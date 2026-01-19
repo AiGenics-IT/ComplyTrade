@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  lc-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.optimized
+    container_name: lc-processing-api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount local directories for persistent storage
+      - ./uploads:/tmp/lc_uploads
+      - ./results:/tmp/lc_results
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/\", timeout=3)' || exit 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 2
+      start_period: 10s
+    # Resource limits (optional - adjust based on your needs)
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M

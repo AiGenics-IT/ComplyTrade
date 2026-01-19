@@ -1,0 +1,28 @@
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+
+# Core PDF and Text Processing
+pdfplumber>=0.10.0
+PyPDF2>=3.0.0
+pdf2image>=1.16.0
+Pillow>=10.0.0
+
+# OCR Engines
+pytesseract>=0.3.10
+easyocr>=1.7.0
+paddleocr>=2.7.0
+
+# Image Processing
+numpy>=1.24.0
+opencv-python>=4.8.0
+
+# Document Processing
+docx2txt>=0.8
+python-docx>=0.8.11
+
+# Data Processing
+pandas>=2.0.0
+
+# Utilities
+tqdm>=4.65.0
+python-multipart>=0.0.9

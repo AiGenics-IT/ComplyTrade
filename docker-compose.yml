@@ -1,0 +1,18 @@
+services:
+  lc-api:
+    container_name: lc-processing-api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"  
+    volumes:
+      - ./uploads:/tmp/lc_uploads
+      - ./results:/tmp/lc_results
+      - ./RestApiSystem:/app/RestApiSystem
+      - ./StandAloneSystem:/app/StandAloneSystem
+      - ./Documentation:/app/Documentation
+      - ./Documents:/app/Documents
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped

@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LC Processing System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            font-size: 3em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .main-card {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            margin-bottom: 30px;
+        }
+
+        .upload-section {
+            border: 3px dashed #667eea;
+            border-radius: 15px;
+            padding: 40px;
+            text-align: center;
+            background: #f8f9ff;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .upload-section:hover {
+            border-color: #764ba2;
+            background: #f0f2ff;
+        }
+
+        .upload-section.dragover {
+            border-color: #764ba2;
+            background: #e8ebff;
+            transform: scale(1.02);
+        }
+
+        .upload-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+            color: #667eea;
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 40px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin: 10px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+
+        .file-list {
+            margin-top: 30px;
+        }
+
+        .file-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 15px;
+            background: #f8f9ff;
+            border-radius: 10px;
+            margin-bottom: 10px;
+            border-left: 4px solid #667eea;
+        }
+
+        .file-name {
+            font-weight: 500;
+            color: #333;
+        }
+
+        .file-size {
+            color: #666;
+            font-size: 0.9em;
+            margin-left: 10px;
+        }
+
+        .remove-btn {
+            background: #f5576c;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+        }
+
+        .remove-btn:hover {
+            background: #e04b5f;
+        }
+
+        .options {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9ff;
+            border-radius: 10px;
+        }
+
+        .option-group {
+            margin-bottom: 20px;
+        }
+
+        .option-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+        }
+
+        .option-group select,
+        .option-group input[type="checkbox"] {
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 5px;
+            font-size: 1em;
+        }
+
+        .option-group select {
+            width: 100%;
+        }
+
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-card {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            margin-bottom: 30px;
+            display: none;
+        }
+
+        .status-card.active {
+            display: block;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.9em;
+            text-transform: uppercase;
+        }
+
+        .status-pending {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .status-processing {
+            background: #cce5ff;
+            color: #004085;
+        }
+
+        .status-completed {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-failed {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #e0e0e0;
+            border-radius: 15px;
+            overflow: hidden;
+            margin: 20px 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            transition: width 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+        }
+
+        .results {
+            margin-top: 30px;
+        }
+
+        .result-item {
+            background: #f8f9ff;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+            border-left: 4px solid #667eea;
+        }
+
+        .result-header {
+            font-size: 1.2em;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .result-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .result-detail {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        .result-label {
+            color: #666;
+            font-size: 0.9em;
+            margin-bottom: 5px;
+        }
+
+        .result-value {
+            color: #333;
+            font-weight: 600;
+            font-size: 1.1em;
+        }
+
+        .download-btn {
+            background: #28a745;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            margin-top: 10px;
+        }
+
+        .download-btn:hover {
+            background: #218838;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error-message {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 15px;
+            border-left: 4px solid #f5c6cb;
+        }
+
+        .info-box {
+            background: #d1ecf1;
+            color: #0c5460;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 30px;
+            border-left: 4px solid #bee5eb;
+        }
+
+        .info-box h3 {
+            margin-bottom: 10px;
+        }
+
+        .info-box ul {
+            margin-left: 20px;
+        }
+
+        .info-box li {
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📄 LC Processing System</h1>
+            <p>Upload Letter of Credit documents and amendments for automatic processing</p>
+        </div>
+
+        <div class="main-card">
+            <div class="upload-section" id="uploadSection">
+                <div class="upload-icon">📤</div>
+                <h2>Drop LC Documents Here</h2>
+                <p style="margin: 20px 0; color: #666;">or click to select files</p>
+                <input type="file" id="fileInput" class="file-input" multiple accept=".pdf,.jpg,.jpeg,.png,.txt">
+                <button class="btn" onclick="document.getElementById('fileInput').click()">
+                    Select Files
+                </button>
+            </div>
+
+            <div class="file-list" id="fileList"></div>
+
+            <div class="options">
+                <h3 style="margin-bottom: 20px;">Processing Options</h3>
+                
+                <div class="option-group">
+                    <label for="ocrBackend">OCR Engine:</label>
+                    <select id="ocrBackend">
+                        <option value="tesseract" selected>Tesseract (Fast, Default)</option>
+                        <option value="easyocr">EasyOCR (High Accuracy)</option>
+                        <option value="paddleocr">PaddleOCR (Multi-language)</option>
+                    </select>
+                </div>
+
+                <div class="option-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="forceOcr">
+                        Force OCR (even for digital PDFs)
+                    </label>
+                </div>
+            </div>
+
+            <div style="text-align: center; margin-top: 30px;">
+                <button class="btn" id="processBtn" onclick="processDocuments()" disabled>
+                    Process Documents
+                </button>
+                <button class="btn btn-secondary" onclick="clearAll()">
+                    Clear All
+                </button>
+            </div>
+        </div>
+
+        <div class="status-card" id="statusCard">
+            <h2>Processing Status</h2>
+            <div style="margin: 20px 0;">
+                <span class="status-badge" id="statusBadge">Pending</span>
+            </div>
+            
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill" style="width: 0%">0%</div>
+            </div>
+
+            <p id="statusMessage" style="margin: 20px 0; color: #666;"></p>
+
+            <div class="spinner" id="spinner"></div>
+
+            <div class="results" id="results"></div>
+        </div>
+
+        <div class="info-box">
+            <h3>ℹ️ How It Works</h3>
+            <ul>
+                <li>Upload your original LC documents (MT700 format)</li>
+                <li>Upload any amendments (MT707 format)</li>
+                <li>The system automatically identifies LCs and amendments</li>
+                <li>All amendments are consolidated into the original LC</li>
+                <li>Download the final consolidated JSON files</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        let selectedFiles = [];
+        let currentJobId = null;
+        let statusCheckInterval = null;
+
+        // File input handling
+        const fileInput = document.getElementById('fileInput');
+        const uploadSection = document.getElementById('uploadSection');
+        const fileList = document.getElementById('fileList');
+        const processBtn = document.getElementById('processBtn');
+
+        fileInput.addEventListener('change', handleFileSelect);
+
+        // Drag and drop
+        uploadSection.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadSection.classList.add('dragover');
+        });
+
+        uploadSection.addEventListener('dragleave', () => {
+            uploadSection.classList.remove('dragover');
+        });
+
+        uploadSection.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadSection.classList.remove('dragover');
+            const files = Array.from(e.dataTransfer.files);
+            handleFiles(files);
+        });
+
+        uploadSection.addEventListener('click', (e) => {
+            if (e.target === uploadSection || e.target.closest('.upload-icon') || e.target.closest('h2') || e.target.closest('p')) {
+                fileInput.click();
+            }
+        });
+
+        function handleFileSelect(e) {
+            const files = Array.from(e.target.files);
+            handleFiles(files);
+        }
+
+        function handleFiles(files) {
+            selectedFiles = [...selectedFiles, ...files];
+            updateFileList();
+            processBtn.disabled = selectedFiles.length === 0;
+        }
+
+        function updateFileList() {
+            if (selectedFiles.length === 0) {
+                fileList.innerHTML = '';
+                return;
+            }
+
+            fileList.innerHTML = '<h3 style="margin-bottom: 15px;">Selected Files (' + selectedFiles.length + ')</h3>';
+            
+            selectedFiles.forEach((file, index) => {
+                const fileItem = document.createElement('div');
+                fileItem.className = 'file-item';
+                fileItem.innerHTML = `
+                    <div>
+                        <span class="file-name">${file.name}</span>
+                        <span class="file-size">(${formatFileSize(file.size)})</span>
+                    </div>
+                    <button class="remove-btn" onclick="removeFile(${index})">Remove</button>
+                `;
+                fileList.appendChild(fileItem);
+            });
+        }
+
+        function removeFile(index) {
+            selectedFiles.splice(index, 1);
+            updateFileList();
+            processBtn.disabled = selectedFiles.length === 0;
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+        }
+
+        function clearAll() {
+            selectedFiles = [];
+            fileInput.value = '';
+            updateFileList();
+            processBtn.disabled = true;
+            document.getElementById('statusCard').classList.remove('active');
+            if (statusCheckInterval) {
+                clearInterval(statusCheckInterval);
+            }
+        }
+
+        async function processDocuments() {
+            if (selectedFiles.length === 0) return;
+
+            const formData = new FormData();
+            selectedFiles.forEach(file => {
+                formData.append('files', file);
+            });
+
+            const ocrBackend = document.getElementById('ocrBackend').value;
+            const forceOcr = document.getElementById('forceOcr').checked;
+
+            processBtn.disabled = true;
+            document.getElementById('statusCard').classList.add('active');
+            document.getElementById('statusBadge').className = 'status-badge status-pending';
+            document.getElementById('statusBadge').textContent = 'Uploading';
+            document.getElementById('statusMessage').textContent = 'Uploading files to server...';
+            document.getElementById('spinner').style.display = 'block';
+            document.getElementById('results').innerHTML = '';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/upload?ocr_backend=${ocrBackend}&force_ocr=${forceOcr}`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error('Upload failed');
+                }
+
+                const data = await response.json();
+                currentJobId = data.job_id;
+
+                document.getElementById('statusMessage').textContent = 'Files uploaded. Processing...';
+                
+                // Start checking status
+                statusCheckInterval = setInterval(checkStatus, 2000);
+
+            } catch (error) {
+                showError('Upload failed: ' + error.message);
+                processBtn.disabled = false;
+            }
+        }
+
+        async function checkStatus() {
+            if (!currentJobId) return;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/status/${currentJobId}`);
+                const status = await response.json();
+
+                updateStatusDisplay(status);
+
+                if (status.status === 'completed') {
+                    clearInterval(statusCheckInterval);
+                    await loadResults();
+                } else if (status.status === 'failed') {
+                    clearInterval(statusCheckInterval);
+                    showError(status.message);
+                }
+
+            } catch (error) {
+                console.error('Status check failed:', error);
+            }
+        }
+
+        function updateStatusDisplay(status) {
+            const badge = document.getElementById('statusBadge');
+            const message = document.getElementById('statusMessage');
+            const progressFill = document.getElementById('progressFill');
+
+            badge.className = 'status-badge status-' + status.status;
+            badge.textContent = status.status.charAt(0).toUpperCase() + status.status.slice(1);
+            message.textContent = status.message || 'Processing...';
+
+            if (status.status === 'processing') {
+                const progress = Math.min(90, (status.files_processed / selectedFiles.length) * 100);
+                progressFill.style.width = progress + '%';
+                progressFill.textContent = Math.round(progress) + '%';
+            }
+        }
+
+        async function loadResults() {
+            document.getElementById('spinner').style.display = 'none';
+            document.getElementById('progressFill').style.width = '100%';
+            document.getElementById('progressFill').textContent = '100%';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/result/${currentJobId}`);
+                const results = await response.json();
+
+                displayResults(results);
+                processBtn.disabled = false;
+
+            } catch (error) {
+                showError('Failed to load results: ' + error.message);
+            }
+        }
+
+        function displayResults(results) {
+            const resultsDiv = document.getElementById('results');
+            
+            let html = '<h3 style="margin-bottom: 20px;">✅ Processing Complete</h3>';
+            
+            html += `
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 30px;">
+                    <div class="result-detail">
+                        <div class="result-label">Files Processed</div>
+                        <div class="result-value">${results.files_processed}</div>
+                    </div>
+                    <div class="result-detail">
+                        <div class="result-label">LCs Found</div>
+                        <div class="result-value">${results.lcs_found}</div>
+                    </div>
+                    <div class="result-detail">
+                        <div class="result-label">Amendments Found</div>
+                        <div class="result-value">${results.amendments_found}</div>
+                    </div>
+                </div>
+            `;
+
+            if (results.consolidated_lcs && results.consolidated_lcs.length > 0) {
+                html += '<h3 style="margin-bottom: 15px;">Consolidated LCs</h3>';
+                
+                results.consolidated_lcs.forEach(lc => {
+                    html += `
+                        <div class="result-item">
+                            <div class="result-header">LC: ${lc.lc_number}</div>
+                            <div class="result-details">
+                                <div class="result-detail">
+                                    <div class="result-label">Issue Date</div>
+                                    <div class="result-value">${lc.original_issue_date || 'N/A'}</div>
+                                </div>
+                                <div class="result-detail">
+                                    <div class="result-label">Amendments</div>
+                                    <div class="result-value">${lc.amendments_applied}</div>
+                                </div>
+                                <div class="result-detail">
+                                    <div class="result-label">Conditions</div>
+                                    <div class="result-value">${lc.additional_conditions.length}</div>
+                                </div>
+                                <div class="result-detail">
+                                    <div class="result-label">Documents Required</div>
+                                    <div class="result-value">${lc.documents_required.length}</div>
+                                </div>
+                            </div>
+                            <a href="${API_BASE}${lc.download_url}" class="download-btn" download>
+                                📥 Download JSON
+                            </a>
+                        </div>
+                    `;
+                });
+            }
+
+            if (results.errors && results.errors.length > 0) {
+                html += '<div class="error-message"><strong>Errors:</strong><ul>';
+                results.errors.forEach(error => {
+                    html += `<li>${error}</li>`;
+                });
+                html += '</ul></div>';
+            }
+
+            resultsDiv.innerHTML = html;
+        }
+
+        function showError(message) {
+            document.getElementById('spinner').style.display = 'none';
+            document.getElementById('results').innerHTML = `
+                <div class="error-message">
+                    <strong>Error:</strong> ${message}
+                </div>
+            `;
+            processBtn.disabled = false;
+        }
+    </script>
+</body>
+</html>

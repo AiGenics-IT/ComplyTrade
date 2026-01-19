@@ -1,0 +1,21 @@
+# Minimal requirements for LC Processing API (Docker optimized)
+
+# Core PDF Processing (essential only)
+pdfplumber==0.10.3
+pdf2image==1.16.3
+Pillow==10.1.0
+
+# OCR Engine (Tesseract only - minimal)
+pytesseract==0.3.10
+
+# Image Processing (essential only)
+numpy==1.24.3
+opencv-python-headless==4.8.1.78
+
+# API Framework (minimal)
+fastapi==0.104.1
+uvicorn==0.24.0
+python-multipart==0.0.6
+
+# No EasyOCR or PaddleOCR (reduces image size by ~2GB)
+# Users can add them if needed

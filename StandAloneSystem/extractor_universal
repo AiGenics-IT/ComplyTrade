@@ -1,0 +1,1159 @@
+"""
+Universal SWIFT MT Message Extraction System
+Supports all major SWIFT MT message types (MT1xx-MT9xx categories)
+Including: Payments, Trade Finance, Treasury, Securities, Collections, etc.
+"""
+
+import re
+import json
+from typing import Dict, List, Optional, Tuple, Any
+from dataclasses import dataclass, asdict, field
+from datetime import datetime
+from pathlib import Path
+from enum import Enum
+
+
+class MTMessageCategory(Enum):
+    """SWIFT MT Message Categories"""
+    CUSTOMER_PAYMENTS = "1"  # MT1xx - Customer Payments and Cheques
+    FINANCIAL_INSTITUTION_TRANSFERS = "2"  # MT2xx - Financial Institution Transfers
+    TREASURY_MARKETS = "3"  # MT3xx - Treasury Markets
+    COLLECTIONS_CASH_LETTERS = "4"  # MT4xx - Collections and Cash Letters
+    SECURITIES_MARKETS = "5"  # MT5xx - Securities Markets
+    PRECIOUS_METALS_SYNDICATIONS = "6"  # MT6xx - Precious Metals and Syndications
+    DOCUMENTARY_CREDITS_GUARANTEES = "7"  # MT7xx - Documentary Credits and Guarantees
+    TRAVELERS_CHEQUES = "8"  # MT8xx - Travelers Cheques
+    CASH_MANAGEMENT = "9"  # MT9xx - Cash Management and Customer Status
+    COMMON_GROUP = "n"  # MTnxx - Common Group Messages
+
+
+# Comprehensive SWIFT MT message type mapping
+SWIFT_MESSAGE_TYPES = {
+    # Category 1 - Customer Payments and Cheques
+    '100': {'name': 'Customer Transfer', 'category': 'Customer Payments'},
+    '101': {'name': 'Request for Transfer', 'category': 'Customer Payments'},
+    '102': {'name': 'Multiple Customer Credit Transfer', 'category': 'Customer Payments'},
+    '103': {'name': 'Single Customer Credit Transfer', 'category': 'Customer Payments'},
+    '104': {'name': 'Direct Debit and Request for Debit Transfer', 'category': 'Customer Payments'},
+    '107': {'name': 'Direct Debit Message and Amendment', 'category': 'Customer Payments'},
+    '110': {'name': 'Advice of Cheque(s)', 'category': 'Customer Payments'},
+    '111': {'name': 'Request for Stop Payment of a Cheque', 'category': 'Customer Payments'},
+    '112': {'name': 'Status of a Request for Stop Payment of a Cheque', 'category': 'Customer Payments'},
+    
+    # Category 2 - Financial Institution Transfers
+    '200': {'name': 'Financial Institution Transfer for its Own Account', 'category': 'FI Transfers'},
+    '201': {'name': 'Multiple Financial Institution Transfer for its Own Account', 'category': 'FI Transfers'},
+    '202': {'name': 'General Financial Institution Transfer', 'category': 'FI Transfers'},
+    '203': {'name': 'Multiple General Financial Institution Transfer', 'category': 'FI Transfers'},
+    '204': {'name': 'Financial Markets Direct Debit Message', 'category': 'FI Transfers'},
+    '205': {'name': 'Financial Institution Transfer (Third Party)', 'category': 'FI Transfers'},
+    '210': {'name': 'Notice to Receive', 'category': 'FI Transfers'},
+    
+    # Category 3 - Treasury Markets - Foreign Exchange, Money Markets and Derivatives
+    '300': {'name': 'Foreign Exchange Confirmation', 'category': 'Treasury Markets'},
+    '303': {'name': 'FX/Currency Option Allocation Instruction', 'category': 'Treasury Markets'},
+    '304': {'name': 'FX/Currency Option Instruction', 'category': 'Treasury Markets'},
+    '305': {'name': 'FX/Currency Option Notification', 'category': 'Treasury Markets'},
+    '306': {'name': 'FX/Currency Option Confirmation', 'category': 'Treasury Markets'},
+    '320': {'name': 'Fixed Loan/Deposit Confirmation', 'category': 'Treasury Markets'},
+    '330': {'name': 'Call/Notice Loan/Deposit Confirmation', 'category': 'Treasury Markets'},
+    '340': {'name': 'Forward Rate Agreement Confirmation', 'category': 'Treasury Markets'},
+    '341': {'name': 'Forward Rate Agreement Settlement Confirmation', 'category': 'Treasury Markets'},
+    '350': {'name': 'Advice of Loan/Deposit Interest Payment', 'category': 'Treasury Markets'},
+    '360': {'name': 'Single Currency Interest Rate Derivative Confirmation', 'category': 'Treasury Markets'},
+    '361': {'name': 'Cross Currency Interest Rate Swap Confirmation', 'category': 'Treasury Markets'},
+    '362': {'name': 'Interest Rate Reset/Advice of Payment', 'category': 'Treasury Markets'},
+    '364': {'name': 'Single Currency Interest Rate Derivative Confirmation', 'category': 'Treasury Markets'},
+    '365': {'name': 'Interest Rate Reset/Advice of Payment', 'category': 'Treasury Markets'},
+    
+    # Category 4 - Collections and Cash Letters
+    '400': {'name': 'Advice of Payment', 'category': 'Collections'},
+    '405': {'name': 'Clean Collection', 'category': 'Collections'},
+    '410': {'name': 'Acknowledgement', 'category': 'Collections'},
+    '412': {'name': 'Advice of Acceptance', 'category': 'Collections'},
+    '416': {'name': 'Advice of Non-Payment/Non-Acceptance', 'category': 'Collections'},
+    '420': {'name': 'Tracer', 'category': 'Collections'},
+    '422': {'name': 'Advice of Fate and Request for Instructions', 'category': 'Collections'},
+    '430': {'name': 'Amendment of Instructions', 'category': 'Collections'},
+    '450': {'name': 'Cash Letter Credit Advice', 'category': 'Collections'},
+    '455': {'name': 'Cash Letter Credit Adjustment Advice', 'category': 'Collections'},
+    
+    # Category 5 - Securities Markets
+    '500': {'name': 'Instruction to Register', 'category': 'Securities'},
+    '501': {'name': 'Confirmation of Registration or Modification', 'category': 'Securities'},
+    '502': {'name': 'Order to Buy or Sell', 'category': 'Securities'},
+    '503': {'name': 'Collateral Claim', 'category': 'Securities'},
+    '504': {'name': 'Collateral Proposal', 'category': 'Securities'},
+    '505': {'name': 'Collateral Substitution', 'category': 'Securities'},
+    '506': {'name': 'Collateral and Exposure Statement', 'category': 'Securities'},
+    '507': {'name': 'Collateral Status and Processing Advice', 'category': 'Securities'},
+    '508': {'name': 'Intra-Position Advice', 'category': 'Securities'},
+    '509': {'name': 'Trade Status Message', 'category': 'Securities'},
+    '510': {'name': 'Registration Status and Processing Advice', 'category': 'Securities'},
+    '513': {'name': 'Client Advice of Execution', 'category': 'Securities'},
+    '514': {'name': 'Trade Allocation Instruction', 'category': 'Securities'},
+    '515': {'name': 'Client Confirmation of Purchase or Sale', 'category': 'Securities'},
+    '516': {'name': 'Securities Loan Confirmation', 'category': 'Securities'},
+    '517': {'name': 'Trade Confirmation Affirmation', 'category': 'Securities'},
+    '518': {'name': 'Market-Side Securities Trade Confirmation', 'category': 'Securities'},
+    '527': {'name': 'Triparty Collateral Status and Processing Advice', 'category': 'Securities'},
+    '528': {'name': 'Statement of Holdings', 'category': 'Securities'},
+    '529': {'name': 'Tri-Party Collateral Instruction', 'category': 'Securities'},
+    '530': {'name': 'Transaction Processing Command', 'category': 'Securities'},
+    '535': {'name': 'Statement of Holdings', 'category': 'Securities'},
+    '536': {'name': 'Statement of Transactions', 'category': 'Securities'},
+    '537': {'name': 'Statement of Pending Transactions', 'category': 'Securities'},
+    '538': {'name': 'Statement of Intra-Position Advice', 'category': 'Securities'},
+    '540': {'name': 'Receive Free', 'category': 'Securities'},
+    '541': {'name': 'Receive Against Payment', 'category': 'Securities'},
+    '542': {'name': 'Deliver Free', 'category': 'Securities'},
+    '543': {'name': 'Deliver Against Payment', 'category': 'Securities'},
+    '544': {'name': 'Receive Free Confirmation', 'category': 'Securities'},
+    '545': {'name': 'Receive Against Payment Confirmation', 'category': 'Securities'},
+    '546': {'name': 'Deliver Free Confirmation', 'category': 'Securities'},
+    '547': {'name': 'Deliver Against Payment Confirmation', 'category': 'Securities'},
+    '548': {'name': 'Settlement Status and Processing Advice', 'category': 'Securities'},
+    '549': {'name': 'Request for Statement/Status Advice', 'category': 'Securities'},
+    '558': {'name': 'Tri-Party Collateral and Exposure Statement', 'category': 'Securities'},
+    '559': {'name': 'Paying Agent\'s Claim', 'category': 'Securities'},
+    '564': {'name': 'Corporate Action Notification', 'category': 'Securities'},
+    '565': {'name': 'Corporate Action Instruction', 'category': 'Securities'},
+    '566': {'name': 'Corporate Action Confirmation', 'category': 'Securities'},
+    '567': {'name': 'Corporate Action Status and Processing Advice', 'category': 'Securities'},
+    '568': {'name': 'Corporate Action Narrative', 'category': 'Securities'},
+    '569': {'name': 'Tri-Party Collateral and Exposure Statement', 'category': 'Securities'},
+    '574': {'name': 'Post Trade Matching Status', 'category': 'Securities'},
+    '575': {'name': 'Combined Statement', 'category': 'Securities'},
+    '576': {'name': 'Statement of Open Orders', 'category': 'Securities'},
+    '577': {'name': 'Statement of Executed Orders', 'category': 'Securities'},
+    '578': {'name': 'Statement of Settlement Allegements', 'category': 'Securities'},
+    '579': {'name': 'Certificate Numbers', 'category': 'Securities'},
+    '581': {'name': 'Collateral Adjustment Message', 'category': 'Securities'},
+    '582': {'name': 'Reimbursement and Set-Off Advice', 'category': 'Securities'},
+    '584': {'name': 'Transfer Out Confirmation', 'category': 'Securities'},
+    '586': {'name': 'Statement of Settlement Allegements', 'category': 'Securities'},
+    '587': {'name': 'Depositary Receipt Confirmation', 'category': 'Securities'},
+    '588': {'name': 'Depositary Receipt Status and Processing Advice', 'category': 'Securities'},
+    '589': {'name': 'Settlement Allegement Removal Advice', 'category': 'Securities'},
+    
+    # Category 6 - Precious Metals and Syndications
+    '600': {'name': 'Precious Metal Trade Confirmation', 'category': 'Precious Metals'},
+    '601': {'name': 'Precious Metal Confirmation', 'category': 'Precious Metals'},
+    '604': {'name': 'Precious Metal Option Instruction', 'category': 'Precious Metals'},
+    '605': {'name': 'Precious Metal Option Notification', 'category': 'Precious Metals'},
+    '606': {'name': 'Precious Metal Option Confirmation', 'category': 'Precious Metals'},
+    '643': {'name': 'Notice of Drawdown/Rate Setting', 'category': 'Syndications'},
+    '644': {'name': 'Advice of Rate and Amount Fixing', 'category': 'Syndications'},
+    '645': {'name': 'Advice of a Third Party\'s Rate and Amount Fixing', 'category': 'Syndications'},
+    '646': {'name': 'Payment of Principal and/or Interest', 'category': 'Syndications'},
+    '649': {'name': 'General Syndicated Facility Message', 'category': 'Syndications'},
+    '950': {'name': 'Statement Message', 'category': 'Cash Management'},
+    
+    # Category 7 - Documentary Credits and Guarantees (Extended)
+    '700': {'name': 'Issue of a Documentary Credit', 'category': 'Documentary Credits'},
+    '701': {'name': 'Issue of a Documentary Credit', 'category': 'Documentary Credits'},
+    '705': {'name': 'Pre-Advice of a Documentary Credit', 'category': 'Documentary Credits'},
+    '707': {'name': 'Amendment to a Documentary Credit', 'category': 'Documentary Credits'},
+    '710': {'name': 'Advice of a Third Bank\'s Documentary Credit', 'category': 'Documentary Credits'},
+    '711': {'name': 'Advice of a Third Bank\'s Documentary Credit', 'category': 'Documentary Credits'},
+    '720': {'name': 'Transfer of a Documentary Credit', 'category': 'Documentary Credits'},
+    '721': {'name': 'Transfer of a Documentary Credit', 'category': 'Documentary Credits'},
+    '730': {'name': 'Acknowledgement', 'category': 'Documentary Credits'},
+    '732': {'name': 'Advice of Discharge', 'category': 'Documentary Credits'},
+    '734': {'name': 'Advice of Refusal', 'category': 'Documentary Credits'},
+    '740': {'name': 'Authorization to Reimburse', 'category': 'Documentary Credits'},
+    '742': {'name': 'Reimbursement Claim', 'category': 'Documentary Credits'},
+    '747': {'name': 'Amendment to an Authorization to Reimburse', 'category': 'Documentary Credits'},
+    '750': {'name': 'Advice of Discrepancy', 'category': 'Documentary Credits'},
+    '752': {'name': 'Authorization to Pay, Accept or Negotiate', 'category': 'Documentary Credits'},
+    '754': {'name': 'Advice of Payment/Acceptance/Negotiation', 'category': 'Documentary Credits'},
+    '756': {'name': 'Advice of Reimbursement or Payment', 'category': 'Documentary Credits'},
+    '759': {'name': 'Ancillary Trade Message', 'category': 'Documentary Credits'},
+    '760': {'name': 'Issue of a Guarantee', 'category': 'Guarantees'},
+    '767': {'name': 'Amendment to a Guarantee', 'category': 'Guarantees'},
+    '768': {'name': 'Acknowledgement of a Guarantee', 'category': 'Guarantees'},
+    '769': {'name': 'Advice of Reduction or Release', 'category': 'Guarantees'},
+    '780': {'name': 'Claim under a Guarantee', 'category': 'Guarantees'},
+    '790': {'name': 'Advice of Charges, Interest and Other Adjustments', 'category': 'Documentary Credits'},
+    '791': {'name': 'Advice of Charges, Interest and Other Adjustments', 'category': 'Documentary Credits'},
+    '792': {'name': 'Request for Cancellation', 'category': 'Documentary Credits'},
+    '795': {'name': 'Queries', 'category': 'Documentary Credits'},
+    '796': {'name': 'Answers', 'category': 'Documentary Credits'},
+    '798': {'name': 'Proprietary Message', 'category': 'Documentary Credits'},
+    '799': {'name': 'Free Format Message', 'category': 'Documentary Credits'},
+    
+    # Category 8 - Travelers Cheques
+    '800': {'name': 'Travelers Cheque Inventory Report', 'category': 'Travelers Cheques'},
+    '801': {'name': 'Travelers Cheque Encashment Advice', 'category': 'Travelers Cheques'},
+    '802': {'name': 'Travelers Cheque Stop Report', 'category': 'Travelers Cheques'},
+    '810': {'name': 'Travelers Cheque Refund Request', 'category': 'Travelers Cheques'},
+    '812': {'name': 'Travelers Cheque Refund Confirmation', 'category': 'Travelers Cheques'},
+    '813': {'name': 'Travelers Cheque Refund Advice', 'category': 'Travelers Cheques'},
+    '820': {'name': 'Travelers Cheque Reconciliation Report', 'category': 'Travelers Cheques'},
+    '823': {'name': 'Travelers Cheque Settlement Request', 'category': 'Travelers Cheques'},
+    '824': {'name': 'Travelers Cheque Settlement Confirmation', 'category': 'Travelers Cheques'},
+    
+    # Category 9 - Cash Management and Customer Status
+    '900': {'name': 'Confirmation of Debit', 'category': 'Cash Management'},
+    '910': {'name': 'Confirmation of Credit', 'category': 'Cash Management'},
+    '920': {'name': 'Request Message', 'category': 'Cash Management'},
+    '935': {'name': 'Rate Change Notification', 'category': 'Cash Management'},
+    '940': {'name': 'Customer Statement Message', 'category': 'Cash Management'},
+    '941': {'name': 'Balance Report', 'category': 'Cash Management'},
+    '942': {'name': 'Interim Transaction Report', 'category': 'Cash Management'},
+    '950': {'name': 'Statement Message', 'category': 'Cash Management'},
+    '960': {'name': 'Authority to Reimburse Message', 'category': 'Cash Management'},
+    '961': {'name': 'Settlement Transaction Report', 'category': 'Cash Management'},
+    '962': {'name': 'Key Exchange Message', 'category': 'Cash Management'},
+    '963': {'name': 'Response to Request Message', 'category': 'Cash Management'},
+    '964': {'name': 'Error Report', 'category': 'Cash Management'},
+    '965': {'name': 'Error Report Acknowledgement', 'category': 'Cash Management'},
+    '966': {'name': 'Settlement Netting Report', 'category': 'Cash Management'},
+    '967': {'name': 'Supplementary Settlement Data Report', 'category': 'Cash Management'},
+    '970': {'name': 'Netting Statement', 'category': 'Cash Management'},
+    '971': {'name': 'Netting Balance Report', 'category': 'Cash Management'},
+    '972': {'name': 'Netting Interim Statement', 'category': 'Cash Management'},
+    '973': {'name': 'Netting Request', 'category': 'Cash Management'},
+    '985': {'name': 'Status Report', 'category': 'Cash Management'},
+    '986': {'name': 'Rate Change Advice', 'category': 'Cash Management'},
+    
+    # Common Group Messages (MTnxx)
+    'n90': {'name': 'Advice of Charges', 'category': 'Common Messages'},
+    'n92': {'name': 'Request for Cancellation', 'category': 'Common Messages'},
+    'n95': {'name': 'Queries', 'category': 'Common Messages'},
+    'n96': {'name': 'Answers', 'category': 'Common Messages'},
+    'n98': {'name': 'Proprietary Message', 'category': 'Common Messages'},
+    'n99': {'name': 'Free Format Message', 'category': 'Common Messages'},
+}
+
+
+# Comprehensive SWIFT field mappings (all categories)
+COMPREHENSIVE_FIELD_MAPPINGS = {
+    # Basic Header Fields
+    ':20:': 'Transaction Reference Number',
+    ':21:': 'Related Reference',
+    ':23:': 'Bank Operation Code',
+    ':23B:': 'Bank Operation Code',
+    ':23E:': 'Instruction Code',
+    ':25:': 'Account Identification',
+    ':26:': 'Transaction Type Code',
+    ':27:': 'Sequence of Total',
+    ':28:': 'Statement Number/Sequence Number',
+    ':28C:': 'Statement Number/Sequence Number',
+    ':28D:': 'Statement Number/Sequence Number',
+    
+    # Date Fields
+    ':30:': 'Date of Issue',
+    ':31C:': 'Date of Issue',
+    ':31D:': 'Date and Place of Expiry',
+    ':31E:': 'Date of Amendment',
+    ':32A:': 'Value Date/Currency/Interbank Settled Amount',
+    ':32B:': 'Currency/Amount',
+    ':32C:': 'Date/Currency/Amount',
+    ':32D:': 'Date/Currency/Amount',
+    ':32H:': 'Currency/Amount',
+    ':32K:': 'Date/Currency/Amount',
+    ':33A:': 'Currency/Amount',
+    ':33B:': 'Currency/Amount',
+    ':33E:': 'Currency/Rate/Amount',
+    ':34A:': 'Currency/Amount',
+    ':34B:': 'Currency/Amount',
+    ':34E:': 'Currency/Amount',
+    ':34F:': 'Currency/Amount',
+    ':35A:': 'Rate',
+    ':35B:': 'Description of Securities',
+    ':36:': 'Exchange Rate',
+    ':36B:': 'Quantity of Security',
+    ':36C:': 'Quantity of Security',
+    ':37G:': 'Applicable Rate',
+    ':37J:': 'Applicable Rate',
+    ':37K:': 'Applicable Rate',
+    ':37L:': 'Applicable Rate',
+    ':37M:': 'Applicable Rate',
+    ':37N:': 'Applicable Rate',
+    ':37P:': 'Applicable Rate',
+    
+    # Party Fields
+    ':40A:': 'Form of Documentary Credit',
+    ':40B:': 'Form of Documentary Credit',
+    ':40C:': 'Applicable Rules',
+    ':40E:': 'Applicable Rules',
+    ':40F:': 'Applicable Rules',
+    ':41A:': 'Available With...By...',
+    ':41D:': 'Available With...By...',
+    ':42A:': 'Drawee',
+    ':42C:': 'Drafts at...',
+    ':42D:': 'Drawee',
+    ':42M:': 'Mixed Payment Details',
+    ':42P:': 'Deferred Payment Details',
+    ':43P:': 'Partial Shipments',
+    ':43T:': 'Transhipment',
+    ':44A:': 'Place of Taking in Charge/Dispatch from/Place of Receipt',
+    ':44B:': 'Place of Final Destination/For Transportation to/Place of Delivery',
+    ':44C:': 'Latest Date of Shipment',
+    ':44D:': 'Shipment Period',
+    ':44E:': 'Port of Loading/Airport of Departure',
+    ':44F:': 'Port of Discharge/Airport of Destination',
+    ':45A:': 'Description of Goods and/or Services',
+    ':45B:': 'Description of Goods and/or Services',
+    ':46A:': 'Documents Required',
+    ':46B:': 'Documents Required (Amendment)',
+    ':47A:': 'Additional Conditions',
+    ':47B:': 'Additional Conditions (Amendment)',
+    ':48:': 'Period for Presentation',
+    ':49:': 'Confirmation Instructions',
+    ':49G:': 'Special Payment Conditions for Beneficiary',
+    ':49H:': 'Special Payment Conditions for Receiving Bank',
+    
+    # Bank and Party Identification
+    ':50:': 'Applicant/Ordering Customer',
+    ':50A:': 'Ordering Customer',
+    ':50B:': 'Ordering Customer',
+    ':50C:': 'Ordering Customer',
+    ':50F:': 'Ordering Customer',
+    ':50G:': 'Ordering Customer',
+    ':50H:': 'Ordering Customer',
+    ':50K:': 'Ordering Customer',
+    ':51A:': 'Sending Institution',
+    ':51D:': 'Applicant Bank',
+    ':52A:': 'Ordering Institution',
+    ':52B:': 'Ordering Institution',
+    ':52C:': 'Ordering Institution',
+    ':52D:': 'Ordering Institution',
+    ':53A:': 'Sender\'s Correspondent',
+    ':53B:': 'Sender\'s Correspondent',
+    ':53C:': 'Sender\'s Correspondent',
+    ':53D:': 'Sender\'s Correspondent',
+    ':54A:': 'Receiver\'s Correspondent',
+    ':54B:': 'Receiver\'s Correspondent',
+    ':54D:': 'Receiver\'s Correspondent',
+    ':55A:': 'Third Reimbursement Institution',
+    ':55B:': 'Third Reimbursement Institution',
+    ':55D:': 'Third Reimbursement Institution',
+    ':56A:': 'Intermediary',
+    ':56C:': 'Intermediary',
+    ':56D:': 'Intermediary',
+    ':57A:': 'Account With Institution',
+    ':57B:': 'Account With Institution',
+    ':57C:': 'Account With Institution',
+    ':57D:': 'Account With Institution',
+    ':58A:': 'Beneficiary Institution',
+    ':58B:': 'Beneficiary Institution',
+    ':58D:': 'Beneficiary Institution',
+    ':59:': 'Beneficiary',
+    ':59A:': 'Beneficiary',
+    ':59F:': 'Beneficiary',
+    
+    # Charges and Additional Information
+    ':60F:': 'Opening Balance',
+    ':60M:': 'Intermediate Opening Balance',
+    ':61:': 'Statement Line',
+    ':62F:': 'Closing Balance',
+    ':62M:': 'Intermediate Closing Balance',
+    ':63:': 'Closing Available Balance',
+    ':64:': 'Closing Available Balance',
+    ':65:': 'Forward Available Balance',
+    ':70:': 'Remittance Information',
+    ':71A:': 'Details of Charges',
+    ':71B:': 'Details of Charges',
+    ':71D:': 'Details of Charges',
+    ':71F:': 'Sender\'s Charges',
+    ':71G:': 'Receiver\'s Charges',
+    ':72:': 'Sender to Receiver Information',
+    ':72Z:': 'Sender to Receiver Information',
+    ':73:': 'Previous Correspondent',
+    ':73A:': 'Previous Correspondent',
+    ':74:': 'Next Correspondent',
+    ':75:': 'Queries',
+    ':76:': 'Answers',
+    ':77A:': 'Narrative',
+    ':77B:': 'Narrative',
+    ':77C:': 'Scope of Guarantee',
+    ':77D:': 'Terms and Conditions',
+    ':77E:': 'Additional Terms and Conditions',
+    ':77F:': 'Delivery To/Collection By',
+    ':77G:': 'Special Conditions',
+    ':77H:': 'Instructions to Bank',
+    ':77J:': 'Instructions to Paying/Accepting/Negotiating Bank',
+    ':77T:': 'Terms and Conditions for Charges',
+    ':78:': 'Instructions to Paying/Accepting/Negotiating Bank',
+    ':79:': 'Narrative Description of Transaction',
+    
+    # Securities and Settlement Fields
+    ':80A:': 'Party A',
+    ':80C:': 'Counterparty',
+    ':81A:': 'Party B',
+    ':81D:': 'Party B',
+    ':82A:': 'Delivering Agent',
+    ':82D:': 'Delivering Agent',
+    ':83A:': 'Receiving Agent',
+    ':83C:': 'Receiving Agent',
+    ':83D:': 'Receiving Agent',
+    ':84A:': 'Place of Settlement',
+    ':84B:': 'Place of Settlement',
+    ':84D:': 'Place of Settlement',
+    ':85A:': 'Party E',
+    ':85B:': 'Party E',
+    ':85D:': 'Party E',
+    ':86A:': 'Safekeeping Account',
+    ':86B:': 'Safekeeping Account',
+    ':86D:': 'Safekeeping Account',
+    ':87A:': 'Beneficiary Institution',
+    ':87D:': 'Beneficiary Institution',
+    ':88A:': 'Instructing Party',
+    ':88D:': 'Instructing Party',
+    ':89A:': 'Receiving Party',
+    ':89D:': 'Receiving Party',
+    
+    # Amendment and Status Fields
+    ':90A:': 'Price',
+    ':90B:': 'Price',
+    ':91A:': 'Total',
+    ':91D:': 'Total',
+    ':92A:': 'Rate',
+    ':92B:': 'Rate',
+    ':92D:': 'Rate',
+    ':92K:': 'Rate',
+    ':92M:': 'Rate',
+    ':92N:': 'Rate',
+    ':93A:': 'Balance',
+    ':93B:': 'Balance',
+    ':93C:': 'Balance',
+    ':93D:': 'Balance',
+    ':94A:': 'Place',
+    ':94B:': 'Place',
+    ':94C:': 'Place',
+    ':94D:': 'Place',
+    ':94F:': 'Place',
+    ':94G:': 'Place',
+    ':94H:': 'Place',
+    ':95A:': 'Party',
+    ':95C:': 'Party',
+    ':95L:': 'Party',
+    ':95P:': 'Party',
+    ':95Q:': 'Party',
+    ':95R:': 'Party',
+    ':96A:': 'Account',
+    ':96D:': 'Account',
+    ':97A:': 'Account',
+    ':97B:': 'Account',
+    ':97C:': 'Account',
+    ':97D:': 'Account',
+    ':98A:': 'Date',
+    ':98B:': 'Date',
+    ':98C:': 'Date',
+    ':98D:': 'Date',
+    ':98E:': 'Date',
+    ':99A:': 'Number',
+    ':99B:': 'Number',
+    ':99C:': 'Number',
+    
+    # Amendment-specific fields
+    'F26E': 'Number of Amendment',
+    'F30': 'Date of Amendment',
+    'F22A': 'Purpose of Message',
+}
+
+
+@dataclass
+class MTField:
+    """Represents a single SWIFT MT field"""
+    field_code: str
+    field_name: str
+    value: str
+    raw_text: str
+    subfields: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class MTMessage:
+    """Represents a complete SWIFT MT message"""
+    message_type: str  # e.g., "MT700", "MT103", "MT940"
+    message_number: str  # Full MT number (e.g., "700", "103")
+    message_category: str  # Category name
+    message_name: str  # Full message name
+    transaction_reference: str  # Primary reference (typically :20:)
+    
+    # Message metadata
+    sender: Optional[str] = None
+    receiver: Optional[str] = None
+    message_date: Optional[str] = None
+    value_date: Optional[str] = None
+    currency: Optional[str] = None
+    amount: Optional[str] = None
+    
+    # Field data
+    fields: Dict[str, MTField] = field(default_factory=dict)
+    
+    # Structured data for specific message types
+    parties: Dict[str, str] = field(default_factory=dict)
+    dates: Dict[str, str] = field(default_factory=dict)
+    amounts: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    narrative_fields: Dict[str, str] = field(default_factory=dict)
+    
+    # For documentary credits - maintain backward compatibility
+    additional_conditions: List[Dict] = field(default_factory=list)
+    documents_required: List[Dict] = field(default_factory=list)
+    amendment_number: Optional[str] = None
+    amendment_date: Optional[str] = None
+    
+    # Raw data
+    raw_text: str = ""
+    
+    # For amendments and related messages
+    related_reference: Optional[str] = None
+    original_message_type: Optional[str] = None
+
+
+class UniversalMTExtractor:
+    """Universal SWIFT MT Message Extractor supporting all MT message types"""
+    
+    def __init__(self):
+        self.message_types = SWIFT_MESSAGE_TYPES
+        self.field_mappings = COMPREHENSIVE_FIELD_MAPPINGS
+    
+    def extract_from_text(self, text: str) -> MTMessage:
+        """
+        Extract SWIFT MT message data from text content
+        Automatically detects message type and extracts all fields
+        """
+        # Detect message type
+        message_type = self._detect_message_type(text)
+        
+        if not message_type:
+            # Try to extract based on field patterns
+            return self._extract_generic_mt(text)
+        
+        # Get message info
+        msg_info = self.message_types.get(message_type, {
+            'name': f'MT{message_type}',
+            'category': 'Unknown'
+        })
+        
+        # Create message object
+        msg = MTMessage(
+            message_type=f"MT{message_type}",
+            message_number=message_type,
+            message_category=msg_info.get('category', 'Unknown'),
+            message_name=msg_info.get('name', 'Unknown'),
+            transaction_reference="",
+            raw_text=text
+        )
+        
+        # Extract basic metadata
+        self._extract_metadata(text, msg)
+        
+        # Extract all fields
+        self._extract_all_fields(text, msg)
+        
+        # Extract structured data based on message type
+        self._extract_structured_data(msg)
+        
+        # Category-specific extraction
+        if msg.message_category == 'Documentary Credits':
+            self._extract_documentary_credit_data(msg)
+        elif msg.message_category == 'Guarantees':
+            self._extract_guarantee_data(msg)
+        elif msg.message_category in ['Customer Payments', 'FI Transfers']:
+            self._extract_payment_data(msg)
+        elif msg.message_category == 'Securities':
+            self._extract_securities_data(msg)
+        elif msg.message_category == 'Treasury Markets':
+            self._extract_treasury_data(msg)
+        elif msg.message_category == 'Cash Management':
+            self._extract_cash_management_data(msg)
+        
+        return msg
+    
+    def _detect_message_type(self, text: str) -> Optional[str]:
+        """Detect SWIFT MT message type from text"""
+        # Try to find MT type in various formats
+        patterns = [
+            r'fin\.(\d{3})',  # fin.700
+            r'MT(\d{3})',     # MT700
+            r'Message Type[:\s]+(\d{3})',
+            r'Type[:\s]+MT(\d{3})',
+            r':(\d{3}):',     # Field tag format
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                mt_type = match.group(1)
+                if mt_type in self.message_types:
+                    return mt_type
+        
+        # Check for message type names
+        for mt_type, info in self.message_types.items():
+            if info['name'].lower() in text.lower():
+                return mt_type
+        
+        return None
+    
+    def _extract_metadata(self, text: str, msg: MTMessage):
+        """Extract basic message metadata"""
+        # Sender
+        sender_match = re.search(r'Sender[:\s]+([A-Z0-9]+)', text)
+        if sender_match:
+            msg.sender = sender_match.group(1).strip()
+        
+        # Receiver
+        receiver_match = re.search(r'Receiver[:\s]+([A-Z0-9]+)', text)
+        if receiver_match:
+            msg.receiver = receiver_match.group(1).strip()
+        
+        # Transaction Reference (field :20:)
+        ref_patterns = [
+            r':20:([^\n:]+)',
+            r'F20[:\s]+.*?([A-Z0-9]+)',
+        ]
+        for pattern in ref_patterns:
+            match = re.search(pattern, text)
+            if match:
+                msg.transaction_reference = match.group(1).strip()
+                break
+    
+    def _extract_all_fields(self, text: str, msg: MTMessage):
+        """Extract all SWIFT fields from text"""
+        # Extract fields in :XX: or :XXX: format
+        field_pattern = r':(\d{1,3}[A-Z]?):(.*?)(?=:\d{1,3}[A-Z]?:|$)'
+        matches = re.finditer(field_pattern, text, re.DOTALL)
+        
+        for match in matches:
+            field_code = match.group(1)
+            field_value = match.group(2).strip()
+            
+            field_tag = f':{field_code}:'
+            field_name = self.field_mappings.get(field_tag, f'Field {field_code}')
+            
+            mt_field = MTField(
+                field_code=field_tag,
+                field_name=field_name,
+                value=self._clean_field_value(field_value),
+                raw_text=field_value
+            )
+            
+            # Parse subfields if present
+            self._parse_subfields(field_value, mt_field)
+            
+            msg.fields[field_tag] = mt_field
+        
+        # Also extract F-format fields (e.g., F20:, F31C:)
+        f_field_pattern = r'F(\d{1,3}[A-Z]?)[:\s]+(.*?)(?=F\d{1,3}[A-Z]?:|Other|$)'
+        f_matches = re.finditer(f_field_pattern, text, re.DOTALL)
+        
+        for match in f_matches:
+            field_code = match.group(1)
+            field_value = match.group(2).strip()
+            
+            field_tag = f'F{field_code}'
+            field_name = self.field_mappings.get(f':{field_code}:', f'Field {field_code}')
+            
+            mt_field = MTField(
+                field_code=field_tag,
+                field_name=field_name,
+                value=self._clean_field_value(field_value),
+                raw_text=field_value
+            )
+            
+            msg.fields[field_tag] = mt_field
+    
+    def _parse_subfields(self, field_value: str, mt_field: MTField):
+        """Parse subfields within a field"""
+        # Common subfield patterns
+        subfield_patterns = {
+            'Currency': r'(?:Currency[:\s]+)?([A-Z]{3})(?:\s|$)',
+            'Amount': r'(?:Amount[:\s]+)?([\d,\.]+)',
+            'Date': r'(?:Date[:\s]+)?(\d{6}|\d{8})',
+            'Code': r'(?:Code[:\s]+)?([A-Z0-9]+)',
+        }
+        
+        for subfield_name, pattern in subfield_patterns.items():
+            match = re.search(pattern, field_value)
+            if match:
+                mt_field.subfields[subfield_name] = match.group(1)
+    
+    def _clean_field_value(self, value: str) -> str:
+        """Clean and normalize field value"""
+        # Remove excessive whitespace
+        value = re.sub(r'\s+', ' ', value)
+        
+        # Remove common prefixes
+        prefixes = [
+            'Name and Address:', 'Currency:', 'Code:', 'Narrative:', 
+            'Date:', 'Place:', 'Number:', 'Total:', 'Amount:', 'Days:',
+            'Party Identifier:', 'Identifier Code:'
+        ]
+        
+        for prefix in prefixes:
+            value = re.sub(f'^{re.escape(prefix)}\\s*', '', value, flags=re.IGNORECASE)
+        
+        return value.strip()
+    
+    def _extract_structured_data(self, msg: MTMessage):
+        """Extract structured data from fields"""
+        # Extract parties
+        party_fields = [':50:', ':50A:', ':50K:', ':52A:', ':52D:', ':53A:', ':53D:', 
+                       ':54A:', ':54D:', ':56A:', ':56D:', ':57A:', ':57D:', 
+                       ':58A:', ':58D:', ':59:', ':59A:']
+        
+        for field_tag in party_fields:
+            if field_tag in msg.fields:
+                party_name = msg.fields[field_tag].field_name
+                msg.parties[party_name] = msg.fields[field_tag].value
+        
+        # Extract dates
+        date_fields = [':30:', ':31C:', ':31D:', ':31E:', ':32A:', ':32C:', ':32D:', 
+                      ':32K:', ':44C:', ':44D:', ':98A:', ':98B:', ':98C:', ':98D:', ':98E:']
+        
+        for field_tag in date_fields:
+            if field_tag in msg.fields:
+                date_name = msg.fields[field_tag].field_name
+                msg.dates[date_name] = msg.fields[field_tag].value
+        
+        # Extract amounts with currency
+        amount_fields = [':32A:', ':32B:', ':32C:', ':32D:', ':32H:', ':32K:', 
+                        ':33A:', ':33B:', ':34A:', ':34B:', ':71F:', ':71G:']
+        
+        for field_tag in amount_fields:
+            if field_tag in msg.fields:
+                field = msg.fields[field_tag]
+                amount_name = field.field_name
+                
+                msg.amounts[amount_name] = {
+                    'currency': field.subfields.get('Currency', ''),
+                    'amount': field.subfields.get('Amount', field.value)
+                }
+                
+                # Set main amount and currency if not set
+                if not msg.amount and 'Amount' in field.subfields:
+                    msg.amount = field.subfields['Amount']
+                if not msg.currency and 'Currency' in field.subfields:
+                    msg.currency = field.subfields['Currency']
+        
+        # Extract narrative fields
+        narrative_fields = [':70:', ':72:', ':72Z:', ':77A:', ':77B:', ':77C:', ':77D:', 
+                          ':77E:', ':77F:', ':77G:', ':77H:', ':77J:', ':77T:', ':79:']
+        
+        for field_tag in narrative_fields:
+            if field_tag in msg.fields:
+                narrative_name = msg.fields[field_tag].field_name
+                msg.narrative_fields[narrative_name] = msg.fields[field_tag].value
+    
+    def _extract_documentary_credit_data(self, msg: MTMessage):
+        """Extract documentary credit specific data (MT700, MT707, etc.)"""
+        # Extract amendment information for MT707
+        if msg.message_number == '707':
+            if 'F26E' in msg.fields:
+                msg.amendment_number = msg.fields['F26E'].value
+            elif ':26E:' in msg.fields:
+                msg.amendment_number = msg.fields[':26E:'].value
+            
+            if 'F30' in msg.fields:
+                msg.amendment_date = msg.fields['F30'].value
+            elif ':30:' in msg.fields:
+                msg.amendment_date = msg.fields[':30:'].value
+        
+        # Extract additional conditions (field 47A or 47B)
+        for field_tag in [':47A:', 'F47A', ':47B:', 'F47B']:
+            if field_tag in msg.fields:
+                conditions = self._extract_numbered_points(
+                    msg.fields[field_tag].raw_text,
+                    field_tag
+                )
+                msg.additional_conditions.extend(conditions)
+        
+        # Extract documents required (field 46A or 46B)
+        for field_tag in [':46A:', 'F46A', ':46B:', 'F46B']:
+            if field_tag in msg.fields:
+                documents = self._extract_numbered_points(
+                    msg.fields[field_tag].raw_text,
+                    field_tag
+                )
+                msg.documents_required.extend(documents)
+        
+        # For amendments (MT707), extract amendment operations
+        if msg.message_number == '707':
+            self._extract_amendment_operations(msg)
+    
+    def _extract_guarantee_data(self, msg: MTMessage):
+        """Extract guarantee specific data (MT760, MT767, etc.)"""
+        # Extract guarantee terms and conditions
+        if ':77C:' in msg.fields:
+            msg.narrative_fields['Scope of Guarantee'] = msg.fields[':77C:'].value
+        
+        if ':77D:' in msg.fields:
+            msg.narrative_fields['Terms and Conditions'] = msg.fields[':77D:'].value
+    
+    def _extract_payment_data(self, msg: MTMessage):
+        """Extract payment specific data (MT103, MT202, etc.)"""
+        # Extract ordering customer
+        for field_tag in [':50:', ':50A:', ':50K:']:
+            if field_tag in msg.fields:
+                msg.parties['Ordering Customer'] = msg.fields[field_tag].value
+                break
+        
+        # Extract beneficiary
+        for field_tag in [':59:', ':59A:']:
+            if field_tag in msg.fields:
+                msg.parties['Beneficiary'] = msg.fields[field_tag].value
+                break
+        
+        # Extract remittance information
+        if ':70:' in msg.fields:
+            msg.narrative_fields['Remittance Information'] = msg.fields[':70:'].value
+    
+    def _extract_securities_data(self, msg: MTMessage):
+        """Extract securities specific data (MT5xx)"""
+        # Extract security description
+        if ':35B:' in msg.fields:
+            msg.narrative_fields['Description of Securities'] = msg.fields[':35B:'].value
+        
+        # Extract quantity
+        for field_tag in [':36B:', ':36C:']:
+            if field_tag in msg.fields:
+                msg.narrative_fields['Quantity of Security'] = msg.fields[field_tag].value
+                break
+    
+    def _extract_treasury_data(self, msg: MTMessage):
+        """Extract treasury markets specific data (MT3xx)"""
+        # Extract rates
+        for field_tag in [':36:', ':37G:', ':37J:', ':37K:']:
+            if field_tag in msg.fields:
+                rate_name = msg.fields[field_tag].field_name
+                msg.narrative_fields[rate_name] = msg.fields[field_tag].value
+    
+    def _extract_cash_management_data(self, msg: MTMessage):
+        """Extract cash management specific data (MT940, MT950, etc.)"""
+        # Extract balances
+        balance_fields = [':60F:', ':60M:', ':62F:', ':62M:', ':64:', ':65:']
+        
+        for field_tag in balance_fields:
+            if field_tag in msg.fields:
+                balance_name = msg.fields[field_tag].field_name
+                msg.narrative_fields[balance_name] = msg.fields[field_tag].value
+        
+        # Extract statement lines for MT940
+        if msg.message_number == '940' and ':61:' in msg.fields:
+            msg.narrative_fields['Statement Lines'] = msg.fields[':61:'].value
+    
+    def _extract_numbered_points(self, text: str, field_code: str) -> List[Dict]:
+        """Extract numbered points from narrative fields"""
+        points = []
+        
+        # Extract numbered points (1., 2., 3., etc.)
+        point_pattern = r'(\d+)\.\s*([^\n]+(?:\n(?!\d+\.)[^\n]+)*)'
+        point_matches = re.finditer(point_pattern, text, re.MULTILINE)
+        
+        for point_match in point_matches:
+            point_num = point_match.group(1)
+            point_text = point_match.group(2).strip()
+            
+            # Clean up the text
+            point_text = re.sub(r'\s+', ' ', point_text)
+            point_text = re.sub(r'\s*\.\s*$', '', point_text)
+            
+            points.append({
+                'point_number': int(point_num),
+                'text': point_text,
+                'field_code': field_code
+            })
+        
+        return points
+    
+    def _extract_amendment_operations(self, msg: MTMessage):
+        """Extract amendment operations (ADD, DELETE, REPALL) for MT707"""
+        amendment_changes = []
+        
+        # Look for amendment fields (F47B, F46B)
+        for field_tag in ['F47B', 'F46B', ':47B:', ':46B:']:
+            if field_tag not in msg.fields:
+                continue
+            
+            field_content = msg.fields[field_tag].raw_text
+            
+            # Extract changes with operation codes
+            current_change = None
+            
+            for line in field_content.split('\n'):
+                line = line.strip()
+                
+                # Check for operation code
+                if '/DELETE/' in line:
+                    if current_change:
+                        amendment_changes.append(current_change)
+                    current_change = {
+                        'operation': 'DELETE',
+                        'field_code': field_tag,
+                        'narrative': []
+                    }
+                elif '/ADD/' in line:
+                    if current_change:
+                        amendment_changes.append(current_change)
+                    current_change = {
+                        'operation': 'ADD',
+                        'field_code': field_tag,
+                        'narrative': []
+                    }
+                elif '/REPALL/' in line:
+                    if current_change:
+                        amendment_changes.append(current_change)
+                    current_change = {
+                        'operation': 'REPLACE_ALL',
+                        'field_code': field_tag,
+                        'narrative': []
+                    }
+                elif 'Narrative:' in line and current_change:
+                    narrative_text = re.sub(r'.*Narrative:\s*', '', line).strip()
+                    if narrative_text:
+                        current_change['narrative'].append(narrative_text)
+                elif line and current_change and not line.startswith('Code:') and not line.startswith('Line'):
+                    current_change['narrative'].append(line)
+            
+            # Add last change
+            if current_change:
+                amendment_changes.append(current_change)
+        
+        # Process amendment changes
+        for change in amendment_changes:
+            full_narrative = ' '.join(change['narrative'])
+            change['narrative'] = full_narrative
+            
+            # Extract point number
+            point_match = re.search(r'FIELD\s+\d+[AB]-(\d+)', full_narrative)
+            if point_match:
+                change['point_number'] = int(point_match.group(1))
+            
+            # Extract change text
+            change_text_match = re.search(r'AS\s+["\']([^"\']+)["\']|AS\s+(.+)$', full_narrative)
+            if change_text_match:
+                change['change_text'] = (change_text_match.group(1) or change_text_match.group(2)).strip()
+            
+            # Add to appropriate list
+            if 'F47B' in change['field_code'] or ':47B:' in change['field_code']:
+                msg.additional_conditions.append(change)
+            elif 'F46B' in change['field_code'] or ':46B:' in change['field_code']:
+                msg.documents_required.append(change)
+    
+    def _extract_generic_mt(self, text: str) -> MTMessage:
+        """Extract data from unidentified MT message"""
+        msg = MTMessage(
+            message_type="MT_UNKNOWN",
+            message_number="UNKNOWN",
+            message_category="Unknown",
+            message_name="Unknown SWIFT Message",
+            transaction_reference="",
+            raw_text=text
+        )
+        
+        self._extract_metadata(text, msg)
+        self._extract_all_fields(text, msg)
+        self._extract_structured_data(msg)
+        
+        return msg
+
+
+class MTMessageConsolidator:
+    """Consolidates MT messages with their amendments and related messages"""
+    
+    def __init__(self):
+        self.messages: Dict[str, MTMessage] = {}
+        self.amendments: Dict[str, List[MTMessage]] = {}
+        self.related_messages: Dict[str, List[MTMessage]] = {}
+    
+    def add_message(self, msg: MTMessage):
+        """Add a message to the consolidator"""
+        ref = msg.transaction_reference
+        
+        # Determine message category
+        if msg.message_number in ['707', '767', '747']:  # Amendments
+            parent_ref = msg.related_reference or ref
+            if parent_ref not in self.amendments:
+                self.amendments[parent_ref] = []
+            self.amendments[parent_ref].append(msg)
+        else:
+            self.messages[ref] = msg
+            
+            # Store related messages
+            if msg.related_reference:
+                if msg.related_reference not in self.related_messages:
+                    self.related_messages[msg.related_reference] = []
+                self.related_messages[msg.related_reference].append(msg)
+    
+    def consolidate(self, reference: str) -> Dict[str, Any]:
+        """Consolidate a message with all its amendments"""
+        if reference not in self.messages:
+            return None
+        
+        original_msg = self.messages[reference]
+        amendments = self.amendments.get(reference, [])
+        
+        # Sort amendments
+        amendments.sort(key=lambda x: x.amendment_number if x.amendment_number else '0')
+        
+        consolidated = {
+            'transaction_reference': reference,
+            'message_type': original_msg.message_type,
+            'message_name': original_msg.message_name,
+            'message_category': original_msg.message_category,
+            'original_date': original_msg.message_date,
+            'sender': original_msg.sender,
+            'receiver': original_msg.receiver,
+            'currency': original_msg.currency,
+            'amount': original_msg.amount,
+            'amendments_applied': len(amendments),
+            'last_amendment_date': amendments[-1].amendment_date if amendments else None,
+            'fields': {k: asdict(v) for k, v in original_msg.fields.items()},
+            'parties': original_msg.parties.copy(),
+            'dates': original_msg.dates.copy(),
+            'amounts': original_msg.amounts.copy(),
+            'narrative_fields': original_msg.narrative_fields.copy(),
+            'additional_conditions': original_msg.additional_conditions.copy(),
+            'documents_required': original_msg.documents_required.copy(),
+            'amendment_history': []
+        }
+        
+        # Apply amendments
+        for amendment in amendments:
+            amendment_record = {
+                'amendment_number': amendment.amendment_number,
+                'amendment_date': amendment.amendment_date,
+                'changes': []
+            }
+            
+            # Apply changes
+            for change in amendment.additional_conditions:
+                self._apply_change(consolidated['additional_conditions'], change, 'additional_conditions')
+                amendment_record['changes'].append(change)
+            
+            for change in amendment.documents_required:
+                self._apply_change(consolidated['documents_required'], change, 'documents_required')
+                amendment_record['changes'].append(change)
+            
+            consolidated['amendment_history'].append(amendment_record)
+        
+        # Sort final points
+        if consolidated['additional_conditions']:
+            consolidated['additional_conditions'].sort(key=lambda x: x.get('point_number', 999))
+        if consolidated['documents_required']:
+            consolidated['documents_required'].sort(key=lambda x: x.get('point_number', 999))
+        
+        return consolidated
+    
+    def _apply_change(self, points_list: List[Dict], change: Dict, change_type: str):
+        """Apply an amendment change to a list of points"""
+        operation = change.get('operation', 'ADD')
+        
+        if operation == 'DELETE':
+            if 'point_number' in change:
+                points_list[:] = [p for p in points_list if p.get('point_number') != change['point_number']]
+        
+        elif operation == 'ADD':
+            new_point = {
+                'point_number': change.get('point_number', len(points_list) + 1),
+                'text': change.get('change_text', change.get('narrative', '')),
+                'field_code': change.get('field_code', ''),
+                'added_by_amendment': True
+            }
+            points_list.append(new_point)
+        
+        elif operation == 'REPLACE_ALL':
+            if 'point_number' in change:
+                for i, point in enumerate(points_list):
+                    if point.get('point_number') == change['point_number']:
+                        points_list[i] = {
+                            'point_number': change['point_number'],
+                            'text': change.get('change_text', change.get('narrative', '')),
+                            'field_code': change.get('field_code', ''),
+                            'modified_by_amendment': True
+                        }
+                        break
+    
+    def get_all_consolidated(self) -> List[Dict]:
+        """Get all consolidated messages"""
+        results = []
+        for ref in self.messages.keys():
+            consolidated = self.consolidate(ref)
+            if consolidated:
+                results.append(consolidated)
+        return results
+
+
+# Utility functions
+def process_swift_messages(file_paths: List[str], output_path: str = None) -> Dict:
+    """
+    Process multiple SWIFT MT messages
+    
+    Args:
+        file_paths: List of paths to SWIFT message files
+        output_path: Optional path to save JSON output
+    
+    Returns:
+        Dictionary containing all processed messages
+    """
+    extractor = UniversalMTExtractor()
+    consolidator = MTMessageConsolidator()
+    
+    results = {
+        'processing_date': datetime.now().isoformat(),
+        'total_files_processed': 0,
+        'messages_by_category': {},
+        'messages': [],
+        'consolidated_messages': []
+    }
+    
+    # Process each file
+    for file_path in file_paths:
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                text = f.read()
+            
+            msg = extractor.extract_from_text(text)
+            consolidator.add_message(msg)
+            
+            # Track in results
+            results['total_files_processed'] += 1
+            
+            category = msg.message_category
+            if category not in results['messages_by_category']:
+                results['messages_by_category'][category] = []
+            results['messages_by_category'][category].append(msg.message_type)
+            
+            # Add message summary
+            results['messages'].append(asdict(msg))
+            
+        except Exception as e:
+            print(f"Error processing {file_path}: {str(e)}")
+            continue
+    
+    # Consolidate messages
+    results['consolidated_messages'] = consolidator.get_all_consolidated()
+    
+    # Save to JSON if output path provided
+    if output_path:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+    
+    return results
+
+
+if __name__ == "__main__":
+    import sys
+    
+    if len(sys.argv) > 1:
+        files = sys.argv[1:]
+        output = "swift_messages_output.json"
+        results = process_swift_messages(files, output)
+        
+        print(f"\n{'='*70}")
+        print("SWIFT MT Message Processing Complete")
+        print(f"{'='*70}")
+        print(f"Total files processed: {results['total_files_processed']}")
+        print(f"\nMessages by category:")
+        for category, messages in results['messages_by_category'].items():
+            print(f"  {category}: {len(messages)} messages")
+        print(f"\nOutput saved to: {output}")
+    else:
+        print("Universal SWIFT MT Message Extractor")
+        print("Supports all MT message types (MT1xx - MT9xx)")
+        print("\nUsage: python lc_extractor.py <file1> <file2> ...")
