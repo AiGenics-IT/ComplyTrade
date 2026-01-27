@@ -208,7 +208,7 @@ async def upload_documents(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     ocr_backend: str = "tesseract",
-    force_ocr: bool = False
+    force_ocr: bool = True
 ):
     """
     Upload LC documents for processing

@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -32,7 +33,7 @@
         .header h1 {
             font-size: 3em;
             margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
         }
 
         .header p {
@@ -43,7 +44,7 @@
         .main-card {
             background: white;
             border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
             padding: 40px;
             margin-bottom: 30px;
         }
@@ -184,7 +185,7 @@
         .status-card {
             background: white;
             border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
             padding: 40px;
             margin-bottom: 30px;
             display: none;
@@ -314,8 +315,13 @@
         }
 
         @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
         }
 
         .error-message {
@@ -349,6 +355,7 @@
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <div class="header">
@@ -371,7 +378,7 @@
 
             <div class="options">
                 <h3 style="margin-bottom: 20px;">Processing Options</h3>
-                
+
                 <div class="option-group">
                     <label for="ocrBackend">OCR Engine:</label>
                     <select id="ocrBackend">
@@ -404,7 +411,7 @@
             <div style="margin: 20px 0;">
                 <span class="status-badge" id="statusBadge">Pending</span>
             </div>
-            
+
             <div class="progress-bar">
                 <div class="progress-fill" id="progressFill" style="width: 0%">0%</div>
             </div>
@@ -483,7 +490,7 @@
             }
 
             fileList.innerHTML = '<h3 style="margin-bottom: 15px;">Selected Files (' + selectedFiles.length + ')</h3>';
-            
+
             selectedFiles.forEach((file, index) => {
                 const fileItem = document.createElement('div');
                 fileItem.className = 'file-item';
@@ -554,7 +561,7 @@
                 currentJobId = data.job_id;
 
                 document.getElementById('statusMessage').textContent = 'Files uploaded. Processing...';
-                
+
                 // Start checking status
                 statusCheckInterval = setInterval(checkStatus, 2000);
 
@@ -621,9 +628,9 @@
 
         function displayResults(results) {
             const resultsDiv = document.getElementById('results');
-            
+
             let html = '<h3 style="margin-bottom: 20px;">✅ Processing Complete</h3>';
-            
+
             html += `
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 30px;">
                     <div class="result-detail">
@@ -643,7 +650,7 @@
 
             if (results.consolidated_lcs && results.consolidated_lcs.length > 0) {
                 html += '<h3 style="margin-bottom: 15px;">Consolidated LCs</h3>';
-                
+
                 results.consolidated_lcs.forEach(lc => {
                     html += `
                         <div class="result-item">
@@ -666,9 +673,17 @@
                                     <div class="result-value">${lc.documents_required.length}</div>
                                 </div>
                             </div>
-                            <a href="${API_BASE}${lc.download_url}" class="download-btn" download>
-                                📥 Download JSON
-                            </a>
+                            <div style="display:flex; gap:10px; margin-top:10px;">
+                                <a href="${API_BASE}${lc.download_url}" class="download-btn" download>
+                                    📥 Download JSON
+                                </a>
+
+                                <button class="download-btn" style="background:#17a2b8"
+                                    onclick="viewJson('${API_BASE}${lc.download_url}')">
+                                    👁 View
+                                </button>
+                            </div>
+
                         </div>
                     `;
                 });
@@ -694,6 +709,53 @@
             `;
             processBtn.disabled = false;
         }
+
+        function viewJson(url) {
+    const win = window.open('', '_blank');
+    win.document.write(`
+        <html>
+        <head>
+            <title>LC Data Viewer</title>
+            <style>
+                body {
+                    font-family: monospace;
+                    background: #0f172a;
+                    color: #e5e7eb;
+                    padding: 20px;
+                }
+                pre {
+                    white-space: pre-wrap;
+                    word-wrap: break-word;
+                    background: #020617;
+                    padding: 20px;
+                    border-radius: 8px;
+                    border: 1px solid #334155;
+                }
+                h1 {
+                    color: #38bdf8;
+                }
+            </style>
+        </head>
+        <body>
+            <h1>📄 LC JSON Data</h1>
+            <pre id="json">Loading...</pre>
+        </body>
+        </html>
+    `);
+
+    fetch(url)
+        .then(res => res.json())
+        .then(data => {
+            win.document.getElementById('json').textContent =
+                JSON.stringify(data, null, 2);
+        })
+        .catch(err => {
+            win.document.getElementById('json').textContent =
+                'Failed to load JSON: ' + err;
+        });
+}
+
     </script>
 </body>
+
 </html>
