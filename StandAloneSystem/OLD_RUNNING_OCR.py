@@ -1,0 +1,514 @@
+"""
+Enhanced OCR Module with Advanced Image Preprocessing
+Optimized for blurry, low-quality, and challenging documents
+Supports multiple OCR engines with intelligent preprocessing
+"""
+
+import os
+import sys
+from pathlib import Path
+from typing import List, Optional, Tuple, Dict
+import json
+import numpy as np
+from PIL import Image, ImageEnhance, ImageFilter
+import cv2
+import tempfile
+
+
+class ImagePreprocessor:
+    """Advanced image preprocessing for OCR accuracy improvement"""
+    
+    def __init__(self):
+        self.default_dpi = 300
+    
+    def preprocess_for_ocr(self, image: Image.Image, aggressive: bool = False) -> Image.Image:
+        """
+        Comprehensive preprocessing pipeline for OCR
+        
+        Args:
+            image: PIL Image object
+            aggressive: Use more aggressive preprocessing for very poor quality
+        
+        Returns:
+            Preprocessed PIL Image
+        """
+        # Convert to numpy array for OpenCV processing
+        img_array = np.array(image)
+        
+        # Convert to grayscale if needed
+        if len(img_array.shape) == 3:
+            img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        
+        # Apply preprocessing pipeline
+        img_array = self._denoise(img_array, aggressive)
+        img_array = self._enhance_contrast(img_array)
+        img_array = self._sharpen(img_array, aggressive)
+        img_array = self._binarize(img_array, aggressive)
+        img_array = self._deskew(img_array)
+        img_array = self._remove_borders(img_array)
+        
+        # Convert back to PIL Image
+        return Image.fromarray(img_array)
+    
+    def _denoise(self, img: np.ndarray, aggressive: bool = False) -> np.ndarray:
+        """
+        Remove noise from image using multiple denoising techniques
+        """
+        # Gaussian blur for basic noise reduction
+        if aggressive:
+            img = cv2.GaussianBlur(img, (5, 5), 0)
+        else:
+            img = cv2.GaussianBlur(img, (3, 3), 0)
+        
+        # Non-local means denoising for better quality
+        img = cv2.fastNlMeansDenoising(img, None, h=10, templateWindowSize=7, searchWindowSize=21)
+        
+        # Bilateral filter to preserve edges while reducing noise
+        img = cv2.bilateralFilter(img, 9, 75, 75)
+        
+        return img
+    
+    def _enhance_contrast(self, img: np.ndarray) -> np.ndarray:
+        """
+        Enhance contrast using CLAHE (Contrast Limited Adaptive Histogram Equalization)
+        """
+        # Apply CLAHE
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        img = clahe.apply(img)
+        
+        return img
+    
+    def _sharpen(self, img: np.ndarray, aggressive: bool = False) -> np.ndarray:
+        """
+        Sharpen the image to enhance text edges
+        """
+        if aggressive:
+            # Aggressive sharpening kernel
+            kernel = np.array([[-1, -1, -1],
+                             [-1,  9, -1],
+                             [-1, -1, -1]])
+        else:
+            # Mild sharpening kernel
+            kernel = np.array([[0, -1, 0],
+                             [-1, 5, -1],
+                             [0, -1, 0]])
+        
+        img = cv2.filter2D(img, -1, kernel)
+        
+        return img
+    
+    def _binarize(self, img: np.ndarray, aggressive: bool = False) -> np.ndarray:
+        """
+        Convert to binary (black and white) using adaptive thresholding
+        """
+        # Adaptive thresholding works better for varying lighting conditions
+        if aggressive:
+            # Otsu's thresholding for aggressive binarization
+            _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        else:
+            # Adaptive Gaussian thresholding
+            img = cv2.adaptiveThreshold(
+                img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                cv2.THRESH_BINARY, 11, 2
+            )
+        
+        return img
+    
+    def _deskew(self, img: np.ndarray) -> np.ndarray:
+        """
+        Correct skew/rotation in scanned documents
+        """
+        # Detect edges
+        edges = cv2.Canny(img, 50, 150, apertureSize=3)
+        
+        # Detect lines using Hough transform
+        lines = cv2.HoughLines(edges, 1, np.pi / 180, 200)
+        
+        if lines is not None and len(lines) > 0:
+            # Calculate average angle
+            angles = []
+            for rho, theta in lines[:, 0]:
+                angle = np.degrees(theta) - 90
+                if -45 < angle < 45:  # Only consider reasonable angles
+                    angles.append(angle)
+            
+            if angles:
+                median_angle = np.median(angles)
+                
+                # Only deskew if angle is significant
+                if abs(median_angle) > 0.5:
+                    # Rotate image
+                    (h, w) = img.shape
+                    center = (w // 2, h // 2)
+                    M = cv2.getRotationMatrix2D(center, median_angle, 1.0)
+                    img = cv2.warpAffine(img, M, (w, h), 
+                                        flags=cv2.INTER_CUBIC, 
+                                        borderMode=cv2.BORDER_REPLICATE)
+        
+        return img
+    
+    def _remove_borders(self, img: np.ndarray) -> np.ndarray:
+        """
+        Remove black borders from scanned documents
+        """
+        # Find contours
+        contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            # Get the largest contour (assumed to be the document)
+            largest_contour = max(contours, key=cv2.contourArea)
+            x, y, w, h = cv2.boundingRect(largest_contour)
+            
+            # Crop to content with small margin
+            margin = 10
+            y_start = max(0, y - margin)
+            y_end = min(img.shape[0], y + h + margin)
+            x_start = max(0, x - margin)
+            x_end = min(img.shape[1], x + w + margin)
+            
+            img = img[y_start:y_end, x_start:x_end]
+        
+        return img
+    
+    def upscale_image(self, image: Image.Image, target_dpi: int = 300) -> Image.Image:
+        """
+        Upscale low-resolution images for better OCR
+        """
+        width, height = image.size
+        
+        # Calculate scaling factor
+        current_dpi = image.info.get('dpi', (72, 72))[0]
+        scale_factor = target_dpi / current_dpi
+        
+        if scale_factor > 1:
+            new_width = int(width * scale_factor)
+            new_height = int(height * scale_factor)
+            
+            # Use LANCZOS for high-quality upscaling
+            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        return image
+
+
+class EnhancedOCRProcessor:
+    """Enhanced OCR processor with multiple engines and advanced preprocessing"""
+    
+    def __init__(self, backend='tesseract', language='en', use_preprocessing=True):
+        """
+        Initialize Enhanced OCR processor
+        
+        Args:
+            backend: 'tesseract', 'easyocr', or 'paddleocr'
+            language: Language code (default: 'eng' for English)
+            use_preprocessing: Enable advanced preprocessing
+        """
+        self.backend = backend
+        self.language = language
+        self.use_preprocessing = use_preprocessing
+        self.preprocessor = ImagePreprocessor()
+        self.ocr_engine = None
+        
+        self._initialize_backend()
+    
+    def _initialize_backend(self):
+        """Initialize the selected OCR backend"""
+        if self.backend == 'tesseract':
+            try:
+                import pytesseract
+                self.ocr_engine = pytesseract
+                print(f"✓ Tesseract OCR initialized with enhanced configuration")
+            except ImportError:
+                print("⚠ Tesseract not available. Install: pip install pytesseract")
+                self.ocr_engine = None
+        
+        elif self.backend == 'easyocr':
+            try:
+                import easyocr
+                self.ocr_engine = easyocr.Reader([self.language], gpu=False)
+                print(f"✓ EasyOCR initialized")
+            except ImportError:
+                print("⚠ EasyOCR not available. Install: pip install easyocr")
+                self.ocr_engine = None
+        
+        elif self.backend == 'paddleocr':
+            try:
+                from paddleocr import PaddleOCR
+                self.ocr_engine = PaddleOCR(use_angle_cls=True, lang='en')
+                print(f"✓ PaddleOCR initialized")
+            except ImportError:
+                print("⚠ PaddleOCR not available. Install: pip install paddleocr")
+                self.ocr_engine = None
+    
+    def extract_text_from_image(self, image_path: str, aggressive_preprocessing: bool = False) -> str:
+        """
+        Extract text from an image file with enhanced preprocessing
+        
+        Args:
+            image_path: Path to image file
+            aggressive_preprocessing: Use aggressive preprocessing for very poor quality
+        
+        Returns:
+            Extracted text
+        """
+        if self.ocr_engine is None:
+            raise RuntimeError(f"OCR backend '{self.backend}' not available")
+        
+        try:
+            # Load image
+            img = Image.open(image_path)
+            
+            # Convert to RGB if needed
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # Upscale if low resolution
+            img = self.preprocessor.upscale_image(img, target_dpi=300)
+            
+            # Apply preprocessing if enabled
+            if self.use_preprocessing:
+                img = self.preprocessor.preprocess_for_ocr(img, aggressive=aggressive_preprocessing)
+            
+            # Extract text based on backend
+            if self.backend == 'tesseract':
+                text = self._tesseract_extract(img)
+            elif self.backend == 'easyocr':
+                text = self._easyocr_extract(img)
+            elif self.backend == 'paddleocr':
+                text = self._paddleocr_extract(img)
+            else:
+                text = ""
+            
+            return text
+            
+        except Exception as e:
+            print(f"Error extracting text from {image_path}: {str(e)}")
+            return ""
+    
+    def _tesseract_extract(self, img: Image.Image) -> str:
+        """Extract text using Tesseract with optimized configuration"""
+        import pytesseract
+        
+        # Try multiple PSM modes for best results
+        psm_modes = [6, 3, 4, 11]  # Different page segmentation modes
+        best_text = ""
+        best_confidence = 0
+        
+        for psm in psm_modes:
+            config = f'--oem 3 --psm {psm}'
+            
+            try:
+                # Get text and confidence
+                data = pytesseract.image_to_data(img, config=config, output_type=pytesseract.Output.DICT)
+                text = pytesseract.image_to_string(img, config=config)
+                
+                # Calculate average confidence
+                confidences = [int(conf) for conf in data['conf'] if conf != '-1']
+                avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+                
+                # Keep best result
+                if avg_confidence > best_confidence:
+                    best_confidence = avg_confidence
+                    best_text = text
+                    
+            except Exception as e:
+                continue
+        
+        return best_text
+    
+    def _easyocr_extract(self, img: Image.Image) -> str:
+        """Extract text using EasyOCR"""
+        # Convert PIL to numpy array
+        img_array = np.array(img)
+        
+        # Extract text
+        results = self.ocr_engine.readtext(img_array, detail=0)
+        
+        # Combine all text
+        text = '\n'.join(results)
+        return text
+    
+    def _paddleocr_extract(self, img: Image.Image) -> str:
+        """Extract text using PaddleOCR"""
+        # Convert PIL to numpy array
+        img_array = np.array(img)
+        
+        # Extract text
+        result = self.ocr_engine.ocr(img_array, cls=True)
+        
+        # Extract text from results
+        text_lines = []
+        if result and result[0]:
+            for line in result[0]:
+                if line:
+                    text_lines.append(line[1][0])
+        
+        return '\n'.join(text_lines)
+
+
+class PDFProcessorEnhanced:
+    """Enhanced PDF processor with advanced OCR"""
+    
+    def __init__(self, ocr_backend='tesseract', use_preprocessing=True):
+        """
+        Initialize Enhanced PDF processor
+        
+        Args:
+            ocr_backend: OCR backend to use
+            use_preprocessing: Enable advanced preprocessing
+        """
+        self.ocr_processor = EnhancedOCRProcessor(
+            backend=ocr_backend, 
+            use_preprocessing=use_preprocessing
+        )
+    
+    def extract_text_from_pdf(self, pdf_path: str, use_ocr=False, aggressive_ocr=False) -> str:
+        """
+        Extract text from PDF with enhanced OCR
+        
+        Args:
+            pdf_path: Path to PDF file
+            use_ocr: Force OCR even if text is extractable
+            aggressive_ocr: Use aggressive preprocessing for poor quality
+        
+        Returns:
+            Extracted text
+        """
+        text = ""
+        
+        try:
+            # Try text extraction first (for digital PDFs)
+            if not use_ocr:
+                text = self._extract_text_layer(pdf_path)
+            
+            # If no text found or OCR forced, use enhanced OCR
+            if not text.strip() or use_ocr:
+                print(f"Using enhanced OCR for: {pdf_path}")
+                text = self._extract_with_enhanced_ocr(pdf_path, aggressive_ocr)
+            
+        except Exception as e:
+            print(f"Error processing PDF {pdf_path}: {str(e)}")
+        
+        return text
+    
+    def _extract_text_layer(self, pdf_path: str) -> str:
+        """Extract text layer from digital PDF"""
+        try:
+            import pdfplumber
+            
+            text = ""
+            with pdfplumber.open(pdf_path) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+            
+            return text
+        except ImportError:
+            print("⚠ pdfplumber not available. Install: pip install pdfplumber")
+            return ""
+    
+    def _extract_with_enhanced_ocr(self, pdf_path: str, aggressive: bool = False) -> str:
+        """
+        Extract text from PDF using enhanced OCR.
+        Fixed for Windows compatibility and encoding errors.
+        """
+        try:
+            from pdf2image import convert_from_path
+            
+            # 1. Convert PDF to images with high DPI
+            images = convert_from_path(pdf_path, dpi=300, fmt='png')
+            
+            text = ""
+            for i, img in enumerate(images):
+                print(f"  Processing page {i+1}/{len(images)} with enhanced OCR...")
+                
+                # 2. Create a Windows-friendly Temporary Path
+                # This replaces the failing "/tmp/" hardcoded path
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    temp_img_path = tmp.name
+                
+                try:
+                    # 3. Save temp image
+                    img.save(temp_img_path, 'PNG', quality=100)
+                    
+                    # 4. Extract text with enhanced preprocessing
+                    page_text = self.ocr_processor.extract_text_from_image(
+                        temp_img_path, 
+                        aggressive_preprocessing=aggressive
+                    )
+                    
+                    # 5. SANITIZE TEXT (Fixes the 'charmap' / \ue072 error)
+                    # Removes invisible icons/symbols that crash the Windows terminal
+                    page_text = "".join(c for c in page_text if c.isprintable() or c in "\n\r\t")
+                    
+                    text += f"\n--- Page {i+1} ---\n{page_text}\n"
+                    
+                finally:
+                    # 6. Clean up the temp file safely
+                    if os.path.exists(temp_img_path):
+                        os.remove(temp_img_path)
+            
+            return text
+        
+        except ImportError:
+            print("⚠ pdf2image not available. Install: pip install pdf2image")
+            return ""
+        except Exception as e:
+            print(f"⚠ Enhanced OCR Failed: {str(e)}")
+            return ""
+
+class DocumentProcessor:
+    """Enhanced universal document processor"""
+    
+    def __init__(self, ocr_backend='tesseract', use_preprocessing=True):
+        self.pdf_processor = PDFProcessorEnhanced(
+            ocr_backend=ocr_backend,
+            use_preprocessing=use_preprocessing
+        )
+        self.ocr_processor = EnhancedOCRProcessor(
+            backend=ocr_backend,
+            use_preprocessing=use_preprocessing
+        )
+    
+    def process_document(self, file_path: str, force_ocr=False, aggressive_ocr=False) -> str:
+        """
+        Process any document type with enhanced OCR
+        
+        Args:
+            file_path: Path to document
+            force_ocr: Force OCR even for digital documents
+            aggressive_ocr: Use aggressive preprocessing for poor quality
+        
+        Returns:
+            Extracted text
+        """
+        file_path = Path(file_path)
+        extension = file_path.suffix.lower()
+        
+        print(f"Processing: {file_path.name}")
+        
+        if extension == '.pdf':
+            return self.pdf_processor.extract_text_from_pdf(
+                str(file_path), 
+                use_ocr=force_ocr, 
+                aggressive_ocr=aggressive_ocr
+            )
+        
+        elif extension in ['.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif']:
+            return self.ocr_processor.extract_text_from_image(
+                str(file_path),
+                aggressive_preprocessing=aggressive_ocr
+            )
+        
+        elif extension in ['.txt', '.text']:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                return f.read()
+        
+        else:
+            print(f"⚠ Unsupported file format: {extension}")
+            return ""
+
+
+if __name__ == "__main__":
+    print("Enhanced OCR Processor with Advanced Preprocessing")
+    print("Optimized for blurry and low-quality documents")

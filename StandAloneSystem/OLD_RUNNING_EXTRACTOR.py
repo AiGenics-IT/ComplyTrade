@@ -12,8 +12,6 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from pathlib import Path
-from StandAloneSystem.ai_auditor import OfflineLCAuditor 
-from StandAloneSystem.lc_ocr import OCRPostProcessor 
 
 
 # ============================================================================
@@ -81,257 +79,6 @@ COMPREHENSIVE_FIELD_MAPPINGS = {
 }
 
 
-SUPPORTING_DOCUMENT_TYPES = {
-
-    # =========================
-    # FINANCIAL / COMMERCIAL
-    # =========================
-    "COMMERCIAL_INVOICE": [
-        "COMMERCIAL INVOICE",
-        "FINAL INVOICE",
-        "INVOICE NO",
-        "TAX INVOICE",
-        "PROFORMA INVOICE"
-    ],
-
-    "PROFORMA_INVOICE": [
-        "PROFORMA INVOICE"
-    ],
-
-    "CREDIT_NOTE": [
-        "CREDIT NOTE"
-    ],
-
-    "DEBIT_NOTE": [
-        "DEBIT NOTE"
-    ],
-
-    "STATEMENT_OF_ACCOUNT": [
-        "STATEMENT OF ACCOUNT"
-    ],
-
-    # =========================
-    # TRANSPORT DOCUMENTS
-    # =========================
-    "BILL_OF_LADING": [
-        "BILL OF LADING",
-        "B/L",
-        "OCEAN BILL OF LADING",
-        "SHIPPED ON BOARD BILL OF LADING",
-        "CLEAN ON BOARD"
-    ],
-
-    "SEA_WAYBILL": [
-        "SEA WAYBILL",
-        "SEAWAY BILL"
-    ],
-
-    "AIR_WAYBILL": [
-        "AIR WAYBILL",
-        "AWB",
-        "MASTER AIR WAYBILL",
-        "HOUSE AIR WAYBILL"
-    ],
-
-    "ROAD_TRANSPORT_DOCUMENT": [
-        "CMR",
-        "ROAD CONSIGNMENT NOTE"
-    ],
-
-    "RAIL_TRANSPORT_DOCUMENT": [
-        "RAILWAY RECEIPT",
-        "RAIL CONSIGNMENT NOTE"
-    ],
-
-    "MULTIMODAL_TRANSPORT_DOCUMENT": [
-        "MULTIMODAL TRANSPORT DOCUMENT",
-        "COMBINED TRANSPORT DOCUMENT"
-    ],
-
-    "CHARTER_PARTY_BILL": [
-        "CHARTER PARTY BILL OF LADING"
-    ],
-
-    # =========================
-    # PACKING / QUANTITY
-    # =========================
-    "PACKING_LIST": [
-        "PACKING LIST",
-        "PACKING DETAILS"
-    ],
-
-    "WEIGHT_CERTIFICATE": [
-        "WEIGHT CERTIFICATE",
-        "CERTIFICATE OF WEIGHT"
-    ],
-
-    "MEASUREMENT_CERTIFICATE": [
-        "MEASUREMENT CERTIFICATE",
-        "ULLAGE REPORT",
-        "DRAFT SURVEY"
-    ],
-
-    "QUANTITY_CERTIFICATE": [
-        "QUANTITY CERTIFICATE"
-    ],
-
-    # =========================
-    # INSURANCE
-    # =========================
-    "INSURANCE_POLICY": [
-        "INSURANCE POLICY"
-    ],
-
-    "INSURANCE_CERTIFICATE": [
-        "INSURANCE CERTIFICATE"
-    ],
-
-    "COVER_NOTE": [
-        "COVER NOTE"
-    ],
-
-    # =========================
-    # ORIGIN / TRADE COMPLIANCE
-    # =========================
-    "CERTIFICATE_OF_ORIGIN": [
-        "CERTIFICATE OF ORIGIN",
-        "COO",
-        "FORM A",
-        "FORM E"
-    ],
-
-    "EUR1_CERTIFICATE": [
-        "EUR.1",
-        "EUR1 CERTIFICATE"
-    ],
-
-    "ATR_CERTIFICATE": [
-        "ATR CERTIFICATE"
-    ],
-
-    "GSP_CERTIFICATE": [
-        "GSP CERTIFICATE"
-    ],
-
-    # =========================
-    # INSPECTION / QUALITY
-    # =========================
-    "INSPECTION_CERTIFICATE": [
-        "INSPECTION CERTIFICATE",
-        "CERTIFICATE OF INSPECTION"
-    ],
-
-    "QUALITY_CERTIFICATE": [
-        "CERTIFICATE OF QUALITY",
-        "CERTIFICATE OF ANALYSIS",
-        "ANALYSIS CERTIFICATE"
-    ],
-
-    "SURVEYOR_REPORT": [
-        "SURVEYOR REPORT",
-        "SURVEY REPORT"
-    ],
-
-    "PRE_SHIPMENT_INSPECTION": [
-        "PRE-SHIPMENT INSPECTION",
-        "PSI CERTIFICATE"
-    ],
-
-    # =========================
-    # AGRICULTURE / FOOD / HEALTH
-    # =========================
-    "PHYTOSANITARY_CERTIFICATE": [
-        "PHYTOSANITARY CERTIFICATE"
-    ],
-
-    "VETERINARY_CERTIFICATE": [
-        "VETERINARY CERTIFICATE"
-    ],
-
-    "HEALTH_CERTIFICATE": [
-        "HEALTH CERTIFICATE"
-    ],
-
-    "FUMIGATION_CERTIFICATE": [
-        "FUMIGATION CERTIFICATE"
-    ],
-
-    # =========================
-    # BENEFICIARY / APPLICANT DECLARATIONS
-    # =========================
-    "BENEFICIARY_CERTIFICATE": [
-        "BENEFICIARY CERTIFICATE"
-    ],
-
-    "APPLICANT_CERTIFICATE": [
-        "APPLICANT CERTIFICATE"
-    ],
-
-    "CERTIFICATE_OF_COMPLIANCE": [
-        "CERTIFICATE OF COMPLIANCE"
-    ],
-
-    "NON_MANIPULATION_CERTIFICATE": [
-        "NON MANIPULATION CERTIFICATE"
-    ],
-
-    "NON_BLACKLIST_CERTIFICATE": [
-        "NON BLACKLIST CERTIFICATE"
-    ],
-
-    # =========================
-    # CUSTOMS / REGULATORY
-    # =========================
-    "CUSTOMS_DECLARATION": [
-        "CUSTOMS DECLARATION",
-        "EXPORT DECLARATION",
-        "IMPORT DECLARATION"
-    ],
-
-    "EXPORT_LICENSE": [
-        "EXPORT LICENSE"
-    ],
-
-    "IMPORT_LICENSE": [
-        "IMPORT LICENSE"
-    ],
-
-    # =========================
-    # PAYMENT / BANKING
-    # =========================
-    "BENEFICIARY_STATEMENT": [
-        "BENEFICIARY STATEMENT"
-    ],
-
-    "DRAFT": [
-        "DRAFT",
-        "BILL OF EXCHANGE"
-    ],
-
-    "REMITTANCE_ADVICE": [
-        "REMITTANCE ADVICE"
-    ],
-
-    # =========================
-    # MISC / FALLBACK
-    # =========================
-    "LETTER_OF_INDEMNITY": [
-        "LETTER OF INDEMNITY",
-        "LOI"
-    ],
-
-    "DELIVERY_ORDER": [
-        "DELIVERY ORDER"
-    ],
-
-    "WAREHOUSE_RECEIPT": [
-        "WAREHOUSE RECEIPT"
-    ],
-
-    "UNKNOWN_SUPPORTING": []
-}
-
-
 # ============================================================================
 # DATA STRUCTURES
 # ============================================================================
@@ -387,99 +134,31 @@ class LCExtractor:
     def __init__(self):
         self.current_doc = None
         self.message_types = SWIFT_MESSAGE_TYPES
-        self.ocr_cleaner = OCRPostProcessor()
-
-    def _sanitize_text(self, text: str) -> str:
-        """Removes non-mappable characters that break the console."""
-        if not text:
-            return ""
-        # Only keep printable characters, tabs, and newlines
-        return "".join(c for c in text if c.isprintable() or c in "\n\r\t")
+    
+    def extract_from_text(self, text: str) -> LCDocument:
+        """Extract MT message data from ANY text format with Console Debugging"""
         
+        # --- NEW DEBUG CONSOLE LOGS ---
+        print("\n" + "="*50)
+        print("EXTRACTOR DEBUG: NEW DOCUMENT DETECTED")
+        print("-" * 50)
+        # Print the first 500 characters to see if tags are there
+        print(f"RAW TEXT START:\n{text[:500]}") 
+        print("="*50 + "\n")
+        # ------------------------------
 
-
-    def extract_from_text(self, text: str) -> Any:
-        """Extract data or categorize supporting documents for later validation."""
-        
-        # text = self.ocr_cleaner.clean_text(text)
-
-        # 1. Clean the incoming OCR text immediately (Fixes your charmap error)
-        text = self._sanitize_text(text)
-        
-        # 2. Detect if it's a SWIFT message
+        # Detect message type
         mt_type = self._detect_message_type(text)
         
-        # 3. CLASSIFICATION LOGIC
-        if mt_type:
-            # It's a SWIFT message (LC or Amendment)
-            is_amendment = self._is_amendment(text, mt_type)
-            if is_amendment:
-                return self._extract_amendment(text, mt_type)
-            else:
-                return self._extract_lc(text, mt_type)
-        
-        # 4. SUPPORTING DOCUMENT LOGIC (The "Skip but Keep" part)
-        # If no MT type is found, it's likely an Invoice, BL, or Certificate
-        return self._categorize_supporting_doc(text)
+        print(f"DETECTED MESSAGE TYPE: {mt_type}")  # Debug: print detected message type
+        # Determine if LC or Amendment
+        is_amendment = self._is_amendment(text, mt_type)
 
-    def _categorize_supporting_doc(self, text: str, file_name: str = "Unknown File") -> LCDocument:
-        """
-        Categorize non-SWIFT supporting documents (Invoice, BL, Certificates, etc.)
-        """
-        text_upper = text.upper()
-
-        detected_type = "UNKNOWN_SUPPORTING"
-        matched_keywords = []
-        confidence = 0
-
-        # 1️⃣ Document type scoring
-        for doc_type, keywords in SUPPORTING_DOCUMENT_TYPES.items():
-            hits = [kw for kw in keywords if kw in text_upper]
-            if hits and len(hits) > confidence:
-                detected_type = doc_type
-                matched_keywords = hits
-                confidence = len(hits)
-
-        # 🔍 CONSOLE LOG: Classification Result
-        print(f"\n[CLASSIFICATION] File: {file_name}")
-        print(f"               Detected Category: {detected_type}")
-        print(f"               Confidence Score:  {confidence} keywords matched")
-
-        # 2️⃣ Create a unified LCDocument (NO LC NUMBER YET)
-        doc = LCDocument(
-            document_type=detected_type,
-            lc_number="PENDING",              # ⬅️ Assigned later
-            message_type="NON_SWIFT",
-            raw_text=text,
-            fields={},                        # Supporting docs don't have SWIFT fields
-            additional_conditions=[],
-            documents_required=[]
-        )
-
-        # 3️⃣ Attach classification metadata
-        doc.is_supporting = True
-        doc.file_name = file_name             # Store filename for reference
-        doc.classification = {
-            "confidence": confidence,
-            "matched_keywords": matched_keywords
-        }
-        doc.status = "stored_for_validation"
-
-        return doc
-
-    def _find_lc_reference_in_supporting_doc(self, text: str) -> str:
-        """Finds LC Number in non-SWIFT documents like Invoices."""
-        patterns = [
-            r'L/?C\s*(?:NO\.?|NUMBER)?\s*:?\s*([A-Z0-9/]{5,})',
-            r'DOCUMENTARY\s*CREDIT\s*(?:NO\.?|NUMBER)?\s*:?\s*([A-Z0-9/]{5,})',
-            r'CREDIT\s*NUMBER\s*:?\s*([A-Z0-9/]{5,})'
-        ]
-        for p in patterns:
-            match = re.search(p, text, re.IGNORECASE)
-            if match:
-                # Use your existing normalize function to clean it
-                return normalize_lc_number(match.group(1))
-        return "UNKNOWN"
+        print(f"IS AMENDMENT: {is_amendment}")  # Debug: print if it's an amendment
+        if is_amendment:
+            return self._extract_amendment(text, mt_type)
+        else:
+            return self._extract_lc(text, mt_type)
     
 
 
@@ -509,11 +188,11 @@ class LCExtractor:
         # Pre-clean the text JUST for detection to handle the "squash"
         search_text = text.replace(" ", "").replace("\n", "")
 
-        # print(search_text[:500],'THe search text her')  # Debug: print the cleaned text snippet
+        print(search_text[:500],'THe search text her')  # Debug: print the cleaned text snippet
         for pattern in patterns:
             # Search in the squashed text for "Messagetype:707"
             match = re.search(r'Messagetype:?(\d{3})', search_text, re.IGNORECASE)
-            # print(match,'The match here')  # Debug: print the match object
+            print(match,'The match here')  # Debug: print the match object
             if match:
                 return match.group(1)
             # Fallback to standard search in original text
@@ -844,127 +523,123 @@ class LCExtractor:
   
 
     def _extract_amendment_changes_complete(self, text: str, field_codes: List[str]) -> List[Dict]:
-        """
-        Extracts ALL 5 changes from the provided PDF by iterating through every 
-        /ADD/, /DELETE/, or /REPALL/ tag found in each field.
-        """
+        """Extracts complete amendment narrative, fixing truncation and OCR noise."""
         changes = []
+        # Uses the flexible field extractor we just updated
         fields = self._extract_all_fields(text) 
 
         for code in field_codes:
-            lookup = f':{code.strip(":")}:'
+            lookup = code if code.startswith(':') else f':{code.rstrip(":")}:'
             if lookup not in fields:
                 continue
                 
+            # Use raw_text to ensure we see the /ADD/ or /REPALL/ tags
             content = fields[lookup].raw_text
             
-            # 1. Find ALL SWIFT operation tags in the field
-            op_pattern = r'/(ADD|DELETE|REPALL)/'
-            op_matches = list(re.finditer(op_pattern, content, re.IGNORECASE))
+            # 1. Identify all SWIFT amendment operations in the field
+            operations = []
+            for op_match in re.finditer(r'/(ADD|DELETE|REPALL)/', content, re.IGNORECASE):
+                operations.append({
+                    'type': op_match.group(1).upper(),
+                    'start': op_match.end(),
+                    'token': op_match.group(0)
+                })
 
-            # 2. Extract and clean the segment for EACH operation found
-            for i, match in enumerate(op_matches):
-                op_type = match.group(1).upper()
-                start_pos = match.end()
-                # Segment ends at the next operation tag or the end of the field
-                end_pos = op_matches[i+1].start() if i < len(op_matches) - 1 else len(content)
+            # 2. Extract the text between operations
+            for i, op in enumerate(operations):
+                # End is either the start of the next operation or the end of the field
+                end_pos = operations[i + 1]['start'] - len(operations[i + 1]['token']) if i < len(operations) - 1 else len(content)
+                op_text = content[op['start']:end_pos].strip()
                 
-                segment_text = content[start_pos:end_pos]
+                # --- NOISY OCR CLEANING ---
+                # Remove artifacts like "Lines 2-100", "Narrative:", etc., that appear mid-amendment
+                op_text = re.sub(r'Lines\s?\d?\s?to\s?\d+:?', '', op_text, flags=re.IGNORECASE)
+                op_text = re.sub(r'Lines\s\d+-\d+:?', '', op_text, flags=re.IGNORECASE)
+                op_text = re.sub(r'Narrativel?:?', '', op_text, flags=re.IGNORECASE)
                 
-                # --- AGGRESSIVE CLEANING ---
-                # Remove repeating OCR noise and squashed "Lines2t" fragments
-                segment_text = re.sub(r'Lines\s?\d?\s?to\s?\d+:?', '', segment_text, flags=re.IGNORECASE)
-                segment_text = re.sub(r'Lines\s?\d?-\d+:?', '', segment_text, flags=re.IGNORECASE)
-                segment_text = re.sub(r'Lines\d+[a-z]*', '', segment_text, flags=re.IGNORECASE) 
-                segment_text = re.sub(r'Narrativel?:?', '', segment_text, flags=re.IGNORECASE)
-                segment_text = re.sub(r'Code\s?:?', '', segment_text, flags=re.IGNORECASE)
+                # Remove HBL/UBL specific leading noise like '+)' or '/'
+                op_text = re.sub(r'^[+)\s/]+', '', op_text) 
                 
-                # Standardize whitespace and remove leading/trailing noise symbols
-                segment_text = re.sub(r'\s+', ' ', segment_text).strip()
-                segment_text = re.sub(r'^[+)\s/:\-]+', '', segment_text) 
+                # Normalize spaces
+                op_text = re.sub(r'\s+', ' ', op_text).strip()
 
-                if segment_text:
+                if op_text:
                     change = {
-                        'operation': op_type,
-                        'field_code': code.strip(":"),
-                        'narrative': segment_text,
-                        'change_text': segment_text
+                        'operation': op['type'],
+                        'field_code': lookup.strip(':'),
+                        'narrative': op_text,
+                        'change_text': op_text
                     }
 
-                    # 3. Detect Point Number (e.g., 1, 11, 19, 20, 21)
+                    # 3. ADVANCED POINT NUMBER DETECTION
+                    # Matches "CLAUSE NO.10", "NO. 21", "FIELD 47A-11", or "POINT 5"
+                    # Updated to handle OCR errors like "CLAUE"
                     point_match = re.search(
                         r'(?:CLAU[S|E]*\s+)?NO\.?\s*(\d+)|FIELD\s+\d+[A-Z]?[-]?(\d+)', 
-                        segment_text, 
+                        op_text, 
                         re.IGNORECASE
                     )
                     
                     if point_match:
+                        # Take whichever group (1 or 2) matched the number
                         p_num = point_match.group(1) or point_match.group(2)
                         change['point_number'] = int(p_num)
                     
                     changes.append(change)
         
         return changes
+   
     def _clean_field_value(self, value: str) -> str:
-        """Enhanced cleaning for MT700 and Supporting Docs to prevent label-bleeding."""
+        """Clean field value from OCR artifacts and SWIFT labels"""
         if not value:
             return ""
 
-        # 1. Remove OCR Label noise globally
+        # 1. Handle OCR Artifacts globally within the text
+        # Removes "Lines2to100:", "Lines 2-100:", "Narrative:", etc.
         noise_patterns = [
             r'Lines\s?\d?\s?to\s?\d+:?', 
-            r'Lines\s?\d?-\d+:?',
-            r'Lines\d+[a-z]*',   # Catches squashed 'Lines2t'
-            r'Narrativel?:?', 
-            r'Code\s?:?'
+            r'Lines\s\d+-\d+:?',
+            r'Narrativel?:?', # Catches 'Narrative:' and the OCR error 'Narrativel:'
+            r'Code:?'
         ]
         
         for pattern in noise_patterns:
             value = re.sub(pattern, '', value, flags=re.IGNORECASE)
 
-        # 2. Normalize whitespace
+        # 2. Normalize whitespace (Convert all newlines/tabs to single spaces)
         value = re.sub(r'\s+', ' ', value)
 
-        # 3. Strip common labels that appear at the start of values
+        # 3. Strip specific SWIFT field prefixes from the START of the value
+        # These are labels that often get merged into the data field
         prefixes = [
             'Name and Address:', 'Currency:', 'Date:', 'Place:', 
             'Number:', 'Total:', 'Amount:', 'Days:', 'Party Identifier:',
-            'Account:', 'Settlement Amount:', 'Narrative:', 'Beneficiary:'
+            'Account:', 'Settlement Amount:'
         ]
         
         for prefix in prefixes:
             value = re.sub(f'^{re.escape(prefix)}\s*', '', value, flags=re.IGNORECASE)
 
         # 4. Final Polish
+        # Remove any leading/trailing weird symbols like +) or / common in HBL
         value = value.strip()
-        # Remove any leading artifacts common in PDF-to-Text conversion
-        value = re.sub(r'^[+)\s/:\-]+', '', value) 
+        value = re.sub(r'^[+)\s/]+', '', value) 
         
         return value.strip()
+
+
 # ============================================================================
 # CONSOLIDATOR
 # ============================================================================
 
-# import re
-# from typing import Dict, Any, List
-# from dataclasses import asdict
 class LCConsolidator:
-    """
-    Consolidate LC with amendments using multi-dialect semantic patching and AI Auditing.
-    Handles squashed text, complex replacements, and multiple operational scenarios.
-    """
+    """Consolidate LC with amendments using multi-dialect semantic patching"""
     
-    def __init__(self, use_ai=True):
+    def __init__(self):
         self.lcs: Dict[str, Any] = {}
         self.amendments: Dict[str, List[Any]] = {}
-        self.use_ai = use_ai
-        if self.use_ai:
-            # Import the improved auditor
-            # from improved_auditor import OfflineLCAuditor
-            self.auditor = OfflineLCAuditor()
     
     def add_document(self, doc: Any):
-        """Categorizes documents into LCs or Amendments for consolidation."""
         ln = doc.lc_number.strip() if hasattr(doc, 'lc_number') else str(doc)
         if doc.document_type == "LC":
             self.lcs[ln] = doc
@@ -974,148 +649,85 @@ class LCConsolidator:
             self.amendments[ln].append(doc)
 
     def _clean_instruction_text(self, text: str) -> str:
-        """Removes 'CLAUSE NO. X TO READ AS' prefixes to isolate the pure value."""
+        """Removes 'CLAUSE NO. X TO READ AS' prefixes to get the pure value."""
+        # Removes "CLAUSE NO. 10", "CLAUSE 10", "ITEM 10" etc.
         text = re.sub(r'^(?:CLAUSE|ITEM)\s*(?:NO\.)?\s*\d+\s*', '', text, flags=re.IGNORECASE)
+        # Removes "TO READ AS", "NOW TO READ AS", "AMENDED TO"
         text = re.sub(r'^(?:NOW\s+)?TO\s+READ\s+AS\s*', '', text, flags=re.IGNORECASE)
         return text.strip()
 
-    def _extract_point_number(self, instruction: str) -> int:
-        """
-        Extracts the clause/point number from the instruction.
-        Example: "CLAUSE NO.5" -> 5, "CLAUSENO.27" -> 27
-        """
-        match = re.search(r'(?:CLAUSE|ITEM)?\s*(?:NO\.?)?\s*(\d+)', instruction, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-        return None
-
     def _apply_change(self, points_list: List[Dict], change: Dict, field_code: str):
-        """
-        Intelligently applies an amendment change to the existing points list.
-        Uses AI for semantic merging of complex 'Delete/Replace' instructions.
-        """
+        target_point = change.get('point_number')
         narrative = change.get('narrative', '')
+        # Clean double quotes and normalize spacing
         raw_text = change.get('change_text', narrative).replace("''", "'").replace('"', "'")
         
-        # Try to extract the point number from the instruction itself
-        target_point = change.get('point_number')
-        if not target_point:
-            target_point = self._extract_point_number(raw_text)
-        
+        # --- DIALECT 1: "NEW TEXT" INSTEAD OF "OLD TEXT" ---
+        # Matches: 'NEW' INSTEAD OF 'OLD'
+        instead_of_pattern = r"['\"](.+?)['\"]\s+INSTEAD\s+OF\s+['\"](.+?)['\"]"
+        instead_match = re.search(instead_of_pattern, raw_text, re.IGNORECASE | re.DOTALL)
+
+        # --- DIALECT 2: DELETE "OLD" REPLACE BY "NEW" ---
+        delete_pattern = r"DELETE\s+['\"](.+?)['\"]\s+REPLACE\s+(?:BY|WITH)\s+['\"](.+?)['\"]"
+        delete_match = re.search(delete_pattern, raw_text, re.IGNORECASE | re.DOTALL)
+
         if target_point:
-            # Find the existing point
-            existing_point = None
             for point in points_list:
                 if point.get('point_number') == target_point:
-                    existing_point = point
-                    break
-            
-            if existing_point:
-                original_text = existing_point.get('text', '')
-                
-                if self.use_ai:
-                    # LEVERAGE AI: Delegate the complex merge logic to the auditor
-                    try:
-                        merged_text = self.auditor.generate_merged_text(
-                            original_text=original_text,
-                            instruction=raw_text
-                        )
-                        
-                        # Only update if we got a valid result
-                        if merged_text and len(merged_text) > 10:
-                            existing_point['text'] = merged_text
-                            existing_point['modified_by_amendment'] = True
-                            existing_point['ai_processed'] = True
-                            existing_point['original_instruction'] = raw_text
-                            print(f"✓ AI updated point {target_point}: {merged_text[:100]}...")
+                    original_text = point.get('text', '')
+                    
+                    # Apply Dialect 1
+                    if instead_match:
+                        new_val, old_val = instead_match.group(1).strip(), instead_match.group(2).strip()
+                        if old_val in original_text:
+                            point['text'] = original_text.replace(old_val, new_val)
+                            point['modified_by_amendment'] = True
                             return
-                        else:
-                            print(f"⚠ AI returned invalid result for point {target_point}, falling back to regex")
-                    except Exception as e:
-                        print(f"⚠ AI processing failed for point {target_point}: {e}, falling back to regex")
-                
-                # REGEX FALLBACK: Basic Dialect Support
-                result = self._regex_fallback(original_text, raw_text)
-                if result:
-                    existing_point['text'] = result
-                    existing_point['modified_by_amendment'] = True
-                    existing_point['fallback_method'] = 'regex'
-                    print(f"✓ Regex updated point {target_point}: {result[:100]}...")
-                    return
-                else:
-                    print(f"⚠ No pattern matched for point {target_point}, keeping original")
-                    # Store the raw instruction for manual review
-                    existing_point['pending_amendment'] = raw_text
-                    return
-            else:
-                # Point doesn't exist - add it as new
-                new_text = self._clean_instruction_text(raw_text)
-                new_point = {
-                    'point_number': target_point,
-                    'text': new_text,
-                    'field_code': field_code,
-                    'added_by_amendment': True,
-                    'original_instruction': raw_text
-                }
-                points_list.append(new_point)
-                print(f"✓ Added new point {target_point}: {new_text[:100]}...")
-                return
-        
-        # --- FALLBACK: STANDARD ADD/REPALL/DELETE OPERATIONS ---
+                    
+                    # Apply Dialect 2
+                    elif delete_match:
+                        old_val, new_val = delete_match.group(1).strip(), delete_match.group(2).strip()
+                        if old_val in original_text:
+                            point['text'] = original_text.replace(old_val, new_val)
+                            point['modified_by_amendment'] = True
+                            return
+
+                    # --- DIALECT 3: "NOW TO READ AS" (Full Clause Replacement) ---
+                    # If the narrative contains "TO READ AS" but no "INSTEAD OF", 
+                    # it means replace the whole clause with the remainder of the text.
+                    if "TO READ AS" in raw_text.upper():
+                        cleaned_text = self._clean_instruction_text(raw_text)
+                        # Remove trailing "INSTEAD OF..." if it exists but wasn't caught
+                        cleaned_text = re.split(r'\s+INSTEAD\s+OF', cleaned_text, flags=re.IGNORECASE)[0]
+                        point['text'] = cleaned_text.strip("' ")
+                        point['modified_by_amendment'] = True
+                        return
+
+        # --- FALLBACK: STANDARD ADD/REPALL ---
         operation = change.get('operation', 'ADD')
         if operation == 'DELETE' and target_point:
             points_list[:] = [p for p in points_list if p.get('point_number') != target_point]
-            print(f"✓ Deleted point {target_point}")
-        elif operation == 'ADD':
-            # Generic add without specific point number
-            new_text = self._clean_instruction_text(raw_text)
-            new_point = {
-                'point_number': target_point or 999,
-                'text': new_text,
-                'field_code': field_code,
-                'added_by_amendment': True
-            }
-            points_list.append(new_point)
-            print(f"✓ Added generic point: {new_text[:100]}...")
-
-    def _regex_fallback(self, original_text: str, instruction: str) -> str:
-        """
-        Attempts regex-based replacement when AI fails.
-        """
-        # Pattern 1: "X INSTEAD OF Y"
-        match = re.search(r"['\"](.+?)['\"]\s+INSTEAD\s+OF\s+['\"](.+?)['\"]", instruction, re.I | re.S)
-        if match:
-            new_val, old_val = match.group(1).strip(), match.group(2).strip()
-            if old_val.upper() in original_text.upper():
-                return re.sub(re.escape(old_val), new_val, original_text, flags=re.IGNORECASE)
-        
-        # Pattern 2: "DELETE X REPLACE BY Y"
-        match = re.search(r"DELETE\s+['\"](.+?)['\"]\s+REPLACE\s+(?:BY|WITH)\s+['\"](.+?)['\"]", instruction, re.I | re.S)
-        if match:
-            old_val, new_val = match.group(1).strip(), match.group(2).strip()
-            if old_val.upper() in original_text.upper():
-                return re.sub(re.escape(old_val), new_val, original_text, flags=re.IGNORECASE)
-        
-        # Pattern 3: "TO READ AS X" (complete replacement)
-        match = re.search(r"TO\s+READ\s+AS\s+['\"](.+?)['\"]", instruction, re.I | re.S)
-        if match:
-            return match.group(1).strip()
-        
-        return None
+        elif target_point:
+            # Check if exists to update, else add
+            found = False
+            for point in points_list:
+                if point.get('point_number') == target_point:
+                    point['text'] = self._clean_instruction_text(raw_text).strip("' ")
+                    point['modified_by_amendment'] = True
+                    found = True
+                    break
+            if not found:
+                points_list.append({
+                    'point_number': target_point,
+                    'text': self._clean_instruction_text(raw_text).strip("' "),
+                    'field_code': field_code,
+                    'added_by_amendment': True
+                })
 
     def consolidate(self, lc_number: str) -> Dict:
-        """Merges all amendments into the base LC and returns a consolidated document."""
-        if lc_number not in self.lcs:
-            return None
-            
-        print(f"\n{'='*80}")
-        print(f"CONSOLIDATING LC: {lc_number}")
-        print(f"{'='*80}\n")
-        
+        if lc_number not in self.lcs: return None
         original_lc = self.lcs[lc_number]
         amendments = self.amendments.get(lc_number, [])
-        
-        # Sort amendments by number to ensure chronological patching
         amendments.sort(key=lambda x: int(x.amendment_number) if x.amendment_number else 0)
         
         consolidated = {
@@ -1126,190 +738,94 @@ class LCConsolidator:
             'message_type': 'MT700_CONSOLIDATED',
             'amendments_applied': len(amendments),
             'last_amendment_date': amendments[-1].amendment_date if amendments else None,
-            'fields': {k: asdict(v) if hasattr(v, '__dataclass_fields__') else v 
-                      for k, v in original_lc.fields.items()},
+            'fields': {k: asdict(v) if hasattr(v, '__dataclass_fields__') else v for k, v in original_lc.fields.items()},
             'additional_conditions': [dict(p) for p in original_lc.additional_conditions],
             'documents_required': [dict(p) for p in original_lc.documents_required],
             'amendment_history': []
         }
         
         for amendment in amendments:
-            print(f"\n--- Processing Amendment {amendment.amendment_number} ---")
             am_rec = {'amendment_number': amendment.amendment_number, 'changes': []}
-            
-            # Update Field 47A (Additional Conditions) using Amendment Field 47B
             for change in amendment.additional_conditions:
-                print(f"  Applying change to 47A: {change.get('narrative', '')[:80]}...")
                 self._apply_change(consolidated['additional_conditions'], change, '47A')
                 am_rec['changes'].append(change)
-            
-            # Update Field 46A (Documents Required) using Amendment Field 46B
             for change in amendment.documents_required:
-                print(f"  Applying change to 46A: {change.get('narrative', '')[:80]}...")
                 self._apply_change(consolidated['documents_required'], change, '46A')
                 am_rec['changes'].append(change)
-            
             consolidated['amendment_history'].append(am_rec)
         
-        # Final cleanup: Ensure points are in numerical order
         consolidated['additional_conditions'].sort(key=lambda x: x.get('point_number', 999))
         consolidated['documents_required'].sort(key=lambda x: x.get('point_number', 999))
-        
-        print(f"\n{'='*80}")
-        print(f"CONSOLIDATION COMPLETE")
-        print(f"{'='*80}\n")
-        
         return consolidated
 
+    
     def get_all_consolidated(self) -> List[Dict]:
-        """Iterates through all loaded LCs and returns their consolidated state."""
         return [self.consolidate(ln) for ln in self.lcs.keys() if self.consolidate(ln)]
-
-    def print_summary(self, consolidated: Dict):
-        """Prints a human-readable summary of the consolidated LC."""
-        print(f"\n{'='*80}")
-        print(f"CONSOLIDATED LC SUMMARY: {consolidated['lc_number']}")
-        print(f"{'='*80}")
-        print(f"Amendments Applied: {consolidated['amendments_applied']}")
-        print(f"Last Amendment: {consolidated['last_amendment_date']}")
-        
-        print(f"\n--- Additional Conditions (Field 47A) ---")
-        for condition in consolidated['additional_conditions']:
-            status = ""
-            if condition.get('modified_by_amendment'):
-                status = "[MODIFIED]"
-            elif condition.get('added_by_amendment'):
-                status = "[NEW]"
-            
-            print(f"{condition['point_number']:3d}. {status:12s} {condition['text'][:100]}...")
-        
-        print(f"\n--- Documents Required (Field 46A) ---")
-        for doc in consolidated['documents_required']:
-            status = ""
-            if doc.get('modified_by_amendment'):
-                status = "[MODIFIED]"
-            elif doc.get('added_by_amendment'):
-                status = "[NEW]"
-            
-            print(f"{doc['point_number']:3d}. {status:12s} {doc['text'][:100]}...")
-        
-        print(f"\n{'='*80}\n")
-
-
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
 
-import json
-from datetime import datetime
-from typing import List, Dict
-from dataclasses import asdict
-
 def process_lc_documents(file_paths: List[str], output_path: str = None) -> Dict:
-    """
-    Process multiple LC documents with:
-    1. SWIFT Consolidation (MT700 + MT707)
-    2. Supporting Document Categorization (Invoice/BL)
-    3. AI Audit of consolidated clauses against supporting docs
-    """
-    # Import here to avoid circular dependencies if any
-    from StandAloneSystem.lc_extractor import LCExtractor, LCConsolidator
-    
+    """Process multiple LC documents with granular text extraction logs"""
     extractor = LCExtractor()
     consolidator = LCConsolidator()
-    
-    # Text accumulator to give the AI context from Invoices/BLs
-    all_supporting_text = ""
     
     results = {
         'processing_date': datetime.now().isoformat(),
         'total_documents_processed': 0,
         'lcs_found': 0,
         'amendments_found': 0,
-        'supporting_docs_found': 0,
         'documents': [],
         'consolidated_lcs': []
     }
 
-    # --- PHASE 1: EXTRACTION & CATEGORIZATION ---
     for file_path in file_paths:
         try:
-            print(f"\n{'='*40}")
-            print(f"ANALYZING: {file_path}")
-            print(f"{'='*40}") # Fixed syntax error here
+            print(f"\n{'='*30}")
+            print(f"DEBUGGING FILE: {file_path}")
+            print(f"{'='*30}")
             
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 text = f.read()
             
-            # Extract doc (Returns LCDocument for both SWIFT and Supporting)
+            # 1. PRINT RAW SOURCE TEXT
+            print(f"\n[STEP 1: RAW TEXT FROM OCR]")
+            print("-" * 20)
+            # Printing first 1000 chars to see headers and field starts
+            print(text[:1000]) 
+            print("-" * 20)
+
             doc = extractor.extract_from_text(text)
             
-            # Logic Branching based on your new _categorize_supporting_doc method
-            is_supporting = getattr(doc, 'is_supporting', False) or doc.message_type == "NON_SWIFT"
+            # 2. PRINT EXTRACTION RESULTS
+            print(f"\n[STEP 2: EXTRACTED METADATA]")
+            print(f"Document Type: {doc.document_type}")
+            print(f"LC Number:     {doc.lc_number}")
+            print(f"Message Type:  {doc.message_type}")
+            print(f"Amend Number:  {doc.amendment_number}")
+            
+            # 3. PRINT FIELD-BY-FIELD ANALYSIS
+            print(f"\n[STEP 3: EXTRACTED FIELDS CONTENT]")
+            for code, field in doc.fields.items():
+                # This helps see if the value contains 'Sender's Reference' or extra noise
+                print(f"Field {code:6} | Value: {field.value[:100]}...")
 
-            if is_supporting:
-                print(f"[TYPE] Supporting Document Detected: {doc.document_type}")
-                results['supporting_docs_found'] += 1
-                # Accumulate text for AI context
-                all_supporting_text += f"\n--- DATA FROM {doc.document_type} ({file_path}) ---\n"
-                all_supporting_text += doc.raw_text + "\n"
-            else:
-                print(f"[TYPE] SWIFT Message Detected: {doc.document_type}")
-                consolidator.add_document(doc)
-                if doc.document_type == 'LC':
-                    results['lcs_found'] += 1
-                else:
-                    results['amendments_found'] += 1
-
+            consolidator.add_document(doc)
+            
             results['total_documents_processed'] += 1
+            if doc.document_type == 'LC':
+                results['lcs_found'] += 1
+            else:
+                results['amendments_found'] += 1
+            
             results['documents'].append(asdict(doc))
-
+            
         except Exception as e:
             print(f"ERROR processing {file_path}: {str(e)}")
             continue
     
-    # --- PHASE 2: CONSOLIDATION ---
-    print(f"\n{'-'*40}")
-    print("CONSOLIDATING AMENDMENTS...")
-    consolidated_data = consolidator.get_all_consolidated()
-    
-    # --- PHASE 3: AI AUDIT ---
-    # Only run if we have a Master LC AND text from shipping docs (Invoice/BL)
-    if consolidated_data and all_supporting_text.strip():
-        print("RUNNING AI AUDIT AGAINST SUPPORTING DOCUMENTS...")
-        try:
-            # Local import of Auditor
-            from StandAloneSystem.ai_auditor import OfflineLCAuditor
-            auditor = OfflineLCAuditor()
-            
-            for lc in consolidated_data:
-                # Audit Additional Conditions (47A) and Documents Required (46A)
-                # These keys match your LCConsolidator.consolidate output
-                for field_key in ['additional_conditions', 'documents_required']:
-                    if field_key in lc:
-                        for point in lc[field_key]:
-                            clause = point.get('text', '')
-                            if len(clause) > 15:
-                                # AI Verification
-                                verdict = auditor.verify_clause(clause, all_supporting_text[:4000])
-                                
-                                point['ai_audit'] = {
-                                    "status": "COMPLIANT" if "yes" in verdict.lower()[:10] else "DISCREPANCY",
-                                    "explanation": verdict.strip()
-                                }
-        except Exception as ai_err:
-            print(f"AI Audit encountered an issue: {str(ai_err)}")
-
-    results['consolidated_lcs'] = consolidated_data
-
-    # --- PHASE 4: EXPORT ---
-    if output_path:
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
-        print(f"\nSUCCESS: Results saved to {output_path}")
-
+    results['consolidated_lcs'] = consolidator.get_all_consolidated()
     return results
-    
 if __name__ == "__main__":
     import sys
     

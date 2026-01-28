@@ -441,6 +441,17 @@
         let currentJobId = null;
         let statusCheckInterval = null;
 
+        // --- NEW REDIRECTION FUNCTION ---
+        //     function goToChecklist(lcNumber) {
+        //     // We pass the LC number as a query parameter
+        //     window.location.href = `checklist.html?lc=${currentJobId}`;
+        // }
+
+     function goToChecklist(lcNumber) {
+    const url = `checklist.html?lc=${lcNumber}&job_id=${currentJobId}`;
+    window.open(url, '_blank');
+}
+
         // File input handling
         const fileInput = document.getElementById('fileInput');
         const uploadSection = document.getElementById('uploadSection');
@@ -682,6 +693,11 @@
                                     onclick="viewJson('${API_BASE}${lc.download_url}')">
                                     👁 View
                                 </button>
+                                <button class="download-btn" style="background:#20c997" 
+                            onclick="goToChecklist('${lc.lc_number}')">
+                            📋 Go to Checklist
+                        </button>
+                    </div>
                             </div>
 
                         </div>
@@ -711,8 +727,8 @@
         }
 
         function viewJson(url) {
-    const win = window.open('', '_blank');
-    win.document.write(`
+            const win = window.open('', '_blank');
+            win.document.write(`
         <html>
         <head>
             <title>LC Data Viewer</title>
@@ -743,17 +759,17 @@
         </html>
     `);
 
-    fetch(url)
-        .then(res => res.json())
-        .then(data => {
-            win.document.getElementById('json').textContent =
-                JSON.stringify(data, null, 2);
-        })
-        .catch(err => {
-            win.document.getElementById('json').textContent =
-                'Failed to load JSON: ' + err;
-        });
-}
+            fetch(url)
+                .then(res => res.json())
+                .then(data => {
+                    win.document.getElementById('json').textContent =
+                        JSON.stringify(data, null, 2);
+                })
+                .catch(err => {
+                    win.document.getElementById('json').textContent =
+                        'Failed to load JSON: ' + err;
+                });
+        }
 
     </script>
 </body>
