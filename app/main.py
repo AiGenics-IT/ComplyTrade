@@ -42,8 +42,8 @@ app.add_middleware(
 )
 
 # Configuration
-UPLOAD_DIR = Path("/uploads/lc_uploads")
-RESULTS_DIR = Path("/uploads/lc_results")
+UPLOAD_DIR = Path("uploads/lc_uploads")
+RESULTS_DIR = Path("uploads/lc_results")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(exist_ok=True)
 
