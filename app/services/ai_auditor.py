@@ -72,7 +72,7 @@ class OfflineLCAuditor:
 
     #     self.model.eval()
 
-   def __init__(self, model_name=None, model_root=None):
+    def __init__(self, model_name=None, model_root=None):
         # 1. Resolve Model Name (Primary config)
         self.model_name = os.getenv("MODEL_NAME", model_name or "google/flan-t5-large")
         
