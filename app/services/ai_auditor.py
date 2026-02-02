@@ -1,10 +1,19 @@
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+import os
 import torch
-import re
 from pathlib import Path
+from dotenv import load_dotenv
+from transformers import (
+    AutoConfig, 
+    AutoTokenizer, 
+    AutoModelForSeq2SeqLM, 
+    AutoModelForCausalLM
+)
+
+# Load variables from .env if present
+load_dotenv()
 
 class OfflineLCAuditor:
-
+    print("Initializing LC Auditor Model...", os.getenv("MODEL_NAME"))
     # use this when not changing the directory to store the models
     # def __init__(self, model_name="google/flan-t5-large"):
     #     self.model_name = model_name
@@ -33,35 +42,89 @@ class OfflineLCAuditor:
     #     self.model.eval()
         
     # use this when using a different directory to store the models
-    def __init__(self, model_name="google/flan-t5-large", model_root=r"D:\AI_Models\huggingface"):
-        self.model_name = model_name
-        self.model_root = Path(model_root)
+    # def __init__(self, model_name="google/flan-t5-large", model_root=r"D:\AI_Models\huggingface"):
+    #     self.model_name = model_name
+    #     self.model_root = Path(model_root)
 
-        # Detect device
+    #     # Detect device
+    #     if torch.cuda.is_available():
+    #         self.device = torch.device("cuda")
+    #         dtype = torch.float16  # FP16 on GPU
+    #         print(f"[LCAuditor] GPU detected: {torch.cuda.get_device_name(0)}")
+    #     else:
+    #         self.device = torch.device("cpu")
+    #         dtype = torch.float32
+    #         print("[LCAuditor] Using CPU")
+
+    #     # Load tokenizer
+    #     self.tokenizer = AutoTokenizer.from_pretrained(
+    #         model_name,
+    #         cache_dir=self.model_root
+    #     )
+
+    #     # Load model
+    #     self.model = AutoModelForSeq2SeqLM.from_pretrained(
+    #         model_name,
+    #         cache_dir=self.model_root,
+    #         device_map="auto",  # Automatically maps model to GPU if available
+    #         torch_dtype=dtype
+    #     )
+
+    #     self.model.eval()
+
+    def __init__(self, model_name=None, model_root=None):
+        # 1. Resolve Model Name: .env first, then argument, then hardcoded default
+        self.model_name = os.getenv("MODEL_NAME", model_name or "google/flan-t5-large")
+        
+        # 2. Conditional Path Logic: 
+        # It will be a Path object ONLY if MODEL_PATH is set in .env or passed as model_root
+        env_root = os.getenv("MODEL_PATH", model_root)
+        self.model_root = Path(env_root) if env_root else None
+
+        # Device detection
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
-            dtype = torch.float16  # FP16 on GPU
-            print(f"[LCAuditor] GPU detected: {torch.cuda.get_device_name(0)}")
+            self.dtype = torch.float16
+            print(f"[LCAuditor] GPU: {torch.cuda.get_device_name(0)}")
         else:
             self.device = torch.device("cpu")
-            dtype = torch.float32
-            print("[LCAuditor] Using CPU")
+            self.dtype = torch.float32
+            print("[LCAuditor] CPU Mode")
 
-        # Load tokenizer
+        # 3. Load Tokenizer (cache_dir is None if no path provided)
         self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            cache_dir=self.model_root
+            self.model_name, 
+            cache_dir=self.model_root,
+            trust_remote_code=True
         )
 
-        # Load model
-        self.model = AutoModelForSeq2SeqLM.from_pretrained(
-            model_name,
-            cache_dir=self.model_root,
-            device_map="auto",  # Automatically maps model to GPU if available
-            torch_dtype=dtype
-        )
+        # 4. Architecture Detection & Loading
+        config = AutoConfig.from_pretrained(self.model_name, cache_dir=self.model_root)
+
+        if config.is_encoder_decoder:
+            # --- Architecture: Seq2Seq (e.g., Google Flan) ---
+            print(f"[LCAuditor] Loading Seq2Seq model: {self.model_name}")
+            self.model = AutoModelForSeq2SeqLM.from_pretrained(
+                self.model_name,
+                cache_dir=self.model_root,
+                torch_dtype=self.dtype
+            ).to(self.device)
+        else:
+            # --- Architecture: Causal (e.g., Qwen, Llama) ---
+            print(f"[LCAuditor] Loading Causal model: {self.model_name}")
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                cache_dir=self.model_root,
+                torch_dtype=self.dtype,
+                device_map="auto",  # Shards across both 5090s if it's a large model
+                trust_remote_code=True
+            )
 
         self.model.eval()
+        
+        # Status Printout
+        location = self.model_root if self.model_root else "Default HF Cache"
+        print(f"[LCAuditor] {self.model_name} initialized from: {location}")
         
     def _prepare_inputs(self, prompt: str, max_length: int = 1024):
         """
