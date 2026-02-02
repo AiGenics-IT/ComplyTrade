@@ -73,50 +73,94 @@ class OfflineLCAuditor:
     #     self.model.eval()
 
     def __init__(self, model_name=None, model_root=None):
-        # 1. Resolve Model Name
+        # 1️⃣ Resolve Model Name
         self.model_name = os.getenv("MODEL_NAME", model_name or "google/flan-t5-large")
-        print(f"[LCAuditor] Resolved model path: {self.model_name}")
-        # 2. Resolve Model Path strictly (Conditional)
-        # We only create a Path object if the env/arg is NOT empty
+        print(f"[LCAuditor] Resolved model name: {self.model_name}")
+
+        # 2️⃣ Resolve Model Root (optional local folder)
         env_root = os.getenv("MODEL_PATH", model_root)
         if env_root and str(env_root).strip():
             self.model_root = Path(env_root)
+            print(f"[LCAuditor] Using local model root: {self.model_root}")
         else:
-            self.model_root = None # This triggers Auto-Download to default cache
+            self.model_root = None
+            print(f"[LCAuditor] No MODEL_PATH specified — using default Hugging Face cache")
 
-        # Device detection
+        # 3️⃣ Detect Device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = torch.float16 if torch.cuda.is_available() else torch.float32
         print(f"[LCAuditor] Device: {self.device} | Path: {self.model_root or 'Default Cache'}")
 
-        # 3. Setup Keyword Arguments for loading
-        # This prevents the "not a local folder" error by omitting cache_dir if it's None
-        loader_args = {"trust_remote_code": True}
+        # 4️⃣ Build loader args
+        # loader_args = {"trust_remote_code": True}
+        loader_args = {"trust_remote_code": True, "revision": "main"}
+        hf_token = os.getenv("HF_TOKEN")
+        if hf_token:
+            loader_args["use_auth_token"] = hf_token
         if self.model_root:
             loader_args["cache_dir"] = str(self.model_root)
+            
+        if self.model_root:
+            # cache_dir is only for downloading; for local models HF automatically uses folder
+            loader_args["cache_dir"] = str(self.model_root)
 
-        # 4. Load Tokenizer & Config
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, **loader_args)
-        config = AutoConfig.from_pretrained(self.model_name, **loader_args)
+        # 5️⃣ Determine local-only vs HF
+        local_only = False
+        if self.model_root:
+            candidate = Path(self.model_root) / self.model_name
+            if candidate.exists():
+                self.model_name = str(candidate)  # Load from local folder
+                local_only = True
+                print(f"[LCAuditor] Loading model locally from {self.model_name}")
+            else:
+                print(f"[LCAuditor] Model folder {candidate} not found — will try HF download")
 
-        # 5. Load Model based on Architecture
-        if config.is_encoder_decoder:
-            print(f"[LCAuditor] Loading Seq2Seq: {self.model_name}")
-            self.model = AutoModelForSeq2SeqLM.from_pretrained(
-                self.model_name, 
-                torch_dtype=self.dtype, 
-                **loader_args
-            ).to(self.device)
-        else:
-            print(f"[LCAuditor] Loading Causal: {self.model_name}")
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name, 
-                torch_dtype=self.dtype, 
-                device_map="auto", # Vital for dual 5090s
-                **loader_args
+        # 6️⃣ Protect GPTQ / 72B models from CPU-only load
+        if "72B" in self.model_name and not torch.cuda.is_available():
+            raise RuntimeError(
+                "[LCAuditor] 72B GPTQ model requires CUDA GPU — cannot load on CPU"
             )
 
+        # 7️⃣ Load Tokenizer & Config
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_name,
+                local_files_only=local_only,
+                **loader_args
+            )
+            config = AutoConfig.from_pretrained(
+                self.model_name,
+                local_files_only=local_only,
+                **loader_args
+            )
+        except Exception as e:
+            raise RuntimeError(f"[LCAuditor] Failed to load tokenizer/config: {e}")
+
+        # 8️⃣ Load Model (Seq2Seq vs Causal)
+        try:
+            if config.is_encoder_decoder:
+                print(f"[LCAuditor] Loading Seq2Seq model: {self.model_name}")
+                self.model = AutoModelForSeq2SeqLM.from_pretrained(
+                    self.model_name,
+                    torch_dtype=self.dtype,
+                    local_files_only=local_only,
+                    **loader_args
+                ).to(self.device)
+            else:
+                print(f"[LCAuditor] Loading Causal model: {self.model_name}")
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_name,
+                    torch_dtype=self.dtype,
+                    device_map="auto" if torch.cuda.is_available() else None,
+                    local_files_only=local_only,
+                    **loader_args
+                )
+        except Exception as e:
+            raise RuntimeError(f"[LCAuditor] Failed to load model: {e}")
+
         self.model.eval()
+        print("[LCAuditor] Model loaded successfully")
+
     
     def _prepare_inputs(self, prompt: str, max_length: int = 1024):
         """
