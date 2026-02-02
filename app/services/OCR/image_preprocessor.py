@@ -1,259 +1,341 @@
 """
-Optimized Image Preprocessing Module
-Fast preprocessing that won't hang on noisy images
+Ultimate ImagePreprocessor - Final Version
+Better quality detection + raw image fallback
 """
 
 import numpy as np
 from PIL import Image
 import cv2
-import signal
-from contextlib import contextmanager
-
-
-class TimeoutException(Exception):
-    """Timeout exception for long-running operations"""
-    pass
-
-
-@contextmanager
-def time_limit(seconds):
-    if sys.platform.startswith("win"):
-        # No SIGALRM support
-        yield
-    else:
-        def signal_handler(signum, frame):
-            raise TimeoutException("Operation timed out")
-        signal.signal(signal.SIGALRM, signal_handler)
-        signal.alarm(seconds)
-        try:
-            yield
-        finally:
-            signal.alarm(0)
 
 
 class ImagePreprocessor:
-    """Optimized image preprocessing that won't hang"""
+    """
+    Production-ready preprocessor with:
+    - More aggressive quality detection
+    - Multiple preprocessing attempts
+    - Raw image fallback if preprocessing makes it worse
+    """
     
     def __init__(self):
         self.default_dpi = 300
-        self.max_dimension = 4000  # Prevent processing huge images
+        self.max_dimension = 4000
     
     def preprocess_for_ocr(self, image: Image.Image, aggressive: bool = False) -> Image.Image:
         """
-        Fast preprocessing pipeline that won't hang
-        
-        CRITICAL CHANGES:
-        - Removed fastNlMeansDenoising (TOO SLOW)
-        - Removed bilateralFilter (TOO SLOW)
-        - Made deskewing optional and safer
-        - Added size limits
+        Main preprocessing with automatic quality detection
+        Returns the BEST version for OCR (preprocessed OR raw)
         """
-        img_array = np.array(image)
+        try:
+            img_array = np.array(image)
+            
+            # Convert to grayscale
+            if len(img_array.shape) == 3:
+                img_gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+            else:
+                img_gray = img_array
+            
+            # Store original for comparison
+            original_gray = img_gray.copy()
+            
+            # Limit size
+            img_gray = self._limit_size(img_gray)
+            
+            # Detect quality with more aggressive thresholds
+            quality = self._detect_quality(img_gray)
+            print(f"  → Detected quality: {quality}")
+            
+            # Force aggressive for very poor images
+            if quality in ['POOR', 'VERY_POOR']:
+                aggressive = True
+            
+            # Try preprocessing
+            if aggressive or quality != 'EXCELLENT':
+                processed = self._preprocess_by_quality(img_gray, quality, aggressive)
+                
+                # If preprocessing made it worse, use simpler approach
+                if self._is_worse(original_gray, processed):
+                    print(f"  ⚠ Preprocessing made it worse, trying alternative...")
+                    processed = self._alternative_preprocessing(img_gray)
+                
+                return Image.fromarray(processed)
+            else:
+                # Image is excellent, minimal processing
+                return Image.fromarray(self._minimal_preprocessing(img_gray))
         
-        # Limit image size to prevent memory issues and hangs
-        img_array = self._limit_size(img_array)
+        except Exception as e:
+            print(f"  ⚠ Preprocessing failed: {str(e)}")
+            return image
+    
+    def _detect_quality(self, img: np.ndarray) -> str:
+        """
+        More aggressive quality detection
+        Biased towards marking images as poor quality
+        """
+        std_dev = img.std()
+        max_val = img.max()
+        min_val = img.min()
+        contrast_range = max_val - min_val
+        mean_val = img.mean()
         
-        # Convert to grayscale
-        if len(img_array.shape) == 3:
-            img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        # Sharpness
+        laplacian = cv2.Laplacian(img, cv2.CV_64F)
+        sharpness = laplacian.var()
         
-        # Fast preprocessing pipeline
-        img_array = self._fast_denoise(img_array, aggressive)
-        img_array = self._enhance_contrast(img_array)
-        img_array = self._sharpen(img_array, aggressive)
-        img_array = self._binarize(img_array, aggressive)
+        # More aggressive scoring (biased towards poor)
+        score = 0
         
-        # Skip expensive operations for non-aggressive mode
-        if aggressive:
-            try:
-                img_array = self._safe_deskew(img_array)
-            except Exception as e:
-                print(f"  ⚠ Deskewing skipped: {str(e)}")
-                pass
+        # Contrast scoring (stricter)
+        if contrast_range > 220:
+            score += 2
+        elif contrast_range > 180:
+            score += 1
+        elif contrast_range < 120:  # Stricter threshold
+            score -= 3  # More penalty
+        elif contrast_range < 150:
+            score -= 1
         
-        # Remove borders (fast operation)
-        img_array = self._remove_borders(img_array)
+        # Std dev scoring (stricter)
+        if std_dev > 70:
+            score += 2
+        elif std_dev > 50:
+            score += 1
+        elif std_dev < 35:  # Stricter threshold
+            score -= 3  # More penalty
+        elif std_dev < 45:
+            score -= 1
         
-        return Image.fromarray(img_array)
+        # Max value scoring (stricter)
+        if max_val > 250:
+            score += 2
+        elif max_val > 235:
+            score += 1
+        elif max_val < 215:  # Stricter threshold
+            score -= 2  # More penalty
+        
+        # Sharpness scoring
+        if sharpness > 600:
+            score += 2
+        elif sharpness > 300:
+            score += 1
+        elif sharpness < 80:
+            score -= 2
+        
+        # Debug output
+        print(f"     Quality metrics: contrast={contrast_range}, std={std_dev:.1f}, max={max_val}, sharp={sharpness:.0f}, score={score}")
+        
+        # More conservative thresholds (bias towards poor)
+        if score >= 5:
+            return 'EXCELLENT'
+        elif score >= 2:
+            return 'GOOD'
+        elif score >= -1:  # Stricter
+            return 'MEDIUM'
+        elif score >= -3:
+            return 'POOR'
+        else:
+            return 'VERY_POOR'
+    
+    def _is_worse(self, original: np.ndarray, processed: np.ndarray) -> bool:
+        """
+        Check if preprocessing made the image worse
+        Compare information content
+        """
+        try:
+            # Count unique values (more is better)
+            orig_unique = len(np.unique(original))
+            proc_unique = len(np.unique(processed))
+            
+            # If processed has much fewer unique values, might be over-processed
+            if proc_unique < orig_unique * 0.3:
+                return True
+            
+            # Check if processed is mostly white or black (over-binarized)
+            if processed.mean() > 250 or processed.mean() < 5:
+                return True
+            
+            return False
+        except:
+            return False
+    
+    def _preprocess_by_quality(self, img: np.ndarray, quality: str, force_aggressive: bool) -> np.ndarray:
+        """Apply appropriate preprocessing based on quality"""
+        if force_aggressive or quality in ['POOR', 'VERY_POOR']:
+            return self._aggressive_preprocessing(img)
+        elif quality == 'MEDIUM':
+            return self._enhanced_preprocessing(img)
+        elif quality == 'GOOD':
+            return self._standard_preprocessing(img)
+        else:
+            return self._minimal_preprocessing(img)
     
     def _limit_size(self, img: np.ndarray) -> np.ndarray:
-        """Limit image size to prevent memory issues"""
+        """Limit size but keep sufficient resolution"""
         height, width = img.shape[:2]
         
         if height > self.max_dimension or width > self.max_dimension:
-            print(f"  → Resizing large image from {width}x{height}")
+            print(f"     Resizing from {width}x{height}", end=" ")
             scale = self.max_dimension / max(height, width)
             new_height = int(height * scale)
             new_width = int(width * scale)
             img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
-            print(f"     to {new_width}x{new_height}")
+            print(f"to {new_width}x{new_height}")
         
         return img
     
-    def _fast_denoise(self, img: np.ndarray, aggressive: bool = False) -> np.ndarray:
-        """
-        Fast denoising using simple blur
-        
-        CRITICAL: Removed slow cv2.fastNlMeansDenoising and cv2.bilateralFilter
-        """
-        if aggressive:
-            # Stronger blur for very noisy images
-            img = cv2.GaussianBlur(img, (5, 5), 0)
-        else:
-            # Light blur
-            img = cv2.GaussianBlur(img, (3, 3), 0)
-        
+    # ========================================================================
+    # PREPROCESSING PIPELINES
+    # ========================================================================
+    
+    def _minimal_preprocessing(self, img: np.ndarray) -> np.ndarray:
+        """Minimal for excellent images"""
+        print("  → Applying minimal preprocessing...")
+        img = cv2.GaussianBlur(img, (3, 3), 0)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        img = clahe.apply(img)
+        _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         return img
     
-    def _enhance_contrast(self, img: np.ndarray) -> np.ndarray:
-        """Fast contrast enhancement using CLAHE"""
-        # Normalize first
+    def _standard_preprocessing(self, img: np.ndarray) -> np.ndarray:
+        """Standard for good images"""
+        print("  → Applying standard preprocessing...")
+        img = cv2.GaussianBlur(img, (3, 3), 0)
+        img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        img = clahe.apply(img)
+        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+        img = cv2.filter2D(img, -1, kernel)
+        img = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                    cv2.THRESH_BINARY, 15, 8)
+        return img
+    
+    def _enhanced_preprocessing(self, img: np.ndarray) -> np.ndarray:
+        """Enhanced for medium quality"""
+        print("  → Applying enhanced preprocessing...")
+        img = cv2.GaussianBlur(img, (5, 5), 0)
+        img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX)
+        clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
+        img = clahe.apply(img)
+        img = self._adjust_gamma(img, 1.3)
+        kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
+        img = cv2.filter2D(img, -1, kernel)
+        
+        _, otsu = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        adaptive = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                        cv2.THRESH_BINARY, 19, 10)
+        img = cv2.bitwise_and(otsu, adaptive)
+        
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        img = cv2.morphologyEx(img, cv2.MORPH_OPEN, kernel)
+        return img
+    
+    def _aggressive_preprocessing(self, img: np.ndarray) -> np.ndarray:
+        """Aggressive for poor quality"""
+        print("  → Applying AGGRESSIVE preprocessing...")
+        
+        # Upscale
+        scale = min(2.0, self.max_dimension / max(img.shape))
+        if scale > 1.0:
+            new_w = int(img.shape[1] * scale)
+            new_h = int(img.shape[0] * scale)
+            print(f"     • Upscaling {scale}x")
+            img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        
+        # Extreme contrast
+        print(f"     • Extreme contrast enhancement")
+        img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX)
+        clahe = cv2.createCLAHE(clipLimit=6.0, tileGridSize=(8, 8))
+        img = clahe.apply(img)
+        img = self._adjust_gamma(img, 1.5)
+        
+        # Remove background
+        print(f"     • Removing background")
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (17, 17))
+        background = cv2.morphologyEx(img, cv2.MORPH_OPEN, kernel)
+        img = cv2.subtract(background, img)
+        img = cv2.bitwise_not(img)
         img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX)
         
-        # Apply CLAHE (fast and effective)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        return clahe.apply(img)
-    
-    def _sharpen(self, img: np.ndarray, aggressive: bool = False) -> np.ndarray:
-        """Sharpen image to enhance text edges"""
-        if aggressive:
-            kernel = np.array([[-1, -1, -1], [-1,  9, -1], [-1, -1, -1]])
-        else:
-            kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+        # Denoise
+        img = cv2.GaussianBlur(img, (3, 3), 0)
         
-        return cv2.filter2D(img, -1, kernel)
-    
-    def _binarize(self, img: np.ndarray, aggressive: bool = False) -> np.ndarray:
-        """Binarize using adaptive or Otsu thresholding"""
-        if aggressive:
-            # Otsu's method for uniform lighting
-            _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        else:
-            # Adaptive threshold (better for uneven lighting)
-            img = cv2.adaptiveThreshold(
-                img, 255, 
-                cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                cv2.THRESH_BINARY, 
-                blockSize=15,  # Larger block for noisy images
-                C=8
-            )
+        # Triple binarization
+        print(f"     • Triple binarization")
+        _, otsu = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        adaptive_g = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                          cv2.THRESH_BINARY, 27, 15)
+        adaptive_m = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                                          cv2.THRESH_BINARY, 27, 15)
+        img = cv2.bitwise_and(otsu, adaptive_g)
+        img = cv2.bitwise_and(img, adaptive_m)
+        
+        # Cleanup
+        print(f"     • Morphological cleanup")
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        img = cv2.morphologyEx(img, cv2.MORPH_OPEN, kernel)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        img = cv2.morphologyEx(img, cv2.MORPH_CLOSE, kernel)
+        
+        # Sharpen
+        gaussian = cv2.GaussianBlur(img, (0, 0), 2.0)
+        img = cv2.addWeighted(img, 1.5, gaussian, -0.5, 0)
+        
         return img
     
-    def _safe_deskew(self, img: np.ndarray, max_angle: float = 5.0) -> np.ndarray:
+    def _alternative_preprocessing(self, img: np.ndarray) -> np.ndarray:
         """
-        Safe deskewing with limits to prevent hanging
-        
-        CRITICAL: Limited HoughLines to prevent hanging
+        Alternative preprocessing if main one fails
+        Simpler but sometimes more effective
         """
-        try:
-            # Detect edges (but don't process huge images)
-            edges = cv2.Canny(img, 50, 150, apertureSize=3)
-            
-            # Limit HoughLines processing (CRITICAL FIX)
-            lines = cv2.HoughLines(
-                edges, 1, np.pi / 180, 
-                threshold=100,  # Higher threshold = fewer lines
-                min_theta=0, 
-                max_theta=np.pi
-            )
-            
-            if lines is None or len(lines) == 0:
-                return img
-            
-            # CRITICAL: Only process first 20 lines (prevent hanging)
-            lines = lines[:20]
-            
-            angles = []
-            for rho, theta in lines[:, 0]:
-                angle = np.degrees(theta) - 90
-                if -max_angle < angle < max_angle:  # Only small corrections
-                    angles.append(angle)
-            
-            if not angles:
-                return img
-            
-            median_angle = np.median(angles)
-            
-            # Only rotate if angle is significant
-            if abs(median_angle) > 0.5:
-                (h, w) = img.shape
-                center = (w // 2, h // 2)
-                M = cv2.getRotationMatrix2D(center, median_angle, 1.0)
-                img = cv2.warpAffine(
-                    img, M, (w, h), 
-                    flags=cv2.INTER_LINEAR,  # Faster than CUBIC
-                    borderMode=cv2.BORDER_REPLICATE
-                )
+        print("  → Trying alternative (simpler) preprocessing...")
         
-        except Exception:
-            # If anything fails, return original image
-            pass
+        # Just extreme contrast and simple threshold
+        img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX)
+        clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
+        img = clahe.apply(img)
+        _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
         return img
     
-    def _remove_borders(self, img: np.ndarray) -> np.ndarray:
-        """Remove borders by finding largest contour"""
-        try:
-            contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            if contours:
-                largest_contour = max(contours, key=cv2.contourArea)
-                x, y, w, h = cv2.boundingRect(largest_contour)
-                
-                margin = 10
-                y_start = max(0, y - margin)
-                y_end = min(img.shape[0], y + h + margin)
-                x_start = max(0, x - margin)
-                x_end = min(img.shape[1], x + w + margin)
-                
-                img = img[y_start:y_end, x_start:x_end]
-        except Exception:
-            pass
-        
-        return img
+    def _adjust_gamma(self, img: np.ndarray, gamma: float = 1.0) -> np.ndarray:
+        """Gamma correction"""
+        inv_gamma = 1.0 / gamma
+        table = np.array([((i / 255.0) ** inv_gamma) * 255 
+                         for i in range(256)]).astype("uint8")
+        return cv2.LUT(img, table)
     
     def upscale_image(self, image: Image.Image, target_dpi: int = 300) -> Image.Image:
-        """Upscale image to target DPI"""
-        width, height = image.size
-        current_dpi = image.info.get('dpi', (72, 72))
-        
-        if isinstance(current_dpi, tuple):
-            current_dpi = current_dpi[0]
-        
-        scale_factor = target_dpi / current_dpi
-        
-        # Only upscale if needed, limit maximum
-        if scale_factor > 1 and scale_factor < 5:
-            new_width = int(width * scale_factor)
-            new_height = int(height * scale_factor)
+        """Upscale to target DPI"""
+        try:
+            width, height = image.size
+            current_dpi = image.info.get('dpi', (72, 72))
+            if isinstance(current_dpi, tuple):
+                current_dpi = current_dpi[0]
             
-            # Don't exceed max dimension
-            if new_width <= self.max_dimension and new_height <= self.max_dimension:
-                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            scale_factor = target_dpi / current_dpi
+            
+            if 1 < scale_factor < 5:
+                new_width = int(width * scale_factor)
+                new_height = int(height * scale_factor)
+                
+                if new_width <= self.max_dimension and new_height <= self.max_dimension:
+                    print(f"  → Upscaling from {width}x{height} to {new_width}x{new_height}")
+                    image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        except Exception as e:
+            print(f"  ⚠ Upscaling failed: {str(e)}")
         
         return image
     
     def quick_preprocess(self, image: Image.Image) -> Image.Image:
-        """
-        Ultra-fast preprocessing for timeout-prone images
-        Use this if normal preprocessing hangs
-        """
-        img_array = np.array(image)
-        
-        # Grayscale
-        if len(img_array.shape) == 3:
-            img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-        
-        # Limit size
-        img_array = self._limit_size(img_array)
-        
-        # Simple contrast enhancement
-        img_array = cv2.normalize(img_array, None, 0, 255, cv2.NORM_MINMAX)
-        
-        # Simple threshold
-        _, img_array = cv2.threshold(
-            img_array, 0, 255, 
-            cv2.THRESH_BINARY + cv2.THRESH_OTSU
-        )
-        
-        return Image.fromarray(img_array)
+        """Emergency fallback"""
+        try:
+            img_array = np.array(image)
+            if len(img_array.shape) == 3:
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+            img_array = self._limit_size(img_array)
+            img_array = cv2.normalize(img_array, None, 0, 255, cv2.NORM_MINMAX)
+            clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
+            img_array = clahe.apply(img_array)
+            _, img_array = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            return Image.fromarray(img_array)
+        except Exception:
+            return image
