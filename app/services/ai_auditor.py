@@ -93,29 +93,16 @@ class OfflineLCAuditor:
 
         # 4️⃣ Build loader args
         loader_args = {"trust_remote_code": True, "revision": "main"}
-
-        # Set HF token in environment instead of passing use_auth_token
         hf_token = os.getenv("HF_TOKEN")
         if hf_token:
             os.environ["HF_TOKEN"] = hf_token
-
         if self.model_root:
             loader_args["cache_dir"] = str(self.model_root)
 
-        if self.model_root:
-            # cache_dir is only for downloading; for local models HF automatically uses folder
-            loader_args["cache_dir"] = str(self.model_root)
-
-        # 5️⃣ Determine local-only vs HF
-        local_only = True
-        if self.model_root:
-            candidate = Path(self.model_root) / self.model_name
-            if candidate.exists():
-                self.model_name = str(candidate)  # Load from local folder
-                local_only = True
-                print(f"[LCAuditor] Loading model locally from {self.model_name}")
-            else:
-                print(f"[LCAuditor] Model folder {candidate} not found — will try HF download")
+        # 5️⃣ Determine local-only
+        # If no model_root specified, allow downloading from HF
+        local_only = bool(self.model_root and (Path(self.model_root)/self.model_name).exists())
+        print(f"[LCAuditor] local_only={local_only}")
 
         # 6️⃣ Protect GPTQ / 72B models from CPU-only load
         if "72B" in self.model_name and not torch.cuda.is_available():
@@ -125,6 +112,7 @@ class OfflineLCAuditor:
 
         # 7️⃣ Load Tokenizer & Config
         try:
+            print(f"[LCAuditor] Loading tokenizer/config for {self.model_name}...")
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.model_name,
                 local_files_only=local_only,
@@ -135,6 +123,7 @@ class OfflineLCAuditor:
                 local_files_only=local_only,
                 **loader_args
             )
+            print("[LCAuditor] Tokenizer & config loaded successfully")
         except Exception as e:
             raise RuntimeError(f"[LCAuditor] Failed to load tokenizer/config: {e}")
 
@@ -157,12 +146,10 @@ class OfflineLCAuditor:
                     local_files_only=local_only,
                     **loader_args
                 )
+            self.model.eval()
+            print("[LCAuditor] Model loaded successfully")
         except Exception as e:
             raise RuntimeError(f"[LCAuditor] Failed to load model: {e}")
-
-        self.model.eval()
-        print("[LCAuditor] Model loaded successfully")
-
     def _prepare_inputs(self, prompt: str, max_length: int = 1024):
         """
         Tokenize inputs and move tensors to the correct device.
