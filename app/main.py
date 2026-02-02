@@ -4,7 +4,7 @@ FastAPI-based service for processing Letter of Credit documents
 """
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from pydantic import BaseModel
@@ -388,7 +388,19 @@ async def get_specific_lc(job_id: str, lc_number: str):
     
     return lc_data
 
-
+@app.get("/interface", response_class=HTMLResponse)
+async def get_ui():
+    """
+    Serves the web interface for the LC Processing System
+    """
+    html_path = Path("view/web_interface.html")
+    
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="Interface file not found in 'view' folder")
+        
+    with open(html_path, "r", encoding="utf-8") as f:
+        return f.read()
+        
 # @app.get("/api/download-pdf/{job_id}/{lc_number}")
 # async def download_consolidated_pdf(job_id: str, lc_number: str):
 #     """
