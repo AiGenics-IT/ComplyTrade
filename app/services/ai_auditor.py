@@ -72,59 +72,58 @@ class OfflineLCAuditor:
 
     #     self.model.eval()
 
-    def __init__(self, model_name=None, model_root=None):
-        # 1. Resolve Model Name: .env first, then argument, then hardcoded default
+   def __init__(self, model_name=None, model_root=None):
+        # 1. Resolve Model Name (Primary config)
         self.model_name = os.getenv("MODEL_NAME", model_name or "google/flan-t5-large")
         
-        # 2. Conditional Path Logic: 
-        # It will be a Path object ONLY if MODEL_PATH is set in .env or passed as model_root
+        # 2. Resolve Model Path (Conditional)
         env_root = os.getenv("MODEL_PATH", model_root)
-        self.model_root = Path(env_root) if env_root else None
+        # We check if env_root is a non-empty string
+        self.model_root = Path(env_root) if env_root and str(env_root).strip() else None
 
-        # Device detection
+        # Device detection for your 2x 5090s
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
             self.dtype = torch.float16
-            print(f"[LCAuditor] GPU: {torch.cuda.get_device_name(0)}")
+            print(f"[LCAuditor] Dual GPU Setup: {torch.cuda.device_count()} cards found.")
         else:
             self.device = torch.device("cpu")
             self.dtype = torch.float32
-            print("[LCAuditor] CPU Mode")
+            print("[LCAuditor] Warning: Using CPU Mode")
 
-        # 3. Load Tokenizer (cache_dir is None if no path provided)
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name, 
-            cache_dir=self.model_root,
-            trust_remote_code=True
-        )
+        # 3. Create common loading kwargs
+        # This is the "Magic" part: if self.model_root is None, cache_dir is removed
+        loader_kwargs = {
+            "trust_remote_code": True
+        }
+        if self.model_root:
+            loader_kwargs["cache_dir"] = str(self.model_root)
 
-        # 4. Architecture Detection & Loading
-        config = AutoConfig.from_pretrained(self.model_name, cache_dir=self.model_root)
+        # 4. Load Tokenizer & Config
+        print(f"[LCAuditor] Fetching: {self.model_name}...")
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, **loader_kwargs)
+        config = AutoConfig.from_pretrained(self.model_name, **loader_kwargs)
 
+        # 5. Architecture-Specific Loading
         if config.is_encoder_decoder:
-            # --- Architecture: Seq2Seq (e.g., Google Flan) ---
-            print(f"[LCAuditor] Loading Seq2Seq model: {self.model_name}")
+            print(f"[LCAuditor] Architecture: Seq2Seq (Flan-T5)")
             self.model = AutoModelForSeq2SeqLM.from_pretrained(
                 self.model_name,
-                cache_dir=self.model_root,
-                torch_dtype=self.dtype
+                torch_dtype=self.dtype,
+                **loader_kwargs
             ).to(self.device)
         else:
-            # --- Architecture: Causal (e.g., Qwen, Llama) ---
-            print(f"[LCAuditor] Loading Causal model: {self.model_name}")
+            print(f"[LCAuditor] Architecture: Causal (Qwen/Llama)")
+            # Using device_map="auto" is vital for the 72B model on 2x 5090s
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
-                cache_dir=self.model_root,
                 torch_dtype=self.dtype,
-                device_map="auto",  # Shards across both 5090s if it's a large model
-                trust_remote_code=True
+                device_map="auto", 
+                **loader_kwargs
             )
 
         self.model.eval()
-        
-        # Status Printout
-        location = self.model_root if self.model_root else "Default HF Cache"
-        print(f"[LCAuditor] {self.model_name} initialized from: {location}")
+        print(f"[LCAuditor] {self.model_name} ready (Auto-downloading to default cache if no path provided).")
         
     def _prepare_inputs(self, prompt: str, max_length: int = 1024):
         """

@@ -219,6 +219,9 @@ def process_pdf_with_multiple_documents(pdf_path: str, output_path: str = None) 
     """
     from services.OCR.document_processor import DocumentProcessor
     from services.lc_extractor import LCExtractor, LCConsolidator
+
+    from services.Extractor.lc_consolidator import LCConsolidator
+
     
     print(f"\n{'='*80}")
     print(f"PROCESSING MULTI-DOCUMENT PDF")
