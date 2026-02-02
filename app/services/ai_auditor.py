@@ -75,7 +75,7 @@ class OfflineLCAuditor:
     def __init__(self, model_name=None, model_root=None):
         # 1. Resolve Model Name
         self.model_name = os.getenv("MODEL_NAME", model_name or "google/flan-t5-large")
-        
+        print(f"[LCAuditor] Resolved model path: {self.model_name}")
         # 2. Resolve Model Path strictly (Conditional)
         # We only create a Path object if the env/arg is NOT empty
         env_root = os.getenv("MODEL_PATH", model_root)
