@@ -99,7 +99,7 @@ class OfflineLCAuditor:
             loader_args["use_auth_token"] = hf_token
         if self.model_root:
             loader_args["cache_dir"] = str(self.model_root)
-            
+
         if self.model_root:
             # cache_dir is only for downloading; for local models HF automatically uses folder
             loader_args["cache_dir"] = str(self.model_root)
@@ -161,7 +161,6 @@ class OfflineLCAuditor:
         self.model.eval()
         print("[LCAuditor] Model loaded successfully")
 
-    
     def _prepare_inputs(self, prompt: str, max_length: int = 1024):
         """
         Tokenize inputs and move tensors to the correct device.
