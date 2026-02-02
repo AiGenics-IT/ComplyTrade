@@ -93,10 +93,20 @@ class OfflineLCAuditor:
 
         # 4️⃣ Build loader args
         # loader_args = {"trust_remote_code": True}
+        # loader_args = {"trust_remote_code": True, "revision": "main"}
+        # hf_token = os.getenv("HF_TOKEN")
+        # hf_token = os.getenv("HF_TOKEN")
+        # if hf_token:
+        #     loader_args["use_auth_token"] = hf_token
+        # if self.model_root:
+        #     loader_args["cache_dir"] = str(self.model_root)
         loader_args = {"trust_remote_code": True, "revision": "main"}
+
+        # Set HF token in environment instead of passing use_auth_token
         hf_token = os.getenv("HF_TOKEN")
         if hf_token:
-            loader_args["use_auth_token"] = hf_token
+            os.environ["HF_TOKEN"] = hf_token
+
         if self.model_root:
             loader_args["cache_dir"] = str(self.model_root)
 
