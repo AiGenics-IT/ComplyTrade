@@ -98,8 +98,6 @@ class EnhancedOCRProcessor:
                 print("⚠ PaddleOCR not available")
                 self.ocr_engine = None
         elif self.backend.lower() == 'paddlevl':
-            import os
-            import torch
             from ppocr.modeling.architectures import build_model
             from ppocr.postprocess import build_post_process
             from ppocr.data import build_dataloader, build_dataset
