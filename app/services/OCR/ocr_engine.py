@@ -86,7 +86,7 @@ class EnhancedOCRProcessor:
                 # Map Tesseract codes to PaddleOCR if needed
                 TESSERACT_TO_PADDLE_LANG = {
                     'eng': 'en',
-                    'fra': 'en',  # PaddleOCR may need 'en' for Latin languages
+                    'fra': 'en',
                     'deu': 'en',
                     'spa': 'en',
                     'ita': 'en',
