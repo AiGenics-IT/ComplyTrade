@@ -8,8 +8,11 @@ from PIL import Image
 from typing import Optional
 import os
 import paddleocr
+from .QwenLocalOCR import QwenLocalOCR  
 print(paddleocr.__version__,'PaddleOCR version loaded')
 
+
+print(QwenLocalOCR ,'QwenLocalOCR version loaded')
 
 try:
     from transformers import pipeline
@@ -142,7 +145,7 @@ class EnhancedOCRProcessor:
                     self.ocr_engine = None
                 else:
                     try:
-                        from qwen_ocr import QwenLocalOCR  # Your local Qwen class
+
                         self.ocr_engine = QwenLocalOCR(model_path=model_path)
                         print(f"[OCR] QwenLocalOCR initialized with model at {model_path}")
                     except Exception as e:
