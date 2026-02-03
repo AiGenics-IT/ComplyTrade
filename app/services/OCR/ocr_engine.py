@@ -6,12 +6,25 @@ No Unix signals - pure exception handling
 import numpy as np
 from PIL import Image
 from typing import Optional
+import os
+import paddleocr
+print(paddleocr.__version__,'PaddleOCR version loaded')
 
+
+try:
+    from transformers import pipeline
+    import torch
+    HF_VL_AVAILABLE = True
+except ImportError:
+    HF_VL_AVAILABLE = False
+# HF_TOKEN = os.getenv("HF_TOKEN")
+# MODEL_PATH = os.getenv("MODEL_PATH")
 
 class EnhancedOCRProcessor:
     """OCR processor optimized for Windows"""
     
     def __init__(self, backend='tesseract', language='eng', use_preprocessing=True, use_postprocessing=True):
+        self.backend = backend.lower().replace("-", "").replace("_", "")
         self.backend = backend
         self.language = language
         self.use_preprocessing = use_preprocessing
@@ -79,12 +92,64 @@ class EnhancedOCRProcessor:
                     'ita': 'en',
                 }
                 paddle_lang = TESSERACT_TO_PADDLE_LANG.get(self.language, 'en')
-                self.ocr_engine = PaddleOCR(use_angle_cls=True, lang=paddle_lang)
+                self.ocr_engine = PaddleOCR(use_angle_cls=True, use_gpu=True, lang=paddle_lang)
                 print(f"✓ PaddleOCR initialized with language '{paddle_lang}'")
             except ImportError:
                 print("⚠ PaddleOCR not available")
                 self.ocr_engine = None
+        elif self.backend.lower() == 'paddlevl':
+            import os
+            import torch
+            from ppocr.modeling.architectures import build_model
+            from ppocr.postprocess import build_post_process
+            from ppocr.data import build_dataloader, build_dataset
+            from ppocr.utils.save_load import load_model
 
+            model_dir = os.getenv("MODEL_PATH")
+            if not model_dir:
+                raise RuntimeError("MODEL_PATH not set")
+            
+            model_cache_dir = os.path.join(model_dir, "PaddleOCR-VL")
+            if not os.path.exists(model_cache_dir):
+                raise RuntimeError(f"PaddleOCR-VL folder not found in {model_dir}")
+
+            print(f"[OCR] Using local PaddleOCR-VL model: {model_cache_dir}")
+
+            # 1️⃣ Load config
+            import json
+            config_path = os.path.join(model_cache_dir, "config.json")
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+
+            # 2️⃣ Build model manually
+            self.vl_pipeline = build_model(config)
+            
+            # 3️⃣ Load weights
+            model_path = os.path.join(model_cache_dir, "model.safetensors")
+            load_model(self.vl_pipeline, model_path)
+            
+            self.vl_pipeline.eval()
+            print("[OCR] PaddleOCR-VL loaded locally without Hugging Face pipeline")
+
+        elif self.backend.lower() == "qwenlocal":
+            # Get MODEL_PATH from environment
+            base_model_dir = os.getenv("MODEL_PATH")
+            if not base_model_dir:
+                print("⚠ MODEL_PATH environment variable not set")
+                self.ocr_engine = None
+            else:
+                model_path = os.path.join(base_model_dir, "models--QuixiAI--Qwen3-72B-Embiggened")
+                if not os.path.exists(model_path):
+                    print(f"⚠ Qwen model folder not found: {model_path}")
+                    self.ocr_engine = None
+                else:
+                    try:
+                        from qwen_ocr import QwenLocalOCR  # Your local Qwen class
+                        self.ocr_engine = QwenLocalOCR(model_path=model_path)
+                        print(f"[OCR] QwenLocalOCR initialized with model at {model_path}")
+                    except Exception as e:
+                        print(f"⚠ Failed to initialize QwenLocalOCR: {e}")
+                        self.ocr_engine = None
         else:
             raise ValueError(f"Unsupported backend: {self.backend}")
 
@@ -131,6 +196,8 @@ class EnhancedOCRProcessor:
                     text = self._easyocr_extract(img)
                 elif self.backend == 'paddleocr':
                     text = self._paddleocr_extract(img)
+                elif self.backend == 'paddlevl':
+                    text = self._paddlevl_extract(img)
                 else:
                     text = ""
                 
@@ -224,3 +291,11 @@ class EnhancedOCRProcessor:
                     text_lines.append(line[1][0])
         
         return '\n'.join(text_lines)
+    
+    def _paddlevl_extract(self, img: Image.Image) -> str:
+        if not self.vl_pipeline:
+            return ""
+        
+        prompt = [{"role": "user", "content": [{"type": "image", "image": img}, {"type": "text", "text": "OCR:"}]}]
+        output = self.vl_pipeline(text=prompt)[0]["generated_text"]
+        return output

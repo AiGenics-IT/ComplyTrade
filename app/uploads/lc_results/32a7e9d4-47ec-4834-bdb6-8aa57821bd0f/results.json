@@ -1,0 +1,11 @@
+{
+  "job_id": "32a7e9d4-47ec-4834-bdb6-8aa57821bd0f",
+  "processing_date": "2026-02-03T14:58:11.137155",
+  "files_processed": 0,
+  "lcs_found": 0,
+  "amendments_found": 0,
+  "consolidated_lcs": [],
+  "errors": [
+    "Error processing noisy.jpg: OCR backend 'paddlevl' not available"
+  ]
+}

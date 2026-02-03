@@ -21,6 +21,7 @@ import shutil
 # from lc_extractor import LCExtractor, LCConsolidator
 # from services.lc_ocr import DocumentProcessor
 from services.OCR.document_processor import DocumentProcessor
+from services.OCR.ai_hybrid_layer import create_hybrid_processor
 from services.Extractor.lc_extractor import LCExtractor
 from services.Extractor.lc_consolidator import LCConsolidator
 # from StandAloneSystem.pdfGenerator import LCPDFGenerator
@@ -118,6 +119,8 @@ def process_lc_job(job_id: str, file_paths: List[Path], ocr_backend: str = "tess
         
         # Initialize processors
         doc_processor = DocumentProcessor(ocr_backend=ocr_backend)
+        ai_processor = create_hybrid_processor(doc_processor)
+
         lc_extractor = LCExtractor()
         consolidator = LCConsolidator()
         

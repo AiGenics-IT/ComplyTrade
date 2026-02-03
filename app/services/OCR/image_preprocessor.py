@@ -42,6 +42,7 @@ class ImagePreprocessor:
             
             # Detect quality with more aggressive thresholds
             quality = self._detect_quality(img_gray)
+            # quality = 'VERY_POOR'  # Force very poor for testing
             print(f"  → Detected quality: {quality}")
             
             # Force aggressive for very poor images
