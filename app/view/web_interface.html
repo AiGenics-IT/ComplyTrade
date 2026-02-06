@@ -385,7 +385,8 @@
                         <option value="tesseract" selected>Tesseract (Fast, Default)</option>
                         <option value="easyocr">EasyOCR (High Accuracy)</option>
                         <option value="paddleocr">PaddleOCR (Multi-language)</option>
-                        <option value="olmocr">olmOCR-2 (Qwen2-VL)</option>
+                        <!-- <option value="olmocr">olmOCR-2 (Qwen2-VL)</option> -->
+                        <option value="api">GOT OCR</option>
                         
                     </select>
                 </div>
@@ -562,7 +563,7 @@
             document.getElementById('results').innerHTML = '';
 
             try {
-                const response = await fetch(`${API_BASE}/api/upload?ocr_backend=${ocrBackend}&force_ocr=${forceOcr}`, {
+                const response = await fetch(`${API_BASE}/api/upload?ocr_backend=${ocrBackend}&force_ocr=${forceOcr}&use_api=True`, {
                     method: 'POST',
                     body: formData
                 });

@@ -5,56 +5,62 @@ No Unix signals - pure exception handling
 
 import numpy as np
 from PIL import Image
+from pathlib import Path
+import requests
 from typing import Optional
-from .olm_ocr_processor import OlmOCRProcessor 
-                
+
+
 class EnhancedOCRProcessor:
-    """OCR processor optimized for Windows"""
-    
-    def __init__(self, backend='tesseract', language='eng', use_preprocessing=True, use_postprocessing=True):
+    """OCR processor optimized for Windows, supports local backends and OCR API"""
+
+    # Set your OCR API URL here
+    OCR_API_URL: str = "http://10.20.10.2:8082/ocr/"
+
+    def __init__(self, backend='tesseract', language='eng', use_preprocessing=True,
+                 use_postprocessing=True, use_api=True):
         self.backend = backend
         self.language = language
         self.use_preprocessing = use_preprocessing
         self.use_postprocessing = use_postprocessing
+        self.use_api = use_api
         self.ocr_engine = None
-        
-        # Import preprocessor and postprocessor
+
+        print(f"[OCR Engine] Initializing with use_api={self.use_api}")
+
+        # Import preprocessor
         try:
             from services.OCR.image_preprocessor import ImagePreprocessor
             self.preprocessor = ImagePreprocessor()
         except ImportError:
-            from .image_preprocessor import ImagePreprocessor
-            self.preprocessor = ImagePreprocessor()
-        
+            try:
+                from .image_preprocessor import ImagePreprocessor
+                self.preprocessor = ImagePreprocessor()
+            except ImportError:
+                self.preprocessor = None
+                print("⚠ ImagePreprocessor not available")
+
+        # Import postprocessor
         try:
             from services.ai_postProcessor import AIOCRPostProcessor
             self.postprocessor = AIOCRPostProcessor()
         except ImportError:
             self.postprocessor = None
-        
-        self._initialize_backend()
-    
+            print("⚠ AIOCRPostProcessor not available")
+
+        # Only initialize backend if NOT using API
+        if not self.use_api:
+            print("[OCR Engine] Initializing local backend...")
+            self._initialize_backend()
+        else:
+            print("[OCR Engine] Skipping local backend initialization - using API")
+
     def _initialize_backend(self):
         """Initialize OCR backend (Tesseract, EasyOCR, or PaddleOCR)"""
-        # Mapping Tesseract codes to EasyOCR codes
         TESSERACT_TO_EASYOCR_LANG = {
-            'eng': 'en',
-            'fra': 'fr',
-            'deu': 'de',
-            'spa': 'es',
-            'ita': 'it',
-            # add more as needed
+            'eng': 'en', 'fra': 'fr', 'deu': 'de', 'spa': 'es', 'ita': 'it'
         }
 
-        if self.backend == 'olmocr':
-            try:
-                # We import our specialized class from the previous step
-                self.ocr_engine = OlmOCRProcessor()
-                print("✓ olmOCR-2 (Qwen2-VL) backend initialized")
-            except Exception as e:
-                print(f"⚠ olmOCR-2 failed to load: {e}")
-                self.ocr_engine = None
-        elif self.backend.lower() == 'tesseract':
+        if self.backend.lower() == 'tesseract':
             try:
                 import pytesseract
                 self.ocr_engine = pytesseract
@@ -66,7 +72,6 @@ class EnhancedOCRProcessor:
         elif self.backend.lower() == 'easyocr':
             try:
                 import easyocr
-                # Convert Tesseract code to EasyOCR code if needed
                 eo_lang = TESSERACT_TO_EASYOCR_LANG.get(self.language, self.language)
                 self.ocr_engine = easyocr.Reader([eo_lang], gpu=False)
                 print(f"✓ EasyOCR initialized with language '{eo_lang}'")
@@ -77,14 +82,8 @@ class EnhancedOCRProcessor:
         elif self.backend.lower() == 'paddleocr':
             try:
                 from paddleocr import PaddleOCR
-                # PaddleOCR uses 'en', 'ch', 'japan', etc.
-                # Map Tesseract codes to PaddleOCR if needed
                 TESSERACT_TO_PADDLE_LANG = {
-                    'eng': 'en',
-                    'fra': 'en',  # PaddleOCR may need 'en' for Latin languages
-                    'deu': 'en',
-                    'spa': 'en',
-                    'ita': 'en',
+                    'eng': 'en', 'fra': 'en', 'deu': 'en', 'spa': 'en', 'ita': 'en'
                 }
                 paddle_lang = TESSERACT_TO_PADDLE_LANG.get(self.language, 'en')
                 self.ocr_engine = PaddleOCR(use_angle_cls=True, lang=paddle_lang)
@@ -96,28 +95,35 @@ class EnhancedOCRProcessor:
         else:
             raise ValueError(f"Unsupported backend: {self.backend}")
 
-    
-    def extract_text_from_image(self, image_path: str, aggressive_preprocessing: bool = False, 
-                               aggressive_postprocessing: bool = False) -> str:
+    def extract_text_from_image(self, image_path: str, aggressive_preprocessing: bool = False,
+                                aggressive_postprocessing: bool = False) -> str:
         """
-        Extract text from image with robust error handling
+        Extract text from image with robust error handling.
+        If `use_api=True`, the OCR API is used instead of local backends.
         """
+        print(f"[OCR Engine] extract_text_from_image called with use_api={self.use_api}")
+        
+        # If API mode is enabled, use API regardless
+        if self.use_api:
+            print(f"[OCR Engine] Routing to API OCR")
+            return self._ocr_via_api(image_path)
+
+        # Local processing mode
+        print(f"[OCR Engine] Using local backend: {self.backend}")
+        
         if self.ocr_engine is None:
             raise RuntimeError(f"OCR backend '{self.backend}' not available")
-        
+
         try:
-            # Load image
             img = Image.open(image_path)
-            
             if img.mode != 'RGB':
                 img = img.convert('RGB')
-            
-            # Upscale
-            print(f"  → Upscaling image...")
-            img = self.preprocessor.upscale_image(img, target_dpi=300)
-            
-            # Preprocessing
-            if self.use_preprocessing:
+
+            if self.preprocessor:
+                print(f"  → Upscaling image...")
+                img = self.preprocessor.upscale_image(img, target_dpi=300)
+
+            if self.use_preprocessing and self.preprocessor:
                 try:
                     print(f"  → Preprocessing image...")
                     img = self.preprocessor.preprocess_for_ocr(img, aggressive=aggressive_preprocessing)
@@ -128,11 +134,9 @@ class EnhancedOCRProcessor:
                         img = self.preprocessor.quick_preprocess(img)
                     except Exception:
                         print(f"  ⚠ Quick mode failed, using original")
-            
-            # Extract text
+
             try:
                 print(f"  → Extracting text with {self.backend}...")
-                
                 if self.backend == 'tesseract':
                     text = self._tesseract_extract(img)
                 elif self.backend == 'easyocr':
@@ -141,14 +145,12 @@ class EnhancedOCRProcessor:
                     text = self._paddleocr_extract(img)
                 else:
                     text = ""
-                
+
                 print(f"  ✓ Extracted {len(text)} characters")
-            
             except Exception as e:
                 print(f"  ⚠ OCR failed: {str(e)}, trying simple mode")
                 text = self._simple_extract(img)
-            
-            # Post-process
+
             if self.use_postprocessing and text and self.postprocessor:
                 try:
                     print(f"  → Post-processing...")
@@ -156,15 +158,14 @@ class EnhancedOCRProcessor:
                     print(f"  ✓ Post-processing complete")
                 except Exception as e:
                     print(f"  ⚠ Post-processing failed: {str(e)}")
-            
+
             return text
-            
+
         except Exception as e:
             print(f"Error extracting text: {str(e)}")
             return ""
-    
+
     def _simple_extract(self, img: Image.Image) -> str:
-        """Simple fast extraction"""
         try:
             if self.backend == 'tesseract':
                 import pytesseract
@@ -178,57 +179,74 @@ class EnhancedOCRProcessor:
         except Exception:
             pass
         return ""
-    
+
     def _tesseract_extract(self, img: Image.Image) -> str:
-        """Extract using Tesseract with multiple PSM modes"""
         import pytesseract
-        
-        # Try different page segmentation modes
-        psm_modes = [6, 3, 4]  # Reduced for speed
+        psm_modes = [6, 3, 4]
         best_text = ""
         best_confidence = 0
-        
+
         for psm in psm_modes:
             try:
                 config = f'--oem 3 --psm {psm}'
-                
-                # Get data for confidence
                 data = pytesseract.image_to_data(img, config=config, output_type=pytesseract.Output.DICT)
                 text = pytesseract.image_to_string(img, config=config)
-                
-                # Calculate confidence
                 confidences = [int(conf) for conf in data['conf'] if conf != '-1']
                 avg_confidence = sum(confidences) / len(confidences) if confidences else 0
-                
                 if avg_confidence > best_confidence:
                     best_confidence = avg_confidence
                     best_text = text
-                
-                # If we got good confidence, stop trying
                 if avg_confidence > 70:
                     break
-                    
             except Exception as e:
                 print(f"    ⚠ PSM {psm} failed: {str(e)}")
                 continue
-        
+
         return best_text if best_text else self._simple_extract(img)
-    
+
     def _easyocr_extract(self, img: Image.Image) -> str:
-        """Extract using EasyOCR"""
         img_array = np.array(img)
         results = self.ocr_engine.readtext(img_array, detail=0)
         return '\n'.join(results)
-    
+
     def _paddleocr_extract(self, img: Image.Image) -> str:
-        """Extract using PaddleOCR"""
         img_array = np.array(img)
         result = self.ocr_engine.ocr(img_array)
-        
         text_lines = []
         if result and result[0]:
             for line in result[0]:
                 if line:
                     text_lines.append(line[1][0])
-        
         return '\n'.join(text_lines)
+
+    def _ocr_via_api(self, file_path: str) -> str:
+        """
+        Send file to OCR API and return extracted text
+        """
+        try:
+            file_name = Path(file_path).name
+            print(f"  → Sending to OCR API: {file_name}")
+            
+            with open(file_path, "rb") as f:
+                response = requests.post(
+                    self.OCR_API_URL,
+                    files={"file": (file_name, f)},
+                    timeout=180
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                text = result.get("text", "")
+                
+                print(f"  ✓ OCR API returned {len(text)} characters for {file_name}")
+                return text
+                
+        except requests.exceptions.Timeout:
+            print(f"  ✗ OCR API timeout for {Path(file_path).name}")
+            return ""
+        except requests.exceptions.RequestException as e:
+            print(f"  ✗ OCR API request failed: {e}")
+            return ""
+        except Exception as e:
+            print(f"  ✗ OCR API error: {e}")
+            return ""

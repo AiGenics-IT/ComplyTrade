@@ -13,12 +13,20 @@ def normalize_lc_number(value: str) -> str:
     return re.sub(r'[^A-Z0-9]', '', value.upper())
 
 
+# def sanitize_text(text: str) -> str:
+#     """Removes non-mappable characters that break the console."""
+#     if not text:
+#         return ""
+#     # Only keep printable characters, tabs, and newlines
+#     return "".join(c for c in text if c.isprintable() or c in "\n\r\t")
+
 def sanitize_text(text: str) -> str:
     """Removes non-mappable characters that break the console."""
     if not text:
         return ""
     # Only keep printable characters, tabs, and newlines
     return "".join(c for c in text if c.isprintable() or c in "\n\r\t")
+
 
 
 def strip_ocr_labels(text: str) -> str:
