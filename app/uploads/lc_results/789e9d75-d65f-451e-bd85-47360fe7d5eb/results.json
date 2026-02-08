@@ -1,0 +1,27 @@
+{
+  "job_id": "789e9d75-d65f-451e-bd85-47360fe7d5eb",
+  "processing_date": "2026-02-08T18:14:55.757298",
+  "summary": {
+    "files_analyzed": 1,
+    "lcs_found": 0,
+    "amendments_found": 0,
+    "shipping_docs_found": 0,
+    "unidentified_found": 0,
+    "consolidated_lcs": 0
+  },
+  "counts": {
+    "lcs": 0,
+    "amendments": 0,
+    "shipping_docs": 0,
+    "unidentified": 0,
+    "consolidated_lcs": 0
+  },
+  "lcs": [],
+  "amendments": [],
+  "shipping_docs": [],
+  "unidentified": [],
+  "consolidated_lcs": [],
+  "errors": [
+    "LC Amendments Swift 4.1-combined.pdf: Unknown error"
+  ]
+}

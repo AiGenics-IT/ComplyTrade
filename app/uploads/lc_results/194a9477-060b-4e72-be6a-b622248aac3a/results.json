@@ -1,0 +1,136 @@
+{
+  "job_id": "194a9477-060b-4e72-be6a-b622248aac3a",
+  "processing_date": "2026-02-08T17:49:41.290797",
+  "summary": {
+    "files_analyzed": 1,
+    "lcs_found": 1,
+    "amendments_found": 4,
+    "shipping_docs_found": 1,
+    "unidentified_found": 1,
+    "consolidated_lcs": 1
+  },
+  "counts": {
+    "lcs": 1,
+    "amendments": 4,
+    "shipping_docs": 1,
+    "unidentified": 1,
+    "consolidated_lcs": 1
+  },
+  "lcs": [
+    {
+      "source_file": "LCTEE_merged.pdf",
+      "page_reference": "7-11",
+      "page_count": 5,
+      "document_type": "LC",
+      "category": "LC",
+      "lc_number": "ILC07860544623PK",
+      "issue_date": "230509",
+      "applicant": "Applicant PAKISTAN STATE OIL COMPANY LTD. P.S.O. HOUSE, KHAYABAN-E-IQBAL CLIFTON, P.O.BOX 3983 KARAC",
+      "beneficiary": "Beneficiary SAHARA ENERGY RESOURCE LTD 21-23 VICTORIA STREET, 2ND FLOOR, DOUGLAS, IM1 2LW, ISLE OF M",
+      "download_url": "/api/download/original/194a9477-060b-4e72-be6a-b622248aac3a/LCTEE_merged.pdf"
+    }
+  ],
+  "amendments": [
+    {
+      "source_file": "LCTEE_merged.pdf",
+      "page_reference": "2",
+      "page_count": 1,
+      "document_type": "AMENDMENT",
+      "category": "AMENDMENT",
+      "lc_number": "ILC07860544623PK",
+      "amendment_number": "01",
+      "amendment_date": "230519",
+      "download_url": "/api/download/original/194a9477-060b-4e72-be6a-b622248aac3a/LCTEE_merged.pdf"
+    },
+    {
+      "source_file": "LCTEE_merged.pdf",
+      "page_reference": "3-4",
+      "page_count": 2,
+      "document_type": "AMENDMENT",
+      "category": "AMENDMENT",
+      "lc_number": "ILC07860544623PK",
+      "amendment_number": "02",
+      "amendment_date": "230525",
+      "download_url": "/api/download/original/194a9477-060b-4e72-be6a-b622248aac3a/LCTEE_merged.pdf"
+    },
+    {
+      "source_file": "LCTEE_merged.pdf",
+      "page_reference": "5",
+      "page_count": 1,
+      "document_type": "AMENDMENT",
+      "category": "AMENDMENT",
+      "lc_number": "ILC07860544623PK",
+      "amendment_number": "03",
+      "amendment_date": "230529",
+      "download_url": "/api/download/original/194a9477-060b-4e72-be6a-b622248aac3a/LCTEE_merged.pdf"
+    },
+    {
+      "source_file": "LCTEE_merged.pdf",
+      "page_reference": "6",
+      "page_count": 1,
+      "document_type": "AMENDMENT",
+      "category": "AMENDMENT",
+      "lc_number": "ILC07860544623PK",
+      "amendment_number": "04",
+      "amendment_date": "230615",
+      "download_url": "/api/download/original/194a9477-060b-4e72-be6a-b622248aac3a/LCTEE_merged.pdf"
+    }
+  ],
+  "shipping_docs": [
+    {
+      "source_file": "LCTEE_merged.pdf",
+      "page_reference": "12",
+      "page_count": 1,
+      "document_type": "SHORE TANK MEASUREMENT",
+      "category": "SHIPPING",
+      "download_url": "/api/download/original/194a9477-060b-4e72-be6a-b622248aac3a/LCTEE_merged.pdf"
+    }
+  ],
+  "unidentified": [
+    {
+      "source_file": "LCTEE_merged.pdf",
+      "page_reference": "1",
+      "page_count": 1,
+      "document_type": "UNIDENTIFIED",
+      "category": "UNIDENTIFIED",
+      "download_url": "/api/download/original/194a9477-060b-4e72-be6a-b622248aac3a/LCTEE_merged.pdf"
+    }
+  ],
+  "consolidated_lcs": [
+    {
+      "lc_number": "ILC07860544623PK",
+      "original_page_reference": "7-11",
+      "issue_date": "230509",
+      "sender": "Available With... By... QNBAFRPPXXX QNBA FR PP XXX BY DEF PAYMENT",
+      "receiver": "Applicant PAKISTAN STATE OIL COMPANY LTD. P.S.O. HOUSE, KHAYABAN-E-IQBAL CLIFTON, P.O.BOX 3983 KARAC",
+      "amendments_applied": 4,
+      "last_amendment_date": "230615",
+      "conditions_count": 35,
+      "documents_count": 10,
+      "amendment_history": [
+        {
+          "amendment_number": "01",
+          "amendment_date": "230519",
+          "page_reference": "2"
+        },
+        {
+          "amendment_number": "02",
+          "amendment_date": "230525",
+          "page_reference": "3-4"
+        },
+        {
+          "amendment_number": "03",
+          "amendment_date": "230529",
+          "page_reference": "5"
+        },
+        {
+          "amendment_number": "04",
+          "amendment_date": "230615",
+          "page_reference": "6"
+        }
+      ],
+      "download_url": "/api/download/194a9477-060b-4e72-be6a-b622248aac3a/ILC07860544623PK"
+    }
+  ],
+  "errors": []
+}

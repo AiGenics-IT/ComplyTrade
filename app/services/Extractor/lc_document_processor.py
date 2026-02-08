@@ -9,7 +9,7 @@ from typing import List, Dict
 from dataclasses import asdict
 from pathlib import Path
 from .lc_extractor import LCExtractor
-from .lc_consolidator import LCConsolidator
+from .lc_consolidator import LCConsolidatorGOT
 from services.ai_auditor import OfflineLCAuditor
 
 
@@ -21,7 +21,7 @@ def process_lc_documents(file_paths: List[str], output_path: str = None) -> Dict
     3. AI Audit of consolidated clauses against supporting docs
     """
     extractor = LCExtractor()
-    consolidator = LCConsolidator()
+    consolidator = LCConsolidatorGOT()
     
     # Text accumulator to give the AI context from Invoices/BLs
     all_supporting_text = ""

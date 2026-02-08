@@ -9,7 +9,7 @@ Modular architecture for better maintainability and testing.
 """
 
 from .lc_extractor import LCExtractor
-from .lc_consolidator import LCConsolidator
+from .lc_consolidator import LCConsolidatorGOT
 from .lc_document_processor import process_lc_documents
 from .models import LCDocument, LCField
 
@@ -21,7 +21,7 @@ from .constants import (
 
 __all__ = [
     'LCExtractor',
-    'LCConsolidator',
+    'LCConsolidatorGOT',
     'process_lc_documents',
     'LCDocument',
     'LCField',

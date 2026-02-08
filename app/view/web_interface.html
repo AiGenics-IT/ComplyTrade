@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LC Processing System</title>
+    <title>LC Processing System - GOT-OCR Powered</title>
     <style>
         * {
             margin: 0;
@@ -20,7 +20,7 @@
         }
 
         .container {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
         }
 
@@ -39,6 +39,15 @@
         .header p {
             font-size: 1.2em;
             opacity: 0.9;
+        }
+
+        .badge {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.2);
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            margin-top: 10px;
         }
 
         .main-card {
@@ -146,42 +155,6 @@
             background: #e04b5f;
         }
 
-        .options {
-            margin-top: 30px;
-            padding: 20px;
-            background: #f8f9ff;
-            border-radius: 10px;
-        }
-
-        .option-group {
-            margin-bottom: 20px;
-        }
-
-        .option-group label {
-            display: block;
-            margin-bottom: 8px;
-            color: #333;
-            font-weight: 500;
-        }
-
-        .option-group select,
-        .option-group input[type="checkbox"] {
-            padding: 10px;
-            border: 2px solid #e0e0e0;
-            border-radius: 5px;
-            font-size: 1em;
-        }
-
-        .option-group select {
-            width: 100%;
-        }
-
-        .checkbox-label {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
         .status-card {
             background: white;
             border-radius: 20px;
@@ -248,44 +221,146 @@
             margin-top: 30px;
         }
 
-        .result-item {
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .summary-card {
+            background: #f8f9ff;
+            padding: 25px;
+            border-radius: 15px;
+            text-align: center;
+            border-left: 4px solid #667eea;
+        }
+
+        .summary-card.lcs { border-left-color: #667eea; }
+        .summary-card.amendments { border-left-color: #f093fb; }
+        .summary-card.shipping { border-left-color: #20c997; }
+        .summary-card.unidentified { border-left-color: #ffc107; }
+
+        .summary-number {
+            font-size: 3em;
+            font-weight: bold;
+            color: #667eea;
+            margin: 10px 0;
+        }
+
+        .summary-label {
+            color: #666;
+            font-size: 1.1em;
+        }
+
+        .documents-section {
+            margin: 40px 0;
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        .section-title {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .section-count {
+            background: #667eea;
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+        }
+
+        .doc-card {
             background: #f8f9ff;
             padding: 20px;
             border-radius: 10px;
             margin-bottom: 15px;
             border-left: 4px solid #667eea;
+            transition: all 0.2s;
         }
 
-        .result-header {
+        .doc-card:hover {
+            transform: translateX(5px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .doc-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+
+        .doc-title {
             font-size: 1.2em;
             font-weight: 600;
             color: #333;
-            margin-bottom: 10px;
         }
 
-        .result-details {
+        .doc-badge {
+            background: #e0e7ff;
+            color: #667eea;
+            padding: 5px 12px;
+            border-radius: 15px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+
+        .doc-details {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 15px;
             margin-top: 15px;
         }
 
-        .result-detail {
+        .doc-detail {
             background: white;
-            padding: 15px;
+            padding: 12px;
             border-radius: 8px;
         }
 
-        .result-label {
+        .doc-detail-label {
             color: #666;
-            font-size: 0.9em;
+            font-size: 0.85em;
             margin-bottom: 5px;
         }
 
-        .result-value {
+        .doc-detail-value {
             color: #333;
             font-weight: 600;
-            font-size: 1.1em;
+        }
+
+        .lc-card {
+            background: white;
+            border: 2px solid #667eea;
+            padding: 25px;
+            border-radius: 15px;
+            margin-bottom: 20px;
+        }
+
+        .lc-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        .lc-number {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #667eea;
         }
 
         .download-btn {
@@ -293,15 +368,50 @@
             color: white;
             padding: 10px 20px;
             border: none;
-            border-radius: 5px;
+            border-radius: 8px;
             cursor: pointer;
             text-decoration: none;
             display: inline-block;
-            margin-top: 10px;
+            margin: 5px;
+            transition: all 0.2s;
+            font-size: 0.95em;
         }
 
         .download-btn:hover {
-            background: #218838;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .download-btn.view { background: #17a2b8; }
+        .download-btn.checklist { background: #20c997; }
+        .download-btn.json { background: #667eea; }
+
+        .amendment-list {
+            margin-top: 20px;
+        }
+
+        .amendment-item {
+            background: #fff8f0;
+            padding: 15px;
+            border-left: 3px solid #f093fb;
+            border-radius: 8px;
+            margin-bottom: 10px;
+        }
+
+        .amendment-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .amendment-badge {
+            background: #f093fb;
+            color: white;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: bold;
         }
 
         .spinner {
@@ -353,6 +463,31 @@
         .info-box li {
             margin: 5px 0;
         }
+
+        .collapsible {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .collapsible::before {
+            content: '▼ ';
+            display: inline-block;
+            transition: transform 0.2s;
+        }
+
+        .collapsible.collapsed::before {
+            transform: rotate(-90deg);
+        }
+
+        .collapsible-content {
+            max-height: 1000px;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+        }
+
+        .collapsible-content.collapsed {
+            max-height: 0;
+        }
     </style>
 </head>
 
@@ -360,14 +495,15 @@
     <div class="container">
         <div class="header">
             <h1>📄 LC Processing System</h1>
-            <p>Upload Letter of Credit documents and amendments for automatic processing</p>
+            <p>GOT-OCR Powered Document Analysis & Consolidation</p>
+            <span class="badge">🚀 v2.0 - Enhanced with Full Amendment Tracking</span>
         </div>
 
         <div class="main-card">
             <div class="upload-section" id="uploadSection">
                 <div class="upload-icon">📤</div>
                 <h2>Drop LC Documents Here</h2>
-                <p style="margin: 20px 0; color: #666;">or click to select files</p>
+                <p style="margin: 20px 0; color: #666;">Supports PDFs, Images, and multi-file uploads</p>
                 <input type="file" id="fileInput" class="file-input" multiple accept=".pdf,.jpg,.jpeg,.png,.txt">
                 <button class="btn" onclick="document.getElementById('fileInput').click()">
                     Select Files
@@ -376,32 +512,9 @@
 
             <div class="file-list" id="fileList"></div>
 
-            <div class="options">
-                <h3 style="margin-bottom: 20px;">Processing Options</h3>
-
-                <div class="option-group">
-                    <label for="ocrBackend">OCR Engine:</label>
-                    <select id="ocrBackend">
-                        <option value="tesseract" selected>Tesseract (Fast, Default)</option>
-                        <option value="easyocr">EasyOCR (High Accuracy)</option>
-                        <option value="paddleocr">PaddleOCR (Multi-language)</option>
-                        <!-- <option value="olmocr">olmOCR-2 (Qwen2-VL)</option> -->
-                        <option value="api">GOT OCR</option>
-                        
-                    </select>
-                </div>
-
-                <div class="option-group">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="forceOcr">
-                        Force OCR (even for digital PDFs)
-                    </label>
-                </div>
-            </div>
-
             <div style="text-align: center; margin-top: 30px;">
                 <button class="btn" id="processBtn" onclick="processDocuments()" disabled>
-                    Process Documents
+                    🚀 Process with GOT-OCR
                 </button>
                 <button class="btn btn-secondary" onclick="clearAll()">
                     Clear All
@@ -429,32 +542,20 @@
         <div class="info-box">
             <h3>ℹ️ How It Works</h3>
             <ul>
-                <li>Upload your original LC documents (MT700 format)</li>
-                <li>Upload any amendments (MT707 format)</li>
-                <li>The system automatically identifies LCs and amendments</li>
-                <li>All amendments are consolidated into the original LC</li>
-                <li>Download the final consolidated JSON files</li>
+                <li><strong>Upload Documents:</strong> Original LCs (MT700), Amendments (MT707), Shipping docs</li>
+                <li><strong>Automatic Classification:</strong> System identifies document types and page boundaries</li>
+                <li><strong>Smart Consolidation:</strong> Amendments automatically merged with base LCs</li>
+                <li><strong>Detailed Tracking:</strong> Complete amendment history with all changes documented</li>
+                <li><strong>Multiple Outputs:</strong> View, download, or verify through interactive checklist</li>
             </ul>
         </div>
     </div>
 
     <script>
-        // const API_BASE = 'http://localhost:8000';
         const API_BASE = window.location.origin;
         let selectedFiles = [];
         let currentJobId = null;
         let statusCheckInterval = null;
-
-        // --- NEW REDIRECTION FUNCTION ---
-        //     function goToChecklist(lcNumber) {
-        //     // We pass the LC number as a query parameter
-        //     window.location.href = `checklist.html?lc=${currentJobId}`;
-        // }
-
-     function goToChecklist(lcNumber) {
-    const url = `checklist.html?lc=${lcNumber}&job_id=${currentJobId}`;
-    window.open(url, '_blank');
-}
 
         // File input handling
         const fileInput = document.getElementById('fileInput');
@@ -551,19 +652,16 @@
                 formData.append('files', file);
             });
 
-            const ocrBackend = document.getElementById('ocrBackend').value;
-            const forceOcr = document.getElementById('forceOcr').checked;
-
             processBtn.disabled = true;
             document.getElementById('statusCard').classList.add('active');
             document.getElementById('statusBadge').className = 'status-badge status-pending';
             document.getElementById('statusBadge').textContent = 'Uploading';
-            document.getElementById('statusMessage').textContent = 'Uploading files to server...';
+            document.getElementById('statusMessage').textContent = 'Uploading files to GOT-OCR server...';
             document.getElementById('spinner').style.display = 'block';
             document.getElementById('results').innerHTML = '';
 
             try {
-                const response = await fetch(`${API_BASE}/api/upload?ocr_backend=${ocrBackend}&force_ocr=${forceOcr}&use_api=True`, {
+                const response = await fetch(`${API_BASE}/api/upload`, {
                     method: 'POST',
                     body: formData
                 });
@@ -575,7 +673,7 @@
                 const data = await response.json();
                 currentJobId = data.job_id;
 
-                document.getElementById('statusMessage').textContent = 'Files uploaded. Processing...';
+                document.getElementById('statusMessage').textContent = 'Files uploaded. Processing with GOT-OCR...';
 
                 // Start checking status
                 statusCheckInterval = setInterval(checkStatus, 2000);
@@ -644,75 +742,124 @@
         function displayResults(results) {
             const resultsDiv = document.getElementById('results');
 
-            let html = '<h3 style="margin-bottom: 20px;">✅ Processing Complete</h3>';
+            let html = '<h3 style="margin-bottom: 30px; font-size: 2em;">✅ Processing Complete</h3>';
 
+            // Summary Grid
+            html += '<div class="summary-grid">';
             html += `
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 30px;">
-                    <div class="result-detail">
-                        <div class="result-label">Files Processed</div>
-                        <div class="result-value">${results.files_processed}</div>
-                    </div>
-                    <div class="result-detail">
-                        <div class="result-label">LCs Found</div>
-                        <div class="result-value">${results.lcs_found}</div>
-                    </div>
-                    <div class="result-detail">
-                        <div class="result-label">Amendments Found</div>
-                        <div class="result-value">${results.amendments_found}</div>
-                    </div>
+                <div class="summary-card lcs">
+                    <div class="summary-label">LCs Found</div>
+                    <div class="summary-number">${results.counts.lcs || 0}</div>
+                </div>
+                <div class="summary-card amendments">
+                    <div class="summary-label">Amendments</div>
+                    <div class="summary-number">${results.counts.amendments || 0}</div>
+                </div>
+                <div class="summary-card shipping">
+                    <div class="summary-label">Shipping Docs</div>
+                    <div class="summary-number">${results.counts.shipping_docs || 0}</div>
+                </div>
+                <div class="summary-card unidentified">
+                    <div class="summary-label">Unidentified</div>
+                    <div class="summary-number">${results.counts.unidentified || 0}</div>
                 </div>
             `;
+            html += '</div>';
 
+            // Consolidated LCs
             if (results.consolidated_lcs && results.consolidated_lcs.length > 0) {
-                html += '<h3 style="margin-bottom: 15px;">Consolidated LCs</h3>';
-                                                // <a href="${pdfUrl}" class="download-btn" style="background:#dc3545" download>
-                                //     📄 Download PDF
-                                // </a>
+                html += '<div class="documents-section">';
+                html += '<div class="section-header">';
+                html += '<div class="section-title">📋 Consolidated LCs</div>';
+                html += `<div class="section-count">${results.consolidated_lcs.length}</div>`;
+                html += '</div>';
+
                 results.consolidated_lcs.forEach(lc => {
-                    const jobId = results.job_id || currentJobId; 
-                   const pdfUrl = `${API_BASE}/api/download-pdf/${jobId}/${lc.lc_number}`;
                     html += `
-                        <div class="result-item">
-                            <div class="result-header">LC: ${lc.lc_number}</div>
-                            <div class="result-details">
-                                <div class="result-detail">
-                                    <div class="result-label">Issue Date</div>
-                                    <div class="result-value">${lc.original_issue_date || 'N/A'}</div>
+                        <div class="lc-card">
+                            <div class="lc-header">
+                                <div>
+                                    <div class="lc-number">${lc.lc_number}</div>
+                                    <div style="color: #666; margin-top: 5px;">Issue Date: ${lc.issue_date || 'N/A'} | Page: ${lc.original_page_reference}</div>
                                 </div>
-                                <div class="result-detail">
-                                    <div class="result-label">Amendments</div>
-                                    <div class="result-value">${lc.amendments_applied}</div>
-                                </div>
-                                <div class="result-detail">
-                                    <div class="result-label">Conditions</div>
-                                    <div class="result-value">${lc.additional_conditions.length}</div>
-                                </div>
-                                <div class="result-detail">
-                                    <div class="result-label">Documents Required</div>
-                                    <div class="result-value">${lc.documents_required.length}</div>
+                                <div style="text-align: right;">
+                                    <div style="font-size: 2em; color: #667eea;">${lc.amendments_applied}</div>
+                                    <div style="color: #666; font-size: 0.9em;">Amendments</div>
                                 </div>
                             </div>
-                            <div style="display:flex; gap:10px; margin-top:10px;">
-                                <a href="${API_BASE}${lc.download_url}" class="download-btn" download>
+                            
+                            <div class="doc-details">
+                                <div class="doc-detail">
+                                    <div class="doc-detail-label">Additional Conditions</div>
+                                    <div class="doc-detail-value">${lc.conditions_count} clauses</div>
+                                </div>
+                                <div class="doc-detail">
+                                    <div class="doc-detail-label">Documents Required</div>
+                                    <div class="doc-detail-value">${lc.documents_count} items</div>
+                                </div>
+                                <div class="doc-detail">
+                                    <div class="doc-detail-label">Last Amendment</div>
+                                    <div class="doc-detail-value">${lc.last_amendment_date || 'N/A'}</div>
+                                </div>
+                            </div>
+
+                            ${lc.amendment_history && lc.amendment_history.length > 0 ? `
+                                <div class="amendment-list">
+                                    <h4 class="collapsible" onclick="toggleCollapse(this)" style="margin: 20px 0 15px 0; cursor: pointer;">
+                                        Amendment History (${lc.amendment_history.length})
+                                    </h4>
+                                    <div class="collapsible-content">
+                                        ${lc.amendment_history.map(amend => `
+                                            <div class="amendment-item">
+                                                <div class="amendment-header">
+                                                    <span class="amendment-badge">Amendment ${amend.amendment_number}</span>
+                                                    <span style="color: #666;">${amend.amendment_date} | Page: ${amend.page_reference}</span>
+                                                </div>
+                                                <div style="margin-top: 10px; font-size: 0.9em;">
+                                                    <div><strong>Conditions Changed:</strong> ${amend.changes.conditions.length}</div>
+                                                    <div><strong>Documents Changed:</strong> ${amend.changes.documents.length}</div>
+                                                </div>
+                                            </div>
+                                        `).join('')}
+                                    </div>
+                                </div>
+                            ` : ''}
+                            
+                            <div style="display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap;">
+                                <a href="${API_BASE}${lc.download_url}" class="download-btn json" download>
                                     📥 Download JSON
                                 </a>
-
-
-
-                                <button class="download-btn" style="background:#17a2b8"
-                                    onclick="viewJson('${API_BASE}${lc.download_url}')">
-                                    👁 View
+                                <button class="download-btn view" onclick="viewJson('${API_BASE}${lc.download_url}')">
+                                    👁 View Data
                                 </button>
-                                <button class="download-btn" style="background:#20c997" 
-                            onclick="goToChecklist('${lc.lc_number}')">
-                            📋 Go to Checklist
-                        </button>
-                    </div>
+                                <button class="download-btn checklist" onclick="goToChecklist('${lc.lc_number}')">
+                                    📋 Verification Checklist
+                                </button>
                             </div>
-
                         </div>
                     `;
                 });
+                html += '</div>';
+            }
+
+            // LCs Section
+            if (results.lcs && results.lcs.length > 0) {
+                html += renderDocumentSection('Original LCs', results.lcs, '📄', '#667eea');
+            }
+
+            // Amendments Section
+            if (results.amendments && results.amendments.length > 0) {
+                html += renderDocumentSection('Amendments', results.amendments, '📝', '#f093fb');
+            }
+
+            // Shipping Documents Section
+            if (results.shipping_docs && results.shipping_docs.length > 0) {
+                html += renderDocumentSection('Shipping Documents', results.shipping_docs, '📦', '#20c997');
+            }
+
+            // Unidentified Section
+            if (results.unidentified && results.unidentified.length > 0) {
+                html += renderDocumentSection('Unidentified Documents', results.unidentified, '❓', '#ffc107');
             }
 
             if (results.errors && results.errors.length > 0) {
@@ -726,6 +873,67 @@
             resultsDiv.innerHTML = html;
         }
 
+        function renderDocumentSection(title, docs, icon, color) {
+            let html = '<div class="documents-section">';
+            html += '<div class="section-header">';
+            html += `<div class="section-title">${icon} ${title}</div>`;
+            html += `<div class="section-count" style="background: ${color}">${docs.length}</div>`;
+            html += '</div>';
+
+            docs.forEach(doc => {
+                html += `
+                    <div class="doc-card" style="border-left-color: ${color}">
+                        <div class="doc-header">
+                            <div class="doc-title">${doc.document_type || 'Document'}</div>
+                            <div class="doc-badge" style="background: ${color}33; color: ${color}">
+                                ${doc.category}
+                            </div>
+                        </div>
+                        <div class="doc-details">
+                            <div class="doc-detail">
+                                <div class="doc-detail-label">Source File</div>
+                                <div class="doc-detail-value">${doc.source_file}</div>
+                            </div>
+                            <div class="doc-detail">
+                                <div class="doc-detail-label">Page Reference</div>
+                                <div class="doc-detail-value">${doc.page_reference}</div>
+                            </div>
+                            <div class="doc-detail">
+                                <div class="doc-detail-label">Page Count</div>
+                                <div class="doc-detail-value">${doc.page_count}</div>
+                            </div>
+                            ${doc.lc_number ? `
+                                <div class="doc-detail">
+                                    <div class="doc-detail-label">LC Number</div>
+                                    <div class="doc-detail-value">${doc.lc_number}</div>
+                                </div>
+                            ` : ''}
+                            ${doc.amendment_number ? `
+                                <div class="doc-detail">
+                                    <div class="doc-detail-label">Amendment #</div>
+                                    <div class="doc-detail-value">${doc.amendment_number}</div>
+                                </div>
+                            ` : ''}
+                            ${doc.amendment_date ? `
+                                <div class="doc-detail">
+                                    <div class="doc-detail-label">Amendment Date</div>
+                                    <div class="doc-detail-value">${doc.amendment_date}</div>
+                                </div>
+                            ` : ''}
+                        </div>
+                        <div style="margin-top: 15px;">
+                            <a href="${API_BASE}${doc.download_url}" class="download-btn json" download>
+                                📥 Download Original
+                            </a>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+            return html;
+        }
+
         function showError(message) {
             document.getElementById('spinner').style.display = 'none';
             document.getElementById('results').innerHTML = `
@@ -736,51 +944,71 @@
             processBtn.disabled = false;
         }
 
+        function goToChecklist(lcNumber) {
+            const url = `checklist.html?lc=${lcNumber}&job_id=${currentJobId}`;
+            window.open(url, '_blank');
+        }
+
         function viewJson(url) {
             const win = window.open('', '_blank');
             win.document.write(`
-        <html>
-        <head>
-            <title>LC Data Viewer</title>
-            <style>
-                body {
-                    font-family: monospace;
-                    background: #0f172a;
-                    color: #e5e7eb;
-                    padding: 20px;
-                }
-                pre {
-                    white-space: pre-wrap;
-                    word-wrap: break-word;
-                    background: #020617;
-                    padding: 20px;
-                    border-radius: 8px;
-                    border: 1px solid #334155;
-                }
-                h1 {
-                    color: #38bdf8;
-                }
-            </style>
-        </head>
-        <body>
-            <h1>📄 LC JSON Data</h1>
-            <pre id="json">Loading...</pre>
-        </body>
-        </html>
-    `);
+                <html>
+                <head>
+                    <title>LC Data Viewer</title>
+                    <style>
+                        body {
+                            font-family: monospace;
+                            background: #0f172a;
+                            color: #e5e7eb;
+                            padding: 20px;
+                            margin: 0;
+                        }
+                        pre {
+                            white-space: pre-wrap;
+                            word-wrap: break-word;
+                            background: #020617;
+                            padding: 20px;
+                            border-radius: 8px;
+                            border: 1px solid #334155;
+                            line-height: 1.5;
+                        }
+                        h1 {
+                            color: #38bdf8;
+                            margin-bottom: 20px;
+                        }
+                        .copy-btn {
+                            background: #667eea;
+                            color: white;
+                            border: none;
+                            padding: 10px 20px;
+                            border-radius: 6px;
+                            cursor: pointer;
+                            margin-bottom: 20px;
+                        }
+                    </style>
+                </head>
+                <body>
+                    <h1>📄 LC JSON Data</h1>
+                    <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('json').textContent)">📋 Copy to Clipboard</button>
+                    <pre id="json">Loading...</pre>
+                </body>
+                </html>
+            `);
 
             fetch(url)
                 .then(res => res.json())
                 .then(data => {
-                    win.document.getElementById('json').textContent =
-                        JSON.stringify(data, null, 2);
+                    win.document.getElementById('json').textContent = JSON.stringify(data, null, 2);
                 })
                 .catch(err => {
-                    win.document.getElementById('json').textContent =
-                        'Failed to load JSON: ' + err;
+                    win.document.getElementById('json').textContent = 'Failed to load JSON: ' + err;
                 });
         }
 
+        function toggleCollapse(element) {
+            element.classList.toggle('collapsed');
+            element.nextElementSibling.classList.toggle('collapsed');
+        }
     </script>
 </body>
 

@@ -1,0 +1,76 @@
+{
+  "job_id": "62ed878a-bd99-4f41-b610-a9f99e596795",
+  "processing_date": "2026-02-08T17:55:10.986015",
+  "summary": {
+    "files_analyzed": 2,
+    "lcs_found": 2,
+    "amendments_found": 0,
+    "shipping_docs_found": 1,
+    "unidentified_found": 2,
+    "consolidated_lcs": 0
+  },
+  "counts": {
+    "lcs": 2,
+    "amendments": 0,
+    "shipping_docs": 1,
+    "unidentified": 2,
+    "consolidated_lcs": 0
+  },
+  "lcs": [
+    {
+      "source_file": "LC Amendments 1_compressed.pdf",
+      "page_reference": "2",
+      "page_count": 1,
+      "document_type": "LC",
+      "category": "LC",
+      "lc_number": "UNKNOWN",
+      "issue_date": "",
+      "applicant": "",
+      "beneficiary": "",
+      "download_url": "/api/download/original/62ed878a-bd99-4f41-b610-a9f99e596795/LC Amendments 1_compressed.pdf"
+    },
+    {
+      "source_file": "LC Swift_compressed.pdf",
+      "page_reference": "3-4",
+      "page_count": 2,
+      "document_type": "LC",
+      "category": "LC",
+      "lc_number": "UNKNOWN",
+      "issue_date": "",
+      "applicant": "",
+      "beneficiary": "",
+      "download_url": "/api/download/original/62ed878a-bd99-4f41-b610-a9f99e596795/LC Swift_compressed.pdf"
+    }
+  ],
+  "amendments": [],
+  "shipping_docs": [
+    {
+      "source_file": "LC Swift_compressed.pdf",
+      "page_reference": "1",
+      "page_count": 1,
+      "document_type": "NOTICE OF READINESS",
+      "category": "SHIPPING",
+      "download_url": "/api/download/original/62ed878a-bd99-4f41-b610-a9f99e596795/LC Swift_compressed.pdf"
+    }
+  ],
+  "unidentified": [
+    {
+      "source_file": "LC Amendments 1_compressed.pdf",
+      "page_reference": "1",
+      "page_count": 1,
+      "document_type": "UNIDENTIFIED",
+      "category": "UNIDENTIFIED",
+      "download_url": "/api/download/original/62ed878a-bd99-4f41-b610-a9f99e596795/LC Amendments 1_compressed.pdf"
+    },
+    {
+      "source_file": "LC Swift_compressed.pdf",
+      "page_reference": "2",
+      "page_count": 1,
+      "document_type": "UNIDENTIFIED",
+      "category": "UNIDENTIFIED",
+      "download_url": "/api/download/original/62ed878a-bd99-4f41-b610-a9f99e596795/LC Swift_compressed.pdf"
+    }
+  ],
+  "consolidated_lcs": [],
+  "errors": []
+}

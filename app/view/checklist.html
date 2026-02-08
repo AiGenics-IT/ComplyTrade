@@ -15,6 +15,7 @@
             --border: #e0e6ed;
             --success: #20c997;
             --danger: #ff4d4d;
+            --warning: #ffc107;
         }
 
         body {
@@ -27,8 +28,8 @@
         }
 
         .checklist-wrapper {
-            width: 90%;
-            max-width: 1400px;
+            width: 95%;
+            max-width: 1600px;
             background: var(--white);
             border-radius: 12px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
@@ -40,12 +41,50 @@
         }
 
         .header {
-            padding: 15px 25px;
+            padding: 20px 30px;
             background: linear-gradient(135deg, var(--primary), var(--secondary));
             color: white;
             display: flex;
             justify-content: space-between;
             align-items: center;
+        }
+
+        .header-info {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .lc-title {
+            font-size: 1.8em;
+            font-weight: bold;
+            margin: 0;
+        }
+
+        .lc-subtitle {
+            font-size: 0.9em;
+            opacity: 0.9;
+        }
+
+        .stats-bar {
+            display: flex;
+            gap: 20px;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .stat-number {
+            font-size: 1.8em;
+            font-weight: bold;
+        }
+
+        .stat-label {
+            font-size: 0.8em;
+            opacity: 0.9;
         }
 
         .main-content {
@@ -55,7 +94,7 @@
         }
 
         .left-pane {
-            width: 35%;
+            width: 40%;
             border-right: 1px solid var(--border);
             display: flex;
             flex-direction: column;
@@ -71,6 +110,34 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+        }
+
+        .filter-tabs {
+            display: flex;
+            gap: 10px;
+            padding: 15px 20px;
+            background: white;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .tab {
+            padding: 8px 15px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: all 0.2s;
+            background: white;
+        }
+
+        .tab:hover {
+            background: #f8f9ff;
+        }
+
+        .tab.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
         }
 
         .scroll-area {
@@ -102,7 +169,7 @@
         .btn-add:hover { opacity: 0.9; }
 
         .right-pane {
-            width: 65%;
+            width: 60%;
             padding: 30px;
             overflow-y: auto;
             background: white;
@@ -133,43 +200,65 @@
             box-shadow: 0 2px 8px rgba(102, 126, 234, 0.1);
         }
 
-        .edit-btn {
-            position: absolute;
-            right: 10px;
-            top: 10px;
-            background: #eee;
-            border: none;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            cursor: pointer;
-            visibility: hidden;
+        .point-item.checked {
+            opacity: 0.7;
+            background: #f0f9f4;
         }
-
-        .point-item:hover .edit-btn { visibility: visible; }
-        .edit-btn:hover { background: #ddd; }
 
         .field-badge {
             font-size: 0.75em;
             background: #e1e7ff;
-            padding: 2px 6px;
+            padding: 4px 8px;
             border-radius: 4px;
             color: var(--primary);
             font-weight: bold;
+            display: inline-block;
+            margin-right: 8px;
+        }
+
+        .field-badge.field-46a {
+            background: #d1f4e0;
+            color: #10b981;
+        }
+
+        .field-badge.field-47a {
+            background: #dbeafe;
+            color: #3b82f6;
+        }
+
+        .field-badge.modified {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .field-badge.added {
+            background: #d4edda;
+            color: #155724;
         }
 
         .details-box {
             background: #fdfdfd;
-            border: 1px dashed var(--primary);
-            padding: 20px;
-            border-radius: 8px;
+            border: 2px solid #e0e7ff;
+            padding: 25px;
+            border-radius: 12px;
             white-space: pre-wrap;
             margin-bottom: 25px;
-            font-size: 1.05em;
-            line-height: 1.6;
+            font-size: 1em;
+            line-height: 1.8;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
         }
 
-        /* Modal Styles */
+        .amendment-badge {
+            display: inline-block;
+            background: #f093fb;
+            color: white;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+
         .modal {
             display: none;
             position: fixed;
@@ -182,24 +271,52 @@
 
         .modal-content {
             background: white;
-            padding: 25px;
+            padding: 30px;
             border-radius: 12px;
-            width: 500px;
+            width: 600px;
             max-width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
             box-shadow: 0 5px 15px rgba(0,0,0,0.3);
         }
 
-        .modal-header { margin-bottom: 20px; color: var(--secondary); border-bottom: 1px solid #eee; padding-bottom: 10px; }
-        .form-group { margin-bottom: 15px; }
-        .form-group label { display: block; font-weight: bold; margin-bottom: 5px; font-size: 0.9em; }
+        .modal-header { 
+            margin-bottom: 20px; 
+            color: var(--secondary); 
+            border-bottom: 2px solid #eee; 
+            padding-bottom: 15px; 
+        }
+
+        .form-group { 
+            margin-bottom: 20px; 
+        }
+
+        .form-group label { 
+            display: block; 
+            font-weight: bold; 
+            margin-bottom: 8px; 
+            font-size: 0.95em; 
+        }
+
         .form-group input, .form-group textarea, .form-group select {
-            width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; box-sizing: border-box; font-family: inherit;
+            width: 100%; 
+            padding: 12px; 
+            border: 2px solid var(--border); 
+            border-radius: 8px; 
+            box-sizing: border-box; 
+            font-family: inherit;
+            font-size: 1em;
+        }
+
+        .form-group textarea {
+            resize: vertical;
+            min-height: 100px;
         }
 
         .loading-overlay {
             position: absolute;
             top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(255, 255, 255, 0.95);
+            background: rgba(255, 255, 255, 0.98);
             display: flex;
             flex-direction: column;
             justify-content: center;
@@ -207,18 +324,96 @@
             z-index: 1000;
         }
 
+        .loading-spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid var(--primary);
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
         .btn-save {
             background: var(--success);
             color: white;
             border: none;
-            padding: 10px 20px;
+            padding: 12px 25px;
             border-radius: 6px;
             cursor: pointer;
             font-weight: bold;
+            transition: all 0.2s;
         }
 
-        .requirement-list { list-style: none; padding: 0; }
-        .requirement-list li { padding: 10px; background: #f8f9fa; border-bottom: 1px solid #eee; }
+        .btn-save:hover {
+            background: #17a085;
+            transform: translateY(-2px);
+        }
+
+        .btn-delete {
+            background: var(--danger);
+        }
+
+        .btn-delete:hover {
+            background: #dc2626;
+        }
+
+        .btn-cancel {
+            background: #6c757d;
+        }
+
+        .btn-cancel:hover {
+            background: #5a6268;
+        }
+
+        .verification-notes {
+            margin-top: 30px;
+            border-top: 2px solid #e0e7ff;
+            padding-top: 25px;
+        }
+
+        .notes-textarea {
+            width: 100%;
+            min-height: 120px;
+            padding: 15px;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 1em;
+            resize: vertical;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #a0aec0;
+        }
+
+        .empty-state-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+        }
+
+        .section-divider {
+            margin: 30px 0;
+            border-top: 2px dashed #e0e7ff;
+            padding-top: 20px;
+        }
+
+        .info-pill {
+            display: inline-block;
+            background: #e0e7ff;
+            color: var(--primary);
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            margin: 5px;
+        }
     </style>
 </head>
 
@@ -226,125 +421,222 @@
 
     <div class="checklist-wrapper">
         <div id="loading" class="loading-overlay">
+            <div class="loading-spinner"></div>
             <div style="text-align: center;">
-                <div style="font-size: 2em; margin-bottom: 10px;">⏳</div>
-                <strong>Fetching Consolidated LC Data...</strong>
-                <p id="debug-status" style="font-size: 0.8em; color: #666;"></p>
+                <strong style="font-size: 1.2em;">Loading LC Data...</strong>
+                <p id="debug-status" style="font-size: 0.9em; color: #666; margin-top: 10px;"></p>
             </div>
         </div>
 
         <div class="header">
-            <h2 id="lc-title" style="margin:0;">LC Verification</h2>
-            <div id="lc-status-info">Session: Processing...</div>
+            <div class="header-info">
+                <h2 class="lc-title" id="lc-title">LC Verification Checklist</h2>
+                <div class="lc-subtitle" id="lc-subtitle">Loading...</div>
+            </div>
+            <div class="stats-bar">
+                <div class="stat-item">
+                    <div class="stat-number" id="stat-conditions">0</div>
+                    <div class="stat-label">Conditions</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number" id="stat-documents">0</div>
+                    <div class="stat-label">Documents</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number" id="stat-amendments">0</div>
+                    <div class="stat-label">Amendments</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number" id="progress-percent">0%</div>
+                    <div class="stat-label">Verified</div>
+                </div>
+            </div>
         </div>
 
         <div class="main-content">
             <div class="left-pane">
                 <div class="pane-header">
-                    <span>Clause Checklist</span>
-                    <span id="progress-text" style="font-size: 0.8em; color: #888;">0% Done</span>
+                    <span>Verification Checklist</span>
+                    <span id="count-text">0 items</span>
                 </div>
+
+                <div class="filter-tabs">
+                    <div class="tab active" data-filter="all" onclick="filterPoints('all')">
+                        All (<span id="count-all">0</span>)
+                    </div>
+                    <div class="tab" data-filter="46A" onclick="filterPoints('46A')">
+                        Documents (<span id="count-46A">0</span>)
+                    </div>
+                    <div class="tab" data-filter="47A" onclick="filterPoints('47A')">
+                        Conditions (<span id="count-47A">0</span>)
+                    </div>
+                    <div class="tab" data-filter="unchecked" onclick="filterPoints('unchecked')">
+                        Unchecked (<span id="count-unchecked">0</span>)
+                    </div>
+                </div>
+
                 <div class="scroll-area" id="points-container"></div>
                 
                 <div class="action-bar">
-                    <button class="btn-add" onclick="openEditor()">+ Add Manual Clause</button>
+                    <button class="btn-add" onclick="openEditor()">+ Add Manual Point</button>
+                    <button class="btn-add" style="background: var(--success);" onclick="exportProgress()">
+                        💾 Export Progress
+                    </button>
                 </div>
             </div>
 
             <div class="right-pane" id="workspace">
-                <div style="text-align: center; margin-top: 100px; color: #a0aec0;">
-                    <h2 style="font-size: 3em;">📋</h2>
+                <div class="empty-state">
+                    <div class="empty-state-icon">📋</div>
                     <h3>Select a clause to verify</h3>
-                    <p>Details from the consolidated JSON will appear here.</p>
+                    <p>Click any item from the checklist to view details and add verification notes.</p>
                 </div>
             </div>
         </div>
     </div>
 
+    <!-- Edit Modal -->
     <div id="clauseModal" class="modal">
         <div class="modal-content">
-            <div class="modal-header"><h3 id="modal-title" style="margin:0;">Edit Clause</h3></div>
+            <div class="modal-header">
+                <h3 id="modal-title" style="margin:0;">Edit Clause</h3>
+            </div>
             <input type="hidden" id="edit-index">
             
             <div class="form-group">
-                <label>Field Type (e.g., 46A, 47A)</label>
-                <input type="text" id="field-type" placeholder="46A">
+                <label>Field Type</label>
+                <select id="field-type">
+                    <option value="46A">46A - Documents Required</option>
+                    <option value="47A">47A - Additional Conditions</option>
+                    <option value="CUSTOM">Custom Field</option>
+                </select>
             </div>
             
             <div class="form-group">
-                <label>Clause Description</label>
-                <textarea id="field-text" rows="5"></textarea>
+                <label>Clause Text</label>
+                <textarea id="field-text" rows="6"></textarea>
             </div>
 
             <div class="form-group">
-                <label>Supporting Documents (One per line)</label>
-                <textarea id="field-docs" rows="3" placeholder="Enter requirements..."></textarea>
+                <label>Point Number (Optional)</label>
+                <input type="number" id="field-point-number" placeholder="Auto-assigned if left empty">
             </div>
 
-            <div style="display: flex; gap: 10px; margin-top: 20px;">
-                <button class="btn-add" style="background: var(--success);" onclick="saveClause()">Save Point</button>
-                <button id="delete-btn" class="btn-add" style="background: var(--danger); display:none;" onclick="deleteClause()">Delete</button>
-                <button class="btn-add" style="background: #999;" onclick="closeEditor()">Cancel</button>
+            <div style="display: flex; gap: 10px; margin-top: 25px;">
+                <button class="btn-save" onclick="saveClause()">💾 Save</button>
+                <button id="delete-btn" class="btn-save btn-delete" style="display:none;" onclick="deleteClause()">🗑 Delete</button>
+                <button class="btn-save btn-cancel" onclick="closeEditor()">Cancel</button>
             </div>
         </div>
     </div>
 
     <script>
-        // const API_BASE = 'http://localhost:8000';
         const API_BASE = window.location.origin;
-        let lcData = { points: [] };
+        let lcData = { points: [], lc_number: '', amendments: [] };
+        let currentFilter = 'all';
 
         function setStatus(msg) {
             document.getElementById('debug-status').innerText = msg;
-            console.log(msg);
-        }
-
-        function getSafeText(textInput) {
-            if (typeof textInput === 'string') return textInput;
-            if (textInput && typeof textInput === 'object') return textInput.text || JSON.stringify(textInput);
-            return "No text content";
+            console.log('[Status]', msg);
         }
 
         async function initChecklist() {
-            setStatus("Initializing...");
+            setStatus("Initializing checklist...");
             const params = new URLSearchParams(window.location.search);
             const lcNumber = params.get('lc');
             const jobId = params.get('job_id');
 
             if (!lcNumber || !jobId) {
-                document.getElementById('loading').innerHTML = `<div style="color:red; padding:20px; text-align:center;"><h2>Error: Missing Parameters</h2></div>`;
+                alert('Error: Missing LC number or Job ID parameters');
+                document.getElementById('loading').innerHTML = 
+                    '<div style="color:red; padding:20px; text-align:center;"><h2>❌ Missing Parameters</h2><p>Please access this page through the main interface.</p></div>';
                 return;
             }
 
             try {
-                setStatus(`Requesting data for Job: ${jobId}`);
+                setStatus(`Fetching data for Job ID: ${jobId}...`);
                 const response = await fetch(`${API_BASE}/api/result/${jobId}`);
-                if (!response.ok) throw new Error(`Server returned ${response.status}`);
+                
+                if (!response.ok) {
+                    throw new Error(`Server returned ${response.status}`);
+                }
 
                 const fullJobData = await response.json();
+                console.log('[Full Job Data]', fullJobData);
+
                 const foundLc = fullJobData.consolidated_lcs.find(item => item.lc_number === lcNumber);
 
-                if (!foundLc) throw new Error(`LC #${lcNumber} not found.`);
+                if (!foundLc) {
+                    throw new Error(`LC #${lcNumber} not found in job results`);
+                }
 
-                const docs = (foundLc.documents_required || []).map(text => ({ type: '46A', text: getSafeText(text) }));
-                const conds = (foundLc.additional_conditions || []).map(text => ({ type: '47A', text: getSafeText(text) }));
-                
+                console.log('[Found LC]', foundLc);
+
+                // Build checklist from consolidated LC data
+                const points = [];
+                let pointId = 1;
+
+                // Add documents required (Field 46A)
+                if (foundLc.documents_required && foundLc.documents_required.length > 0) {
+                    foundLc.documents_required.forEach(doc => {
+                        points.push({
+                            id: pointId++,
+                            type: doc.field_code || '46A',
+                            point_number: doc.point_number,
+                            text: doc.text,
+                            modified_by_amendment: doc.modified_by_amendment || false,
+                            added_by_amendment: doc.added_by_amendment || false,
+                            checked: false
+                        });
+                    });
+                }
+
+                // Add additional conditions (Field 47A)
+                if (foundLc.additional_conditions && foundLc.additional_conditions.length > 0) {
+                    foundLc.additional_conditions.forEach(cond => {
+                        points.push({
+                            id: pointId++,
+                            type: cond.field_code || '47A',
+                            point_number: cond.point_number,
+                            text: cond.text,
+                            modified_by_amendment: cond.modified_by_amendment || false,
+                            added_by_amendment: cond.added_by_amendment || false,
+                            checked: false
+                        });
+                    });
+                }
+
                 lcData = {
                     lc_number: foundLc.lc_number,
-                    points: [...docs, ...conds].map((c, i) => ({
-                        id: i + 1,
-                        type: c.type,
-                        text: c.text,
-                        docs: ["Original Document Required"]
-                    }))
+                    issue_date: foundLc.issue_date,
+                    sender: foundLc.sender,
+                    receiver: foundLc.receiver,
+                    amendments_applied: foundLc.amendments_applied,
+                    amendment_history: foundLc.amendment_history || [],
+                    points: points
                 };
 
-                document.getElementById('lc-title').innerText = `LC Verification: #${lcData.lc_number}`;
-                document.getElementById('lc-status-info').innerText = `Job ID: ${jobId.substring(0, 8)}`;
+                console.log('[LC Data Loaded]', lcData);
+
+                // Update UI
+                document.getElementById('lc-title').innerText = `LC Verification: ${lcData.lc_number}`;
+                document.getElementById('lc-subtitle').innerText = 
+                    `Issue Date: ${lcData.issue_date} | ${lcData.amendments_applied} Amendments Applied`;
+                
+                document.getElementById('stat-conditions').innerText = 
+                    points.filter(p => p.type === '47A').length;
+                document.getElementById('stat-documents').innerText = 
+                    points.filter(p => p.type === '46A').length;
+                document.getElementById('stat-amendments').innerText = 
+                    lcData.amendments_applied;
+
                 document.getElementById('loading').style.display = 'none';
 
                 renderPoints();
+                updateCounts();
+
             } catch (err) {
+                console.error('[Critical Error]', err);
                 setStatus("Critical Failure: " + err.message);
                 document.getElementById('loading').style.display = 'none';
                 alert("Error loading data: " + err.message);
@@ -355,42 +647,188 @@
             const container = document.getElementById('points-container');
             container.innerHTML = '';
 
-            lcData.points.forEach((point, index) => {
-                const div = document.createElement('div');
-                div.className = 'point-item';
-                div.onclick = () => selectPoint(index, div);
+            let filteredPoints = lcData.points;
 
-                const shortText = point.text.substring(0, 80);
+            if (currentFilter === '46A' || currentFilter === '47A') {
+                filteredPoints = lcData.points.filter(p => p.type === currentFilter);
+            } else if (currentFilter === 'unchecked') {
+                filteredPoints = lcData.points.filter(p => !p.checked);
+            }
+
+            if (filteredPoints.length === 0) {
+                container.innerHTML = '<div class="empty-state" style="padding: 40px 20px;"><p>No items to display</p></div>';
+                return;
+            }
+
+            filteredPoints.forEach((point, index) => {
+                const div = document.createElement('div');
+                div.className = 'point-item' + (point.checked ? ' checked' : '');
+                
+                const shortText = point.text.substring(0, 100);
+                const badgeClass = point.type === '46A' ? 'field-46a' : 'field-47a';
+                const modBadge = point.modified_by_amendment ? '<span class="field-badge modified">Modified</span>' : '';
+                const addBadge = point.added_by_amendment ? '<span class="field-badge added">Added</span>' : '';
 
                 div.innerHTML = `
-                    <input type="checkbox" onclick="event.stopPropagation(); updateProgress();">
-                    <div class="point-content">
-                        <strong><span class="field-badge">${point.type}</span> Item ${point.id}</strong><br>
-                        ${shortText}${point.text.length > 80 ? '...' : ''}
+                    <input type="checkbox" ${point.checked ? 'checked' : ''} 
+                           onclick="event.stopPropagation(); toggleCheck(${lcData.points.indexOf(point)});">
+                    <div style="flex: 1;">
+                        <div style="margin-bottom: 8px;">
+                            <span class="field-badge ${badgeClass}">${point.type}</span>
+                            <strong>Point ${point.point_number}</strong>
+                            ${modBadge}
+                            ${addBadge}
+                        </div>
+                        <div style="color: #666; font-size: 0.95em;">
+                            ${shortText}${point.text.length > 100 ? '...' : ''}
+                        </div>
                     </div>
-                    <button class="edit-btn" onclick="event.stopPropagation(); openEditor(${index})">Edit</button>
                 `;
+
+                div.onclick = (e) => {
+                    if (e.target.type !== 'checkbox') {
+                        selectPoint(lcData.points.indexOf(point), div);
+                    }
+                };
+
                 container.appendChild(div);
             });
+
+            updateCounts();
+        }
+
+        function toggleCheck(index) {
+            lcData.points[index].checked = !lcData.points[index].checked;
+            renderPoints();
             updateProgress();
+        }
+
+        function updateProgress() {
+            const total = lcData.points.length;
+            const checked = lcData.points.filter(p => p.checked).length;
+            const percentage = total > 0 ? Math.round((checked / total) * 100) : 0;
+            document.getElementById('progress-percent').innerText = `${percentage}%`;
+        }
+
+        function updateCounts() {
+            const total = lcData.points.length;
+            const docs = lcData.points.filter(p => p.type === '46A').length;
+            const conds = lcData.points.filter(p => p.type === '47A').length;
+            const unchecked = lcData.points.filter(p => !p.checked).length;
+
+            document.getElementById('count-text').innerText = `${total} items`;
+            document.getElementById('count-all').innerText = total;
+            document.getElementById('count-46A').innerText = docs;
+            document.getElementById('count-47A').innerText = conds;
+            document.getElementById('count-unchecked').innerText = unchecked;
+        }
+
+        function filterPoints(filter) {
+            currentFilter = filter;
+            
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            event.target.closest('.tab').classList.add('active');
+            
+            renderPoints();
+        }
+
+        function selectPoint(index, element) {
+            const point = lcData.points[index];
+            
+            document.querySelectorAll('.point-item').forEach(p => p.classList.remove('active'));
+            element.classList.add('active');
+
+            const workspace = document.getElementById('workspace');
+            
+            const statusBadges = [];
+            if (point.modified_by_amendment) statusBadges.push('<span class="info-pill">Modified by Amendment</span>');
+            if (point.added_by_amendment) statusBadges.push('<span class="info-pill">Added by Amendment</span>');
+
+            workspace.innerHTML = `
+                <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px;">
+                    <div>
+                        <h2 style="margin: 0; color: var(--secondary);">
+                            ${point.type} - Point ${point.point_number}
+                        </h2>
+                        <div style="margin-top: 10px;">
+                            ${statusBadges.join('')}
+                        </div>
+                    </div>
+                    <button class="btn-save" style="background: #6c757d;" onclick="openEditor(${index})">
+                        ✏️ Edit
+                    </button>
+                </div>
+
+                <div class="details-box">
+                    ${point.text}
+                </div>
+
+                <div class="section-divider">
+                    <h3 style="color: var(--secondary); margin-bottom: 15px;">🔍 Verification Workspace</h3>
+                    
+                    <div class="verification-notes">
+                        <label style="font-weight: bold; display: block; margin-bottom: 10px;">
+                            Auditor Notes & Discrepancy Comments:
+                        </label>
+                        <textarea id="auditor-note-${index}" class="notes-textarea" 
+                            placeholder="Document any discrepancies, missing items, or observations here...">${point.notes || ''}</textarea>
+                        
+                        <div style="margin-top: 15px; display: flex; gap: 10px;">
+                            <button class="btn-save" onclick="saveNotes(${index})">
+                                💾 Save Notes
+                            </button>
+                            <button class="btn-save" style="background: ${point.checked ? '#6c757d' : 'var(--success)'};" 
+                                    onclick="toggleCheck(${index})">
+                                ${point.checked ? '↩️ Mark Unverified' : '✅ Mark as Verified'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                ${lcData.amendment_history.length > 0 ? `
+                    <div class="section-divider">
+                        <h3 style="color: var(--secondary); margin-bottom: 15px;">📝 Amendment History</h3>
+                        ${lcData.amendment_history.map(amend => `
+                            <div style="background: #fff8f0; padding: 15px; border-left: 3px solid #f093fb; border-radius: 8px; margin-bottom: 10px;">
+                                <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                                    <strong>Amendment ${amend.amendment_number}</strong>
+                                    <span style="color: #666;">${amend.amendment_date} | Page: ${amend.page_reference}</span>
+                                </div>
+                                <div style="font-size: 0.9em;">
+                                    <div>Conditions Changed: ${amend.changes.conditions.length}</div>
+                                    <div>Documents Changed: ${amend.changes.documents.length}</div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                ` : ''}
+            `;
+        }
+
+        function saveNotes(index) {
+            const textarea = document.getElementById(`auditor-note-${index}`);
+            if (textarea) {
+                lcData.points[index].notes = textarea.value;
+                alert('✅ Notes saved locally');
+            }
         }
 
         // Editor Functions
         function openEditor(index = null) {
             const modal = document.getElementById('clauseModal');
             document.getElementById('edit-index').value = index !== null ? index : "";
-            document.getElementById('modal-title').innerText = index !== null ? "Edit Clause" : "Add New Clause";
+            document.getElementById('modal-title').innerText = index !== null ? "Edit Clause" : "Add Manual Clause";
             document.getElementById('delete-btn').style.display = index !== null ? "block" : "none";
 
             if (index !== null) {
                 const p = lcData.points[index];
                 document.getElementById('field-type').value = p.type;
                 document.getElementById('field-text').value = p.text;
-                document.getElementById('field-docs').value = p.docs.join('\n');
+                document.getElementById('field-point-number').value = p.point_number || '';
             } else {
-                document.getElementById('field-type').value = "46A";
+                document.getElementById('field-type').value = "47A";
                 document.getElementById('field-text').value = "";
-                document.getElementById('field-docs').value = "";
+                document.getElementById('field-point-number').value = "";
             }
 
             modal.style.display = 'flex';
@@ -402,23 +840,35 @@
 
         function saveClause() {
             const index = document.getElementById('edit-index').value;
-            const type = document.getElementById('field-type').value || "MANUAL";
-            const text = document.getElementById('field-text').value || "No content";
-            const docs = document.getElementById('field-docs').value.split('\n').filter(d => d.trim() !== "");
+            const type = document.getElementById('field-type').value;
+            const text = document.getElementById('field-text').value.trim();
+            const pointNumber = document.getElementById('field-point-number').value;
+
+            if (!text) {
+                alert('Please enter clause text');
+                return;
+            }
 
             if (index !== "") {
-                // Update Existing
+                // Update existing
                 lcData.points[index].type = type;
                 lcData.points[index].text = text;
-                lcData.points[index].docs = docs.length ? docs : ["Manual Verification"];
+                if (pointNumber) {
+                    lcData.points[index].point_number = parseInt(pointNumber);
+                }
             } else {
-                // Add New
-                lcData.points.push({
+                // Add new
+                const newPoint = {
                     id: lcData.points.length + 1,
                     type: type,
+                    point_number: pointNumber ? parseInt(pointNumber) : 9999,
                     text: text,
-                    docs: docs.length ? docs : ["Manual Verification"]
-                });
+                    modified_by_amendment: false,
+                    added_by_amendment: false,
+                    checked: false,
+                    notes: ''
+                };
+                lcData.points.push(newPoint);
             }
 
             renderPoints();
@@ -433,45 +883,43 @@
                 lcData.points.forEach((p, i) => p.id = i + 1);
                 renderPoints();
                 closeEditor();
+                document.getElementById('workspace').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📋</div>
+                        <h3>Select a clause to verify</h3>
+                    </div>
+                `;
             }
         }
 
-        function selectPoint(index, element) {
-            const point = lcData.points[index];
-            document.querySelectorAll('.point-item').forEach(p => p.classList.remove('active'));
-            element.classList.add('active');
+        function exportProgress() {
+            const exportData = {
+                lc_number: lcData.lc_number,
+                issue_date: lcData.issue_date,
+                exported_at: new Date().toISOString(),
+                progress: {
+                    total: lcData.points.length,
+                    verified: lcData.points.filter(p => p.checked).length,
+                    percentage: Math.round((lcData.points.filter(p => p.checked).length / lcData.points.length) * 100)
+                },
+                points: lcData.points.map(p => ({
+                    type: p.type,
+                    point_number: p.point_number,
+                    text: p.text,
+                    verified: p.checked,
+                    notes: p.notes || ''
+                }))
+            };
 
-            const workspace = document.getElementById('workspace');
-            workspace.innerHTML = `
-                <span class="doc-tag">Field ${point.type} | Requirement #${point.id}</span>
-                <h2 style="margin-top:0; color:var(--secondary)">Verification Workspace</h2>
-                
-                <div class="details-box">
-                    <strong>Full Clause Text:</strong><br><br>${point.text}
-                </div>
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${lcData.lc_number}_verification_${new Date().toISOString().split('T')[0]}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
 
-                <h3>Supporting Documents Needed:</h3>
-                <ul class="requirement-list">
-                    ${point.docs.map(doc => `<li>📄 ${doc}</li>`).join('')}
-                </ul>
-
-                <div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px;">
-                    <label style="font-weight: bold; display: block; margin-bottom: 10px;">Auditor Discrepancy Notes:</label>
-                    <textarea id="auditor-note" style="width: 100%; height: 100px; padding: 12px; border: 1px solid #cbd5e0; border-radius: 8px; font-family: inherit;" 
-                        placeholder="Note any inconsistencies..."></textarea>
-                    
-                    <div style="margin-top:15px; display:flex; justify-content: space-between; align-items:center;">
-                        <button class="btn-save" onclick="alert('Progress Saved Locally')">Save Verification</button>
-                    </div>
-                </div>
-            `;
-        }
-
-        function updateProgress() {
-            const total = document.querySelectorAll('#points-container input[type="checkbox"]').length;
-            const checked = document.querySelectorAll('#points-container input[type="checkbox"]:checked').length;
-            const percentage = total > 0 ? Math.round((checked / total) * 100) : 0;
-            document.getElementById('progress-text').innerText = `${percentage}% Done`;
+            alert('✅ Progress exported successfully!');
         }
 
         window.addEventListener('DOMContentLoaded', initChecklist);

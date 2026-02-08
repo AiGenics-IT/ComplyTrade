@@ -98,3 +98,52 @@ def extract_point_number(instruction: str) -> int:
     if match:
         return int(match.group(1))
     return None
+
+
+def clean_field_value(value: str) -> str:
+    """
+    Clean field value - AGGRESSIVE OCR noise removal
+    Removes page markers, URLs, headers, and other junk
+    """
+    if not value:
+        return ""
+    
+    # Remove page markers
+    value = re.sub(r'---\s*Page\s+\d+\s*---', ' ', value, flags=re.IGNORECASE)
+    
+    # Remove URLs
+    value = re.sub(r'http[s]?://[^\s]+', '', value)
+    
+    # Remove print/system headers
+    value = re.sub(r'Select\s+[\'"]Print[\'"].*?output[\.]*', '', value, flags=re.IGNORECASE | re.DOTALL)
+    value = re.sub(r'Formatted\s+Outward\s+SWIFT.*', '', value, flags=re.IGNORECASE)
+    value = re.sub(r'FUSION\s+TRADE\s+INNOVATION', '', value, flags=re.IGNORECASE)
+    value = re.sub(r'Page\s+\d+\s+of\s+\d+', '', value, flags=re.IGNORECASE)
+    
+    # Remove bank letterhead fragments
+    value = re.sub(r'H\s*BL\s+HABIB\s+BANK', '', value, flags=re.IGNORECASE)
+    value = re.sub(r'\d+\s*th\s+Floor,?\s+Jubilee\s+Insurance\s+House', '', value, flags=re.IGNORECASE)
+    value = re.sub(r'I\.I\.\s+Chundrigar\s+Road', '', value, flags=re.IGNORECASE)
+    value = re.sub(r'Karachi\s*-\s*Pakistan', '', value, flags=re.IGNORECASE)
+    value = re.sub(r'Tel:\s*\d{4}-\d{3}-\d+', '', value, flags=re.IGNORECASE)
+    value = re.sub(r'swift:\s*[A-Z\s]+\d+', '', value, flags=re.IGNORECASE)
+    value = re.sub(r'For\s+Information\s+Purpose\s+Only', '', value, flags=re.IGNORECASE)
+    
+    # Remove "Lines X to Y" OCR noise
+    value = re.sub(r'Lines\s?\d?\s?to\s?\d+:?', '', value, flags=re.IGNORECASE)
+    value = re.sub(r'Lines\s?\d?-\d+:?', '', value, flags=re.IGNORECASE)
+    value = re.sub(r'Lines\d+[a-z]*', '', value, flags=re.IGNORECASE)
+    value = re.sub(r'Narrativel?:?', '', value, flags=re.IGNORECASE)
+    
+    # Remove common field labels that OCR sometimes includes
+    value = re.sub(r'^(Documentary Credit Number|Sender\'s Reference|Number of Amendment|Date of Issue|Additional Conditions|Documents Required)\s*[:]*\s*', '', value, flags=re.IGNORECASE)
+    
+    # Normalize whitespace
+    value = re.sub(r'\s+', ' ', value)
+    value = value.strip()
+    
+    # Remove leading/trailing special chars
+    value = re.sub(r'^[+)\s/:\-]+', '', value)
+    value = re.sub(r'[+)\s/:\-]+$', '', value)
+    
+    return value

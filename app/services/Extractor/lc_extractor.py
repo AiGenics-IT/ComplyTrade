@@ -18,6 +18,24 @@ from .document_detector import DocumentDetector
 from services.ai_postProcessor import AIOCRPostProcessor
 
 
+
+class SWIFTField:
+    """Helper class to allow .attribute access while remaining JSON serializable"""
+    def __init__(self, field_code, field_name, value, raw_text):
+        self.field_code = field_code
+        self.field_name = field_name
+        self.value = value
+        self.raw_text = raw_text
+
+    def to_dict(self):
+        return {
+            "field_code": self.field_code,
+            "field_name": self.field_name,
+            "value": self.value,
+            "raw_text": self.raw_text
+        }
+        
+        
 class LCExtractor:
     """
     Bulletproof Universal SWIFT MT Extractor
@@ -26,79 +44,98 @@ class LCExtractor:
     
     def __init__(
         self,
-        use_llm: bool = True,
+        use_llm: bool = False,  # Default to FALSE
         model_name: Optional[str] = None,
         model_root: Optional[str] = None,
-        mode: Literal["llm", "regex", "auto"] = "auto"
+        mode: Literal["llm", "regex", "auto"] = "regex"  # Default to REGEX
     ):
         """
         Initialize LC Extractor
         
         Args:
-            use_llm: Enable LLM-based extraction (default: True)
+            use_llm: Enable LLM-based extraction (default: False)
             model_name: Hugging Face model name (default: from MODEL_NAME env or "google/flan-t5-large")
             model_root: Local model path (default: from MODEL_PATH env)
-            mode: Extraction mode - "llm", "regex", or "auto" (try LLM, fallback to regex)
+            mode: Extraction mode - "llm", "regex", or "auto" (default: regex)
         """
-        self.mode = mode if use_llm else "regex"
+        # FORCE REGEX MODE - LLM is unreliable
+        if use_llm and mode in ["llm", "auto"]:
+            print(f"[LCExtractor] ⚠️  WARNING: LLM mode requested but unreliable. Forcing REGEX mode.")
+            self.mode = "regex"
+        else:
+            self.mode = "regex"  # Always use regex
+        
         self.current_doc = None
         self.current_doc_fields = None
         self.field_mappings = COMPREHENSIVE_FIELD_MAPPINGS
         self.message_types = SWIFT_MESSAGE_TYPES
         
         # Initialize regex-based components (always available)
-        print(f"[LCExtractor] Initializing in {self.mode} mode...")
+        print(f"[LCExtractor] ✓ Initializing in {self.mode.upper()} mode (PRODUCTION)")
         self.ocr_cleaner = AIOCRPostProcessor()
         self.field_extractor = FieldExtractor()
         self.detector = DocumentDetector()
         
-        # Initialize LLM components if enabled
+        # DO NOT Initialize LLM - it's unreliable for SWIFT extraction
         self.llm_model = None
         self.llm_tokenizer = None
         self.device = None
         self.dtype = None
         
-        if self.mode in ["llm", "auto"]:
+        # Only initialize LLM if explicitly requested AND mode is llm
+        # (This code path should never execute in production)
+        if use_llm and mode == "llm":
+            print("[LCExtractor] ⚠️  LLM mode explicitly requested (not recommended)")
             self._initialize_llm(model_name, model_root)
 
     def _initialize_llm(self, model_name: Optional[str] = None, model_root: Optional[str] = None):
         """
-        Initialize Flan-T5 model with GPU support and environment-based configuration
+        Initialize Flan-T5 model with GPU support and environment-based configuration.
+        Downloads model to cache_dir if not already present.
         """
         try:
-            from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+            from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, logging
+            logging.set_verbosity_error()  # suppress unnecessary HF warnings
             
-            # 1️⃣ Resolve Model Name
+            # 1️⃣ Resolve Model Name (always use HuggingFace model name, not path)
             self.model_name = os.getenv("MODEL_NAME", model_name or "google/flan-t5-large")
             print(f"[LCExtractor] Resolved model name: {self.model_name}")
 
-            # 2️⃣ Resolve Model Root (optional local folder)
+            # 2️⃣ Resolve Cache Directory (where to download/store the model)
             env_root = os.getenv("MODEL_PATH", model_root)
             if env_root and str(env_root).strip():
                 self.model_root = Path(env_root)
-                print(f"[LCExtractor] Using local model root: {self.model_root}")
-                model_path = str(self.model_root)
+                self.model_root.mkdir(parents=True, exist_ok=True)
+                cache_dir = str(self.model_root)
+                print(f"[LCExtractor] Using model cache directory: {cache_dir}")
             else:
-                self.model_root = None
-                model_path = self.model_name
-                print(f"[LCExtractor] No MODEL_PATH specified — using default Hugging Face cache")
+                cache_dir = None
+                print(f"[LCExtractor] Using default HuggingFace cache")
 
             # 3️⃣ Detect Device
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             self.dtype = torch.float16 if torch.cuda.is_available() else torch.float32
             print(f"[LCExtractor] Device: {self.device} | dtype: {self.dtype}")
             
-            # 4️⃣ Load Model and Tokenizer
-            print(f"[LCExtractor] Loading tokenizer from {model_path}...")
-            self.llm_tokenizer = AutoTokenizer.from_pretrained(model_path)
-            
-            print(f"[LCExtractor] Loading model from {model_path}...")
-            self.llm_model = AutoModelForSeq2SeqLM.from_pretrained(
-                model_path,
-                torch_dtype=self.dtype,
-                device_map="auto" if torch.cuda.is_available() else None
+            # 4️⃣ Load Tokenizer (downloads to cache_dir if not present)
+            print(f"[LCExtractor] Loading tokenizer for {self.model_name}...")
+            self.llm_tokenizer = AutoTokenizer.from_pretrained(
+                self.model_name,  # ← Use model name, not path!
+                use_fast=False,
+                legacy=False,
+                cache_dir=cache_dir  # ← Downloads here if needed
             )
             
+            # 5️⃣ Load Model (downloads to cache_dir if not present)
+            print(f"[LCExtractor] Loading model for {self.model_name}...")
+            self.llm_model = AutoModelForSeq2SeqLM.from_pretrained(
+                self.model_name,  # ← Use model name, not path!
+                torch_dtype=self.dtype,
+                device_map="auto" if torch.cuda.is_available() else None,
+                cache_dir=cache_dir  # ← Downloads here if needed
+            )
+            
+            # 6️⃣ Move to device if needed
             if not torch.cuda.is_available():
                 self.llm_model.to(self.device)
             
@@ -126,22 +163,31 @@ class LCExtractor:
         Handles LC, Amendments, and Supporting documents with robust OCR text processing.
         Uses LLM if available, otherwise falls back to regex.
         """
+        # Log current mode
+        print(f"\n{'='*70}")
+        print(f"[LCExtractor] CURRENT MODE: {self.mode.upper()}")
+        print(f"{'='*70}")
+        
         # Route based on mode
         if self.mode == "llm":
+            print("[LCExtractor] → Using LLM extraction")
             return self._extract_with_llm(text)
         elif self.mode == "regex":
+            print("[LCExtractor] → Using REGEX extraction")
             return self._extract_with_regex(text)
         else:  # auto mode
+            print("[LCExtractor] → Using AUTO mode (LLM with regex fallback)")
             try:
                 result = self._extract_with_llm(text)
                 # Validate result
                 if self._is_extraction_complete(result):
+                    print("[LCExtractor] ✓ LLM extraction successful")
                     return result
                 else:
-                    print("[LCExtractor] LLM extraction incomplete, trying regex...")
+                    print("[LCExtractor] ⚠ LLM extraction incomplete, trying regex...")
                     return self._extract_with_regex(text)
             except Exception as e:
-                print(f"[LCExtractor] LLM extraction failed: {e}, trying regex...")
+                print(f"[LCExtractor] ⚠ LLM extraction failed: {e}, trying regex...")
                 return self._extract_with_regex(text)
     
     def _is_extraction_complete(self, doc: Any) -> bool:
@@ -168,7 +214,7 @@ class LCExtractor:
         # Clean text
         text_clean = sanitize_text(text)
         
-        # Detect document type
+        # Detect document type with STRICT rules
         doc_type = self._detect_document_type_llm(text_clean)
         print(f"[LCExtractor-LLM] Detected document type: {doc_type}")
         
@@ -182,12 +228,10 @@ class LCExtractor:
     
     def _extract_with_regex(self, text: str) -> Any:
         """
-        Extract using traditional regex patterns
+        Extract using traditional regex patterns.
+        Modified to support Alliance 'fin.xxx' and 'Unique Message Identifier' formats.
         """
         print("\n[LCExtractor-Regex] Starting regex-based extraction...")
-
-        # --- Step 0: Log raw input ---
-        print("\n[LCExtractor] Starting extraction process... before PostProcessing\n", text[:500])
 
         # --- Step 1: Minimal OCR cleaning ---
         text_clean = sanitize_text(text)
@@ -198,61 +242,142 @@ class LCExtractor:
         # --- Step 3: Normalize OCR text further for detection ---
         text_norm = self._normalize_ocr_text_for_detection(text_clean)
 
-        # --- Step 4: Log cleaned text ---
-        print("\n[LCExtractor] Starting extraction process... after PostProcessing\n", text_norm[:500])
+        # --- Step 4: Detect SWIFT MT message type (ROBUST VERSION) ---
+        mt_type = None
 
-        # --- Step 5: Detect SWIFT MT message type ---
+        # Strategy A: Standard "Message type: 700"
         mt_type_match = re.search(r'Message\s*type[:]*\s*(\d{3})', text_norm, re.IGNORECASE)
-        mt_type = mt_type_match.group(1) if mt_type_match else None
 
-        # --- Step 6: Detect amendment tags (26E or Number of Amendment) ---
+        print(f"[LCExtractor-Regex] MT type detection asjkfas: {mt_type}")
+        # Strategy B: Alliance "Identifier: fin.700"
+        alliance_match = re.search(r'Identifier[:]*\s*fin\.?\s*(\d{3})', text_norm, re.IGNORECASE)
+        
+        # Strategy C: Alliance "Unique Message Identifier: ... 700 ..."
+        unique_match = re.search(r'Unique\s*Message\s*Identifier:.*?\s(\d{3})\s', text_norm, re.IGNORECASE | re.DOTALL)
+
+        if mt_type_match:
+            mt_type = mt_type_match.group(1)
+        elif alliance_match:
+            mt_type = alliance_match.group(1)
+            print(f"[LCExtractor] ✓ Detected MT{mt_type} via Alliance Identifier")
+        elif unique_match:
+            mt_type = unique_match.group(1)
+            print(f"[LCExtractor] ✓ Detected MT{mt_type} via Unique Message ID")
+
+        # Strategy D: Expansion Title Fallback
+        if not mt_type:
+            if "Issue of a Documentary Credit" in text_norm:
+                mt_type = "700"
+            elif "Amendment to a Documentary Credit" in text_norm:
+                mt_type = "707"
+
+        # --- Step 5: STRICT Document Type Detection ---
+        # RULE: LC = MT700 or MT701 (no 26E tag)
+        #       AMENDMENT = MT707 AND has 26E tag
         is_amendment = False
-        if mt_type in ["707", "MT707"]:
-            if re.search(r'26E|Number\s*of\s*Amendment', text_norm, re.IGNORECASE):
+        
+        if mt_type == "707":
+            # MT707 - Check for amendment marker (support optional F prefix for Alliance)
+            if re.search(r'F?26E[:|\s]|Number\s*of\s*Amendment', text_norm, re.IGNORECASE):
                 is_amendment = True
-                print(f"[LCExtractor] Amendment detected via 26E tag")
+                print(f"[LCExtractor] ✓ Detected AMENDMENT MT707 (has 26E tag)")
+            else:
+                print(f"[LCExtractor] ⚠ WARNING: MT707 without 26E tag, treating as LC")
+                is_amendment = False
+        
+        elif mt_type in ["700", "701"]:
+            # MT700/701 - ALWAYS LC, never amendment
+            is_amendment = False
+            print(f"[LCExtractor] ✓ Detected LC MT{mt_type}")
+        
+        else:
+            # Unknown or missing MT type
+            if mt_type:
+                print(f"[LCExtractor] ⚠ Unknown MT type: {mt_type}")
+            else:
+                print(f"[LCExtractor] ⚠ No MT type found")
+            is_amendment = False
 
-        # --- Step 7: Route extraction ---
+        # --- Step 6: Route extraction ---
         if mt_type:
             if is_amendment:
-                print(f"[LCExtractor] Routing to Amendment extractor (MT{mt_type})")
+                print(f"[LCExtractor] → Routing to Amendment extractor (MT{mt_type})")
                 return self._extract_amendment(text_norm, mt_type)
             else:
-                print(f"[LCExtractor] Routing to LC extractor (MT{mt_type})")
+                print(f"[LCExtractor] → Routing to LC extractor (MT{mt_type})")
                 return self._extract_lc(text_norm, mt_type)
 
-        # --- Step 8: Fallback for supporting documents ---
-        print(f"[LCExtractor] No MT type found - treating as supporting document")
+        # --- Step 7: Fallback for supporting documents ---
+        print(f"[LCExtractor] → Treating as supporting document")
         return self._categorize_supporting_doc(text_norm)
+    
+    
+    
+    
+    
     
     # ========================================================================
     # LLM-BASED EXTRACTION METHODS
     # ========================================================================
     
     def _detect_document_type_llm(self, text: str) -> str:
-        """Detect document type using LLM"""
-        prompt = f"""Analyze this document and identify its type.
+        """
+        Detect document type using STRICT SWIFT MT validation
+        
+        RULES (NON-NEGOTIABLE):
+        - LC: MT700 or MT701 (does NOT have 26E tag)
+        - AMENDMENT: MT707 AND has 26E tag (Number of Amendment)
+        - SUPPORTING: Everything else
+        """
+        # First, check for SWIFT message type
+        mt_type_match = re.search(r'Message\s*type[:]*\s*(\d{3})', text, re.IGNORECASE)
+        mt_type = mt_type_match.group(1) if mt_type_match else None
+        
+        print(f"[LCExtractor-LLM] MT Type found: {mt_type}")
+        
+        # STRICT VALIDATION
+        if mt_type == "707":
+            # MT707 - check for amendment marker (26E)
+            has_26E = bool(re.search(r'26E[:|\s]|Number\s*of\s*Amendment', text, re.IGNORECASE))
+            print(f"[LCExtractor-LLM] MT707 has 26E tag: {has_26E}")
+            
+            if has_26E:
+                return "AMENDMENT"
+            else:
+                # MT707 without 26E - treat as LC (unusual but possible)
+                print("[LCExtractor-LLM] ⚠ WARNING: MT707 without 26E tag, treating as LC")
+                return "LC"
+        
+        elif mt_type in ["700", "701"]:
+            # MT700/701 - these are ALWAYS LC, never amendments
+            # Even if they have confusing text, trust the message type
+            print(f"[LCExtractor-LLM] ✓ MT{mt_type} = LC (guaranteed)")
+            return "LC"
+        
+        else:
+            # No valid MT type - use LLM to classify
+            print(f"[LCExtractor-LLM] No valid MT type, using LLM classification")
+            prompt = f"""Analyze this document and identify its type.
 
 Document text:
 {text[:1000]}
 
 Question: Is this document a:
-1. Letter of Credit (LC) - SWIFT MT700
-2. Amendment to LC - SWIFT MT707 (look for "26E" or "Number of Amendment")
+1. Letter of Credit (LC) - SWIFT MT700 or MT701
+2. Amendment to LC - SWIFT MT707 with tag 26E (Number of Amendment)
 3. Supporting document (Invoice, Bill of Lading, Certificate, etc.)
 
 Answer with only one word: LC, AMENDMENT, or SUPPORTING"""
 
-        response = self._generate_llm(prompt, max_length=10)
-        response = response.strip().upper()
-        
-        # Fallback regex detection
-        if "AMENDMENT" in response or re.search(r'26E|Number\s*of\s*Amendment', text, re.IGNORECASE):
-            return "AMENDMENT"
-        elif "LC" in response or re.search(r'Message\s*type:\s*700', text, re.IGNORECASE):
-            return "LC"
-        else:
-            return "SUPPORTING"
+            response = self._generate_llm(prompt, max_length=10)
+            response = response.strip().upper()
+            
+            if "AMENDMENT" in response:
+                return "AMENDMENT"
+            elif "LC" in response:
+                return "LC"
+            else:
+                return "SUPPORTING"
     
     def _extract_lc_llm(self, text: str) -> LCDocument:
         """Extract LC fields using LLM"""
@@ -370,7 +495,9 @@ Answer with only one word: LC, AMENDMENT, or SUPPORTING"""
         print(f"  - Amendment Date: {doc.amendment_date}")
         print(f"  - Sender: {doc.sender}")
         print(f"  - Receiver: {doc.receiver}")
+        print(f"  - Changes: {len(doc.additional_conditions)} + {len(doc.documents_required)}")
         
+
         return doc
     
     def _extract_field_llm(self, text: str, instruction: str, max_length: int = 50) -> str:
@@ -492,133 +619,58 @@ Fields:"""
     # ========================================================================
     # REGEX-BASED EXTRACTION METHODS (LEGACY)
     # ========================================================================
-
-        # --- Step 0: Log raw input ---
-        print("\n[LCExtractor] Starting extraction process... before PostProcessing\n", text)
-
-        # --- Step 1: Minimal OCR cleaning ---
-        text_clean = sanitize_text(text)
-
-        # --- Step 2: Fix squashed tags, spacing, and preserve line breaks ---
-        text_clean = self._prepare_text_for_extraction(text_clean)
-
-        # --- Step 3: Normalize OCR text further for detection ---
-        text_norm = self._normalize_ocr_text_for_detection(text_clean)
-
-        # --- Step 4: Log cleaned text ---
-        print("\n[LCExtractor] Starting extraction process... after PostProcessing\n", text_norm)
-
-        # --- Step 5: Detect SWIFT MT message type ---
-        mt_type_match = re.search(r'Message\s*type[:]*\s*(\d{3})', text_norm, re.IGNORECASE)
-        mt_type = mt_type_match.group(1) if mt_type_match else None
-
-        # --- Step 6: Detect amendment tags (26E or Number of Amendment) ---
-        is_amendment = False
-        if mt_type in ["707", "MT707"]:
-            if re.search(r'26E|Number\s*of\s*Amendment', text_norm, re.IGNORECASE):
-                is_amendment = True
-                print(f"[LCExtractor] Amendment detected via 26E tag")
-
-        # --- Step 7: Route extraction ---
-        if mt_type:
-            if is_amendment:
-                print(f"[LCExtractor] Routing to Amendment extractor (MT{mt_type})")
-                return self._extract_amendment(text_norm, mt_type)
-            else:
-                print(f"[LCExtractor] Routing to LC extractor (MT{mt_type})")
-                return self._extract_lc(text_norm, mt_type)
-
-        # --- Step 8: Fallback for supporting documents ---
-        print(f"[LCExtractor] No MT type found - treating as supporting document")
-        return self._categorize_supporting_doc(text_norm)
-
     
     def _prepare_text_for_extraction(self, text: str) -> str:
-        """
-        Clean OCR text while preserving tags and line breaks for reliable amendment detection.
-
-        Steps:
-        1. Normalize common OCR spacing issues (remove extra spaces inside tags)
-        2. Ensure each SWIFT tag starts on a new line
-        3. Fix squashed references (e.g., "I LC 07860544623 PK" → "ILC07860544623PK")
-        4. Preserve multi-line addresses and long field values
-        5. Fix split LC numbers across lines
-        """
+        """Clean OCR text while preserving tags and line breaks"""
         if not text:
             return ""
 
-        # Step 1: Fix OCR splits inside known tags and references
+        # Fix OCR splits
         text = re.sub(r'\bI\s+LC\b', 'ILC', text, flags=re.IGNORECASE)
         text = re.sub(r'sw\s*if\s*t?', 'swift', text, flags=re.IGNORECASE)
         text = re.sub(r'NON\s+REF', 'NONREF', text, flags=re.IGNORECASE)
         
-        # Step 1.5: Fix spaced LC numbers BEFORE line processing
-        # Pattern: "ILC 07860544623 PK" or "I LC 07860544623 PK"
-        # This captures: ILC + (spaces + digits/letters)+ and removes all spaces
+        # Fix spaced LC numbers
         text = re.sub(r'(ILC)\s+(\d{11})\s+([A-Z]{2})', r'\1\2\3', text, flags=re.IGNORECASE)
         text = re.sub(r'(ILC)\s+(\d{10,}[A-Z]{0,2})', r'\1\2', text, flags=re.IGNORECASE)
-        
-        # Fix split LC numbers that span lines (e.g., "ILC 078605446\n23PK")
         text = re.sub(r'(ILC\s*\d+)\s*\n\s*([A-Z0-9]+)', r'\1\2', text, flags=re.IGNORECASE)
         
-        # Fix dates split across lines (e.g., "2\n30509" -> "230509")
+        # Fix dates split across lines
         text = re.sub(r'(\d)\s*\n\s*(\d{5})', r'\1\2', text)
         
-        # Fix spaced SWIFT codes (e.g., "HAB B PK KA 786" -> "HABBPKKA786")
+        # Fix spaced SWIFT codes
         text = re.sub(r'([A-Z]{3,4})\s+([A-Z]{2})\s+([A-Z]{2})\s+([A-Z0-9]{3})', r'\1\2\3\4', text)
-        text = re.sub(r'([A-Z]{4})\s+([A-Z]{2})\s+([A-Z]{2})\s+([A-Z]{3})', r'\1\2\3\4', text)
-        
-        # Fix spaced BIC codes (e.g., "QN B AQ A QAX XX" -> "QNBAQAQAXXX")
         text = re.sub(r'([A-Z]{2})\s+([A-Z]{2})\s+([A-Z]{2})\s+([A-Z]{2})\s+([A-Z]{3})', r'\1\2\3\4\5', text)
 
-        # Step 2: Ensure each SWIFT tag starts on a new line
+        # Ensure SWIFT tags start on new lines
         tags = ['Message type', 'To Institution', '20:', '21:', '23:', '26E:', '30:', 
                 '31C:', '22A:', '46B:', '47B:', '52A:', 'Priority:', '27:', '45B:']
         for tag in tags:
-            # Add newline before tag if not already at start of line
             text = re.sub(rf'(?<!\n)({re.escape(tag)})', r'\n\1', text, flags=re.IGNORECASE)
 
-        # Step 3: Remove excessive spaces but preserve line breaks
+        # Clean up spaces
         lines = text.splitlines()
         cleaned_lines = []
         for line in lines:
-            # Remove leading/trailing spaces
             line = line.strip()
-            # Collapse multiple spaces inside the line
             line = re.sub(r'\s+', ' ', line)
             if line:
                 cleaned_lines.append(line)
 
         return '\n'.join(cleaned_lines)
 
-
     def _normalize_ocr_text_for_detection(self, text: str) -> str:
-        """
-        Normalize OCR text for amendment detection WITHOUT collapsing important spaces.
-        - Fixes extra spaces in numeric/letter tags (e.g., '2 6 E' -> '26E')
-        - Keeps line breaks to separate tags
-        - Keeps spaces after colons intact
-        """
+        """Normalize OCR text for detection"""
         normalized = text
-
-        # Fix OCR-split tags: 2 6 E -> 26E, 4 7 B -> 47B, 3 1 C -> 31C
         normalized = re.sub(r'(\d)\s+([A-Z])\s*:', r'\1\2:', normalized, flags=re.IGNORECASE)
-
-        # Fix OCR-split tags with extra spaces before colon: 26E : -> 26E:
         normalized = re.sub(r'([0-9A-Z]+)\s*:\s*', r'\1: ', normalized)
-
-        # Remove multiple spaces, but keep line breaks
         normalized = re.sub(r'[ \t]{2,}', ' ', normalized)
-
         return normalized
 
     def _categorize_supporting_doc(self, text: str, file_name: str = "Unknown File") -> LCDocument:
-        """
-        Categorize non-SWIFT supporting documents (Invoice, BL, Certificates, etc.)
-        """
+        """Categorize non-SWIFT supporting documents"""
         classification = self.detector.categorize_supporting_doc(text, file_name)
         
-        # Create a unified LCDocument (NO LC NUMBER YET)
         doc = LCDocument(
             document_type=classification['type'],
             lc_number="PENDING",
@@ -629,7 +681,6 @@ Fields:"""
             documents_required=[]
         )
 
-        # Attach classification metadata
         doc.is_supporting = True
         doc.file_name = file_name
         doc.classification = {
@@ -640,597 +691,227 @@ Fields:"""
 
         return doc
 
+    
+    
+    
     def _extract_lc(self, text: str, mt_type: Optional[str] = None) -> LCDocument:
-        """Extract LC from ANY text format"""
+        """Extract LC from ANY text format, including Alliance Header and standard SWIFT."""
+        print(f"\n[LC Extract] ========== STARTING LC EXTRACTION ==========")
+        print(f"[LC Extract] Text length: {len(text)} characters")
+        print(f"[LC Extract] MT Type: {mt_type}")
+        print(f"[LC Extract] Text preview (first 1000 chars):\n{text[:1000]}\n")
+        
         doc = LCDocument(
             document_type="LC",
             lc_number="",
             message_type=f"MT{mt_type}" if mt_type else "MT700",
             raw_text=text
         )
+
+        # --- Step 1: Metadata Extraction (Alliance Header & Patterns) ---
+        print(f"[LC Extract] Attempting to extract LC metadata...")
         
-        # Extract LC number - MULTIPLE FORMAT PATTERNS
-        lc_patterns = [
-            r'20:\s*Sender\'?s\s*Reference\s*([A-Z0-9]+)',
-            r'20:\s*Documentary Credit Number\s+([A-Z0-9]+)',
-            r':20:\s*([A-Z0-9]+)',
-            r'Documentary Credit Number\s+([A-Z0-9]+)',
-            r'20:\s*([A-Z0-9]{10,})',  # Catch any long alphanumeric after 20:
-        ]
-        for pattern in lc_patterns:
-            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-            if match:
-                raw_lc = match.group(1)
-                doc.lc_number = normalize_lc_number(raw_lc)
-                print(f"[LC Extract] Found LC number: {doc.lc_number}")
-                break
+        header_lc = re.search(r'Transaction Reference[:\s]+([A-Z0-9]+)', text, re.I)
+        tag_lc = re.search(r'F?20[:\s]+(?:Documentary Credit Number\s+)?([A-Z0-9]+)', text, re.I)
         
-        # Extract issue date
-        date_patterns = [
-            r'31C:\s*Date of Issue\s*(\d{6})',
-            r':31C:\s*(\d{6})',
-            r'31C:\s*(\d{6})',
-        ]
-        for pattern in date_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                doc.issue_date = match.group(1).strip()
-                break
+        if header_lc:
+            doc.lc_number = normalize_lc_number(header_lc.group(1).strip())
+            print(f"[LC Extract] ✓ Found LC Number in Header: {doc.lc_number}")
+        elif tag_lc:
+            doc.lc_number = normalize_lc_number(tag_lc.group(1).strip())
+            print(f"[LC Extract] ✓ Found LC Number in Tags: {doc.lc_number}")
+
+        sender_match = re.search(r'Sender[:\s]+([A-Z0-9]{8,11})', text, re.I)
+        if sender_match:
+            doc.sender = sender_match.group(1).strip()
+
+        receiver_match = re.search(r'Receiver[:\s]+([A-Z0-9]{8,11})', text, re.I)
+        if receiver_match:
+            doc.receiver = receiver_match.group(1).strip()
+
+        date_match = re.search(r'F?31C[:\s]+(?:Date of Issue\s*)?(\d{6,})', text, re.I)
+        if date_match:
+            doc.issue_date = date_match.group(1).strip()
+
+        # --- Step 2: Robust Field Extraction ---
+        print(f"\n[LC Extract] Extracting all SWIFT fields...")
         
-        # Extract sender
-        sender_patterns = [
-            r'52A:\s*Issuing Bank\s*([A-Z0-9]{8,11})',
-            r':52A:\s*([A-Z0-9]{8,11})',
-            r'52A:\s*([A-Z0-9]{8,11})',
-        ]
-        for pattern in sender_patterns:
-            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-            if match:
-                doc.sender = match.group(1).strip()
-                break
+        # Capture tags (optional F) and content until next tag or footer
+        field_pattern = r"(F?\d{2}[A-Z]?):\s*(.*?)(?=\s*F?\d{2}[A-Z]?:|Page\s*\d+|Unique Message|$)"
+        all_matches = re.findall(field_pattern, text, re.DOTALL)
         
-        # Extract receiver
-        receiver_patterns = [
-            r'To Institution:\s*([A-Z0-9]{8,11})',
-        ]
-        for pattern in receiver_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                doc.receiver = match.group(1).strip()
-                break
+        field_names = {
+            "20": "Documentary Credit Number", "27": "Sequence of Total",
+            "31C": "Date of Issue", "31D": "Date and Place of Expiry",
+            "32B": "Currency Code, Amount", "40A": "Form of Documentary Credit",
+            "45A": "Description of Goods", "46A": "Documents Required",
+            "47A": "Additional Conditions", "50": "Applicant", "59": "Beneficiary"
+        }
+
+        extracted_fields = {}
+        for tag, content in all_matches:
+            clean_tag = re.sub(r'^F', '', tag).strip()
+            
+            # Clean content and artifacts
+            val = content.strip()
+            val = re.sub(r'^(Narrative|Number|Amount|Currency)[:\s]+', '', val, flags=re.I)
+            val = re.sub(r'\s+F$', '', val) 
+            
+            field_key = f":{clean_tag}:"
+            
+            # FIX: Use SWIFTField class here instead of LCExtractor
+            extracted_fields[field_key] = SWIFTField(
+                field_code=field_key,
+                field_name=field_names.get(clean_tag, f"Field {clean_tag}"),
+                value=val.replace('\n', ' ').strip(),
+                raw_text=content.strip()
+            )
         
-        # Extract all fields
-        doc.fields = self.field_extractor.extract_all_fields(text)
+        doc.fields = extracted_fields
         self.current_doc_fields = doc.fields
+        print(f"[LC Extract] Extracted {len(doc.fields)} fields")
+
+        # --- Step 3: Extract Clauses ---
+        # Clauses extraction logic works here because doc.fields contains objects with .raw_text
+        print(f"\n[LC Extract] Extracting clauses...")
         
-        # Extract additional conditions (47A)
         doc.additional_conditions = self.field_extractor.extract_numbered_points_robust(
-            text, ['47A:', ':47A:'], doc.fields
+            text, ['47A:', ':47A:', 'F47A:'], doc.fields
         )
+        print(f"[LC Extract] Additional conditions: {len(doc.additional_conditions)} items")
         
-        # Extract documents required (46A)
         doc.documents_required = self.field_extractor.extract_numbered_points_robust(
-            text, ['46A:', ':46A:'], doc.fields
+            text, ['46A:', ':46A:', 'F46A:'], doc.fields
         )
+        print(f"[LC Extract] Documents required: {len(doc.documents_required)} items")
+
+        # --- Step 4: JSON Serialization Conversion ---
+        # Convert SWIFTField objects back into dictionaries so json.dump() doesn't fail
+        final_serialized_fields = {}
+        for key, field_obj in doc.fields.items():
+            if hasattr(field_obj, 'to_dict'):
+                final_serialized_fields[key] = field_obj.to_dict()
+            else:
+                final_serialized_fields[key] = field_obj
+
+        doc.fields = final_serialized_fields
         
+        print(f"\n[LC Extract] ========== EXTRACTION COMPLETE ==========")
         return doc
     
+    
+    
+    
+    
+    
     def _extract_amendment(self, text: str, mt_type: Optional[str] = None) -> LCDocument:
-        """Extract amendment with 'Squash-Proof' regex for messy OCR and multi-line splits"""
-        print(f"[Amendment Extract] Starting amendment extraction...")
+        """
+        Extract amendment supporting both standard SWIFT and Alliance 'F-prefixed' formats.
+        Robust against system labels like 'Narrative:', 'Code:', and 'Lines2to100:'.
+        """
+        print(f"[Amendment Extract] Starting robust amendment extraction...")
         
         doc = LCDocument(
             document_type="AMENDMENT",
             lc_number="",
             message_type=f"MT{mt_type}" if mt_type else "MT707",
             raw_text=text
-        )
-        
-        # 1. LC Number (Tag 20) - Handle multi-line splits AND spaces
-        # First, let's do one more pass to clean up the LC number area
-        lc_section = re.search(r'20:\s*Sender\'?s\s*Reference(.{0,50})', text, re.IGNORECASE | re.DOTALL)
-        if lc_section:
-            lc_text = lc_section.group(1)
-            print(f"[Amendment Extract] LC section found: '{lc_text}'")
-            # Remove ALL spaces from the LC number
-            lc_cleaned = re.sub(r'\s+', '', lc_text)
-            # Extract clean LC number
-            lc_match = re.search(r'(ILC\d{11}[A-Z]{2})', lc_cleaned, re.IGNORECASE)
-            if lc_match:
-                doc.lc_number = normalize_lc_number(lc_match.group(1))
-                print(f"[Amendment Extract] Found LC number: {doc.lc_number}")
-        
-        # Fallback patterns if the above didn't work
-        if not doc.lc_number:
-            lc_patterns = [
-                # Try to find ILC followed by 11 digits and 2 letters (with or without spaces)
-                r'20:.*?(ILC\s*\d{11}\s*[A-Z]{2})',
-                r'(ILC\s*\d{11}\s*[A-Z]{2})',
-                # Standard format
-                r'20:\s*Sender\'?s\s*Reference\s*([A-Z0-9]+)',
-                # Compact format
-                r'20:\s*([A-Z]{3}\d{11,}[A-Z]{2})',
-                # Flexible fallback
-                r'20:.*?([A-Z]{3}\d{10,}[A-Z]*)',
-            ]
+        )   
+
+        # --- Helper for Cleaning OCR Artifacts & System Labels ---
+        def sanitize_content(val: str) -> str:
+            # 1. Basic OCR character cleaning
+            val = val.replace('’', "'").replace('‘', "'").replace('“', '"').replace('”', '"')
             
-            for pattern in lc_patterns:
-                match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-                if match:
-                    raw_lc = match.group(1).strip()
-                    # Remove all spaces from the captured LC number
-                    raw_lc = re.sub(r'\s+', '', raw_lc)
-                    doc.lc_number = normalize_lc_number(raw_lc)
-                    print(f"[Amendment Extract] Found LC number (fallback): {doc.lc_number} (raw: {raw_lc})")
-                    break
+            # 2. Remove Alliance system labels (e.g., 'Narrative:', 'Expansion:')
+            # This prevents system noise from being saved as part of the LC clause
+            system_labels = [
+                "Additional Conditions", "Documents Required", "Description of Goods",
+                "Number:", "Expansion:", "Name and Address:", "Code:", "Narrative:", 
+                "Lines2to100:", "Lines 2-100:", "Total:"
+            ]
+            for label in system_labels:
+                val = re.sub(rf"{label}", "", val, flags=re.IGNORECASE)
+            
+            # 3. Strip non-ASCII blobs/emojis
+            val = val.encode("ascii", "ignore").decode("ascii")
+            return val.strip()
+
+        # =========================================================
+        # Fuzzy Metadata Extraction (F-Prefix & System ID Support)
+        # =========================================================
         
-        if not doc.lc_number:
-            print(f"[Amendment Extract] WARNING: LC number not found!")
+        # 1. LC Number (Field 20 / F20)
+        # Support for standard 'ILC...' and system IDs like '0239ILU012702'
+        lc_match = re.search(r'F?20:.*?(?:Number)?\s*([A-Z0-9\s-]{8,25})', text, re.DOTALL | re.IGNORECASE)
+        if lc_match:
+            raw_lc = re.sub(r'\s+', '', lc_match.group(1))
+            doc.lc_number = normalize_lc_number(raw_lc)
+
+        # 2. Amendment Number (Field 26E / F26E)
+        am_match = re.search(r'F?26\s*E:.*?(?:Number.*?Amendment)?\s*(\d+)', text, re.IGNORECASE | re.DOTALL)
+        if am_match:
+            doc.amendment_number = am_match.group(1).strip().zfill(2)
+
+        # 3. Dates (Field 31C or 30 / F31C or F30)
+        # Supports '210906' and '2021 Sep 06'
+        issue_date_match = re.search(r'F?31\s*C:.*?(?:Date)?\s*([A-Z0-9\s-]{6,15})', text, re.IGNORECASE | re.DOTALL)
+        if issue_date_match:
+            doc.issue_date = re.sub(r'\s+', '', issue_date_match.group(1))
+
+        amend_date_match = re.search(r'F?30:.*?(?:Date)?\s*([A-Z0-9\s-]{6,15})', text, re.IGNORECASE | re.DOTALL)
+        if amend_date_match:
+            doc.amendment_date = re.sub(r'\s+', '', amend_date_match.group(1))
+
+        # 4. Sender/Receiver (BIC Extraction)
+        bic_matches = re.findall(r'([A-Z]{6}[A-Z0-9]{2,5})', text)
+        if len(bic_matches) >= 2:
+            doc.sender = bic_matches[0]
+            doc.receiver = bic_matches[1]
+
+        # =============================
+        # Extract Changes (The Body)
+        # =============================
+        # Updated Regex: Handles optional 'F' prefix. 
+        # Boundaries: Stops at next Tag, URL, Page marker, or Alliance System Header.
+        swift_field_pattern = r"(F?\d{2}[A-Z]?):\s*(.*?)(?=\s*F?\d{2}[A-Z]?:|http:|Page\s*\d+|Unique Message|Alliance Message|$)"
+        extracted_fields = re.findall(swift_field_pattern, text, re.DOTALL)
+        
+        doc.additional_conditions = []
+        doc.documents_required = []
+        
+        FOOTER_STOPPERS = ["http", "Page ", "Select 'Print'", "Fusion Trade", "Unique Message", "Delivery overdue"]
+
+        for tag, content in extracted_fields:
+            clean_val = sanitize_content(content)
+            
+            # Standardize Tag: Remove 'F' and whitespace (F 47 A -> 47A)
+            clean_tag = re.sub(r'^F', '', tag.strip().upper())
+            clean_tag = re.sub(r'\s+', '', clean_tag)
+
+            # Apply footer stoppers
+            for stopper in FOOTER_STOPPERS:
+                if stopper.lower() in clean_val.lower():
+                    clean_val = clean_val.split(stopper)[0].strip()
+
+            if not clean_val or len(clean_val) < 5: 
+                continue
                 
-        # 2. Amendment Number (Tag 26E)
-        amend_patterns = [
-            r'26E:\s*Number\s*of\s*Amendment\s*(\d+)',
-            r'26E:\s*(\d+)',
-            r'Number\s*of\s*Amendment\s*(\d+)',
-        ]
-        for pattern in amend_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                doc.amendment_number = match.group(1).strip()
-                print(f"[Amendment Extract] Found amendment number: {doc.amendment_number}")
-                break
+            change_obj = {
+                "field_code": clean_tag,
+                "content": clean_val,
+                "operation": "ADD" if "/ADD/" in clean_val.upper() else "CHANGE"
+            }
 
-        # 3. Amendment Date (Tag 30)
-        amend_date_patterns = [
-            r'30:\s*Date\s*of\s*Amendment\s*(\d{6})',
-            r'30:\s*(\d{6})',
-            r'Date\s*of\s*Amendment\s*(\d{6})',
-        ]
-        for pattern in amend_date_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                doc.amendment_date = match.group(1).strip()
-                print(f"[Amendment Extract] Found amendment date: {doc.amendment_date}")
-                break
+            # Map Alliance tags (47A/46A) and Standard tags (47B/46B) to unified lists
+            if clean_tag in ['47A', '47B']:
+                doc.additional_conditions.append(change_obj)
+            elif clean_tag in ['46A', '46B']:
+                doc.documents_required.append(change_obj)
+            elif clean_tag in ['45A', '45B', '79']:
+                doc.additional_conditions.append(change_obj)
 
-        # 4. Date of Issue (Tag 31C)
-        issue_patterns = [
-            r'31C:\s*Date\s*of\s*Issue\s*(\d{6})',
-            r'31C:\s*(\d{6})',
-        ]
-        for pattern in issue_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                doc.issue_date = match.group(1).strip()
-                print(f"[Amendment Extract] Found issue date: {doc.issue_date}")
-                break
-
-        # 5. Sender (Tag 52A) - Handle spaces in SWIFT codes
-        sender_patterns = [
-            r'52A:\s*Issuing\s*Bank\s*([A-Z0-9\s]{8,15})',
-            r'52A:\s*([A-Z0-9\s]{8,15})',
-        ]
-        for pattern in sender_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                sender_raw = match.group(1).strip()
-                # Remove spaces from SWIFT code
-                doc.sender = re.sub(r'\s+', '', sender_raw)
-                print(f"[Amendment Extract] Found sender: {doc.sender} (raw: {sender_raw})")
-                break
-
-        # 6. Receiver (To Institution) - Handle spaces in BIC codes
-        receiver_patterns = [
-            r'To\s*Institution:\s*([A-Z0-9\s]{8,15})',
-        ]
-        for pattern in receiver_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                receiver_raw = match.group(1).strip()
-                # Remove spaces from BIC code
-                doc.receiver = re.sub(r'\s+', '', receiver_raw)
-                print(f"[Amendment Extract] Found receiver: {doc.receiver} (raw: {receiver_raw})")
-                break
-
-        # 7. Field-by-Field and Clause Extraction
-        print(f"[Amendment Extract] Extracting all fields...")
-        doc.fields = self.field_extractor.extract_all_fields(text)
-        
-        print(f"[Amendment Extract] Extracting amendment changes...")
-        doc.additional_conditions = self.field_extractor.extract_amendment_changes_complete(text, ['47B'])
-        doc.documents_required = self.field_extractor.extract_amendment_changes_complete(text, ['46B'])
-        
-        desc_changes = self.field_extractor.extract_amendment_changes_complete(text, ['45B'])
-        if desc_changes:
-            for change in desc_changes:
-                change['field_code'] = '45B'
-            doc.additional_conditions.extend(desc_changes)
-        
-        print(f"[Amendment Extract] Extraction complete:")
-        print(f"  - LC Number: {doc.lc_number}")
-        print(f"  - Amendment Number: {doc.amendment_number}")
-        print(f"  - Amendment Date: {doc.amendment_date}")
-        print(f"  - Sender: {doc.sender}")
-        print(f"  - Receiver: {doc.receiver}")
-        print(f"  - Fields extracted: {len(doc.fields)}")
-        print(f"  - Additional conditions: {len(doc.additional_conditions)}")
-        print(f"  - Documents required: {len(doc.documents_required)}")
+        total_changes = len(doc.additional_conditions) + len(doc.documents_required)
+        print(f"[Amendment Extract] Complete: LC {doc.lc_number} | AM {doc.amendment_number} | Changes: {total_changes}")
         
         return doc
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# """
-# LC Extractor
-# Main extraction logic for LC and Amendment documents
-# """
-
-# import re
-# from typing import Optional, Any
-# from .models import LCDocument
-# from .constants import COMPREHENSIVE_FIELD_MAPPINGS, SWIFT_MESSAGE_TYPES
-# from .utils import normalize_lc_number, sanitize_text
-# from .field_extractor import FieldExtractor
-# from .document_detector import DocumentDetector
-# from services.ai_postProcessor import AIOCRPostProcessor
-
-
-# class LCExtractor:
-#     """Bulletproof Universal SWIFT MT Extractor with COMPLETE text extraction"""
-    
-#     def __init__(self):
-#         self.current_doc = None
-#         self.current_doc_fields = None
-#         self.field_mappings = COMPREHENSIVE_FIELD_MAPPINGS
-#         self.message_types = SWIFT_MESSAGE_TYPES
-#         self.ocr_cleaner = AIOCRPostProcessor()
-#         self.field_extractor = FieldExtractor()
-#         self.detector = DocumentDetector()
-
-#     def extract_from_text(self, text: str) -> Any:
-#         """
-#         Extract data or categorize supporting documents for later validation.
-#         Handles LC, Amendments, and Supporting documents with robust OCR text processing.
-#         """
-
-#         # --- Step 0: Log raw input ---
-#         print("\n[LCExtractor] Starting extraction process... before PostProcessing\n", text)
-
-#         # --- Step 1: Minimal OCR cleaning ---
-#         text_clean = sanitize_text(text)
-
-#         # --- Step 2: Fix squashed tags, spacing, and preserve line breaks ---
-#         text_clean = self._prepare_text_for_extraction(text_clean)
-
-#         # --- Step 3: Normalize OCR text further for detection ---
-#         text_norm = self._normalize_ocr_text_for_detection(text_clean)
-
-#         # --- Step 4: Log cleaned text ---
-#         print("\n[LCExtractor] Starting extraction process... after PostProcessing\n", text_norm)
-
-#         # --- Step 5: Detect SWIFT MT message type ---
-#         mt_type_match = re.search(r'Message\s*type[:]*\s*(\d{3})', text_norm, re.IGNORECASE)
-#         mt_type = mt_type_match.group(1) if mt_type_match else None
-
-#         # --- Step 6: Detect amendment tags (26E or Number of Amendment) ---
-#         is_amendment = False
-#         if mt_type in ["707", "MT707"]:
-#             if re.search(r'26E|Number\s*of\s*Amendment', text_norm, re.IGNORECASE):
-#                 is_amendment = True
-#                 print(f"[LCExtractor] Amendment detected via 26E tag")
-
-#         # --- Step 7: Route extraction ---
-#         if mt_type:
-#             if is_amendment:
-#                 print(f"[LCExtractor] Routing to Amendment extractor (MT{mt_type})")
-#                 return self._extract_amendment(text_norm, mt_type)
-#             else:
-#                 print(f"[LCExtractor] Routing to LC extractor (MT{mt_type})")
-#                 return self._extract_lc(text_norm, mt_type)
-
-#         # --- Step 8: Fallback for supporting documents ---
-#         print(f"[LCExtractor] No MT type found - treating as supporting document")
-#         return self._categorize_supporting_doc(text_norm)
-
-    
-#     def _prepare_text_for_extraction(self, text: str) -> str:
-#         """
-#         Clean OCR text while preserving tags and line breaks for reliable amendment detection.
-
-#         Steps:
-#         1. Normalize common OCR spacing issues (remove extra spaces inside tags)
-#         2. Ensure each SWIFT tag starts on a new line
-#         3. Fix squashed references (e.g., "I LC 07860544623 PK" → "ILC07860544623PK")
-#         4. Preserve multi-line addresses and long field values
-#         5. Fix split LC numbers across lines
-#         """
-#         if not text:
-#             return ""
-
-#         # Step 1: Fix OCR splits inside known tags and references
-#         text = re.sub(r'\bI\s*LC\b', 'ILC', text, flags=re.IGNORECASE)
-#         text = re.sub(r'sw\s*if\s*t?', 'swift', text, flags=re.IGNORECASE)
-#         text = re.sub(r'NON\s*REF', 'NONREF', text, flags=re.IGNORECASE)
-        
-#         # Fix split LC numbers that span lines (e.g., "ILC 078605446\n23PK")
-#         # This pattern looks for ILC followed by digits, then captures trailing digits/letters on next line
-#         text = re.sub(r'(ILC\s*\d+)\s*\n\s*([A-Z0-9]+)', r'\1\2', text, flags=re.IGNORECASE)
-        
-#         # Fix dates split across lines (e.g., "2\n30509" -> "230509")
-#         text = re.sub(r'(\d)\s*\n\s*(\d{5})', r'\1\2', text)
-
-#         # Step 2: Ensure each SWIFT tag starts on a new line
-#         tags = ['Message type', 'To Institution', '20:', '21:', '23:', '26E:', '30:', 
-#                 '31C:', '22A:', '46B:', '47B:', '52A:', 'Priority:', '27:', '45B:']
-#         for tag in tags:
-#             # Add newline before tag if not already at start of line
-#             text = re.sub(rf'(?<!\n)({re.escape(tag)})', r'\n\1', text, flags=re.IGNORECASE)
-
-#         # Step 3: Remove excessive spaces but preserve line breaks
-#         lines = text.splitlines()
-#         cleaned_lines = []
-#         for line in lines:
-#             # Remove leading/trailing spaces
-#             line = line.strip()
-#             # Collapse multiple spaces inside the line
-#             line = re.sub(r'\s+', ' ', line)
-#             if line:
-#                 cleaned_lines.append(line)
-
-#         return '\n'.join(cleaned_lines)
-
-
-#     def _normalize_ocr_text_for_detection(self, text: str) -> str:
-#         """
-#         Normalize OCR text for amendment detection WITHOUT collapsing important spaces.
-#         - Fixes extra spaces in numeric/letter tags (e.g., '2 6 E' -> '26E')
-#         - Keeps line breaks to separate tags
-#         - Keeps spaces after colons intact
-#         """
-#         normalized = text
-
-#         # Fix OCR-split tags: 2 6 E -> 26E, 4 7 B -> 47B, 3 1 C -> 31C
-#         normalized = re.sub(r'(\d)\s+([A-Z])\s*:', r'\1\2:', normalized, flags=re.IGNORECASE)
-
-#         # Fix OCR-split tags with extra spaces before colon: 26E : -> 26E:
-#         normalized = re.sub(r'([0-9A-Z]+)\s*:\s*', r'\1: ', normalized)
-
-#         # Remove multiple spaces, but keep line breaks
-#         normalized = re.sub(r'[ \t]{2,}', ' ', normalized)
-
-#         return normalized
-
-#     def _categorize_supporting_doc(self, text: str, file_name: str = "Unknown File") -> LCDocument:
-#         """
-#         Categorize non-SWIFT supporting documents (Invoice, BL, Certificates, etc.)
-#         """
-#         classification = self.detector.categorize_supporting_doc(text, file_name)
-        
-#         # Create a unified LCDocument (NO LC NUMBER YET)
-#         doc = LCDocument(
-#             document_type=classification['type'],
-#             lc_number="PENDING",
-#             message_type="NON_SWIFT",
-#             raw_text=text,
-#             fields={},
-#             additional_conditions=[],
-#             documents_required=[]
-#         )
-
-#         # Attach classification metadata
-#         doc.is_supporting = True
-#         doc.file_name = file_name
-#         doc.classification = {
-#             "confidence": classification['confidence'],
-#             "matched_keywords": classification['matched_keywords']
-#         }
-#         doc.status = "stored_for_validation"
-
-#         return doc
-
-#     def _extract_lc(self, text: str, mt_type: Optional[str] = None) -> LCDocument:
-#         """Extract LC from ANY text format"""
-#         doc = LCDocument(
-#             document_type="LC",
-#             lc_number="",
-#             message_type=f"MT{mt_type}" if mt_type else "MT700",
-#             raw_text=text
-#         )
-        
-#         # Extract LC number - MULTIPLE FORMAT PATTERNS
-#         lc_patterns = [
-#             r'20:\s*Sender\'?s\s*Reference\s*([A-Z0-9]+)',
-#             r'20:\s*Documentary Credit Number\s+([A-Z0-9]+)',
-#             r':20:\s*([A-Z0-9]+)',
-#             r'Documentary Credit Number\s+([A-Z0-9]+)',
-#             r'20:\s*([A-Z0-9]{10,})',  # Catch any long alphanumeric after 20:
-#         ]
-#         for pattern in lc_patterns:
-#             match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-#             if match:
-#                 raw_lc = match.group(1)
-#                 doc.lc_number = normalize_lc_number(raw_lc)
-#                 print(f"[LC Extract] Found LC number: {doc.lc_number}")
-#                 break
-        
-#         # Extract issue date
-#         date_patterns = [
-#             r'31C:\s*Date of Issue\s*(\d{6})',
-#             r':31C:\s*(\d{6})',
-#             r'31C:\s*(\d{6})',
-#         ]
-#         for pattern in date_patterns:
-#             match = re.search(pattern, text, re.IGNORECASE)
-#             if match:
-#                 doc.issue_date = match.group(1).strip()
-#                 break
-        
-#         # Extract sender
-#         sender_patterns = [
-#             r'52A:\s*Issuing Bank\s*([A-Z0-9]{8,11})',
-#             r':52A:\s*([A-Z0-9]{8,11})',
-#             r'52A:\s*([A-Z0-9]{8,11})',
-#         ]
-#         for pattern in sender_patterns:
-#             match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-#             if match:
-#                 doc.sender = match.group(1).strip()
-#                 break
-        
-#         # Extract receiver
-#         receiver_patterns = [
-#             r'To Institution:\s*([A-Z0-9]{8,11})',
-#         ]
-#         for pattern in receiver_patterns:
-#             match = re.search(pattern, text, re.IGNORECASE)
-#             if match:
-#                 doc.receiver = match.group(1).strip()
-#                 break
-        
-#         # Extract all fields
-#         doc.fields = self.field_extractor.extract_all_fields(text)
-#         self.current_doc_fields = doc.fields
-        
-#         # Extract additional conditions (47A)
-#         doc.additional_conditions = self.field_extractor.extract_numbered_points_robust(
-#             text, ['47A:', ':47A:'], doc.fields
-#         )
-        
-#         # Extract documents required (46A)
-#         doc.documents_required = self.field_extractor.extract_numbered_points_robust(
-#             text, ['46A:', ':46A:'], doc.fields
-#         )
-        
-#         return doc
-    
-#     def _extract_amendment(self, text: str, mt_type: Optional[str] = None) -> LCDocument:
-#         """Extract amendment with 'Squash-Proof' regex for messy OCR and multi-line splits"""
-#         print(f"[Amendment Extract] Starting amendment extraction...")
-        
-#         doc = LCDocument(
-#             document_type="AMENDMENT",
-#             lc_number="",
-#             message_type=f"MT{mt_type}" if mt_type else "MT707",
-#             raw_text=text
-#         )
-        
-#         # 1. LC Number (Tag 20) - Handle multi-line splits
-#         # Pattern now captures LC numbers that might be split across lines
-#         lc_patterns = [
-#             # Standard format
-#             r'20:\s*Sender\'?s\s*Reference\s*([A-Z0-9]+)',
-#             # Compact format
-#             r'20:\s*([A-Z]{3}\d{11,}[A-Z]{2})',  # ILC followed by 11+ digits then 2 letters
-#             # Flexible fallback
-#             r'20:.*?([A-Z]{3}\d{10,}[A-Z]*)',
-#         ]
-        
-#         for pattern in lc_patterns:
-#             match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-#             if match:
-#                 raw_lc = match.group(1).strip()
-#                 doc.lc_number = normalize_lc_number(raw_lc)
-#                 print(f"[Amendment Extract] Found LC number: {doc.lc_number} (raw: {raw_lc})")
-#                 break
-        
-#         if not doc.lc_number:
-#             print(f"[Amendment Extract] WARNING: LC number not found!")
-                
-#         # 2. Amendment Number (Tag 26E)
-#         amend_patterns = [
-#             r'26E:\s*Number\s*of\s*Amendment\s*(\d+)',
-#             r'26E:\s*(\d+)',
-#             r'Number\s*of\s*Amendment\s*(\d+)',
-#         ]
-#         for pattern in amend_patterns:
-#             match = re.search(pattern, text, re.IGNORECASE)
-#             if match:
-#                 doc.amendment_number = match.group(1).strip()
-#                 print(f"[Amendment Extract] Found amendment number: {doc.amendment_number}")
-#                 break
-
-#         # 3. Amendment Date (Tag 30)
-#         amend_date_patterns = [
-#             r'30:\s*Date\s*of\s*Amendment\s*(\d{6})',
-#             r'30:\s*(\d{6})',
-#             r'Date\s*of\s*Amendment\s*(\d{6})',
-#         ]
-#         for pattern in amend_date_patterns:
-#             match = re.search(pattern, text, re.IGNORECASE)
-#             if match:
-#                 doc.amendment_date = match.group(1).strip()
-#                 print(f"[Amendment Extract] Found amendment date: {doc.amendment_date}")
-#                 break
-
-#         # 4. Date of Issue (Tag 31C)
-#         issue_patterns = [
-#             r'31C:\s*Date\s*of\s*Issue\s*(\d{6})',
-#             r'31C:\s*(\d{6})',
-#         ]
-#         for pattern in issue_patterns:
-#             match = re.search(pattern, text, re.IGNORECASE)
-#             if match:
-#                 doc.issue_date = match.group(1).strip()
-#                 print(f"[Amendment Extract] Found issue date: {doc.issue_date}")
-#                 break
-
-#         # 5. Sender (Tag 52A)
-#         sender_patterns = [
-#             r'52A:\s*Issuing\s*Bank\s*([A-Z0-9]{8,11})',
-#             r'52A:\s*([A-Z0-9]{8,11})',
-#         ]
-#         for pattern in sender_patterns:
-#             match = re.search(pattern, text, re.IGNORECASE)
-#             if match:
-#                 doc.sender = match.group(1).strip()
-#                 print(f"[Amendment Extract] Found sender: {doc.sender}")
-#                 break
-
-#         # 6. Receiver (To Institution)
-#         receiver_patterns = [
-#             r'To\s*Institution:\s*([A-Z0-9]{8,11})',
-#         ]
-#         for pattern in receiver_patterns:
-#             match = re.search(pattern, text, re.IGNORECASE)
-#             if match:
-#                 doc.receiver = match.group(1).strip()
-#                 print(f"[Amendment Extract] Found receiver: {doc.receiver}")
-#                 break
-
-#         # 7. Field-by-Field and Clause Extraction
-#         print(f"[Amendment Extract] Extracting all fields...")
-#         doc.fields = self.field_extractor.extract_all_fields(text)
-        
-#         print(f"[Amendment Extract] Extracting amendment changes...")
-#         doc.additional_conditions = self.field_extractor.extract_amendment_changes_complete(text, ['47B'])
-#         doc.documents_required = self.field_extractor.extract_amendment_changes_complete(text, ['46B'])
-        
-#         desc_changes = self.field_extractor.extract_amendment_changes_complete(text, ['45B'])
-#         if desc_changes:
-#             for change in desc_changes:
-#                 change['field_code'] = '45B'
-#             doc.additional_conditions.extend(desc_changes)
-        
-#         print(f"[Amendment Extract] Extraction complete:")
-#         print(f"  - LC Number: {doc.lc_number}")
-#         print(f"  - Amendment Number: {doc.amendment_number}")
-#         print(f"  - Amendment Date: {doc.amendment_date}")
-#         print(f"  - Sender: {doc.sender}")
-#         print(f"  - Receiver: {doc.receiver}")
-#         print(f"  - Fields extracted: {len(doc.fields)}")
-#         print(f"  - Additional conditions: {len(doc.additional_conditions)}")
-#         print(f"  - Documents required: {len(doc.documents_required)}")
-        
-#         return doc

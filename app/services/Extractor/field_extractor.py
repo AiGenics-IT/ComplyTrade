@@ -96,6 +96,9 @@ class FieldExtractor:
                 
             content = existing_fields[lookup].raw_text
             
+            # CRITICAL: Clean page markers FIRST
+            content = re.sub(r'---\s*Page\s+\d+\s*---', ' ', content, flags=re.IGNORECASE)
+            
             # --- ROBUST POINT SPLITTING ---
             # This regex matches:
             # 1. (1) or (12)
@@ -147,8 +150,8 @@ class FieldExtractor:
     
     def extract_amendment_changes_complete(self, text: str, field_codes: List[str]) -> List[Dict]:
         """
-        Extracts ALL 5 changes from the provided PDF by iterating through every 
-        /ADD/, /DELETE/, or /REPALL/ tag found in each field.
+        Enhanced extraction of amendment changes from tags like 46B, 47B
+        Handles ALL formats including typos like CLAUE vs CLAUSE
         """
         changes = []
         fields = self.extract_all_fields(text)
@@ -160,50 +163,122 @@ class FieldExtractor:
                 
             content = fields[lookup].raw_text
             
-            # 1. Find ALL SWIFT operation tags in the field
+            # CRITICAL: Remove page markers FIRST
+            content = re.sub(r'---\s*Page\s+\d+\s*---', '', content, flags=re.IGNORECASE)
+            
+            # Remove URLs and junk
+            content = re.sub(r'http[s]?://[^\s]+', '', content)
+            content = re.sub(r'Select\s+[\'"]Print[\'"].*', '', content, flags=re.IGNORECASE)
+            content = re.sub(r'Formatted\s+Outward.*', '', content, flags=re.IGNORECASE)
+            
+            # Pattern 1: Try to find SWIFT operation tags (/ADD/, /DELETE/, /REPALL/)
             op_pattern = r'/(ADD|DELETE|REPALL)/'
             op_matches = list(re.finditer(op_pattern, content, re.IGNORECASE))
 
-            # 2. Extract and clean the segment for EACH operation found
-            for i, match in enumerate(op_matches):
-                op_type = match.group(1).upper()
-                start_pos = match.end()
-                # Segment ends at the next operation tag or the end of the field
-                end_pos = op_matches[i+1].start() if i < len(op_matches) - 1 else len(content)
-                
-                segment_text = content[start_pos:end_pos]
-                
-                # --- AGGRESSIVE CLEANING ---
-                # Remove repeating OCR noise and squashed "Lines2t" fragments
-                segment_text = re.sub(r'Lines\s?\d?\s?to\s?\d+:?', '', segment_text, flags=re.IGNORECASE)
-                segment_text = re.sub(r'Lines\s?\d?-\d+:?', '', segment_text, flags=re.IGNORECASE)
-                segment_text = re.sub(r'Lines\d+[a-z]*', '', segment_text, flags=re.IGNORECASE) 
-                segment_text = re.sub(r'Narrativel?:?', '', segment_text, flags=re.IGNORECASE)
-                segment_text = re.sub(r'Code\s?:?', '', segment_text, flags=re.IGNORECASE)
-                
-                # Standardize whitespace and remove leading/trailing noise symbols
-                segment_text = re.sub(r'\s+', ' ', segment_text).strip()
-                segment_text = re.sub(r'^[+)\s/:\-]+', '', segment_text) 
-
-                if segment_text:
-                    change = {
-                        'operation': op_type,
-                        'field_code': code.strip(":"),
-                        'narrative': segment_text,
-                        'change_text': segment_text
-                    }
-
-                    # 3. Detect Point Number (e.g., 1, 11, 19, 20, 21)
-                    point_match = re.search(
-                        r'(?:CLAU[S|E]*\s+)?NO\.?\s*(\d+)|FIELD\s+\d+[A-Z]?[-]?(\d+)', 
-                        segment_text, 
-                        re.IGNORECASE
-                    )
+            if op_matches:
+                # Extract changes with operation markers
+                for i, match in enumerate(op_matches):
+                    op_type = match.group(1).upper()
+                    start_pos = match.end()
+                    # Segment ends at the next operation tag or the end of the field
+                    end_pos = op_matches[i+1].start() if i < len(op_matches) - 1 else len(content)
                     
-                    if point_match:
-                        p_num = point_match.group(1) or point_match.group(2)
-                        change['point_number'] = int(p_num)
+                    segment_text = content[start_pos:end_pos]
                     
-                    changes.append(change)
+                    # Clean noise
+                    segment_text = self._clean_amendment_text(segment_text)
+                    
+                    if segment_text:
+                        change = {
+                            'operation': op_type,
+                            'field_code': code.strip(":"),
+                            'content': segment_text
+                        }
+
+                        # Extract clause/point number - handle typos like CLAUE
+                        point_match = re.search(
+                            r'(?:CLAU[ES]+\s+)?NO\.?\s*(\d+)|FIELD\s+\d+[A-Z]?[-]?(\d+)', 
+                            segment_text, 
+                            re.IGNORECASE
+                        )
+                        
+                        if point_match:
+                            p_num = point_match.group(1) or point_match.group(2)
+                            change['clause_number'] = p_num
+                        
+                        changes.append(change)
+            
+            else:
+                # Pattern 2: No operation markers found
+                cleaned_content = self._clean_amendment_text(content)
+                
+                if cleaned_content:
+                    # Try to detect clause numbers (handle typos)
+                    clause_pattern = r'(?:CLAU[ES]+\s+NO\.?\s*(\d+)|POINT\s+(\d+))'
+                    clause_matches = list(re.finditer(clause_pattern, cleaned_content, re.IGNORECASE))
+                    
+                    if clause_matches:
+                        # Split by clause numbers
+                        for i, match in enumerate(clause_matches):
+                            clause_num = match.group(1) or match.group(2)
+                            start_pos = match.end()
+                            end_pos = clause_matches[i+1].start() if i < len(clause_matches) - 1 else len(cleaned_content)
+                            
+                            clause_text = cleaned_content[start_pos:end_pos].strip()
+                            clause_text = self._clean_amendment_text(clause_text)
+                            
+                            if clause_text:
+                                changes.append({
+                                    'operation': 'MODIFY',
+                                    'field_code': code.strip(":"),
+                                    'clause_number': clause_num,
+                                    'content': clause_text
+                                })
+                    else:
+                        # No clause numbers - treat as single change
+                        changes.append({
+                            'operation': 'MODIFY',
+                            'field_code': code.strip(":"),
+                            'content': cleaned_content
+                        })
         
         return changes
+    
+    def _clean_amendment_text(self, text: str) -> str:
+        """
+        Clean OCR noise from amendment text - AGGRESSIVE cleaning
+        """
+        # Remove page markers
+        text = re.sub(r'---\s*Page\s+\d+\s*---', ' ', text, flags=re.IGNORECASE)
+        
+        # Remove URLs
+        text = re.sub(r'http[s]?://[^\s]+', '', text)
+        
+        # Remove print/header junk
+        text = re.sub(r'Select\s+[\'"]Print[\'"].*?output[\.]*', '', text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r'Formatted\s+Outward\s+SWIFT.*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'FUSION\s+TRADE\s+INNOVATION', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'Page\s+\d+\s+of\s+\d+', '', text, flags=re.IGNORECASE)
+        
+        # Remove bank letterhead fragments
+        text = re.sub(r'H\s*BL\s+HABIB\s+BANK', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\d+\s*th\s+Floor,?\s+Jubilee\s+Insurance\s+House', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'Karachi\s*-\s*Pakistan', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'Tel:\s*\d{4}-\d{3}-\d+', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'swift:\s*[A-Z\s]+\d+', '', text, flags=re.IGNORECASE)
+        
+        # Remove "Lines X to Y" OCR noise
+        text = re.sub(r'Lines\s?\d?\s?to\s?\d+:?', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'Lines\s?\d?-\d+:?', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'Lines\d+[a-z]*', '', text, flags=re.IGNORECASE) 
+        text = re.sub(r'Narrativel?:?', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'Code\s?:?', '', text, flags=re.IGNORECASE)
+        
+        # Standardize whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # Remove leading/trailing noise symbols
+        text = re.sub(r'^[+)\s/:\-]+', '', text)
+        text = re.sub(r'[+)\s/:\-]+$', '', text)
+        
+        return text
