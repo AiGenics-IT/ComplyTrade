@@ -357,6 +357,9 @@ def process_lc_job(job_id: str, file_paths: List[Path], ocr_backend: str = "tess
                     "issue_date": lc.get('issue_date', ''),
                     "sender": lc.get('sender', '')[:100] if lc.get('sender') else '',
                     "receiver": lc.get('receiver', '')[:100] if lc.get('receiver') else '',
+                    "applicant": lc.get('receiver', ''),  # Full applicant data
+                    "beneficiary": lc.get('beneficiary', ''),  # Full beneficiary data
+                    "amount": lc.get('amount', ''),
                     "amendments_applied": lc.get('amendments_applied', 0),
                     "last_amendment_date": lc.get('last_amendment_date', ''),
                     "conditions_count": len(lc.get('additional_conditions', [])),
@@ -488,7 +491,8 @@ async def root():
             "result": "/api/result/{job_id}",
             "download": "/api/download/{job_id}/{lc_number}",
             "list_jobs": "/api/jobs",
-            "interface": "/interface"
+            "interface": "/interface",
+            "checklist": "/checklist.html"
         }
     }
 
@@ -717,6 +721,20 @@ async def get_ui():
         return f.read()
 
 
+@app.get("/checklist.html", response_class=HTMLResponse)
+async def get_checklist():
+    """
+    Serves the checklist interface for LC verification
+    """
+    html_path = Path("view/checklist.html")
+    
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="Checklist file not found in 'view' folder")
+        
+    with open(html_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("LC Processing API Server (GOT-OCR + Validation)")
@@ -733,6 +751,7 @@ if __name__ == "__main__":
     print("  • Swagger UI: http://0.0.0.0:8000/docs")
     print("  • ReDoc: http://0.0.0.0:8000/redoc")
     print("  • Web Interface: http://0.0.0.0:8000/interface")
+    print("  • Checklist: http://0.0.0.0:8000/checklist.html")
     print("\n⌨️  Press CTRL+C to stop")
     print("=" * 70)
     
