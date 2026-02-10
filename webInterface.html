@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LC Processing System</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#1554ca 0%,#0d3b8a 100%);min-height:100vh;padding:20px}
+        .container{max-width:1200px;margin:0 auto}
+        .header{text-align:center;color:#fff;margin-bottom:30px}
+        .header h1{font-size:2.6em;margin-bottom:8px;text-shadow:2px 2px 4px rgba(0,0,0,.2)}
+        .header p{font-size:1.1em;opacity:.9}
+        .card{background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.25);padding:30px;margin-bottom:24px}
+        .upload-section{border:3px dashed #1554ca;border-radius:12px;padding:36px;text-align:center;background:#f8f9ff;transition:all .3s;cursor:pointer}
+        .upload-section:hover{border-color:#0d3b8a;background:#eef1ff}
+        .upload-section.dragover{border-color:#0d3b8a;background:#e0e5ff;transform:scale(1.01)}
+        .upload-icon{font-size:3.5em;margin-bottom:12px;color:#1554ca}
+        .file-input{display:none}
+        .btn{background:linear-gradient(135deg,#1554ca,#0d3b8a);color:#fff;padding:13px 36px;border:none;border-radius:8px;font-size:1.05em;cursor:pointer;transition:transform .2s,box-shadow .2s;margin:8px}
+        .btn:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(21,84,202,.4)}
+        .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+        .btn-secondary{background:linear-gradient(135deg,#f093fb,#f5576c)}
+        .btn-info{background:linear-gradient(135deg,#4facfe,#00c6fb)}
+        .btn-success{background:#28a745}
+        .file-item{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8f9ff;border-radius:8px;margin-bottom:8px;border-left:4px solid #1554ca}
+        .file-name{font-weight:500;color:#333}
+        .file-size{color:#666;font-size:.9em;margin-left:8px}
+        .remove-btn{background:#f5576c;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:.85em}
+        .remove-btn:hover{background:#e04b5f}
+        .status-card{display:none}.status-card.active{display:block}
+        .status-badge{display:inline-block;padding:6px 18px;border-radius:20px;font-weight:600;font-size:.85em;text-transform:uppercase}
+        .status-pending{background:#fff3cd;color:#856404}
+        .status-processing{background:#cce5ff;color:#004085}
+        .status-completed{background:#d4edda;color:#155724}
+        .status-failed{background:#f8d7da;color:#721c24}
+        .progress-bar{width:100%;height:26px;background:#e0e0e0;border-radius:13px;overflow:hidden;margin:16px 0}
+        .progress-fill{height:100%;background:linear-gradient(90deg,#1554ca,#4facfe);transition:width .3s;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;font-size:.85em}
+        .spinner{border:4px solid #f3f3f3;border-top:4px solid #1554ca;border-radius:50%;width:36px;height:36px;animation:spin 1s linear infinite;margin:16px auto}
+        @keyframes spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}
+        .result-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px}
+        .stat-box{background:#f8f9ff;padding:14px;border-radius:8px;text-align:center}
+        .stat-label{color:#666;font-size:.85em;margin-bottom:4px}
+        .stat-value{color:#1554ca;font-weight:700;font-size:1.4em}
+        .result-item{background:#f8f9ff;padding:18px;border-radius:10px;margin-bottom:12px;border-left:4px solid #1554ca}
+        .result-header{font-size:1.15em;font-weight:600;color:#333;margin-bottom:8px}
+        .download-btn{background:#28a745;color:#fff;padding:8px 16px;border:none;border-radius:5px;cursor:pointer;text-decoration:none;display:inline-block;margin-top:8px;margin-right:8px;font-size:.9em}
+        .download-btn:hover{background:#218838}
+        .error-message{background:#f8d7da;color:#721c24;padding:14px;border-radius:8px;margin-top:12px;border-left:4px solid #f5c6cb}
+        /* Modal */
+        .modal{display:none;position:fixed;z-index:1000;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.7)}
+        .modal.active{display:flex;align-items:center;justify-content:center}
+        .modal-content{background:#fff;border-radius:16px;width:92%;max-width:1100px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+        .modal-header{background:linear-gradient(135deg,#1554ca,#0d3b8a);color:#fff;padding:20px 28px;border-radius:16px 16px 0 0;display:flex;justify-content:space-between;align-items:center}
+        .modal-header h2{margin:0;font-size:1.5em}
+        .close-modal{background:none;border:none;color:#fff;font-size:1.8em;cursor:pointer;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center}
+        .close-modal:hover{background:rgba(255,255,255,.2)}
+        .modal-body{padding:24px}
+        .doc-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:24px;padding:16px;background:#f8f9ff;border-radius:8px}
+        .doc-summary-item{text-align:center;padding:12px;background:#fff;border-radius:6px}
+        .doc-summary-label{font-size:.8em;color:#666;margin-bottom:4px}
+        .doc-summary-value{font-size:1.3em;font-weight:700;color:#1554ca}
+        .doc-tabs{display:flex;gap:8px;margin-bottom:16px;border-bottom:2px solid #e0e0e0;flex-wrap:wrap}
+        .doc-tab{padding:10px 20px;background:none;border:none;border-bottom:3px solid transparent;cursor:pointer;font-size:.95em;font-weight:500;color:#666}
+        .doc-tab:hover{color:#1554ca}
+        .doc-tab.active{color:#1554ca;border-bottom-color:#1554ca}
+        .doc-tab-content{display:none}.doc-tab-content.active{display:block}
+        .doc-card{background:#f8f9ff;padding:16px;border-radius:8px;margin-bottom:12px;border-left:4px solid #1554ca}
+        .doc-card.lc{border-left-color:#4facfe}
+        .doc-card.amendment{border-left-color:#f093fb}
+        .doc-card.supporting{border-left-color:#28a745}
+        .doc-card.final_lc{border-left-color:#ffc107}
+        .doc-card.unclassified{border-left-color:#999}
+        .doc-card-header{display:flex;justify-content:space-between;align-items:start;margin-bottom:10px}
+        .doc-card-title{font-size:1.05em;font-weight:600;color:#333}
+        .doc-card-badge{padding:4px 10px;border-radius:12px;font-size:.75em;font-weight:600;text-transform:uppercase}
+        .badge-lc{background:#d1ecf1;color:#0c5460}
+        .badge-amendment{background:#f8d7da;color:#721c24}
+        .badge-supporting{background:#d4edda;color:#155724}
+        .badge-final_lc{background:#fff3cd;color:#856404}
+        .badge-unclassified{background:#e0e0e0;color:#666}
+        .doc-info{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:8px}
+        .doc-info-item{font-size:.85em}
+        .doc-info-label{color:#666;font-weight:500}
+        .doc-info-value{color:#333}
+        .amended-tag{display:inline-block;background:#fff3cd;color:#856404;padding:2px 8px;border-radius:4px;font-size:.75em;font-weight:600;margin-left:6px}
+        .progress-log{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:16px;margin-top:16px;max-height:400px;overflow-y:auto;font-family:'Fira Code',Consolas,monospace;font-size:.82em;line-height:1.6;display:none}
+        .progress-log.active{display:block}
+        .progress-log .log-line{padding:2px 0;white-space:pre-wrap;word-break:break-word}
+        .progress-log .stage-extraction{color:#38bdf8}
+        .progress-log .stage-ocr{color:#fbbf24}
+        .progress-log .stage-classification{color:#a78bfa}
+        .progress-log .stage-stamps{color:#f87171}
+        .progress-log .stage-extraction_fields{color:#34d399}
+        .progress-log .stage-upload{color:#94a3b8}
+        .progress-log .stage-summary{color:#22d3ee}
+        .progress-log .log-header{color:#64748b;font-size:.75em;margin-bottom:8px;border-bottom:1px solid #1e293b;padding-bottom:6px}
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>📄 LC Processing System</h1>
+        <p>Upload LC documents for automatic processing via AI OCR</p>
+    </div>
+
+    <div class="card">
+        <div class="upload-section" id="uploadSection">
+            <div class="upload-icon">📤</div>
+            <h2>Drop LC Documents Here</h2>
+            <p style="margin:16px 0;color:#666">or click to select files</p>
+            <input type="file" id="fileInput" class="file-input" multiple accept=".pdf,.jpg,.jpeg,.png">
+            <button class="btn" onclick="document.getElementById('fileInput').click()">Select Files</button>
+        </div>
+        <div id="fileList" style="margin-top:20px"></div>
+        <div style="text-align:center;margin-top:24px">
+            <button class="btn" id="processBtn" onclick="processDocuments()" disabled>Process Documents</button>
+            <button class="btn btn-secondary" onclick="clearAll()">Clear All</button>
+        </div>
+    </div>
+
+    <div class="card status-card" id="statusCard">
+        <h2>Processing Status</h2>
+        <div style="margin:16px 0"><span class="status-badge" id="statusBadge">Pending</span></div>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%">0%</div></div>
+        <p id="statusMessage" style="margin:12px 0;color:#666"></p>
+        <div class="spinner" id="spinner"></div>
+        <div class="progress-log" id="progressLog">
+            <div class="log-header">📡 Live Processing Log</div>
+            <div id="logLines"></div>
+        </div>
+        <div id="results"></div>
+    </div>
+</div>
+
+<!-- Docs Modal -->
+<div class="modal" id="docsModal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>📋 Identified Documents</h2>
+            <button class="close-modal" onclick="closeDocsModal()">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="doc-summary" id="docSummary"></div>
+            <div class="doc-tabs" id="docTabs"></div>
+            <div id="docTabsContent"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+const API_BASE = window.location.origin;
+let selectedFiles = [];
+let currentJobId = null;
+let statusCheckInterval = null;
+let currentResults = null;
+
+const fileInput = document.getElementById('fileInput');
+const uploadSection = document.getElementById('uploadSection');
+const processBtn = document.getElementById('processBtn');
+
+fileInput.addEventListener('change', e => handleFiles(Array.from(e.target.files)));
+
+uploadSection.addEventListener('dragover', e => { e.preventDefault(); uploadSection.classList.add('dragover'); });
+uploadSection.addEventListener('dragleave', () => uploadSection.classList.remove('dragover'));
+uploadSection.addEventListener('drop', e => { e.preventDefault(); uploadSection.classList.remove('dragover'); handleFiles(Array.from(e.dataTransfer.files)); });
+uploadSection.addEventListener('click', e => { if(!e.target.closest('button')) fileInput.click(); });
+
+function handleFiles(files) {
+    selectedFiles = [...selectedFiles, ...files];
+    updateFileList();
+    processBtn.disabled = selectedFiles.length === 0;
+}
+
+function updateFileList() {
+    const fl = document.getElementById('fileList');
+    if (!selectedFiles.length) { fl.innerHTML = ''; return; }
+    fl.innerHTML = `<h3 style="margin-bottom:12px">Selected Files (${selectedFiles.length})</h3>` +
+        selectedFiles.map((f, i) => `<div class="file-item"><div><span class="file-name">${f.name}</span><span class="file-size">(${(f.size/1024/1024).toFixed(2)} MB)</span></div><button class="remove-btn" onclick="removeFile(${i})">Remove</button></div>`).join('');
+}
+
+function removeFile(i) { selectedFiles.splice(i, 1); updateFileList(); processBtn.disabled = selectedFiles.length === 0; }
+function clearAll() { selectedFiles = []; fileInput.value = ''; updateFileList(); processBtn.disabled = true; document.getElementById('statusCard').classList.remove('active'); if (statusCheckInterval) clearInterval(statusCheckInterval); }
+
+async function processDocuments() {
+    if (!selectedFiles.length) return;
+    const formData = new FormData();
+    selectedFiles.forEach(f => formData.append('files', f));
+
+    processBtn.disabled = true;
+    lastLogCount = 0;
+    document.getElementById('logLines').innerHTML = '';
+    document.getElementById('progressLog').classList.remove('active');
+    const sc = document.getElementById('statusCard'); sc.classList.add('active');
+    document.getElementById('statusBadge').className = 'status-badge status-pending';
+    document.getElementById('statusBadge').textContent = 'Uploading';
+    document.getElementById('statusMessage').textContent = 'Uploading files...';
+    document.getElementById('spinner').style.display = 'block';
+    document.getElementById('results').innerHTML = '';
+
+    try {
+        const resp = await fetch(`${API_BASE}/api/upload`, { method: 'POST', body: formData });
+        if (!resp.ok) throw new Error('Upload failed');
+        const data = await resp.json();
+        currentJobId = data.job_id;
+        document.getElementById('statusMessage').textContent = 'Files uploaded. Processing via OCR API...';
+        statusCheckInterval = setInterval(checkStatus, 2500);
+    } catch (err) {
+        showError('Upload failed: ' + err.message);
+        processBtn.disabled = false;
+    }
+}
+
+let lastLogCount = 0;
+
+async function checkStatus() {
+    if (!currentJobId) return;
+    try {
+        const resp = await fetch(`${API_BASE}/api/status/${currentJobId}`);
+        const status = await resp.json();
+        updateStatusDisplay(status);
+        if (status.status === 'completed') { clearInterval(statusCheckInterval); await loadResults(); }
+        else if (status.status === 'failed') { clearInterval(statusCheckInterval); showError(status.message); }
+    } catch (err) { console.error('Status check failed:', err); }
+}
+
+function updateStatusDisplay(status) {
+    const badge = document.getElementById('statusBadge');
+    const msg = document.getElementById('statusMessage');
+    const pf = document.getElementById('progressFill');
+    badge.className = 'status-badge status-' + status.status;
+    badge.textContent = status.status.charAt(0).toUpperCase() + status.status.slice(1);
+    msg.textContent = status.message || 'Processing...';
+
+    if (status.status === 'processing') {
+        // Show progress log
+        const logContainer = document.getElementById('progressLog');
+        const logLines = document.getElementById('logLines');
+        logContainer.classList.add('active');
+
+        // Append only NEW log entries
+        const log = status.progress_log || [];
+        if (log.length > lastLogCount) {
+            for (let i = lastLogCount; i < log.length; i++) {
+                const entry = log[i];
+                const div = document.createElement('div');
+                div.className = `log-line stage-${entry.stage || 'upload'}`;
+                div.textContent = entry.message;
+                logLines.appendChild(div);
+            }
+            lastLogCount = log.length;
+            // Auto-scroll to bottom
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        // Estimate progress from stages
+        const stages = {'upload': 5, 'extraction': 15, 'ocr': 35, 'classification': 55, 'stamps': 80, 'extraction_fields': 90};
+        const currentStage = status.current_stage || 'upload';
+        const p = stages[currentStage] || 10;
+        pf.style.width = p + '%'; pf.textContent = currentStage.replace('_', ' ');
+    }
+}
+
+async function loadResults() {
+    document.getElementById('spinner').style.display = 'none';
+    const pf = document.getElementById('progressFill'); pf.style.width = '100%'; pf.textContent = '✅ Complete';
+    try {
+        const resp = await fetch(`${API_BASE}/api/result/${currentJobId}`);
+        currentResults = await resp.json();
+        displayResults(currentResults);
+        processBtn.disabled = false;
+    } catch (err) { showError('Failed to load results: ' + err.message); }
+}
+
+function displayResults(r) {
+    const div = document.getElementById('results');
+    const ts = r.type_summary || {};
+    const totalDocs = r.documents ? r.documents.filter(d => !['blank_page','header_page','unidentified','final_lc'].includes(d.object_type)).length : 0;
+
+    let html = '<h3 style="margin-bottom:16px">✅ Processing Complete</h3>';
+    html += `<div class="result-grid">
+        <div class="stat-box"><div class="stat-label">Total Pages</div><div class="stat-value">${r.total_pages||0}</div></div>
+        <div class="stat-box"><div class="stat-label">Documents Found</div><div class="stat-value">${totalDocs}</div></div>
+        <div class="stat-box"><div class="stat-label">LCs</div><div class="stat-value">${ts.lc||0}</div></div>
+        <div class="stat-box"><div class="stat-label">Amendments</div><div class="stat-value">${ts.amendment||0}</div></div>
+        <div class="stat-box"><div class="stat-label">Classification</div><div class="stat-value">${r.documents?r.documents[0]?'100%':'—':'—'}</div></div>
+    </div>`;
+
+    // Type summary chips
+    if (Object.keys(ts).length) {
+        html += '<div style="margin-bottom:20px;display:flex;flex-wrap:wrap;gap:6px">';
+        for (const [t, c] of Object.entries(ts)) {
+            if (['blank_page','header_page','unidentified'].includes(t)) continue;
+            const color = t==='lc'?'#4facfe':t==='amendment'?'#f093fb':t==='final_lc'?'#ffc107':'#28a745';
+            html += `<span style="background:${color}22;color:${color};padding:4px 12px;border-radius:12px;font-size:.85em;font-weight:600">${t}: ${c}</span>`;
+        }
+        html += '</div>';
+    }
+
+    // View all docs button
+    if (r.documents && r.documents.length > 0)
+        html += `<div style="text-align:center;margin-bottom:16px"><button class="btn btn-info" onclick="showDocsModal()">📋 View All Identified Documents (${r.documents.length})</button></div>`;
+
+    // Consolidated LCs
+    if (r.consolidated_lcs && r.consolidated_lcs.length > 0) {
+        html += '<h3 style="margin-bottom:12px">📑 Consolidated LCs</h3>';
+        r.consolidated_lcs.forEach(lc => {
+            const nAmend = lc.amendments_applied || 0;
+            const nDocs = Array.isArray(lc.documents_required) ? lc.documents_required.length : 0;
+            const nCond = Array.isArray(lc.additional_conditions) ? lc.additional_conditions.length : 0;
+            html += `<div class="result-item">
+                <div class="result-header">LC: ${lc.lc_number}</div>
+                <div class="result-grid">
+                    <div class="stat-box"><div class="stat-label">Issue Date</div><div class="stat-value" style="font-size:1em">${lc.original_issue_date||'N/A'}</div></div>
+                    <div class="stat-box"><div class="stat-label">Amendments</div><div class="stat-value">${nAmend}</div></div>
+                    <div class="stat-box"><div class="stat-label">Docs Required (46A)</div><div class="stat-value">${nDocs}</div></div>
+                    <div class="stat-box"><div class="stat-label">Conditions (47A)</div><div class="stat-value">${nCond}</div></div>
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+                    <a href="${API_BASE}${lc.download_url}" class="download-btn" download>📥 Download JSON</a>
+                    <button class="download-btn" style="background:#17a2b8" onclick="viewJson('${API_BASE}${lc.download_url}')">👁 View JSON</button>
+                    <button class="download-btn" style="background:#20c997" onclick="goToChecklist('${lc.lc_number}')">📋 Checklist</button>
+                </div>
+            </div>`;
+        });
+    }
+
+    if (r.errors && r.errors.length > 0) {
+        html += '<div class="error-message"><strong>Errors:</strong><ul>' + r.errors.map(e => `<li>${e}</li>`).join('') + '</ul></div>';
+    }
+    div.innerHTML = html;
+}
+
+// ─── Documents Modal ───
+function showDocsModal() {
+    if (!currentResults || !currentResults.documents) return;
+    const docs = currentResults.documents;
+    const modal = document.getElementById('docsModal');
+
+    const cats = {lc:[], amendment:[], final_lc:[], supporting:[], unclassified:[]};
+    docs.forEach(d => { const c = cats[d.category] || cats.supporting; c.push(d); });
+
+    document.getElementById('docSummary').innerHTML = Object.entries(cats).map(([k,v]) =>
+        `<div class="doc-summary-item"><div class="doc-summary-label">${k}</div><div class="doc-summary-value">${v.length}</div></div>`
+    ).join('');
+
+    const tabNames = ['all','lc','amendment','final_lc','supporting','unclassified'];
+    const tabCounts = { all: docs.length, ...Object.fromEntries(Object.entries(cats).map(([k,v])=>[k,v.length])) };
+    document.getElementById('docTabs').innerHTML = tabNames.map((t,i) =>
+        `<button class="doc-tab${i===0?' active':''}" onclick="switchDocTab('${t}',this)">${t} (${tabCounts[t]||0})</button>`
+    ).join('');
+
+    const tabDocs = { all: docs, ...cats };
+    document.getElementById('docTabsContent').innerHTML = tabNames.map((t,i) =>
+        `<div class="doc-tab-content${i===0?' active':''}" id="tab-${t}">${renderDocs(tabDocs[t])}</div>`
+    ).join('');
+
+    modal.classList.add('active');
+}
+
+function renderDocs(docs) {
+    if (!docs.length) return '<p style="text-align:center;color:#666;padding:30px">No documents</p>';
+    return docs.map(d => {
+        const data = d.data || {};
+        const cat = d.category || 'supporting';
+        const objType = d.object_type || '';
+        const conf = d.classification_confidence || data.classification_confidence || 0;
+        const stamps = d.has_stamps ? '✅ Stamps detected' : '';
+        const amended = data.Amendment_Number ? `<span class="amended-tag">Amendment #${data.Amendment_Number}</span>` : '';
+        const dcNum = data.DC_Number || data.Amendment_Number || '';
+        const preview = data.text_preview ? data.text_preview.substring(0, 120) + '...' : '';
+
+        return `<div class="doc-card ${cat}">
+            <div class="doc-card-header">
+                <div>
+                    <div class="doc-card-title">${objType.replace(/_/g,' ')} ${amended}</div>
+                    <div style="color:#666;font-size:.85em">Pages: ${d.page_reference||'?'} · ${d.source_file||''}</div>
+                </div>
+                <span class="doc-card-badge badge-${cat}">${cat}</span>
+            </div>
+            <div class="doc-info">
+                ${dcNum ? `<div class="doc-info-item"><span class="doc-info-label">DC/LC#:</span> <span class="doc-info-value">${dcNum}</span></div>` : ''}
+                <div class="doc-info-item"><span class="doc-info-label">Confidence:</span> <span class="doc-info-value">${(conf*100).toFixed(0)}%</span></div>
+                ${stamps ? `<div class="doc-info-item"><span class="doc-info-label">${stamps}</span></div>` : ''}
+                ${data.stamp_details ? `<div class="doc-info-item"><span class="doc-info-label">Stamps:</span> <span class="doc-info-value">${String(data.stamp_details).substring(0,80)}</span></div>` : ''}
+            </div>
+            ${preview ? `<div style="margin-top:8px;font-size:.8em;color:#888;font-style:italic">${preview}</div>` : ''}
+        </div>`;
+    }).join('');
+}
+
+function switchDocTab(name, el) {
+    document.querySelectorAll('.doc-tab').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+    document.querySelectorAll('.doc-tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+}
+
+function closeDocsModal() { document.getElementById('docsModal').classList.remove('active'); }
+document.getElementById('docsModal').addEventListener('click', e => { if(e.target===document.getElementById('docsModal')) closeDocsModal(); });
+
+function goToChecklist(lcNumber) { window.open(`/checklist?lc=${lcNumber}&job_id=${currentJobId}`, '_blank'); }
+
+function showError(msg) {
+    document.getElementById('spinner').style.display = 'none';
+    document.getElementById('results').innerHTML = `<div class="error-message"><strong>Error:</strong> ${msg}</div>`;
+    processBtn.disabled = false;
+}
+
+function viewJson(url) {
+    const w = window.open('','_blank');
+    w.document.write(`<html><head><title>LC JSON</title><style>body{font-family:monospace;background:#0f172a;color:#e5e7eb;padding:20px}pre{white-space:pre-wrap;background:#020617;padding:20px;border-radius:8px;border:1px solid #334155}h1{color:#38bdf8}</style></head><body><h1>📄 LC JSON Data</h1><pre id="j">Loading...</pre></body></html>`);
+    fetch(url).then(r=>r.json()).then(d=>{w.document.getElementById('j').textContent=JSON.stringify(d,null,2)}).catch(e=>{w.document.getElementById('j').textContent='Error: '+e});
+}
+</script>
+</body>
+</html>

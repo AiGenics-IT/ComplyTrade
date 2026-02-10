@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LC Verification Checklist</title>
+    <style>
+        :root{--primary:#1554ca;--secondary:#0d3b8a;--bg:#f0f2f5;--white:#fff;--text:#333;--border:#e0e6ed;--success:#20c997;--danger:#ff4d4d;--warning:#ffc107;--amended:#fff3cd}
+        body{font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background:var(--bg);margin:0;padding:20px;display:flex;justify-content:center}
+        .wrapper{width:94%;max-width:1500px;background:var(--white);border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.1);display:flex;flex-direction:column;height:92vh;overflow:hidden;position:relative}
+        .header{padding:14px 24px;background:linear-gradient(135deg,var(--primary),var(--secondary));color:#fff;display:flex;justify-content:space-between;align-items:center}
+        .main-content{display:flex;flex:1;overflow:hidden}
+        .left-pane{width:38%;border-right:1px solid var(--border);display:flex;flex-direction:column;background:#fafbff}
+        .pane-header{padding:14px 18px;border-bottom:1px solid var(--border);font-weight:700;color:var(--secondary);background:#fff;display:flex;justify-content:space-between;align-items:center}
+        .scroll-area{flex:1;overflow-y:auto;padding:12px}
+        .right-pane{width:62%;padding:24px;overflow-y:auto;background:#fff}
+        .filter-bar{padding:8px 12px;background:#f8f9ff;border-bottom:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap}
+        .filter-chip{padding:4px 12px;border-radius:16px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:.8em;font-weight:500;transition:all .2s}
+        .filter-chip:hover,.filter-chip.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+        .point-item{display:flex;align-items:flex-start;gap:10px;padding:12px;background:#fff;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;cursor:pointer;transition:all .2s;position:relative}
+        .point-item:hover{border-color:var(--primary);background:#f8f9ff}
+        .point-item.active{border-left:5px solid var(--primary);background:#f0f4ff;box-shadow:0 2px 8px rgba(21,84,202,.1)}
+        .point-item.amended{border-right:4px solid var(--warning)}
+        .field-badge{font-size:.7em;background:#e1e7ff;padding:2px 6px;border-radius:4px;color:var(--primary);font-weight:700}
+        .amended-badge{font-size:.7em;background:var(--amended);padding:2px 6px;border-radius:4px;color:#856404;font-weight:700;margin-left:4px}
+        .details-box{background:#fdfdfd;border:1px dashed var(--primary);padding:18px;border-radius:8px;white-space:pre-wrap;margin-bottom:20px;font-size:1em;line-height:1.6}
+        .amendment-info{background:var(--amended);border:1px solid #ffeeba;padding:14px;border-radius:8px;margin-bottom:16px}
+        .amendment-info h4{margin:0 0 8px;color:#856404}
+        .amendment-detail{font-size:.9em;color:#856404;margin-bottom:4px}
+        .loading-overlay{position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(255,255,255,.95);display:flex;flex-direction:column;justify-content:center;align-items:center;z-index:1000}
+        .btn-action{background:var(--primary);color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:600;font-size:.9em;transition:opacity .2s}
+        .btn-action:hover{opacity:.9}
+        .btn-success{background:var(--success)}
+        .btn-danger{background:var(--danger)}
+        .progress-ring{display:flex;align-items:center;gap:8px}
+        .progress-text{font-size:.85em;color:#666}
+        /* Modal */
+        .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:2000;justify-content:center;align-items:center}
+        .modal.active{display:flex}
+        .modal-content{background:#fff;padding:24px;border-radius:12px;width:500px;max-width:90%;box-shadow:0 5px 15px rgba(0,0,0,.3)}
+        .modal-header{margin-bottom:16px;color:var(--secondary);border-bottom:1px solid #eee;padding-bottom:8px}
+        .form-group{margin-bottom:12px}
+        .form-group label{display:block;font-weight:700;margin-bottom:4px;font-size:.85em}
+        .form-group input,.form-group textarea,.form-group select{width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;font-family:inherit}
+        .lc-fields-section{margin-bottom:20px}
+        .lc-fields-section h3{margin-bottom:10px;color:var(--secondary);font-size:1.1em;border-bottom:2px solid var(--primary);padding-bottom:6px}
+        .field-row{display:flex;justify-content:space-between;padding:8px 12px;background:#f8f9ff;border-radius:6px;margin-bottom:4px;font-size:.9em}
+        .field-row.amended{background:var(--amended)}
+        .field-label{color:#666;font-weight:500;min-width:160px}
+        .field-value{color:var(--text);flex:1;text-align:right;word-break:break-all}
+    </style>
+</head>
+<body>
+<div class="wrapper">
+    <div id="loading" class="loading-overlay">
+        <div style="text-align:center">
+            <div style="font-size:2em;margin-bottom:10px">⏳</div>
+            <strong>Fetching Consolidated LC Data...</strong>
+            <p id="debug-status" style="font-size:.8em;color:#666"></p>
+        </div>
+    </div>
+
+    <div class="header">
+        <h2 id="lc-title" style="margin:0">LC Verification</h2>
+        <div id="lc-meta" style="font-size:.85em;opacity:.9">Loading...</div>
+    </div>
+
+    <div class="main-content">
+        <div class="left-pane">
+            <div class="pane-header">
+                <span>Clause Checklist</span>
+                <div class="progress-ring">
+                    <span id="progress-text" class="progress-text">0/0</span>
+                </div>
+            </div>
+            <div class="filter-bar" id="filterBar">
+                <span class="filter-chip active" onclick="filterClauses('all',this)">All</span>
+                <span class="filter-chip" onclick="filterClauses('46A',this)">46A Docs Required</span>
+                <span class="filter-chip" onclick="filterClauses('47A',this)">47A Conditions</span>
+                <span class="filter-chip" onclick="filterClauses('45A',this)">45A Description</span>
+                <span class="filter-chip" onclick="filterClauses('amended',this)">⚡ Amended</span>
+            </div>
+            <div class="scroll-area" id="points-container"></div>
+            <div style="padding:10px 12px;border-top:1px solid var(--border);background:#fff">
+                <button class="btn-action" style="width:100%" onclick="openEditor()">+ Add Manual Clause</button>
+            </div>
+        </div>
+
+        <div class="right-pane" id="workspace">
+            <div style="text-align:center;margin-top:80px;color:#a0aec0">
+                <div style="font-size:3em">📋</div>
+                <h3>Select a clause to verify</h3>
+                <p>Details from the Final LC will appear here.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Modal -->
+<div id="clauseModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header"><h3 id="modal-title" style="margin:0">Edit Clause</h3></div>
+        <input type="hidden" id="edit-index">
+        <div class="form-group"><label>SWIFT Field (46A, 47A, etc.)</label><input type="text" id="field-type" placeholder="47A"></div>
+        <div class="form-group"><label>Clause Number</label><input type="text" id="field-num" placeholder="5"></div>
+        <div class="form-group"><label>Clause Text</label><textarea id="field-text" rows="5"></textarea></div>
+        <div style="display:flex;gap:8px;margin-top:16px">
+            <button class="btn-action btn-success" onclick="saveClause()">Save</button>
+            <button id="delete-btn" class="btn-action btn-danger" style="display:none" onclick="deleteClause()">Delete</button>
+            <button class="btn-action" style="background:#999" onclick="closeEditor()">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const API_BASE = window.location.origin;
+let lcData = { points: [], lc_number: '', consolidated_fields: {} };
+let currentFilter = 'all';
+
+function setStatus(msg) { document.getElementById('debug-status').innerText = msg; }
+
+async function initChecklist() {
+    setStatus("Initializing...");
+    const params = new URLSearchParams(window.location.search);
+    const lcNumber = params.get('lc');
+    const jobId = params.get('job_id');
+
+    if (!lcNumber || !jobId) {
+        document.getElementById('loading').innerHTML = '<div style="color:red;padding:20px;text-align:center"><h2>Error: Missing lc or job_id parameter</h2></div>';
+        return;
+    }
+
+    try {
+        setStatus(`Fetching results for job: ${jobId}`);
+        const resp = await fetch(`${API_BASE}/api/result/${jobId}`);
+        if (!resp.ok) throw new Error(`Server returned ${resp.status}`);
+        const fullData = await resp.json();
+
+        const foundLc = (fullData.consolidated_lcs || []).find(item => item.lc_number === lcNumber);
+        if (!foundLc) throw new Error(`LC #${lcNumber} not found in results.`);
+
+        const cf = foundLc.consolidated_fields || {};
+        const points = [];
+
+        // Extract clauses from multi-clause fields (46A, 47A, 45A)
+        ['Documents_Required', 'Additional_Conditions', 'Description_of_Goods'].forEach(fieldName => {
+            const fieldData = cf[fieldName];
+            if (Array.isArray(fieldData)) {
+                fieldData.forEach(clause => {
+                    points.push({
+                        id: points.length + 1,
+                        swift_field: clause.swift_field || '',
+                        swift_field_ref: clause.swift_field_ref || clause.swift_field || '',
+                        clause_number: clause.clause_number || null,
+                        text: clause.text || '',
+                        amended: clause.amended || false,
+                        amended_by: clause.amended_by || [],
+                        source_field: fieldName,
+                        checked: false,
+                    });
+                });
+            }
+        });
+
+        // Build LC summary fields (non-clause fields)
+        const summaryFields = {};
+        for (const [k, v] of Object.entries(cf)) {
+            if (!Array.isArray(v) && typeof v === 'object' && v.value !== undefined) {
+                summaryFields[k] = v;
+            }
+        }
+
+        lcData = {
+            lc_number: foundLc.lc_number,
+            issue_date: foundLc.original_issue_date || '',
+            amendments_applied: foundLc.amendments_applied || 0,
+            amendments_summary: foundLc.amendments_summary || [],
+            consolidated_fields: cf,
+            summary_fields: summaryFields,
+            points: points,
+        };
+
+        document.getElementById('lc-title').innerText = `LC Verification: ${lcData.lc_number}`;
+        document.getElementById('lc-meta').innerHTML = `Issue: ${lcData.issue_date} · ${lcData.amendments_applied} amendments · ${points.length} clauses`;
+        document.getElementById('loading').style.display = 'none';
+
+        renderPoints();
+
+    } catch (err) {
+        setStatus("Error: " + err.message);
+        document.getElementById('loading').style.display = 'none';
+        alert("Error loading data: " + err.message);
+    }
+}
+
+function renderPoints() {
+    const container = document.getElementById('points-container');
+    container.innerHTML = '';
+
+    const filtered = lcData.points.filter(p => {
+        if (currentFilter === 'all') return true;
+        if (currentFilter === 'amended') return p.amended;
+        return p.swift_field === currentFilter;
+    });
+
+    if (!filtered.length) {
+        container.innerHTML = '<p style="text-align:center;color:#999;padding:30px">No clauses match this filter</p>';
+        updateProgress();
+        return;
+    }
+
+    filtered.forEach((point, _) => {
+        const idx = lcData.points.indexOf(point);
+        const div = document.createElement('div');
+        div.className = `point-item${point.amended ? ' amended' : ''}`;
+        div.onclick = () => selectPoint(idx, div);
+
+        const short = point.text.substring(0, 75);
+        div.innerHTML = `
+            <input type="checkbox" ${point.checked?'checked':''} onclick="event.stopPropagation(); lcData.points[${idx}].checked=this.checked; updateProgress();">
+            <div style="flex:1">
+                <div>
+                    <span class="field-badge">${point.swift_field_ref || point.swift_field}</span>
+                    ${point.clause_number ? `<span style="font-size:.8em;color:#666"> Clause ${point.clause_number}</span>` : ''}
+                    ${point.amended ? '<span class="amended-badge">⚡ Amended</span>' : ''}
+                </div>
+                <div style="margin-top:4px;font-size:.9em;color:#444">${short}${point.text.length>75?'...':''}</div>
+            </div>
+        `;
+        container.appendChild(div);
+    });
+    updateProgress();
+}
+
+function filterClauses(filter, el) {
+    currentFilter = filter;
+    document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+    el.classList.add('active');
+    renderPoints();
+}
+
+function selectPoint(index, element) {
+    const point = lcData.points[index];
+    document.querySelectorAll('.point-item').forEach(p => p.classList.remove('active'));
+    if (element) element.classList.add('active');
+
+    const ws = document.getElementById('workspace');
+    let html = '';
+
+    // Header
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div>
+            <span class="field-badge" style="font-size:.9em">${point.swift_field_ref || point.swift_field}</span>
+            ${point.clause_number ? `<span style="margin-left:8px;color:#666">Clause ${point.clause_number}</span>` : ''}
+        </div>
+        <span style="font-size:.85em;color:#888">Source: ${point.source_field.replace(/_/g,' ')}</span>
+    </div>`;
+
+    // Amendment info
+    if (point.amended && point.amended_by.length > 0) {
+        html += '<div class="amendment-info"><h4>⚡ This clause was amended</h4>';
+        point.amended_by.forEach(a => {
+            html += `<div class="amendment-detail">
+                <strong>Amendment #${a.amendment_number}</strong> (${a.amendment_date || ''}) — Page ${a.amendment_page || '?'}
+                <br><em>${a.change_description || a.change || ''}</em>
+            </div>`;
+        });
+        html += '</div>';
+    }
+
+    // Full clause text
+    html += `<h3 style="margin-bottom:8px;color:var(--secondary)">Full Clause Text</h3>
+        <div class="details-box">${point.text}</div>`;
+
+    // LC Summary fields (show key fields for context)
+    html += '<h3 style="margin-bottom:8px;color:var(--secondary)">LC Key Fields</h3>';
+    const keyFields = ['Amount','Applicant','Beneficiary','Port_of_Loading','Port_of_Discharge','Latest_Shipment_Date','Tolerance'];
+    html += '<div style="margin-bottom:20px">';
+    keyFields.forEach(k => {
+        const f = lcData.summary_fields[k];
+        if (f) {
+            const isAmended = f.amended ? ' amended' : '';
+            html += `<div class="field-row${isAmended}">
+                <span class="field-label">${k.replace(/_/g,' ')} [${f.swift_field||''}]</span>
+                <span class="field-value">${String(f.value).substring(0,80)}${String(f.value).length>80?'...':''} ${f.amended?'⚡':''}</span>
+            </div>`;
+        }
+    });
+    html += '</div>';
+
+    // Auditor notes
+    html += `<div style="border-top:1px solid #eee;padding-top:16px">
+        <label style="font-weight:700;display:block;margin-bottom:8px">Auditor Notes:</label>
+        <textarea id="auditor-note-${index}" style="width:100%;height:80px;padding:10px;border:1px solid #cbd5e0;border-radius:8px;font-family:inherit" placeholder="Note any discrepancies..."></textarea>
+        <div style="margin-top:12px;display:flex;gap:8px">
+            <button class="btn-action btn-success" onclick="lcData.points[${index}].checked=true;renderPoints();alert('Verified ✓')">✓ Mark Verified</button>
+            <button class="btn-action btn-danger" onclick="alert('Discrepancy flagged')">✗ Flag Discrepancy</button>
+        </div>
+    </div>`;
+
+    ws.innerHTML = html;
+}
+
+function updateProgress() {
+    const total = lcData.points.length;
+    const checked = lcData.points.filter(p => p.checked).length;
+    document.getElementById('progress-text').innerText = `${checked}/${total} verified`;
+}
+
+// Editor
+function openEditor(index = null) {
+    document.getElementById('edit-index').value = index !== null ? index : '';
+    document.getElementById('modal-title').innerText = index !== null ? 'Edit Clause' : 'Add Manual Clause';
+    document.getElementById('delete-btn').style.display = index !== null ? 'block' : 'none';
+    if (index !== null) {
+        const p = lcData.points[index];
+        document.getElementById('field-type').value = p.swift_field;
+        document.getElementById('field-num').value = p.clause_number || '';
+        document.getElementById('field-text').value = p.text;
+    } else {
+        document.getElementById('field-type').value = '47A';
+        document.getElementById('field-num').value = '';
+        document.getElementById('field-text').value = '';
+    }
+    document.getElementById('clauseModal').classList.add('active');
+}
+
+function closeEditor() { document.getElementById('clauseModal').classList.remove('active'); }
+
+function saveClause() {
+    const idx = document.getElementById('edit-index').value;
+    const sf = document.getElementById('field-type').value || 'MANUAL';
+    const cn = document.getElementById('field-num').value || null;
+    const text = document.getElementById('field-text').value || 'No content';
+    const ref = cn ? `${sf}-${cn}` : sf;
+
+    if (idx !== '') {
+        Object.assign(lcData.points[idx], { swift_field: sf, clause_number: cn, swift_field_ref: ref, text: text });
+    } else {
+        lcData.points.push({ id: lcData.points.length + 1, swift_field: sf, swift_field_ref: ref, clause_number: cn, text: text, amended: false, amended_by: [], source_field: 'Manual', checked: false });
+    }
+    renderPoints(); closeEditor();
+}
+
+function deleteClause() {
+    const idx = document.getElementById('edit-index').value;
+    if (idx !== '' && confirm('Delete this clause?')) {
+        lcData.points.splice(idx, 1);
+        lcData.points.forEach((p, i) => p.id = i + 1);
+        renderPoints(); closeEditor();
+    }
+}
+
+window.addEventListener('DOMContentLoaded', initChecklist);
+</script>
+</body>
+</html>
