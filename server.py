@@ -1176,6 +1176,7 @@ def start_verification(job_id: str, lc_number: str, background_tasks: Background
     if job.get('review_approved') and job.get('status') == 'processing':
         return {"status": "already_running", "message": "Verification is currently in progress"}
     job['review_approved'] = True
+    job['status'] = 'processing'
     verification_id = str(uuid.uuid4())
     job['verification_id'] = verification_id
     # Start Phase 2 pipeline in background
