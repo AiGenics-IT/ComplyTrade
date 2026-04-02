@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compliance Rules Manager</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#1554ca 0%,#0d3b8a 100%);min-height:100vh;padding:20px}
+        .container{max-width:1300px;margin:0 auto}
+        .header{text-align:center;color:#fff;margin-bottom:24px}
+        .header h1{font-size:2.4em;margin-bottom:6px;text-shadow:2px 2px 4px rgba(0,0,0,.2)}
+        .header p{font-size:1.05em;opacity:.9}
+        .card{background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.25);padding:28px;margin-bottom:20px}
+        .card h2{color:#1554ca;margin-bottom:16px;font-size:1.3em}
+
+        /* Upload Section */
+        .upload-form{display:flex;gap:12px;align-items:end;flex-wrap:wrap}
+        .form-group{display:flex;flex-direction:column;gap:4px}
+        .form-group label{font-size:.85em;font-weight:600;color:#555}
+        .form-group input[type=text],.form-group select{padding:10px 14px;border:2px solid #e0e6ed;border-radius:8px;font-size:1em;width:200px;transition:border-color .2s;background:#fff}
+        .form-group input[type=text]:focus,.form-group select:focus{outline:none;border-color:#1554ca}
+        .file-label{display:inline-flex;align-items:center;gap:8px;padding:10px 20px;background:#f8f9ff;border:2px dashed #1554ca;border-radius:8px;cursor:pointer;font-weight:500;color:#1554ca;transition:all .2s}
+        .file-label:hover{background:#eef1ff;border-color:#0d3b8a}
+        .file-label input{display:none}
+        .file-label .fname{max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#333}
+        .btn{padding:10px 24px;border:none;border-radius:8px;font-size:.95em;font-weight:600;cursor:pointer;transition:all .2s}
+        .btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.15)}
+        .btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+        .btn-primary{background:linear-gradient(135deg,#1554ca,#0d3b8a);color:#fff}
+        .btn-danger{background:#dc2626;color:#fff}
+        .btn-secondary{background:#e2e8f0;color:#334155}
+        .btn-success{background:#16a34a;color:#fff}
+        .btn-sm{padding:6px 14px;font-size:.82em}
+
+        /* Rulesets Grid */
+        .rulesets-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
+        .ruleset-card{background:#f8f9ff;border:1px solid #e0e6ed;border-radius:12px;padding:20px;transition:all .2s;cursor:pointer;position:relative}
+        .ruleset-card:hover{border-color:#1554ca;box-shadow:0 4px 16px rgba(21,84,202,.12);transform:translateY(-2px)}
+        .ruleset-card.active{border-color:#1554ca;border-width:2px;background:#f0f4ff}
+        .ruleset-title{font-size:1.3em;font-weight:700;color:#1554ca;margin-bottom:8px}
+        .ruleset-meta{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+        .ruleset-meta span{font-size:.82em;color:#666;display:flex;align-items:center;gap:4px}
+        .ruleset-desc{font-size:.85em;color:#888;margin-bottom:12px}
+        .ruleset-actions{display:flex;gap:8px}
+
+        /* Articles View */
+        .articles-view{display:none}
+        .articles-view.active{display:block}
+        .back-btn{display:inline-flex;align-items:center;gap:6px;color:#1554ca;font-weight:600;cursor:pointer;font-size:.9em;margin-bottom:16px;padding:6px 0}
+        .back-btn:hover{text-decoration:underline}
+        .ruleset-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:12px}
+        .ruleset-header h2{margin:0}
+        .search-box{padding:10px 16px;border:2px solid #e0e6ed;border-radius:8px;font-size:.95em;width:300px;transition:border-color .2s}
+        .search-box:focus{outline:none;border-color:#1554ca}
+
+        /* Article Accordion */
+        .article{background:#f8f9ff;border:1px solid #e0e6ed;border-radius:10px;margin-bottom:10px;overflow:hidden}
+        .article-header{padding:14px 18px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;transition:background .2s}
+        .article-header:hover{background:#eef1ff}
+        .article-header.open{background:#e8edff;border-bottom:1px solid #d4ddff}
+        .article-num{font-weight:700;color:#1554ca;font-size:1em;min-width:80px}
+        .article-title-text{flex:1;font-weight:500;color:#333;font-size:.95em}
+        .article-count{background:#e0e7ff;color:#3730a3;padding:3px 10px;border-radius:12px;font-size:.78em;font-weight:700}
+        .article-chevron{color:#999;font-size:1.1em;transition:transform .2s}
+        .article-header.open .article-chevron{transform:rotate(180deg)}
+        .article-body{display:none;padding:4px 0}
+        .article-body.open{display:block}
+
+        /* Rule Points */
+        .rule-point{display:flex;align-items:flex-start;gap:12px;padding:12px 18px;border-bottom:1px solid #eef0f5;transition:background .15s}
+        .rule-point:last-child{border-bottom:none}
+        .rule-point:hover{background:#f0f4ff}
+        .point-label{min-width:50px;font-weight:700;color:#1554ca;font-size:.88em;padding-top:2px}
+        .point-content{flex:1;font-size:.92em;color:#333;line-height:1.55}
+        .point-actions{display:flex;gap:6px;flex-shrink:0;opacity:0;transition:opacity .2s}
+        .rule-point:hover .point-actions{opacity:1}
+        .icon-btn{width:30px;height:30px;border:none;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:.9em;transition:all .15s}
+        .icon-btn:hover{transform:scale(1.1)}
+        .icon-btn.edit{background:#dbeafe;color:#2563eb}
+        .icon-btn.delete{background:#fee2e2;color:#dc2626}
+
+        /* Modal */
+        .modal{display:none;position:fixed;z-index:1000;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.6)}
+        .modal.active{display:flex;align-items:center;justify-content:center}
+        .modal-content{background:#fff;border-radius:16px;width:600px;max-width:92%;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+        .modal-header{background:linear-gradient(135deg,#1554ca,#0d3b8a);color:#fff;padding:18px 24px;border-radius:16px 16px 0 0;display:flex;justify-content:space-between;align-items:center}
+        .modal-header h3{margin:0;font-size:1.2em}
+        .close-modal{background:none;border:none;color:#fff;font-size:1.6em;cursor:pointer;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center}
+        .close-modal:hover{background:rgba(255,255,255,.2)}
+        .modal-body{padding:24px}
+        .modal-body .form-group{margin-bottom:16px}
+        .modal-body .form-group input[type=text],
+        .modal-body textarea{width:100%;padding:10px 14px;border:2px solid #e0e6ed;border-radius:8px;font-size:.95em;font-family:inherit;transition:border-color .2s}
+        .modal-body .form-group input:focus,
+        .modal-body textarea:focus{outline:none;border-color:#1554ca}
+        .modal-body textarea{min-height:120px;resize:vertical;line-height:1.5}
+        .modal-footer{display:flex;gap:10px;margin-top:20px}
+
+        /* Toast */
+        .toast{position:fixed;bottom:24px;right:24px;padding:14px 24px;border-radius:10px;color:#fff;font-weight:600;font-size:.92em;box-shadow:0 8px 24px rgba(0,0,0,.2);z-index:2000;transform:translateY(100px);opacity:0;transition:all .3s}
+        .toast.show{transform:translateY(0);opacity:1}
+        .toast.success{background:#16a34a}
+        .toast.error{background:#dc2626}
+        .toast.info{background:#2563eb}
+
+        /* Empty state */
+        .empty-state{text-align:center;padding:50px 20px;color:#999}
+        .empty-state .icon{font-size:3em;margin-bottom:12px}
+        .empty-state h3{color:#666;margin-bottom:8px}
+
+        /* Loading */
+        .spinner{border:4px solid #f3f3f3;border-top:4px solid #1554ca;border-radius:50%;width:32px;height:32px;animation:spin 1s linear infinite;margin:20px auto}
+        @keyframes spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}
+        .loading-overlay{position:absolute;inset:0;background:rgba(255,255,255,.9);display:flex;align-items:center;justify-content:center;border-radius:16px;z-index:10}
+
+        /* Stats row */
+        .stats-row{display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+        .stat-chip{display:flex;align-items:center;gap:6px;padding:8px 16px;background:#f8f9ff;border:1px solid #e0e6ed;border-radius:8px;font-size:.88em}
+        .stat-chip .num{font-weight:700;color:#1554ca;font-size:1.1em}
+        .stat-chip .lbl{color:#666}
+
+        /* Re-upload section */
+        .reupload-section{display:flex;align-items:center;gap:12px;padding:14px 18px;background:#fff8f0;border:1px solid #fed7aa;border-radius:10px;margin-bottom:16px}
+        .reupload-section .info{flex:1;font-size:.88em;color:#9a3412}
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>Compliance Rules Manager</h1>
+        <p>Upload, manage, and edit trade compliance rules (UCP 600 Art 1-39, ISBP 745/821, URR 725, ISP98, etc.)</p>
+    </div>
+
+    <!-- Upload Card -->
+    <div class="card">
+        <h2>Upload New Ruleset</h2>
+        <div class="upload-form" id="uploadForm">
+            <div class="form-group">
+                <label>Ruleset Title</label>
+                <select id="titleSelect" onchange="onTitleSelect()">
+                    <option value="" disabled selected>Select ruleset...</option>
+                    <option value="UCP 600">UCP 600 (Art 1-39)</option>
+                    <option value="URR 725">URR 725</option>
+                    <option value="ISBP 821">ISBP 821 (Non-Discrepancy Filter)</option>
+                    <option value="ISBP 745">ISBP 745</option>
+                    <option value="eUCP">eUCP</option>
+                    <option value="URDG 758">URDG 758</option>
+                    <option value="ISP98">ISP98 (Standby Practices)</option>
+                    <option value="TFO Manual">TFO Manual (Trade Finance Operations)</option>
+                    <option value="FE Manual Export">FE Manual Export (Ch.12)</option>
+                    <option value="FE Manual Import">FE Manual Import (Ch.13)</option>
+                    <option value="IPO 2022">IPO 2022 (Import Policy Order)</option>
+                    <option value="__other__">Other (custom)...</option>
+                </select>
+                <input type="text" id="titleInput" placeholder="Enter custom title..." style="display:none;margin-top:6px">
+            </div>
+            <div class="form-group">
+                <label>PDF File</label>
+                <label class="file-label" id="fileLabel">
+                    <span>📄</span>
+                    <span class="fname" id="fileName">Choose PDF file...</span>
+                    <input type="file" id="fileInput" accept=".pdf" onchange="onFileSelect(this)">
+                </label>
+            </div>
+            <button class="btn btn-primary" id="uploadBtn" onclick="uploadRuleset()" disabled>Upload & Extract</button>
+        </div>
+        <div id="uploadProgress" style="display:none;margin-top:16px">
+            <div class="spinner"></div>
+            <p style="text-align:center;color:#666;font-size:.9em" id="uploadStatus">Extracting rules from PDF...</p>
+        </div>
+    </div>
+
+    <!-- Rulesets List View -->
+    <div class="card" id="rulesetsView">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+            <h2 style="margin:0">Rulesets</h2>
+            <button class="btn btn-secondary btn-sm" onclick="loadRulesets()">↻ Refresh</button>
+        </div>
+        <div id="rulesetsContainer">
+            <div class="spinner"></div>
+        </div>
+    </div>
+
+    <!-- Audit Coverage Info -->
+    <div class="card" id="auditCoverage" style="background:#f8f9ff">
+        <h2 style="font-size:1.1em;margin-bottom:12px">Audit Coverage — 30 Compliance Functions</h2>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;font-size:.85em">
+            <div style="background:#fff;padding:10px 14px;border-radius:8px;border-left:3px solid #1554ca">
+                <div style="font-weight:700;color:#1554ca;margin-bottom:4px">UCP 600 Art 18-32</div>
+                <div style="color:#666;font-size:.9em">Commercial Invoice (Art 18), Transport Docs — BL (Art 19-22), Road/Rail (Art 24), Courier Receipt (Art 25), Insurance (Art 28), COO, Draft, Packing/Weight List</div>
+            </div>
+            <div style="background:#fff;padding:10px 14px;border-radius:8px;border-left:3px solid #7c3aed">
+                <div style="font-weight:700;color:#7c3aed;margin-bottom:4px">Cross-Document Consistency</div>
+                <div style="color:#666;font-size:.9em">10 cross-checks: beneficiary, applicant, goods description, quantity, weight, currency, shipping marks, packages, containers, vessel name</div>
+            </div>
+            <div style="background:#fff;padding:10px 14px;border-radius:8px;border-left:3px solid #0369a1">
+                <div style="font-weight:700;color:#0369a1;margin-bottom:4px">Art 29-32 Special Rules</div>
+                <div style="color:#666;font-size:.9em">Art 29: Banking day extension for expiry. Art 30(a/b/c): Quantity/amount tolerance variants. Art 32: Installment drawing/shipment schedule tracking</div>
+            </div>
+            <div style="background:#fff;padding:10px 14px;border-radius:8px;border-left:3px solid #16a34a">
+                <div style="font-weight:700;color:#16a34a;margin-bottom:4px">Art 14(h) & ISBP Filter</div>
+                <div style="color:#666;font-size:.9em">Non-documentary conditions (Art 14(h)) marked as disregarded. ISBP 745/821 non-discrepancy filter suppresses false positives</div>
+            </div>
+            <div style="background:#fff;padding:10px 14px;border-radius:8px;border-left:3px solid #dc2626">
+                <div style="font-weight:700;color:#dc2626;margin-bottom:4px">Hard/Soft Discrepancy Classification</div>
+                <div style="color:#666;font-size:.9em">Each failed check classified as HARD (refuse) or SOFT (waivable). Severity-weighted verdict: critical/major fails = non-compliant</div>
+            </div>
+            <div style="background:#fff;padding:10px 14px;border-radius:8px;border-left:3px solid #d97706">
+                <div style="font-weight:700;color:#d97706;margin-bottom:4px">Transport Document Types</div>
+                <div style="color:#666;font-size:.9em">Bill of Lading, Multimodal BL, Charter Party BL, Road Transport (CMR), Rail Transport (CIM), Courier/Post Receipt, Shipping Advice</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Articles Detail View -->
+    <div class="card articles-view" id="articlesView">
+        <div class="back-btn" onclick="showRulesetsView()">← Back to Rulesets</div>
+        <div class="ruleset-header">
+            <div>
+                <h2 id="detailTitle" style="margin:0">Ruleset</h2>
+                <p id="detailDesc" style="color:#888;font-size:.88em;margin-top:4px"></p>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center">
+                <input type="text" class="search-box" id="searchBox" placeholder="Search articles & rules..." oninput="filterArticles()">
+            </div>
+        </div>
+
+        <!-- Re-upload -->
+        <div class="reupload-section" id="reuploadSection" style="display:none">
+            <div class="info">
+                <strong>Replace all rules:</strong> Upload a new PDF to overwrite all rules in this ruleset.
+            </div>
+            <label class="file-label" style="border-style:solid;padding:8px 16px;font-size:.85em">
+                <span>📄</span>
+                <span class="fname" id="reuploadFileName">Choose PDF...</span>
+                <input type="file" id="reuploadFileInput" accept=".pdf" onchange="onReuploadFileSelect(this)">
+            </label>
+            <button class="btn btn-primary btn-sm" id="reuploadBtn" onclick="reuploadRuleset()" disabled>Replace</button>
+        </div>
+
+        <div class="stats-row" id="statsRow"></div>
+        <div id="articlesContainer"></div>
+    </div>
+</div>
+
+<!-- Edit Rule Modal -->
+<div class="modal" id="editModal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 id="editModalTitle">Edit Rule</h3>
+            <button class="close-modal" onclick="closeEditModal()">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>Article</label>
+                <input type="text" id="editArticle" disabled style="background:#f1f5f9">
+            </div>
+            <div class="form-group">
+                <label>Sub-point</label>
+                <input type="text" id="editSubPoint" placeholder="e.g. a, b.ii">
+            </div>
+            <div class="form-group">
+                <label>Content</label>
+                <textarea id="editContent"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-success" onclick="saveRule()">Save Changes</button>
+                <button class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Confirm Modal -->
+<div class="modal" id="deleteModal">
+    <div class="modal-content">
+        <div class="modal-header" style="background:linear-gradient(135deg,#dc2626,#991b1b)">
+            <h3>Confirm Delete</h3>
+            <button class="close-modal" onclick="closeDeleteModal()">×</button>
+        </div>
+        <div class="modal-body">
+            <p id="deleteMessage" style="font-size:1.05em;margin-bottom:20px"></p>
+            <div class="modal-footer">
+                <button class="btn btn-danger" id="confirmDeleteBtn">Delete</button>
+                <button class="btn btn-secondary" onclick="closeDeleteModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+const API = window.location.origin;
+let currentRulesetId = null;
+let currentRulesetData = null;
+
+// ─── Upload ───
+function onFileSelect(input) {
+    const file = input.files[0];
+    document.getElementById('fileName').textContent = file ? file.name : 'Choose PDF file...';
+    checkUploadReady();
+}
+
+function onTitleSelect() {
+    const sel = document.getElementById('titleSelect');
+    const customInput = document.getElementById('titleInput');
+    if (sel.value === '__other__') {
+        customInput.style.display = 'block';
+        customInput.focus();
+    } else {
+        customInput.style.display = 'none';
+        customInput.value = '';
+    }
+    checkUploadReady();
+}
+
+function getSelectedTitle() {
+    const sel = document.getElementById('titleSelect').value;
+    if (sel === '__other__') return document.getElementById('titleInput').value.trim();
+    return sel;
+}
+
+function checkUploadReady() {
+    const title = getSelectedTitle();
+    const file = document.getElementById('fileInput').files[0];
+    document.getElementById('uploadBtn').disabled = !title || !file;
+}
+
+document.getElementById('titleInput').addEventListener('input', checkUploadReady);
+
+async function uploadRuleset() {
+    const title = getSelectedTitle();
+    const file = document.getElementById('fileInput').files[0];
+    if (!title || !file) return;
+
+    document.getElementById('uploadBtn').disabled = true;
+    document.getElementById('uploadProgress').style.display = 'block';
+    document.getElementById('uploadStatus').textContent = 'Extracting rules from PDF...';
+
+    const fd = new FormData();
+    fd.append('title', title);
+    fd.append('file', file);
+
+    try {
+        const resp = await fetch(`${API}/api/compliance/upload`, { method: 'POST', body: fd });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Upload failed');
+
+        toast(`Extracted ${data.total_articles} articles, ${data.total_points} rules from "${title}"`, 'success');
+        document.getElementById('titleSelect').selectedIndex = 0;
+        document.getElementById('titleInput').value = '';
+        document.getElementById('titleInput').style.display = 'none';
+        document.getElementById('fileInput').value = '';
+        document.getElementById('fileName').textContent = 'Choose PDF file...';
+        loadRulesets();
+    } catch (e) {
+        toast('Error: ' + e.message, 'error');
+    } finally {
+        document.getElementById('uploadBtn').disabled = false;
+        document.getElementById('uploadProgress').style.display = 'none';
+    }
+}
+
+// ─── Rulesets List ───
+async function loadRulesets() {
+    const container = document.getElementById('rulesetsContainer');
+    container.innerHTML = '<div class="spinner"></div>';
+
+    try {
+        const resp = await fetch(`${API}/api/compliance/rulesets`);
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Failed to load');
+
+        const rulesets = data.rulesets || [];
+        if (!rulesets.length) {
+            container.innerHTML = `<div class="empty-state">
+                <div class="icon">📚</div>
+                <h3>No rulesets yet</h3>
+                <p>Upload a compliance rules PDF to get started.</p>
+            </div>`;
+            return;
+        }
+
+        container.innerHTML = '<div class="rulesets-grid">' + rulesets.map(rs => `
+            <div class="ruleset-card" onclick="openRuleset(${rs.id})">
+                <div class="ruleset-title">${esc(rs.title)}</div>
+                <div class="ruleset-meta">
+                    <span>📄 ${rs.total_articles} articles</span>
+                    <span>📝 ${rs.total_points} rules</span>
+                    <span>📎 ${esc(rs.source_filename || 'N/A')}</span>
+                </div>
+                <div class="ruleset-desc">${esc(rs.description || '')}</div>
+                <div class="ruleset-actions" onclick="event.stopPropagation()">
+                    <button class="btn btn-primary btn-sm" onclick="openRuleset(${rs.id})">View Rules</button>
+                    <button class="btn btn-danger btn-sm" onclick="confirmDeleteRuleset(${rs.id}, '${esc(rs.title)}')">Delete</button>
+                </div>
+            </div>
+        `).join('') + '</div>';
+    } catch (e) {
+        container.innerHTML = `<div class="empty-state"><h3>Error loading rulesets</h3><p>${esc(e.message)}</p></div>`;
+    }
+}
+
+// ─── Ruleset Detail ───
+async function openRuleset(id) {
+    currentRulesetId = id;
+    document.getElementById('rulesetsView').style.display = 'none';
+    document.getElementById('articlesView').classList.add('active');
+    document.getElementById('articlesContainer').innerHTML = '<div class="spinner"></div>';
+    document.getElementById('searchBox').value = '';
+    document.getElementById('reuploadSection').style.display = 'flex';
+    document.getElementById('reuploadBtn').disabled = true;
+    document.getElementById('reuploadFileName').textContent = 'Choose PDF...';
+    document.getElementById('reuploadFileInput').value = '';
+
+    try {
+        const resp = await fetch(`${API}/api/compliance/rulesets/${id}`);
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Failed to load');
+
+        currentRulesetData = data;
+        document.getElementById('detailTitle').textContent = data.title;
+        document.getElementById('detailDesc').textContent = `${data.source_filename || ''} — ${data.total_articles} articles, ${data.total_points} rules`;
+
+        document.getElementById('statsRow').innerHTML = `
+            <div class="stat-chip"><span class="num">${data.total_articles}</span><span class="lbl">Articles</span></div>
+            <div class="stat-chip"><span class="num">${data.total_points}</span><span class="lbl">Rule Points</span></div>
+            <div class="stat-chip"><span class="num">${data.source_filename || 'N/A'}</span><span class="lbl">Source</span></div>
+        `;
+
+        renderArticles(data.articles || []);
+    } catch (e) {
+        document.getElementById('articlesContainer').innerHTML = `<div class="empty-state"><h3>Error</h3><p>${esc(e.message)}</p></div>`;
+    }
+}
+
+function renderArticles(articles, searchTerm = '') {
+    const container = document.getElementById('articlesContainer');
+    const term = searchTerm.toLowerCase();
+
+    const filtered = articles.map(art => {
+        if (!term) return art;
+        const titleMatch = art.article_title.toLowerCase().includes(term);
+        const filteredPoints = art.points.filter(p =>
+            (p.content && p.content.toLowerCase().includes(term)) ||
+            (p.sub_point && p.sub_point.toLowerCase().includes(term))
+        );
+        if (titleMatch || filteredPoints.length) {
+            return { ...art, points: titleMatch ? art.points : filteredPoints, _matched: true };
+        }
+        return null;
+    }).filter(Boolean);
+
+    if (!filtered.length) {
+        container.innerHTML = `<div class="empty-state"><h3>No matches</h3><p>Try a different search term.</p></div>`;
+        return;
+    }
+
+    container.innerHTML = filtered.map(art => `
+        <div class="article" data-article="${art.article_number}">
+            <div class="article-header" onclick="toggleArticle(this)">
+                <span class="article-num">Article ${art.article_number}</span>
+                <span class="article-title-text">${esc(art.article_title)}</span>
+                <span class="article-count">${art.points.length} point${art.points.length !== 1 ? 's' : ''}</span>
+                <span class="article-chevron">▼</span>
+            </div>
+            <div class="article-body">
+                ${art.points.map(p => `
+                    <div class="rule-point" data-rule-id="${p.id}">
+                        <div class="point-label">${p.sub_point ? esc(p.sub_point) : '—'}</div>
+                        <div class="point-content">${highlightTerm(esc(p.content), term)}</div>
+                        <div class="point-actions">
+                            <button class="icon-btn edit" title="Edit" onclick="openEditModal(${p.id}, ${art.article_number}, '${esc(art.article_title)}', '${esc(p.sub_point || '')}', this)">✎</button>
+                            <button class="icon-btn delete" title="Delete" onclick="confirmDeleteRule(${p.id}, ${art.article_number}, '${esc(p.sub_point || '')}')">✕</button>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+    `).join('');
+
+    // Auto-expand if search is active or only a few articles
+    if (term || filtered.length <= 3) {
+        container.querySelectorAll('.article-header').forEach(h => {
+            h.classList.add('open');
+            h.nextElementSibling.classList.add('open');
+        });
+    }
+}
+
+function toggleArticle(header) {
+    header.classList.toggle('open');
+    header.nextElementSibling.classList.toggle('open');
+}
+
+function filterArticles() {
+    const term = document.getElementById('searchBox').value.trim();
+    if (currentRulesetData) {
+        renderArticles(currentRulesetData.articles || [], term);
+    }
+}
+
+function highlightTerm(text, term) {
+    if (!term) return text;
+    const regex = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return text.replace(regex, '<mark style="background:#fef08a;padding:0 2px;border-radius:2px">$1</mark>');
+}
+
+function showRulesetsView() {
+    document.getElementById('articlesView').classList.remove('active');
+    document.getElementById('rulesetsView').style.display = 'block';
+    currentRulesetId = null;
+    currentRulesetData = null;
+}
+
+// ─── Re-upload ───
+function onReuploadFileSelect(input) {
+    const file = input.files[0];
+    document.getElementById('reuploadFileName').textContent = file ? file.name : 'Choose PDF...';
+    document.getElementById('reuploadBtn').disabled = !file;
+}
+
+async function reuploadRuleset() {
+    if (!currentRulesetId) return;
+    const file = document.getElementById('reuploadFileInput').files[0];
+    if (!file) return;
+
+    document.getElementById('reuploadBtn').disabled = true;
+    document.getElementById('reuploadBtn').textContent = 'Replacing...';
+
+    const fd = new FormData();
+    fd.append('file', file);
+
+    try {
+        const resp = await fetch(`${API}/api/compliance/rulesets/${currentRulesetId}/upload`, { method: 'PUT', body: fd });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Re-upload failed');
+
+        toast(`Replaced with ${data.total_articles} articles, ${data.total_points} rules`, 'success');
+        document.getElementById('reuploadFileInput').value = '';
+        document.getElementById('reuploadFileName').textContent = 'Choose PDF...';
+        openRuleset(currentRulesetId);
+    } catch (e) {
+        toast('Error: ' + e.message, 'error');
+    } finally {
+        document.getElementById('reuploadBtn').disabled = false;
+        document.getElementById('reuploadBtn').textContent = 'Replace';
+    }
+}
+
+// ─── Edit Modal ───
+let editingRuleId = null;
+
+function openEditModal(ruleId, articleNum, articleTitle, subPoint, btnEl) {
+    editingRuleId = ruleId;
+    document.getElementById('editModalTitle').textContent = `Edit Rule — Article ${articleNum}`;
+    document.getElementById('editArticle').value = `Article ${articleNum}: ${articleTitle}`;
+    document.getElementById('editSubPoint').value = subPoint;
+
+    // Get content from the DOM
+    const ruleEl = btnEl.closest('.rule-point');
+    const content = ruleEl.querySelector('.point-content').textContent;
+    document.getElementById('editContent').value = content;
+
+    document.getElementById('editModal').classList.add('active');
+}
+
+function closeEditModal() {
+    document.getElementById('editModal').classList.remove('active');
+    editingRuleId = null;
+}
+
+async function saveRule() {
+    if (!editingRuleId) return;
+    const content = document.getElementById('editContent').value.trim();
+    const subPoint = document.getElementById('editSubPoint').value.trim() || null;
+
+    if (!content) { toast('Content cannot be empty', 'error'); return; }
+
+    try {
+        const resp = await fetch(`${API}/api/compliance/rules/${editingRuleId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content, sub_point: subPoint })
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Update failed');
+
+        toast('Rule updated successfully', 'success');
+        closeEditModal();
+        openRuleset(currentRulesetId);
+    } catch (e) {
+        toast('Error: ' + e.message, 'error');
+    }
+}
+
+// ─── Delete ───
+function confirmDeleteRule(ruleId, articleNum, subPoint) {
+    const label = subPoint ? `Article ${articleNum}, point ${subPoint}` : `Article ${articleNum} rule`;
+    document.getElementById('deleteMessage').textContent = `Are you sure you want to delete "${label}"? This action cannot be undone.`;
+    document.getElementById('confirmDeleteBtn').onclick = () => deleteRule(ruleId);
+    document.getElementById('deleteModal').classList.add('active');
+}
+
+function confirmDeleteRuleset(id, title) {
+    document.getElementById('deleteMessage').textContent = `Are you sure you want to delete the entire "${title}" ruleset and ALL its rules? This cannot be undone.`;
+    document.getElementById('confirmDeleteBtn').onclick = () => deleteRuleset(id);
+    document.getElementById('deleteModal').classList.add('active');
+}
+
+function closeDeleteModal() {
+    document.getElementById('deleteModal').classList.remove('active');
+}
+
+async function deleteRule(ruleId) {
+    closeDeleteModal();
+    try {
+        const resp = await fetch(`${API}/api/compliance/rules/${ruleId}`, { method: 'DELETE' });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Delete failed');
+        toast('Rule deleted', 'success');
+        openRuleset(currentRulesetId);
+    } catch (e) {
+        toast('Error: ' + e.message, 'error');
+    }
+}
+
+async function deleteRuleset(id) {
+    closeDeleteModal();
+    try {
+        const resp = await fetch(`${API}/api/compliance/rulesets/${id}`, { method: 'DELETE' });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Delete failed');
+        toast('Ruleset deleted', 'success');
+        showRulesetsView();
+        loadRulesets();
+    } catch (e) {
+        toast('Error: ' + e.message, 'error');
+    }
+}
+
+// ─── Helpers ───
+function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function toast(msg, type = 'info') {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = `toast ${type} show`;
+    setTimeout(() => t.classList.remove('show'), 3500);
+}
+
+// Close modals on backdrop click
+document.querySelectorAll('.modal').forEach(m => {
+    m.addEventListener('click', e => { if (e.target === m) { m.classList.remove('active'); } });
+});
+
+// ─── Init ───
+window.addEventListener('DOMContentLoaded', () => {
+    loadRulesets();
+});
+</script>
+</body>
+</html>

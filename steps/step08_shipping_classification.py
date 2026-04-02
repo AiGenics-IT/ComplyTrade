@@ -1,0 +1,637 @@
+"""
+Step 8 -- Shipping Document Classification Against Expected List
+================================================================
+For each shipping packet, sends page image + GLM text to Qwen VLM
+which classifies the document against the LC's required document list.
+
+KEY PRINCIPLE: GLM OCR already extracted trusted text (Step 1).
+Qwen VLM gets the page image + GLM text together. It reviews,
+classifies, detects stamps/signatures, and extracts metadata.
+Qwen NEVER rewrites GLM text -- only adds missing things.
+
+INPUT:
+    - Shipping packets from Step 3 (with GLM text + page images)
+    - Required documents from Step 7 (expected document list from LC)
+
+OUTPUT:
+    - classified_packets[]: each with document_type, stamps, signatures,
+      copy_status, marking_status, issued_by, etc.
+"""
+
+import json
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+import os
+import re
+import time
+import base64
+import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field, asdict
+from typing import List, Optional, Dict, Any
+from pathlib import Path
+
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config.settings import QWEN_VLM_URL, QWEN_VLM_MODEL, MAX_CONCURRENT_VLM, VLM_TIMEOUT
+
+
+# ── Dataclasses ──
+
+@dataclass
+class StampInfo:
+    """A stamp detected on a document."""
+    text: str = ""
+    type: str = ""  # rubber_stamp / embossed / printed
+
+
+@dataclass
+class SignatureInfo:
+    """A signature detected on a document."""
+    description: str = ""
+    type: str = ""  # handwritten / digital
+
+
+@dataclass
+class SealInfo:
+    """A seal detected on a document."""
+    description: str = ""
+
+
+@dataclass
+class LogoInfo:
+    """A logo detected on a document."""
+    company_name: str = ""
+
+
+@dataclass
+class ClassifiedPacket:
+    """A shipping packet after classification against the LC's expected document list."""
+    packet_id: str
+    original_pages: List[int] = field(default_factory=list)
+    page_image_paths: List[str] = field(default_factory=list)
+    raw_text: str = ""
+    cleaned_text: str = ""
+
+    # Classification results
+    document_type: str = ""
+    classification_status: str = "unknown"  # matched_document | alien_document | extra_document | unknown
+    match_confidence: float = 0.0
+    matched_requirement_index: int = -1
+    matched_requirement_name: str = ""
+
+    # VLM classification details
+    vlm_top_matches: List[dict] = field(default_factory=list)
+    vlm_reasoning: str = ""
+
+    # Document summary from VLM
+    document_summary: str = ""
+    document_number: str = ""
+    document_date: str = ""
+    document_amount: str = ""
+
+    # Visual elements detected by VLM
+    stamps: List[dict] = field(default_factory=list)
+    signatures: List[dict] = field(default_factory=list)
+    seals: List[dict] = field(default_factory=list)
+    logos: List[dict] = field(default_factory=list)
+
+    # Copy/Original status
+    copy_status: str = ""        # "original" or "copy"
+    copy_label: str = ""         # exact text of copy marking
+    marking_status: str = ""     # stamped_and_signed / signed / stamped / unsigned
+
+    # Issuer and references
+    issued_by: str = ""
+    lc_reference: str = ""
+
+    # Metadata
+    source_step: int = 8
+    confidence: float = 0.0
+    ambiguity_flag: bool = False
+    ambiguity_notes: str = ""
+    elapsed_seconds: float = 0.0
+
+
+# ── Classification Prompt ──
+
+_CLASSIFICATION_PROMPT = """You are classifying a trade finance shipping document.
+
+GLM OCR TEXT (trusted):
+{glm_text}
+
+The LC requires these documents:
+{required_docs_list}
+
+Based on the image and text, classify this document:
+1. document_type: exact name from the required list, or a standard trade finance document name
+2. confidence: 0.0 to 1.0
+3. summary: Detailed description including ALL key details: drawer/drawee, at sight/usance, to the order of, amount in figures AND words, tenor, maturity, endorsements, and any other relevant terms visible in the document
+4. document_number: if visible
+5. date: if visible
+6. amount: if visible (with currency)
+7. stamps: list of stamp text detected [{{"text": "...", "type": "rubber_stamp/embossed/printed"}}]
+8. signatures: list [{{"description": "...", "type": "handwritten/digital"}}]
+9. seals: list [{{"description": "..."}}]
+10. logos: list [{{"company_name": "..."}}]
+11. copy_status: "original" or "copy" (look for ORIGINAL/COPY/NON-NEGOTIABLE stamps)
+12. copy_label: exact text of copy marking if visible
+13. marking_status: "stamped_and_signed" / "signed" / "stamped" / "unsigned"
+14. issued_by: who issued this document
+15. lc_reference: LC number if visible on document
+
+Return ONLY valid JSON:
+{{
+    "document_type": "...",
+    "confidence": 0.0,
+    "summary": "...",
+    "document_number": "",
+    "date": "",
+    "amount": "",
+    "stamps": [],
+    "signatures": [],
+    "seals": [],
+    "logos": [],
+    "copy_status": "",
+    "copy_label": "",
+    "marking_status": "",
+    "issued_by": "",
+    "lc_reference": "",
+    "reasoning": ""
+}}"""
+
+
+# ── Rule-Based Pre-Classification ──
+
+_DOC_INDICATORS = {
+    "Commercial Invoice": [
+        r'COMMERCIAL\s+INVOICE', r'INVOICE\s+NO', r'INVOICE\s+DATE',
+        r'UNIT\s+PRICE', r'TOTAL\s+AMOUNT', r'SOLD\s+TO',
+    ],
+    "Bill of Lading": [
+        r'BILL\s+OF\s+LADING', r'B/?L\s+NO', r'SHIPPER', r'CONSIGNEE',
+        r'PORT\s+OF\s+LOADING', r'PORT\s+OF\s+DISCHARGE', r'ON\s+BOARD',
+        r'VESSEL\s+NAME', r'OCEAN\s+BILL',
+    ],
+    "Airway Bill": [
+        r'AIR\s*WAY\s*BILL', r'AWB', r'AIRLINE', r'FLIGHT\s+NO',
+    ],
+    "Insurance Policy/Certificate": [
+        r'INSURANCE\s+(?:POLICY|CERTIFICATE)', r'INSURED\s+VALUE',
+        r'MARINE\s+CARGO', r'PREMIUM', r'SUM\s+INSURED', r'UNDERWRITER',
+    ],
+    "Certificate of Origin": [
+        r'CERTIFICATE\s+OF\s+ORIGIN', r'COUNTRY\s+OF\s+ORIGIN',
+        r'ORIGIN\s+CRITERIA', r'CHAMBER\s+OF\s+COMMERCE',
+    ],
+    "Packing List": [
+        r'PACKING\s+LIST', r'NET\s+WEIGHT', r'GROSS\s+WEIGHT',
+        r'CARTONS?', r'PACKAGES?', r'DIMENSIONS',
+    ],
+    "Weight List": [
+        r'WEIGHT\s+LIST', r'WEIGHT\s+CERTIFICATE', r'TARE\s+WEIGHT',
+    ],
+    "Draft": [
+        r'DRAFT', r'BILL\s+OF\s+EXCHANGE', r'PAY\s+TO\s+THE\s+ORDER',
+        r'AT\s+SIGHT', r'TENOR', r'DRAWEE', r'DRAWER',
+    ],
+    "Beneficiary Certificate": [
+        r'BENEFICIARY\s*(?:\'S)?\s*CERTIFICATE', r'WE\s+HEREBY\s+CERTIFY',
+    ],
+    "Inspection Certificate": [
+        r'INSPECTION\s+(?:CERTIFICATE|REPORT)', r'SURVEYOR',
+    ],
+    "Shipping Advice": [
+        r'SHIPPING\s+ADVICE', r'SHIPMENT\s+ADVICE',
+    ],
+    "Fumigation Certificate": [
+        r'FUMIGATION\s+CERTIFICATE', r'FUMIGAT',
+    ],
+    "Phytosanitary Certificate": [
+        r'PHYTOSANITARY', r'PLANT\s+(?:HEALTH|PROTECTION)',
+    ],
+    "Health Certificate": [
+        r'HEALTH\s+CERTIFICATE', r'FIT\s+FOR\s+HUMAN\s+CONSUMPTION',
+    ],
+    "Documentary Remittance": [
+        r'DOCUMENTARY\s+REMITTANCE', r'COVERING\s+LETTER', r'ENCLOSED\s+HEREWITH',
+        r'WE\s+(?:ARE\s+)?ENCLOS', r'DOCUMENTS?\s+ATTACHED',
+    ],
+}
+
+
+def _rule_based_classify(text: str) -> List[dict]:
+    """Pre-classify document using keyword matching. Returns sorted matches."""
+    upper = text.upper()
+    scores = {}
+    for doc_type, patterns in _DOC_INDICATORS.items():
+        hits = sum(1 for p in patterns if re.search(p, upper))
+        if hits > 0:
+            score = hits / len(patterns)
+            scores[doc_type] = round(score, 3)
+    return [
+        {"document_name": name, "score": score}
+        for name, score in sorted(scores.items(), key=lambda x: -x[1])
+    ]
+
+
+def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tuple:
+    """Match a document type string to the expected docs list. Returns (index, name).
+
+    Uses multiple matching strategies:
+    1. Exact containment (either direction)
+    2. Normalized containment (strip plurals, strip 'OF', etc.)
+    3. Fuzzy word overlap (1+ significant words match)
+    """
+    if not doc_type:
+        return -1, ""
+    dt_upper = doc_type.upper().strip()
+
+    # Normalize: strip plurals and common words for better matching
+    def _normalize(s):
+        s = s.upper()
+        s = re.sub(r'\bBILLS?\b', 'BILL', s)
+        s = re.sub(r'\bCERTIFICATES?\b', 'CERTIFICATE', s)
+        s = re.sub(r'\bINVOICES?\b', 'INVOICE', s)
+        s = re.sub(r'\bADVICES?\b', 'ADVICE', s)
+        s = re.sub(r'\bEXCHANGES?\b', 'EXCHANGE', s)
+        return s
+
+    dt_norm = _normalize(dt_upper)
+
+    for i, ed in enumerate(expected_docs):
+        ed_name = ed.get('document_name', '').upper()
+        ed_norm = _normalize(ed_name)
+        # Exact containment
+        if dt_upper in ed_name or ed_name in dt_upper:
+            return i, ed.get('document_name', '')
+        # Normalized containment
+        if dt_norm in ed_norm or ed_norm in dt_norm:
+            return i, ed.get('document_name', '')
+
+    # Fuzzy: check if any significant words overlap (1+ is enough)
+    dt_words = set(re.findall(r'[A-Z]{3,}', _normalize(dt_upper)))
+    # Remove common filler words
+    _FILLER = {'THE', 'AND', 'FOR', 'FROM', 'WITH', 'THEIR', 'MUST', 'SHOULD',
+               'FULL', 'SET', 'ORIGINAL', 'COPY', 'DUPLICATE', 'ORDER'}
+    dt_words -= _FILLER
+    for i, ed in enumerate(expected_docs):
+        ed_upper = ed.get('document_name', '').upper()
+        ed_words = set(re.findall(r'[A-Z]{3,}', _normalize(ed_upper))) - _FILLER
+        overlap = dt_words & ed_words
+        # Key document words: BILL, LADING, INVOICE, CERTIFICATE, DRAFT, ADVICE, PACKING, WEIGHT, QUALITY
+        _key_words = {'BILL', 'LADING', 'INVOICE', 'CERTIFICATE', 'DRAFT', 'EXCHANGE',
+                      'ADVICE', 'PACKING', 'WEIGHT', 'QUALITY', 'INSURANCE', 'FUMIGATION',
+                      'PHYTOSANITARY', 'SHIPPING', 'AGENT'}
+        key_overlap = overlap & _key_words
+        if key_overlap:
+            return i, ed.get('document_name', '')
+        if len(overlap) >= 2:
+            return i, ed.get('document_name', '')
+    return -1, ""
+
+
+def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_index: int) -> dict:
+    """Classify a single shipping packet by sending image + GLM text to Qwen VLM."""
+    start = time.time()
+
+    # Get text content (GLM OCR text)
+    glm_text = packet.get('cleaned_text', packet.get('raw_text', ''))
+    if not glm_text:
+        texts = packet.get('page_texts', [])
+        glm_text = '\n'.join(str(t) for t in texts) if texts else ''
+
+    pages = packet.get('pages', packet.get('original_pages', []))
+    image_paths = packet.get('page_image_paths', packet.get('image_paths', []))
+
+    # Build required docs list for prompt
+    req_lines = []
+    for i, d in enumerate(expected_docs):
+        req_lines.append("%d. %s (%d originals, %d copies)" % (
+            i + 1,
+            d.get('document_name', 'Unknown'),
+            d.get('originals_count', 0),
+            d.get('copies_count', 0),
+        ))
+    required_docs_list = "\n".join(req_lines)
+
+    # Rule-based pre-classification (fallback)
+    rule_matches = _rule_based_classify(glm_text)
+
+    # VLM classification
+    vlm_result = None
+    prompt_text = _CLASSIFICATION_PROMPT.format(
+        glm_text=glm_text[:5000],
+        required_docs_list=required_docs_list,
+    )
+
+    try:
+        content_parts = []
+
+        # Include first page image
+        if image_paths:
+            first_img = str(image_paths[0])
+            if os.path.exists(first_img):
+                try:
+                    with open(first_img, 'rb') as f:
+                        img_b64 = base64.b64encode(f.read()).decode('utf-8')
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,%s" % img_b64}
+                    })
+                except Exception:
+                    pass
+
+        content_parts.append({"type": "text", "text": prompt_text})
+
+        resp = requests.post(QWEN_VLM_URL, json={
+            "model": QWEN_VLM_MODEL,
+            "messages": [{"role": "user", "content": content_parts}],
+            "max_tokens": 2000,
+            "temperature": 0.1,
+        }, timeout=VLM_TIMEOUT)
+
+        if resp.status_code == 200:
+            result = resp.json()
+            content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                vlm_result = json.loads(json_match.group(0))
+
+    except Exception as e:
+        print("[Step 8] VLM classification failed for packet %d: %s" % (packet_index, e))
+
+    # ── Combine results ──
+    document_type = ""
+    match_confidence = 0.0
+    matched_index = -1
+    matched_name = ""
+    top_matches = rule_matches[:5]
+    reasoning = ""
+    classification_status = "unknown"
+
+    # VLM-extracted visual elements
+    stamps = []
+    signatures = []
+    seals = []
+    logos = []
+    copy_status = ""
+    copy_label = ""
+    marking_status = ""
+    issued_by = ""
+    lc_reference = ""
+    document_summary = ""
+    document_number = ""
+    document_date = ""
+    document_amount = ""
+
+    if vlm_result:
+        document_type = vlm_result.get('document_type', '')
+        match_confidence = float(vlm_result.get('confidence', 0.0))
+        reasoning = vlm_result.get('reasoning', '')
+        document_summary = vlm_result.get('summary', '')
+        document_number = vlm_result.get('document_number', '')
+        document_date = vlm_result.get('date', '')
+        document_amount = vlm_result.get('amount', '')
+
+        # Visual elements
+        raw_stamps = vlm_result.get('stamps', [])
+        if isinstance(raw_stamps, list):
+            stamps = [{"text": s.get("text", ""), "type": s.get("type", "rubber_stamp")}
+                      for s in raw_stamps if isinstance(s, dict)]
+
+        raw_sigs = vlm_result.get('signatures', [])
+        if isinstance(raw_sigs, list):
+            signatures = [{"description": s.get("description", ""), "type": s.get("type", "handwritten")}
+                          for s in raw_sigs if isinstance(s, dict)]
+
+        raw_seals = vlm_result.get('seals', [])
+        if isinstance(raw_seals, list):
+            seals = [{"description": s.get("description", "")}
+                     for s in raw_seals if isinstance(s, dict)]
+
+        raw_logos = vlm_result.get('logos', [])
+        if isinstance(raw_logos, list):
+            logos = [{"company_name": s.get("company_name", "")}
+                     for s in raw_logos if isinstance(s, dict)]
+
+        copy_status = vlm_result.get('copy_status', '')
+        copy_label = vlm_result.get('copy_label', '')
+        marking_status = vlm_result.get('marking_status', '')
+        issued_by = vlm_result.get('issued_by', '')
+        lc_reference = vlm_result.get('lc_reference', '')
+
+        # Match to expected docs
+        matched_index, matched_name = _match_type_to_requirement(document_type, expected_docs)
+        if matched_index >= 0:
+            classification_status = "matched_document"
+        else:
+            classification_status = "alien_document"
+
+    elif rule_matches:
+        # Fallback to rule-based
+        best = rule_matches[0]
+        document_type = best['document_name']
+        match_confidence = best['score'] * 0.8
+
+        matched_index, matched_name = _match_type_to_requirement(document_type, expected_docs)
+        if matched_index >= 0:
+            classification_status = "matched_document"
+        else:
+            classification_status = "alien_document" if match_confidence > 0.3 else "unknown"
+
+        reasoning = "Rule-based classification (VLM unavailable): top match %s (%.2f)" % (
+            document_type, match_confidence)
+
+    # Determine ambiguity
+    ambiguity = False
+    ambiguity_notes = ""
+    if 0 < match_confidence < 0.6:
+        ambiguity = True
+        ambiguity_notes = "Classification confidence %.2f is low" % match_confidence
+    if len(top_matches) >= 2:
+        scores = [m.get('score', 0) for m in top_matches[:2]]
+        if len(scores) == 2 and scores[0] > 0 and scores[1] > 0:
+            if scores[0] - scores[1] < 0.2:
+                ambiguity = True
+                if ambiguity_notes:
+                    ambiguity_notes += "; "
+                ambiguity_notes += "Close scores: %s=%.2f vs %s=%.2f" % (
+                    top_matches[0]['document_name'], scores[0],
+                    top_matches[1]['document_name'], scores[1])
+
+    elapsed = time.time() - start
+
+    classified = ClassifiedPacket(
+        packet_id=packet.get('packet_id', "packet_%03d" % packet_index),
+        original_pages=pages if isinstance(pages, list) else [pages],
+        page_image_paths=image_paths if isinstance(image_paths, list) else [image_paths],
+        raw_text=packet.get('raw_text', ''),
+        cleaned_text=packet.get('cleaned_text', glm_text),
+        document_type=document_type,
+        classification_status=classification_status,
+        match_confidence=match_confidence,
+        matched_requirement_index=matched_index,
+        matched_requirement_name=matched_name,
+        vlm_top_matches=top_matches,
+        vlm_reasoning=reasoning,
+        document_summary=document_summary,
+        document_number=document_number,
+        document_date=document_date,
+        document_amount=document_amount,
+        stamps=stamps,
+        signatures=signatures,
+        seals=seals,
+        logos=logos,
+        copy_status=copy_status,
+        copy_label=copy_label,
+        marking_status=marking_status,
+        issued_by=issued_by,
+        lc_reference=lc_reference,
+        confidence=match_confidence,
+        ambiguity_flag=ambiguity,
+        ambiguity_notes=ambiguity_notes,
+        elapsed_seconds=round(elapsed, 2),
+    )
+
+    return asdict(classified)
+
+
+# ── Main Run Function ──
+
+def run(step3_result: dict, step7_result: dict, output_dir: str = None, progress_callback=None) -> dict:
+    """
+    Execute Step 8: Classify shipping packets against expected document list.
+
+    Args:
+        step3_result: Output from Step 3 with 'shipping_packets' list
+        step7_result: Output from Step 7 with 'required_documents' list
+        output_dir: Directory to save results
+        progress_callback: Optional callback for progress updates
+
+    Returns:
+        dict with 'classified_packets', 'summary', 'required_documents', 'elapsed_seconds'
+    """
+    def _progress(msg):
+        if progress_callback:
+            progress_callback("[Step 8] %s" % msg)
+        print("[Step 8] %s" % msg)
+
+    start_time = time.time()
+
+    packets = step3_result.get('shipping_packets', step3_result.get('packets', []))
+    required_docs = step7_result.get('required_documents', [])
+
+    _progress("Classifying %d shipping packets against %d expected documents..." % (
+        len(packets), len(required_docs)))
+
+    if not packets:
+        return {
+            'classified_packets': [],
+            'summary': {'total': 0, 'matched': 0, 'alien': 0, 'extra': 0, 'unknown': 0},
+            'required_documents': required_docs,
+            'elapsed_seconds': 0,
+        }
+
+    # Classify packets concurrently
+    classified_packets = [None] * len(packets)
+
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_VLM) as executor:
+        futures = {}
+        for idx, packet in enumerate(packets):
+            future = executor.submit(_classify_single_packet, packet, required_docs, idx)
+            futures[future] = idx
+
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                result = future.result()
+                classified_packets[idx] = result
+                status = result.get('classification_status', 'unknown')
+                doc_type = result.get('document_type', '?')
+                conf = result.get('match_confidence', 0)
+                copy = result.get('copy_status', '')
+                marking = result.get('marking_status', '')
+                _progress("  Packet %d: %s [%s] (%.2f) copy=%s marking=%s" % (
+                    idx, doc_type, status, conf, copy, marking))
+            except Exception as e:
+                _progress("  Packet %d: ERROR - %s" % (idx, e))
+                classified_packets[idx] = asdict(ClassifiedPacket(
+                    packet_id="packet_%03d" % idx,
+                    classification_status="unknown",
+                    ambiguity_flag=True,
+                    ambiguity_notes="Classification error: %s" % e,
+                ))
+
+    # Post-process: detect extra documents
+    type_counts = {}
+    for cp in classified_packets:
+        if cp and cp.get('classification_status') == 'matched_document':
+            mi = cp.get('matched_requirement_index', -1)
+            if mi >= 0:
+                type_counts[mi] = type_counts.get(mi, 0) + 1
+
+    for cp in classified_packets:
+        if cp and cp.get('classification_status') == 'matched_document':
+            mi = cp.get('matched_requirement_index', -1)
+            if mi >= 0 and mi < len(required_docs):
+                expected_total = (required_docs[mi].get('originals_count', 0) +
+                                  required_docs[mi].get('copies_count', 0))
+                if expected_total > 0 and type_counts.get(mi, 0) > expected_total:
+                    cp['classification_status'] = 'extra_document'
+                    cp['ambiguity_flag'] = True
+                    notes = cp.get('ambiguity_notes', '')
+                    extra_note = "More instances (%d) than expected (%d)" % (
+                        type_counts[mi], expected_total)
+                    cp['ambiguity_notes'] = ("%s; %s" % (notes, extra_note)).strip('; ')
+
+    # Summary
+    summary = {
+        'total': len(classified_packets),
+        'matched': sum(1 for p in classified_packets if p and p.get('classification_status') == 'matched_document'),
+        'alien': sum(1 for p in classified_packets if p and p.get('classification_status') == 'alien_document'),
+        'extra': sum(1 for p in classified_packets if p and p.get('classification_status') == 'extra_document'),
+        'unknown': sum(1 for p in classified_packets if p and p.get('classification_status') == 'unknown'),
+        'ambiguous': sum(1 for p in classified_packets if p and p.get('ambiguity_flag')),
+    }
+
+    elapsed = time.time() - start_time
+
+    # Save results
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        result_file = os.path.join(output_dir, 'step08_result.json')
+        with open(result_file, 'w', encoding='utf-8') as f:
+            json.dump({
+                'step': 8,
+                'step_name': 'Shipping Document Classification',
+                'total_packets': len(classified_packets),
+                'summary': summary,
+                'elapsed_seconds': round(elapsed, 2),
+                'classified_packets': classified_packets,
+                'required_documents_used': required_docs,
+            }, f, indent=2, ensure_ascii=False)
+
+    _progress("Step 8 complete: %d matched, %d alien, %d extra, %d unknown in %.1fs" % (
+        summary['matched'], summary['alien'], summary['extra'], summary['unknown'], elapsed))
+
+    return {
+        'classified_packets': classified_packets,
+        'summary': summary,
+        'required_documents': required_docs,
+        'elapsed_seconds': round(elapsed, 2),
+    }
+
+
+if __name__ == '__main__':
+    import sys as _main_sys
+    if len(_main_sys.argv) < 3:
+        print("Usage: python step08_shipping_classification.py <step03_result.json> <step07_result.json>")
+        _main_sys.exit(1)
+    with open(_main_sys.argv[1], 'r', encoding='utf-8') as f:
+        step3 = json.load(f)
+    with open(_main_sys.argv[2], 'r', encoding='utf-8') as f:
+        step7 = json.load(f)
+    result = run(step3, step7, output_dir=os.path.dirname(_main_sys.argv[1]))
+    print("\nResult: %s" % result['summary'])

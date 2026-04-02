@@ -1,0 +1,1331 @@
+<!DOCTYPE html>
+<html lang="en">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ComplyTrade - AiGenics</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#1554ca 0%,#0d3b8a 100%);min-height:100vh;padding:20px}
+        .container{max-width:1200px;margin:0 auto}
+        .header{text-align:center;color:#fff;margin-bottom:30px}
+        .header h1{font-size:2.6em;margin-bottom:8px;text-shadow:2px 2px 4px rgba(0,0,0,.2)}
+        .header p{font-size:1.1em;opacity:.9}
+        .card{background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.25);padding:30px;margin-bottom:24px}
+        .upload-section{border:3px dashed #1554ca;border-radius:12px;padding:36px;text-align:center;background:#f8f9ff;transition:all .3s;cursor:pointer}
+        .upload-section:hover{border-color:#0d3b8a;background:#eef1ff}
+        .upload-section.dragover{border-color:#0d3b8a;background:#e0e5ff;transform:scale(1.01)}
+        .upload-icon{font-size:3.5em;margin-bottom:12px;color:#1554ca}
+        .file-input{display:none}
+        .btn{background:linear-gradient(135deg,#1554ca,#0d3b8a);color:#fff;padding:13px 36px;border:none;border-radius:8px;font-size:1.05em;cursor:pointer;transition:transform .2s,box-shadow .2s;margin:8px}
+        .btn:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(21,84,202,.4)}
+        .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+        .btn-secondary{background:linear-gradient(135deg,#f093fb,#f5576c)}
+        .btn-info{background:linear-gradient(135deg,#4facfe,#00c6fb)}
+        .btn-success{background:#28a745}
+        .file-item{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8f9ff;border-radius:8px;margin-bottom:8px;border-left:4px solid #1554ca}
+        .file-name{font-weight:500;color:#333}
+        .file-size{color:#666;font-size:.9em;margin-left:8px}
+        .remove-btn{background:#f5576c;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:.85em}
+        .remove-btn:hover{background:#e04b5f}
+        .status-card{display:none}.status-card.active{display:block}
+        .status-badge{display:inline-block;padding:6px 18px;border-radius:20px;font-weight:600;font-size:.85em;text-transform:uppercase}
+        .status-pending{background:#fff3cd;color:#856404}
+        .status-processing{background:#cce5ff;color:#004085}
+        .status-completed{background:#d4edda;color:#155724}
+        .status-failed{background:#f8d7da;color:#721c24}
+        .progress-bar{width:100%;height:26px;background:#e0e0e0;border-radius:13px;overflow:hidden;margin:16px 0}
+        .progress-fill{height:100%;background:linear-gradient(90deg,#1554ca,#4facfe);transition:width .3s;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;font-size:.85em}
+        .spinner{border:4px solid #f3f3f3;border-top:4px solid #1554ca;border-radius:50%;width:36px;height:36px;animation:spin 1s linear infinite;margin:16px auto}
+        @keyframes spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}
+        .result-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px}
+        .stat-box{background:#f8f9ff;padding:14px;border-radius:8px;text-align:center}
+        .stat-label{color:#666;font-size:.85em;margin-bottom:4px}
+        .stat-value{color:#1554ca;font-weight:700;font-size:1.4em}
+        .result-item{background:#f8f9ff;padding:18px;border-radius:10px;margin-bottom:12px;border-left:4px solid #1554ca}
+        .result-header{font-size:1.15em;font-weight:600;color:#333;margin-bottom:8px}
+        .download-btn{background:#28a745;color:#fff;padding:8px 16px;border:none;border-radius:5px;cursor:pointer;text-decoration:none;display:inline-block;margin-top:8px;margin-right:8px;font-size:.9em}
+        .download-btn:hover{background:#218838}
+        .error-message{background:#f8d7da;color:#721c24;padding:14px;border-radius:8px;margin-top:12px;border-left:4px solid #f5c6cb}
+        /* Modal */
+        .modal{display:none;position:fixed;z-index:1000;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.7)}
+        .modal.active{display:flex;align-items:center;justify-content:center}
+        .modal-content{background:#fff;border-radius:16px;width:92%;max-width:1100px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+        .modal-header{background:linear-gradient(135deg,#1554ca,#0d3b8a);color:#fff;padding:20px 28px;border-radius:16px 16px 0 0;display:flex;justify-content:space-between;align-items:center}
+        .modal-header h2{margin:0;font-size:1.5em}
+        .close-modal{background:none;border:none;color:#fff;font-size:1.8em;cursor:pointer;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center}
+        .close-modal:hover{background:rgba(255,255,255,.2)}
+        .modal-body{padding:24px}
+        .doc-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:24px;padding:16px;background:#f8f9ff;border-radius:8px}
+        .doc-summary-item{text-align:center;padding:12px;background:#fff;border-radius:6px}
+        .doc-summary-label{font-size:.8em;color:#666;margin-bottom:4px}
+        .doc-summary-value{font-size:1.3em;font-weight:700;color:#1554ca}
+        .doc-tabs{display:flex;gap:8px;margin-bottom:16px;border-bottom:2px solid #e0e0e0;flex-wrap:wrap}
+        .doc-tab{padding:10px 20px;background:none;border:none;border-bottom:3px solid transparent;cursor:pointer;font-size:.95em;font-weight:500;color:#666}
+        .doc-tab:hover{color:#1554ca}
+        .doc-tab.active{color:#1554ca;border-bottom-color:#1554ca}
+        .doc-tab-content{display:none}.doc-tab-content.active{display:block}
+        .doc-card{background:#f8f9ff;padding:16px;border-radius:8px;margin-bottom:12px;border-left:4px solid #1554ca}
+        .doc-card.lc{border-left-color:#4facfe}
+        .doc-card.amendment{border-left-color:#f093fb}
+        .doc-card.supporting{border-left-color:#28a745}
+        .doc-card.final_lc{border-left-color:#ffc107}
+        .doc-card.swift_messages{border-left-color:#0d6efd}
+        .doc-card.unclassified{border-left-color:#999}
+        .doc-card-header{display:flex;justify-content:space-between;align-items:start;margin-bottom:10px}
+        .doc-card-title{font-size:1.05em;font-weight:600;color:#333}
+        .doc-card-badge{padding:4px 10px;border-radius:12px;font-size:.75em;font-weight:600;text-transform:uppercase}
+        .badge-lc{background:#d1ecf1;color:#0c5460}
+        .badge-amendment{background:#f8d7da;color:#721c24}
+        .badge-supporting{background:#d4edda;color:#155724}
+        .badge-final_lc{background:#fff3cd;color:#856404}
+        .badge-swift_messages{background:#cfe2ff;color:#084298}
+        .badge-unclassified{background:#e0e0e0;color:#666}
+        .mismatch-tag{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:4px;font-size:.72em;font-weight:700;text-transform:uppercase;letter-spacing:.03em;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;margin-left:6px}
+        .mismatch-tag .mismatch-icon{font-size:1em}
+        .mismatch-ref{display:block;font-size:.78em;color:#b91c1c;margin-top:3px;padding:3px 8px;background:#fef2f2;border-radius:3px;border-left:3px solid #ef4444}
+        .not-selected-tag{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:4px;font-size:.72em;font-weight:700;text-transform:uppercase;letter-spacing:.03em;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;margin-left:6px}
+        .not-selected-ref{display:block;font-size:.78em;color:#92400e;margin-top:3px;padding:3px 8px;background:#fffbeb;border-radius:3px;border-left:3px solid #f59e0b}
+        /* LC Selection Modal */
+        .lc-select-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:3000;display:none;align-items:center;justify-content:center}
+        .lc-select-overlay.active{display:flex}
+        .lc-select-modal{background:#fff;border-radius:16px;max-width:800px;width:92%;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+        .lc-select-header{background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;padding:20px 28px;border-radius:16px 16px 0 0;text-align:center}
+        .lc-select-header h2{margin:0 0 6px;font-size:1.4em}
+        .lc-select-header p{margin:0;opacity:.9;font-size:.95em}
+        .lc-select-body{padding:20px 24px}
+        .lc-option-card{border:2px solid #e5e7eb;border-radius:12px;padding:18px 20px;margin-bottom:14px;cursor:pointer;transition:all .2s}
+        .lc-option-card:hover{border-color:#f59e0b;background:#fffbeb;transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.08)}
+        .lc-option-card .lc-number{font-size:1.2em;font-weight:700;color:#1e293b;margin-bottom:8px}
+        .lc-option-card .lc-details{display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;font-size:.88em;color:#475569}
+        .lc-option-card .lc-detail-label{font-weight:600;color:#64748b}
+        .lc-option-card .lc-select-btn{display:inline-block;margin-top:12px;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;padding:8px 24px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:.92em;transition:transform .2s}
+        .lc-option-card .lc-select-btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(245,158,11,.4)}
+        .doc-info{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:8px}
+        .doc-info-item{font-size:.85em}
+        .doc-info-label{color:#666;font-weight:500}
+        .doc-info-value{color:#333}
+        .amended-tag{display:inline-block;background:#fff3cd;color:#856404;padding:2px 8px;border-radius:4px;font-size:.75em;font-weight:600;margin-left:6px}
+        /* Copy/Original Tags */
+        .copy-tag{display:inline-block;padding:3px 10px;border-radius:4px;font-size:.72em;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+        .copy-tag.original{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0}
+        .copy-tag.copy{background:#e0e7ff;color:#3730a3;border:1px solid #c7d2fe}
+        .copy-tag.non_negotiable_copy{background:#fef3c7;color:#92400e;border:1px solid #fde68a}
+        .copy-tag.unknown{background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0}
+        /* Stamp pill */
+        .stamp-pill{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;font-size:.72em;font-weight:600}
+        .stamp-pill.has-stamps{background:#fef2f2;color:#dc2626;border:1px solid #fecaca}
+        .stamp-pill.stamped-signed{background:#fef2f2;color:#dc2626;border:1px solid #fecaca}
+        .stamp-pill.has-signed{background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe}
+        .stamp-pill.no-stamps{background:#f8fafc;color:#94a3b8;border:1px solid #e2e8f0}
+        /* Mark tags for categorized stamp details */
+        .mark-tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.7em;font-weight:600;margin:1px 2px}
+        .mark-tag.stamp-tag{background:#fef2f2;color:#dc2626;border:1px solid #fecaca}
+        .mark-tag.seal-tag{background:#fef9c3;color:#a16207;border:1px solid #fde68a}
+        .mark-tag.sig-tag{background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe}
+        .mark-tag.copy-ind-tag{background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0}
+        .mark-tag.logo-tag{background:#f8fafc;color:#94a3b8;border:1px solid #e2e8f0}
+        /* Stamp detail modal */
+        .stamp-detail-modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:2000;display:none;align-items:center;justify-content:center}
+        .stamp-detail-modal-overlay.active{display:flex}
+        .stamp-detail-modal{background:#fff;border-radius:12px;max-width:700px;width:90%;max-height:80vh;overflow-y:auto;padding:0;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+        .stamp-detail-modal-header{padding:16px 20px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:#fff;z-index:1;border-radius:12px 12px 0 0}
+        .stamp-detail-modal-header h3{margin:0;font-size:1em;color:#1e293b}
+        .stamp-detail-modal-close{cursor:pointer;font-size:1.2em;color:#94a3b8;background:none;border:none;padding:4px 8px;border-radius:4px}
+        .stamp-detail-modal-close:hover{background:#f1f5f9;color:#475569}
+        .stamp-detail-modal-body{padding:16px 20px}
+        .stamp-detail-section{margin-bottom:16px}
+        .stamp-detail-section-title{font-weight:700;font-size:.85em;color:#475569;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+        .stamp-detail-item{padding:8px 12px;margin:4px 0;border-radius:6px;font-size:.82em;line-height:1.5}
+        .stamp-detail-item .detail-type{font-weight:600;text-transform:uppercase;font-size:.75em;letter-spacing:.5px;margin-bottom:2px}
+        .stamp-detail-item .detail-text{color:#334155;font-weight:600}
+        .stamp-detail-item .detail-meta{color:#64748b;font-size:.9em;margin-top:2px}
+        .stamp-item-stamp{background:#fef2f2;border-left:3px solid #dc2626}
+        .stamp-item-seal{background:#fef9c3;border-left:3px solid #a16207}
+        .stamp-item-sig{background:#eff6ff;border-left:3px solid #2563eb}
+        .stamp-item-copy{background:#f0fdf4;border-left:3px solid #15803d}
+        .stamp-item-logo{background:#f8fafc;border-left:3px solid #94a3b8}
+        .stamp-view-btn{cursor:pointer;color:#6366f1;font-size:.72em;font-weight:600;text-decoration:underline;margin-left:6px;background:none;border:none;padding:0}
+        /* Confidence bar */
+        .conf-bar{display:inline-block;width:60px;height:6px;background:#e2e8f0;border-radius:3px;vertical-align:middle;margin-left:4px;overflow:hidden}
+        .conf-bar-fill{height:100%;border-radius:3px;transition:width .3s}
+        .conf-high{background:#16a34a}.conf-med{background:#d97706}.conf-low{background:#dc2626}
+        /* Doc type groups in modal */
+        .doc-group-header{font-size:.9em;font-weight:700;color:#1554ca;padding:10px 0 6px;border-bottom:1px solid #e2e8f0;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
+        .doc-group-count{background:#e0e7ff;color:#3730a3;padding:2px 10px;border-radius:10px;font-size:.8em}
+        .progress-log{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:16px;margin-top:16px;max-height:400px;overflow-y:auto;font-family:'Fira Code',Consolas,monospace;font-size:.82em;line-height:1.6;display:none}
+        .progress-log.active{display:block}
+        .progress-log .log-line{padding:2px 0;white-space:pre-wrap;word-break:break-word}
+        .progress-log .stage-extraction{color:#38bdf8}
+        .progress-log .stage-ocr{color:#fbbf24}
+        .progress-log .stage-classification{color:#a78bfa}
+        .progress-log .stage-stamps{color:#f87171}
+        .progress-log .stage-extraction_fields{color:#34d399}
+        .progress-log .stage-upload{color:#94a3b8}
+        .progress-log .stage-summary{color:#22d3ee}
+        .progress-log .log-header{color:#64748b;font-size:.75em;margin-bottom:8px;border-bottom:1px solid #1e293b;padding-bottom:6px}
+
+        /* ── Hard/Soft Discrepancy Badges ── */
+        .disc-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.72em;font-weight:800;letter-spacing:.04em;margin-left:4px;vertical-align:middle}
+        .disc-badge.hard{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}
+        .disc-badge.soft{background:#fff7ed;color:#9a3412;border:1px solid #fdba74}
+        .isbp-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.72em;font-weight:800;letter-spacing:.04em;margin-left:4px;background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd}
+        .art14h-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.72em;font-weight:800;letter-spacing:.04em;margin-left:4px;background:#f0fdf4;color:#166534;border:1px solid #86efac}
+
+        /* ── Cross-Document Consistency Section ── */
+        .xdoc-section{background:#f8f9ff;border:1px solid #e0e6ed;border-radius:10px;padding:16px;margin-top:12px}
+        .xdoc-section h4{color:#7c3aed;margin:0 0 10px;font-size:1em;display:flex;align-items:center;gap:8px}
+        .xdoc-check{display:flex;align-items:center;gap:8px;padding:6px 10px;margin-bottom:4px;background:#fff;border-radius:6px;border:1px solid #eee;font-size:.88em}
+        .xdoc-check.pass{border-left:3px solid #16a34a}.xdoc-check.fail{border-left:3px solid #dc2626}.xdoc-check.warning{border-left:3px solid #d97706}
+        .xdoc-field-name{font-weight:700;color:#333;min-width:100px}
+        .xdoc-detail{color:#666;flex:1}
+        .xdoc-status{font-weight:800;font-size:.78em;padding:2px 8px;border-radius:4px}
+        .xdoc-status.pass{background:#dcfce7;color:#16a34a}.xdoc-status.fail{background:#fee2e2;color:#dc2626}.xdoc-status.warning{background:#fef3c7;color:#d97706}
+
+        /* ── Installment Compliance Section ── */
+        .inst-section{background:#f0f7ff;border:1px solid #bfdbfe;border-radius:10px;padding:16px;margin-top:12px}
+        .inst-section h4{color:#0369a1;margin:0 0 10px;font-size:1em}
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <img src="/logo.png" alt="AiGenics" style="height:55px;margin-bottom:10px;">
+        <h1>ComplyTrade</h1>
+        <p>AI-Powered LC Document Compliance & Verification Platform</p>
+    </div>
+
+    <div class="card">
+        <div class="upload-section" id="uploadSection">
+            <div class="upload-icon">📤</div>
+            <h2>Drop LC Documents Here</h2>
+            <p style="margin:16px 0;color:#666">or click to select files</p>
+            <input type="file" id="fileInput" class="file-input" multiple accept=".pdf,.jpg,.jpeg,.png">
+            <button class="btn" onclick="document.getElementById('fileInput').click()">Select Files</button>
+        </div>
+        <div id="fileList" style="margin-top:20px"></div>
+        <div style="text-align:center;margin-top:24px">
+            <button class="btn" id="processBtn" onclick="processDocuments()" disabled>Process Documents</button>
+            <button class="btn btn-secondary" onclick="clearAll()">Clear All</button>
+            <button id="cancelBtn" onclick="cancelJob()" style="display:none;padding:12px 24px;background:#dc3545;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:1em;font-weight:600;margin-left:10px">Cancel Processing</button>
+        </div>
+    </div>
+
+    <div class="card status-card" id="statusCard">
+        <h2>Processing Status</h2>
+        <div style="margin:16px 0"><span class="status-badge" id="statusBadge">Pending</span> <span id="elapsedTimer" style="margin-left:12px;font-size:.95em;font-weight:600;color:#1554ca;display:none"></span></div>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%">0%</div></div>
+        <p id="statusMessage" style="margin:12px 0;color:#666"></p>
+        <div class="spinner" id="spinner"></div>
+        <!-- Cancel button moved next to Clear All -->
+        <div class="progress-log" id="progressLog">
+            <div class="log-header">📡 Live Processing Log</div>
+            <div id="logLines"></div>
+        </div>
+        <!-- Persistent file list for this job -->
+        <div id="jobFilesList" style="display:none;margin-top:16px;padding:16px;background:#f8f9ff;border-radius:8px;border:1px solid #e0e0e0">
+            <h4 style="margin-bottom:8px;color:#1554ca">📁 Files in This Job</h4>
+            <div id="jobFilesContent"></div>
+        </div>
+        <div id="results"></div>
+    </div>
+</div>
+
+<!-- Docs Modal -->
+<div class="modal" id="docsModal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>📋 Identified Documents</h2>
+            <button class="close-modal" onclick="closeDocsModal()">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="doc-summary" id="docSummary"></div>
+            <div class="doc-tabs" id="docTabs"></div>
+            <div id="docTabsContent"></div>
+        </div>
+    </div>
+</div>
+
+<div class="stamp-detail-modal-overlay" id="stampDetailOverlay">
+    <div class="stamp-detail-modal">
+        <div class="stamp-detail-modal-header">
+            <h3 id="stampDetailTitle">Stamps & Marks Detail</h3>
+            <button class="stamp-detail-modal-close" onclick="closeStampDetail()">&times;</button>
+        </div>
+        <div class="stamp-detail-modal-body" id="stampDetailBody"></div>
+    </div>
+</div>
+
+<!-- LC Selection Modal -->
+<div class="lc-select-overlay" id="lcSelectOverlay">
+    <div class="lc-select-modal">
+        <div class="lc-select-header">
+            <h2>&#x26A0; Multiple LCs Detected</h2>
+            <p>Select the primary LC for Final LC consolidation and verification</p>
+        </div>
+        <div class="lc-select-body" id="lcSelectBody"></div>
+    </div>
+</div>
+
+<script>
+const API_BASE = window.location.origin;
+let selectedFiles = [];
+let currentJobId = null;
+let statusCheckInterval = null;
+let currentResults = null;
+let jobFileNames = []; // persistent list of all filenames in this job
+let timerInterval = null;
+
+// SWIFT message type → human-readable labels (global for reuse)
+const _SWIFT_TYPE_LABELS = {
+    'free_format_message': 'Free Format Message',
+    'swift_message': 'SWIFT Message',
+    'acknowledgement': 'Acknowledgement (MT730)',
+    'advice_of_discharge': 'Advice of Discharge (MT732)',
+    'advice_of_refusal': 'Advice of Refusal (MT734)',
+    'amendment_response': 'Amendment Response (MT735)',
+    'reimbursement': 'Reimbursement Authorization (MT740)',
+    'reimbursement_claim': 'Reimbursement Claim (MT742)',
+    'amendment_to_reimbursement': 'Amendment to Reimbursement (MT747)',
+    'advice_of_discrepancy': 'Advice of Discrepancy (MT750)',
+    'authorization_to_pay': 'Authorization to Pay (MT752)',
+    'advice_of_payment': 'Advice of Payment (MT754)',
+    'advice_of_reimbursement': 'Advice of Reimbursement (MT756)',
+    'guarantee': 'Guarantee / Standby LC (MT760)',
+    'guarantee_amendment': 'Guarantee Amendment (MT767)',
+    'guarantee_acknowledgement': 'Guarantee Acknowledgement (MT768)',
+    'advice_of_reduction': 'Advice of Reduction (MT769)',
+    // Non-classified pages — show as "Supporting Document" not "unidentified"
+    'unidentified': 'Supporting Document',
+    'blank_page': 'Blank Page',
+    'stamp only page': 'Stamp / Endorsement Page',
+};
+let timerStartTime = null;
+
+function startTimer() {
+    timerStartTime = Date.now();
+    const el = document.getElementById('elapsedTimer');
+    el.style.display = 'inline';
+    el.textContent = '0:00';
+    if (timerInterval) clearInterval(timerInterval);
+    timerInterval = setInterval(() => {
+        const secs = Math.floor((Date.now() - timerStartTime) / 1000);
+        const m = Math.floor(secs / 60);
+        const s = secs % 60;
+        el.textContent = m + ':' + String(s).padStart(2, '0');
+    }, 1000);
+}
+
+function stopTimer() {
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    if (timerStartTime) {
+        const secs = Math.floor((Date.now() - timerStartTime) / 1000);
+        const m = Math.floor(secs / 60);
+        const s = secs % 60;
+        document.getElementById('elapsedTimer').textContent = m + ':' + String(s).padStart(2, '0') + ' elapsed';
+    }
+}
+
+function resumeTimer() {
+    // Resume the timer from the original start time (don't reset to 0)
+    if (!timerStartTime) { startTimer(); return; }
+    const el = document.getElementById('elapsedTimer');
+    el.style.display = 'inline';
+    if (timerInterval) clearInterval(timerInterval);
+    timerInterval = setInterval(() => {
+        const secs = Math.floor((Date.now() - timerStartTime) / 1000);
+        const m = Math.floor(secs / 60);
+        const s = secs % 60;
+        el.textContent = m + ':' + String(s).padStart(2, '0');
+    }, 1000);
+}
+
+const fileInput = document.getElementById('fileInput');
+const uploadSection = document.getElementById('uploadSection');
+const processBtn = document.getElementById('processBtn');
+
+fileInput.addEventListener('change', e => handleFiles(Array.from(e.target.files)));
+
+uploadSection.addEventListener('dragover', e => { e.preventDefault(); uploadSection.classList.add('dragover'); });
+uploadSection.addEventListener('dragleave', () => uploadSection.classList.remove('dragover'));
+uploadSection.addEventListener('drop', e => { e.preventDefault(); uploadSection.classList.remove('dragover'); handleFiles(Array.from(e.dataTransfer.files)); });
+uploadSection.addEventListener('click', e => { if(!e.target.closest('button')) fileInput.click(); });
+
+function handleFiles(files) {
+    selectedFiles = [...selectedFiles, ...files];
+    updateFileList();
+    processBtn.disabled = selectedFiles.length === 0;
+}
+
+function updateFileList() {
+    const fl = document.getElementById('fileList');
+    if (!selectedFiles.length) { fl.innerHTML = ''; return; }
+    fl.innerHTML = `<h3 style="margin-bottom:12px">Selected Files (${selectedFiles.length})</h3>` +
+        selectedFiles.map((f, i) => `<div class="file-item"><div><span class="file-name">${f.name}</span><span class="file-size">(${(f.size/1024/1024).toFixed(2)} MB)</span></div><button class="remove-btn" onclick="removeFile(${i})">Remove</button></div>`).join('');
+}
+
+function removeFile(i) { selectedFiles.splice(i, 1); updateFileList(); processBtn.disabled = selectedFiles.length === 0; }
+function clearAll() { selectedFiles = []; fileInput.value = ''; updateFileList(); processBtn.disabled = true; currentJobId = null; jobFileNames = []; document.getElementById('statusCard').classList.remove('active'); document.getElementById('jobFilesList').style.display = 'none'; if (statusCheckInterval) clearInterval(statusCheckInterval); if (timerInterval) clearInterval(timerInterval); timerStartTime = null; document.getElementById('elapsedTimer').style.display = 'none'; document.getElementById('cancelBtn').style.display = 'none'; }
+
+async function cancelJob() {
+    if (!currentJobId) return;
+    try {
+        await fetch(`${API_BASE}/api/cancel/${currentJobId}`, { method: 'POST' });
+        if (statusCheckInterval) clearInterval(statusCheckInterval);
+        stopTimer();
+        document.getElementById('cancelBtn').style.display = 'none';
+        document.getElementById('spinner').style.display = 'none';
+        document.getElementById('statusBadge').textContent = 'Cancelled';
+        document.getElementById('statusBadge').className = 'status-badge status-failed';
+        document.getElementById('statusMessage').textContent = 'Processing cancelled by user.';
+    } catch(e) { console.error('Cancel failed:', e); }
+}
+
+async function processDocuments() {
+    if (!selectedFiles.length) return;
+    const formData = new FormData();
+    selectedFiles.forEach(f => formData.append('files', f));
+
+    processBtn.disabled = true;
+    lastLogCount = 0;
+    document.getElementById('logLines').innerHTML = '';
+    document.getElementById('progressLog').classList.remove('active');
+    const sc = document.getElementById('statusCard'); sc.classList.add('active');
+    document.getElementById('statusBadge').className = 'status-badge status-pending';
+    document.getElementById('statusBadge').textContent = 'Uploading';
+    document.getElementById('statusMessage').textContent = 'Uploading files...';
+    document.getElementById('spinner').style.display = 'block';
+    document.getElementById('results').innerHTML = '';
+    startTimer();
+
+    try {
+        console.log('[UPLOAD] Sending', selectedFiles.length, 'file(s) to', `${API_BASE}/api/upload`);
+        selectedFiles.forEach(f => console.log('[UPLOAD]', f.name, f.size, 'bytes'));
+        const resp = await fetch(`${API_BASE}/api/upload`, { method: 'POST', body: formData });
+        let data;
+        try { data = await resp.json(); } catch(_) { data = {}; }
+        if (!resp.ok) {
+            const errMsg = data.error || data.detail || `HTTP ${resp.status}`;
+            const hint = data.hint ? ` | Hint: ${data.hint}` : '';
+            throw new Error(errMsg + hint);
+        }
+        currentJobId = data.job_id;
+        jobFileNames = data.files || [];
+        updateJobFilesList();
+        document.getElementById('statusMessage').textContent = 'Files uploaded. Processing via OCR API...';
+        document.getElementById('cancelBtn').style.display = 'inline-block';
+        statusCheckInterval = setInterval(checkStatus, 1000);
+    } catch (err) {
+        showError('Upload failed: ' + err.message);
+        processBtn.disabled = false;
+    }
+}
+
+let lastLogCount = 0;
+
+async function checkStatus() {
+    if (!currentJobId) return;
+    try {
+        const resp = await fetch(`${API_BASE}/api/status/${currentJobId}`);
+        const status = await resp.json();
+        // Keep file list updated from server
+        if (status.filenames && status.filenames.length) {
+            jobFileNames = status.filenames;
+            updateJobFilesList();
+        }
+        updateStatusDisplay(status);
+        if (status.status === 'completed') { clearInterval(statusCheckInterval); document.getElementById('cancelBtn').style.display = 'none'; await loadResults(); }
+        else if (status.status === 'failed') { clearInterval(statusCheckInterval); stopTimer(); showError(status.message); }
+        else if (status.status === 'lc_selection_required' && status.lc_options) {
+            clearInterval(statusCheckInterval);
+            stopTimer();
+            showLcSelectionModal(status.lc_options);
+        }
+    } catch (err) { console.error('Status check failed:', err); }
+}
+
+function updateStatusDisplay(status) {
+    if (!status || !status.status) return;  // guard against error responses
+    const badge = document.getElementById('statusBadge');
+    const msg = document.getElementById('statusMessage');
+    const pf = document.getElementById('progressFill');
+    badge.className = 'status-badge status-' + status.status;
+    badge.textContent = status.status.charAt(0).toUpperCase() + status.status.slice(1);
+    msg.textContent = status.message || 'Processing...';
+
+    if (status.status === 'processing') {
+        const logContainer = document.getElementById('progressLog');
+        const logLines = document.getElementById('logLines');
+        logContainer.classList.add('active');
+        const log = status.progress_log || [];
+        if (log.length > lastLogCount) {
+            for (let i = lastLogCount; i < log.length; i++) {
+                const entry = log[i];
+                const div = document.createElement('div');
+                div.className = `log-line stage-${entry.stage || 'upload'}`;
+                div.textContent = entry.message;
+                logLines.appendChild(div);
+            }
+            lastLogCount = log.length;
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+        const stages = {
+            'upload': 5, 'extraction': 15, 'ocr': 30, 'classification': 45,
+            'stamps': 55, 'extraction_fields': 65, 'checklist': 75,
+            'vessel': 80, 'validation': 85, 'saving': 90, 'summary': 95
+        };
+        const stageLabels = {
+            'upload': 'Uploading', 'extraction': 'Extracting Text', 'ocr': 'OCR Processing',
+            'classification': 'Classifying Pages', 'stamps': 'Detecting Stamps',
+            'extraction_fields': 'Extracting Fields', 'checklist': 'Generating Checklist',
+            'vessel': 'Vessel Tracking', 'validation': 'Validating', 'saving': 'Saving',
+            'summary': 'Finalizing'
+        };
+        const currentStage = status.current_stage || 'upload';
+        const p = stages[currentStage] || 10;
+        pf.style.width = p + '%'; pf.textContent = stageLabels[currentStage] || currentStage.replace('_', ' ');
+    }
+}
+
+async function loadResults() {
+    stopTimer();
+    document.getElementById('spinner').style.display = 'none';
+    const pf = document.getElementById('progressFill'); pf.style.width = '100%'; pf.textContent = '✅ Complete';
+    try {
+        const resp = await fetch(`${API_BASE}/api/result/${currentJobId}`);
+        currentResults = await resp.json();
+        displayResults(currentResults);
+        processBtn.disabled = false;
+    } catch (err) { showError('Failed to load results: ' + err.message); }
+}
+
+function displayResults(r) {
+    const div = document.getElementById('results');
+    const ts = r.type_summary || {};
+    const totalDocs = r.documents ? r.documents.filter(d => !['blank_page','header_page','unidentified','final_lc'].includes(d.object_type)).length : 0;
+
+    const elapsedText = document.getElementById('elapsedTimer').textContent || '';
+    let html = '<h3 style="margin-bottom:16px">✅ Processing Complete</h3>';
+    html += `<div class="result-grid">
+        <div class="stat-box"><div class="stat-label">Total Pages</div><div class="stat-value">${r.total_pages||0}</div></div>
+        <div class="stat-box"><div class="stat-label">Documents Found</div><div class="stat-value">${totalDocs}</div></div>
+        <div class="stat-box"><div class="stat-label">LCs</div><div class="stat-value">${ts.lc||0}</div></div>
+        <div class="stat-box"><div class="stat-label">Amendments</div><div class="stat-value">${ts.amendment||0}</div></div>
+        <div class="stat-box"><div class="stat-label">Time</div><div class="stat-value">${elapsedText||'—'}</div></div>
+    </div>`;
+
+    // Type summary chips
+    if (Object.keys(ts).length) {
+        html += '<div style="margin-bottom:20px;display:flex;flex-wrap:wrap;gap:6px">';
+        for (const [t, c] of Object.entries(ts)) {
+            if (['blank_page','header_page'].includes(t)) continue;
+            const _swiftTypes = ['free_format_message','swift_message','acknowledgement','advice_of_discharge','advice_of_refusal','amendment_response','reimbursement','reimbursement_claim','amendment_to_reimbursement','advice_of_discrepancy','authorization_to_pay','advice_of_payment','advice_of_reimbursement','guarantee','guarantee_amendment','guarantee_acknowledgement','advice_of_reduction'];
+            const color = t==='lc'?'#4facfe':t==='amendment'?'#f093fb':t==='final_lc'?'#ffc107':t==='unidentified'?'#888':'#28a745';
+            const chipLabel = _SWIFT_TYPE_LABELS[t] || t.replace(/_/g,' ');
+            html += `<span style="background:${color}22;color:${color};padding:4px 12px;border-radius:12px;font-size:.85em;font-weight:600">${chipLabel}: ${c}</span>`;
+        }
+        html += '</div>';
+    }
+
+    // View all docs button
+    if (r.documents && r.documents.length > 0)
+        html += `<div style="text-align:center;margin-bottom:16px"><button class="btn btn-info" onclick="showDocsModal()">📋 View All Identified Documents (${r.documents.length})</button></div>`;
+
+    // Warnings (No LC found, duplicates, mismatches, etc.)
+    if (r.warnings && r.warnings.length > 0) {
+        r.warnings.forEach(w => {
+            const isCritical = w.severity === 'critical';
+            const isWarning = w.severity === 'warning';
+            const bgColor = isCritical ? '#1a0000' : isWarning ? '#1a1200' : '#1a1a00';
+            const borderColor = isCritical ? '#dc3545' : isWarning ? '#fd7e14' : '#ffc107';
+            const icon = isCritical ? '⚠️' : isWarning ? '⚠️' : 'ℹ️';
+            // Title based on warning code
+            let title = 'Notice';
+            if (w.code === 'no_lc_found') title = 'No Letter of Credit Found';
+            else if (w.code === 'duplicate_amendments_skipped') title = 'Duplicate Amendments Skipped';
+            else if (w.code === 'amendment_lc_mismatch') title = 'Amendment LC Mismatch';
+            else if (w.code === 'no_amendments') title = 'No Amendments';
+            else if (w.code === 'lc_number_mismatch') title = 'LC Number Mismatch';
+            // Build detail lines for amendment warnings
+            let detailHtml = '';
+            if (w.details && w.details.length > 0) {
+                detailHtml = '<div style="margin-top:8px">';
+                w.details.forEach(d => {
+                    const typeIcon = d.type === 'amendment_lc_mismatch' ? '🚫' : '📋';
+                    detailHtml += `<div style="color:#e5e7eb;padding:3px 0;font-size:.9em">${typeIcon} ${d.message}</div>`;
+                });
+                detailHtml += '</div>';
+            }
+            html += `<div style="background:${bgColor};border:1px solid ${borderColor};border-radius:8px;padding:16px;margin-bottom:16px">
+                <div style="font-size:1.1em;font-weight:600;color:${borderColor};margin-bottom:6px">${icon} ${title}</div>
+                ${!w.details ? '<div style="color:#e5e7eb">' + (w.message||'').replace(/\n/g,'<br>') + '</div>' : ''}
+                ${detailHtml}
+            </div>`;
+        });
+    }
+
+    // Consolidated LCs
+    if (r.consolidated_lcs && r.consolidated_lcs.length > 0) {
+        html += '<h3 style="margin-bottom:12px">📑 Consolidated LCs</h3>';
+        r.consolidated_lcs.forEach(lc => {
+            const nAmend = lc.amendments_applied || 0;
+            const nDocs = Array.isArray(lc.documents_required) ? lc.documents_required.length : 0;
+            const nCond = Array.isArray(lc.additional_conditions) ? lc.additional_conditions.length : 0;
+            html += `<div class="result-item">
+                <div class="result-header">LC: ${lc.lc_number}</div>
+                <div class="result-grid">
+                    <div class="stat-box"><div class="stat-label">Issue Date</div><div class="stat-value" style="font-size:1em">${lc.original_issue_date||'N/A'}</div></div>
+                    <div class="stat-box"><div class="stat-label">Amendments</div><div class="stat-value">${nAmend}</div></div>
+                    <div class="stat-box"><div class="stat-label">Docs Required (46A)</div><div class="stat-value">${nDocs}</div></div>
+                    <div class="stat-box"><div class="stat-label">Conditions (47A)</div><div class="stat-value">${nCond}</div></div>
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+                    <a href="${API_BASE}${lc.download_url}" class="download-btn" download>📥 Download JSON</a>
+                    <button class="download-btn" style="background:#17a2b8" onclick="viewJson('${API_BASE}${lc.download_url}')">👁 View JSON</button>
+                    <button class="download-btn" style="background:#20c997" onclick="goToChecklist('${lc.lc_number}')">📋 Checklist</button>
+                    <button class="download-btn" style="background:#6f42c1" onclick="downloadFinalLcPdf('${lc.lc_number}')">📄 Download Final LC PDF</button>
+                    <button class="download-btn" style="background:#0d6efd" onclick="window.open('/final-lc-viewer?job_id=${currentJobId}&lc=${lc.lc_number}','_blank')">📝 View & Edit Final LC</button>
+                    <button class="download-btn" style="background:#475569" onclick="window.open('/extracted-text?job_id=${currentJobId}','_blank')">📄 View Cleaned Text</button>
+                </div>
+                ${renderCrossDocSection(r)}
+                ${renderInstallmentSection(r)}
+            </div>`;
+        });
+    }
+
+    if (r.errors && r.errors.length > 0) {
+        html += '<div class="error-message"><strong>Errors:</strong><ul>' + r.errors.map(e => `<li>${e}</li>`).join('') + '</ul></div>';
+    }
+
+    // Add Documents section — allows incremental uploads to the same job
+    html += `<div style="margin-top:24px;border-top:2px solid #e0e0e0;padding-top:20px">
+        <h3 style="margin-bottom:12px">📎 Add More Documents to This Job</h3>
+        <p style="color:#666;font-size:.9em;margin-bottom:12px">Upload amendments or shipping documents to add them to this job. All documents will be reprocessed together.</p>
+        <div id="addDocsZone" style="border:2px dashed #1554ca;border-radius:8px;padding:20px;text-align:center;background:#f8f9ff;cursor:pointer;transition:all .3s"
+             ondragover="event.preventDefault();this.style.background='#e0e5ff'"
+             ondragleave="this.style.background='#f8f9ff'"
+             ondrop="event.preventDefault();this.style.background='#f8f9ff';handleAddFiles(Array.from(event.dataTransfer.files))">
+            <input type="file" id="addFileInput" style="display:none" multiple accept=".pdf,.jpg,.jpeg,.png" onchange="handleAddFiles(Array.from(this.files))">
+            <div style="font-size:1.5em;margin-bottom:6px">📤</div>
+            <p style="color:#666">Drop files here or <a href="#" onclick="event.preventDefault();document.getElementById('addFileInput').click()" style="color:#1554ca;font-weight:600">browse</a></p>
+        </div>
+        <div id="addFilesList" style="margin-top:10px"></div>
+        <div style="text-align:center;margin-top:12px">
+            <button class="btn" id="addDocsBtn" onclick="addDocumentsToJob()" disabled>Add Documents & Reprocess</button>
+        </div>
+    </div>`;
+
+    div.innerHTML = html;
+}
+
+let additionalFiles = [];
+
+function updateJobFilesList() {
+    const container = document.getElementById('jobFilesList');
+    const content = document.getElementById('jobFilesContent');
+    if (!jobFileNames.length) { container.style.display = 'none'; return; }
+    container.style.display = 'block';
+    content.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:6px">' +
+        jobFileNames.map(name =>
+            `<span style="background:#e0e7ff;color:#3730a3;padding:4px 12px;border-radius:16px;font-size:.85em;font-weight:500">📄 ${esc(name)}</span>`
+        ).join('') +
+        '</div><div style="margin-top:6px;font-size:.8em;color:#666">Total: ' + jobFileNames.length + ' file(s) in this job</div>';
+}
+
+function handleAddFiles(files) {
+    additionalFiles = [...additionalFiles, ...files];
+    const fl = document.getElementById('addFilesList');
+    if (!additionalFiles.length) { fl.innerHTML = ''; return; }
+    fl.innerHTML = additionalFiles.map((f, i) =>
+        `<div class="file-item"><div><span class="file-name">${f.name}</span><span class="file-size">(${(f.size/1024/1024).toFixed(2)} MB)</span></div><button class="remove-btn" onclick="removeAddFile(${i})">Remove</button></div>`
+    ).join('');
+    document.getElementById('addDocsBtn').disabled = additionalFiles.length === 0;
+}
+
+function removeAddFile(i) {
+    additionalFiles.splice(i, 1);
+    handleAddFiles([]);  // re-render (additionalFiles is already updated)
+}
+
+async function addDocumentsToJob() {
+    if (!additionalFiles.length || !currentJobId) return;
+    const formData = new FormData();
+    additionalFiles.forEach(f => formData.append('files', f));
+
+    document.getElementById('addDocsBtn').disabled = true;
+    lastLogCount = 0;
+    document.getElementById('logLines').innerHTML = '';
+    document.getElementById('progressLog').classList.remove('active');
+    document.getElementById('statusBadge').className = 'status-badge status-processing';
+    document.getElementById('statusBadge').textContent = 'Reprocessing';
+    startTimer();
+    document.getElementById('statusMessage').textContent = 'Adding documents and reprocessing all files...';
+    document.getElementById('spinner').style.display = 'block';
+    // Show a reprocessing overlay on results instead of wiping them
+    const resultsDiv = document.getElementById('results');
+    resultsDiv.innerHTML = '<div style="text-align:center;padding:30px;color:#666">' +
+        '<div class="spinner" style="margin:0 auto 12px"></div>' +
+        '<p style="font-size:1.1em;font-weight:500">Reprocessing all documents with new additions...</p>' +
+        '<p style="font-size:.9em;margin-top:4px">Previous results will be updated shortly.</p></div>';
+
+    try {
+        const resp = await fetch(`${API_BASE}/api/upload/${currentJobId}`, { method: 'POST', body: formData });
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.error || 'Upload failed');
+        }
+        const data = await resp.json();
+        // Update file list from server response
+        if (data.total_files) {
+            jobFileNames = data.total_files;
+            updateJobFilesList();
+        }
+        additionalFiles = [];
+        statusCheckInterval = setInterval(checkStatus, 1000);
+    } catch (err) {
+        showError('Add documents failed: ' + err.message);
+        document.getElementById('addDocsBtn').disabled = false;
+    }
+}
+
+// ─── Documents Modal ───
+function showDocsModal() {
+    if (!currentResults || !currentResults.documents) return;
+    const docs = currentResults.documents;
+    const modal = document.getElementById('docsModal');
+
+    const cats = {lc:[], amendment:[], final_lc:[], swift_messages:[], supporting:[], unclassified:[]};
+    docs.forEach(d => { const c = cats[d.category] || cats.supporting; c.push(d); });
+
+    // Summary bar with copy/original counts for supporting docs
+    const supportDocs = cats.supporting;
+    const origCount = supportDocs.filter(d => (d.copy_status||d.data?.copy_status) === 'original').length;
+    const copyCount = supportDocs.filter(d => ['copy','non_negotiable_copy'].includes(d.copy_status||d.data?.copy_status)).length;
+    const unknCount = supportDocs.length - origCount - copyCount;
+    const stampCount = supportDocs.filter(d => d.has_stamps).length;
+
+    document.getElementById('docSummary').innerHTML = `
+        <div class="doc-summary-item"><div class="doc-summary-label">Total Documents</div><div class="doc-summary-value">${docs.length}</div></div>
+        <div class="doc-summary-item"><div class="doc-summary-label">LC / Amendments</div><div class="doc-summary-value">${cats.lc.length + cats.amendment.length}</div></div>
+        <div class="doc-summary-item"><div class="doc-summary-label">SWIFT Messages</div><div class="doc-summary-value" style="color:#0d6efd">${cats.swift_messages.length}</div></div>
+        <div class="doc-summary-item"><div class="doc-summary-label">Supporting</div><div class="doc-summary-value">${supportDocs.length}</div></div>
+        <div class="doc-summary-item"><div class="doc-summary-label">🟢 Originals</div><div class="doc-summary-value" style="color:#16a34a">${origCount}</div></div>
+        <div class="doc-summary-item"><div class="doc-summary-label">📋 Copies</div><div class="doc-summary-value" style="color:#3730a3">${copyCount}</div></div>
+        <div class="doc-summary-item"><div class="doc-summary-label">🔴 Stamped</div><div class="doc-summary-value" style="color:#dc2626">${stampCount}</div></div>
+    `;
+
+    const _tabLabels = {all:'All', lc:'LC', amendment:'Amendment', final_lc:'Final LC',
+                        swift_messages:'SWIFT Messages', supporting:'Supporting', unclassified:'Unclassified'};
+    const tabNames = ['all','lc','amendment','final_lc','swift_messages','supporting','unclassified'];
+    const tabCounts = { all: docs.length, ...Object.fromEntries(Object.entries(cats).map(([k,v])=>[k,v.length])) };
+    document.getElementById('docTabs').innerHTML = tabNames.map((t,i) =>
+        `<button class="doc-tab${i===0?' active':''}" onclick="switchDocTab('${t}',this)">${_tabLabels[t]||t} (${tabCounts[t]||0})</button>`
+    ).join('');
+
+    const tabDocs = { all: docs, ...cats };
+    document.getElementById('docTabsContent').innerHTML = tabNames.map((t,i) =>
+        `<div class="doc-tab-content${i===0?' active':''}" id="tab-${t}">${renderDocGroup(tabDocs[t], t)}</div>`
+    ).join('');
+
+    modal.classList.add('active');
+}
+
+function renderDocGroup(docs, tabName) {
+    if (!docs.length) return '<p style="text-align:center;color:#666;padding:30px">No documents</p>';
+    
+    // For "all", "supporting", and "swift_messages" tabs, group by document type
+    if (tabName === 'all' || tabName === 'supporting' || tabName === 'swift_messages') {
+        const groups = {};
+        docs.forEach(d => {
+            const t = d.object_type || 'unidentified';
+            if (!groups[t]) groups[t] = [];
+            groups[t].push(d);
+        });
+        
+        // Sort groups: lc first, then amendment, then alphabetical
+        const order = ['lc','amendment','final_lc'];
+        const sorted = Object.entries(groups).sort((a,b) => {
+            const ai = order.indexOf(a[0]), bi = order.indexOf(b[0]);
+            if (ai >= 0 && bi >= 0) return ai - bi;
+            if (ai >= 0) return -1; if (bi >= 0) return 1;
+            return a[0].localeCompare(b[0]);
+        });
+        
+        return sorted.map(([type, group]) => {
+            const label = _SWIFT_TYPE_LABELS[type] || type.replace(/_/g,' ');
+            const mtNum = group[0]?.data?.mt_number ? ` (MT${group[0].data.mt_number})` : '';
+            return `<div class="doc-group-header">${label}${mtNum} <span class="doc-group-count">${group.length}</span></div>` +
+                group.map(d => renderDocCard(d)).join('');
+        }).join('');
+    }
+    
+    return docs.map(d => renderDocCard(d)).join('');
+}
+
+function renderDocCard(d) {
+    const data = d.data || {};
+    const cat = d.category || 'supporting';
+    const objType = d.object_type || '';
+    const conf = d.classification_confidence || data.classification_confidence || 0;
+    const confPct = (conf * 100).toFixed(0);
+    const confClass = conf >= 0.85 ? 'conf-high' : conf >= 0.6 ? 'conf-med' : 'conf-low';
+
+    // Document title — use document_title field, fall back to type label
+    const swiftLabel = _SWIFT_TYPE_LABELS[objType] || null;
+    const docTitle = d.document_title || data.document_title || swiftLabel || objType.replace(/_/g, ' ');
+    
+    // Copy/Original status
+    const copyStatus = d.copy_status || data.copy_status || '';
+    const copyLabel = d.copy_label || data.copy_label || '';
+    const copyTagClass = copyStatus === 'original' ? 'original' : 
+                         copyStatus === 'non_negotiable_copy' ? 'non_negotiable_copy' :
+                         copyStatus === 'copy' ? 'copy' : 'unknown';
+    const copyDisplay = copyLabel || (copyStatus ? copyStatus.replace(/_/g,' ') : '');
+    
+    // Stamps / Seals / Signatures / Marks
+    const hasStamps = d.has_stamps || data.has_stamps;
+    const hasSignatures = d.has_signatures || data.has_signatures;
+    const markingStatus = data.marking_status || d.marking_status || '';
+    const stampDetails = d.stamp_details || data.stamp_details || '';
+    const stampPages = data.stamps_per_page || d.stamps_per_page || [];
+    const docStamps = data.stamps || d.stamps || [];
+    const docSeals = data.seals || d.seals || [];
+    const docSignatures = data.signatures || d.signatures || [];
+    const docLogos = data.logos || d.logos || [];
+    const docCopyIndicators = data.copy_indicators || d.copy_indicators || [];
+    const totalMarks = docStamps.length + docSeals.length + docSignatures.length + docCopyIndicators.length + docLogos.length;
+
+    // Amendment info
+    const amended = data.Amendment_Number ? `<span class="amended-tag">Amendment #${data.Amendment_Number}</span>` : '';
+    const dcNum = data.DC_Number || data.Amendment_Number || '';
+    const preview = data.text_preview ? data.text_preview.substring(0, 150) + '...' : '';
+
+    // Duplicate amendment — skipped during dedup
+    const isDuplicateSkipped = d.amendment_duplicate_skipped;
+    const duplicateNotice = d.amendment_duplicate_notice || '';
+    // LC Mismatch — document references a different LC
+    const isLcMismatch = d.lc_mismatch || d.amendment_lc_mismatch;
+    const mismatchRefLc = d.referenced_lc || ((d.data||{}).DC_Number) || ((d.data||{}).Related_DC) || '';
+    const mismatchExpLc = d.expected_lc || '';
+    const mismatchNotice = d.amendment_lc_mismatch_notice || '';
+    // LC Not Selected — from multi-LC selection
+    const isNotSelected = d.lc_not_selected;
+    const notSelectedNotice = d.lc_not_selected_notice || '';
+    const notSelectedLc = d.not_selected_lc || ((d.data||{}).DC_Number) || '';
+
+    let mismatchHtml = '';
+    if (isDuplicateSkipped) {
+        let refNote = '';
+        if (duplicateNotice) {
+            refNote = `<div class="mismatch-ref" style="color:#f87171">${esc(duplicateNotice)}</div>`;
+        }
+        mismatchHtml = `<span class="mismatch-tag" style="background:#dc3545;color:#fff"><span class="mismatch-icon">&#x1F6AB;</span> DUPLICATE — SKIPPED</span>${refNote}`;
+    } else if (isNotSelected) {
+        let refNote = '';
+        if (notSelectedNotice) {
+            refNote = `<div class="not-selected-ref">${esc(notSelectedNotice)}</div>`;
+        } else if (notSelectedLc) {
+            refNote = `<div class="not-selected-ref">LC: ${esc(notSelectedLc)}</div>`;
+        }
+        mismatchHtml = `<span class="not-selected-tag">&#x1F4CB; NOT SELECTED</span>${refNote}`;
+    } else if (isLcMismatch) {
+        let refNote = '';
+        if (mismatchNotice) {
+            refNote = `<div class="mismatch-ref">${esc(mismatchNotice)}</div>`;
+        } else if (mismatchRefLc && mismatchExpLc) {
+            refNote = `<div class="mismatch-ref">References LC: ${esc(mismatchRefLc)} — Expected: ${esc(mismatchExpLc)}</div>`;
+        } else if (mismatchRefLc) {
+            refNote = `<div class="mismatch-ref">References LC: ${esc(mismatchRefLc)}</div>`;
+        }
+        mismatchHtml = `<span class="mismatch-tag"><span class="mismatch-icon">&#x26A0;</span> NOT RELATED</span>${refNote}`;
+    }
+
+    let copyHtml = '';
+    if (copyDisplay && cat === 'supporting') {
+        copyHtml = `<span class="copy-tag ${copyTagClass}">${esc(copyDisplay)}</span>`;
+    }
+
+    let stampHtml = '';
+    if (cat === 'supporting') {
+        if (markingStatus === 'stamped_and_signed') {
+            stampHtml = `<span class="stamp-pill stamped-signed">Stamped & Signed</span>`;
+        } else if (markingStatus === 'stamped_only') {
+            stampHtml = `<span class="stamp-pill has-stamps">Stamped</span>`;
+        } else if (markingStatus === 'signed_only') {
+            stampHtml = `<span class="stamp-pill has-signed">Signed</span>`;
+        } else {
+            stampHtml = `<span class="stamp-pill no-stamps">No stamps/signatures</span>`;
+        }
+    }
+
+    // Amendment changes — render each change as a separate section
+    let amendChangesHtml = '';
+    const amendChanges = data.amendment_changes || [];
+    if (amendChanges.length > 0) {
+        amendChangesHtml = '<div style="margin-top:10px;border-top:1px solid #eee;padding-top:8px">';
+        amendChangesHtml += `<div style="font-weight:700;font-size:.85em;color:#555;margin-bottom:6px">Changes (${amendChanges.length}):</div>`;
+        const typeColors = {
+            'delete_replace': '#dc3545', 'replace': '#0d6efd', 'amount_change': '#198754',
+            'period_change': '#6f42c1', 'delete': '#dc3545', 'modify': '#fd7e14'
+        };
+        const typeLabels = {
+            'delete_replace': 'DELETE/REPLACE', 'replace': 'REPLACE', 'amount_change': 'AMOUNT',
+            'period_change': 'PERIOD', 'delete': 'DELETE', 'modify': 'MODIFY'
+        };
+        for (const ch of amendChanges) {
+            const color = typeColors[ch.change_type] || '#6c757d';
+            const label = typeLabels[ch.change_type] || ch.change_type.toUpperCase();
+            const clauseTag = ch.clause_number ? ` <span style="background:#e9ecef;padding:1px 6px;border-radius:3px;font-size:.8em">Clause ${esc(ch.clause_number)}</span>` : '';
+            amendChangesHtml += `<div style="margin:4px 0;padding:8px 10px;background:#f8f9fa;border-left:3px solid ${color};border-radius:4px;font-size:.82em">`;
+            amendChangesHtml += `<div style="margin-bottom:3px"><span style="background:${color};color:#fff;padding:1px 8px;border-radius:3px;font-size:.8em;font-weight:600">${label}</span> <span style="font-weight:600;color:#333">${esc(ch.field)} (${esc(ch.swift_tag)})</span>${clauseTag}</div>`;
+            amendChangesHtml += `<div style="color:#555;line-height:1.4">${esc(ch.instruction)}</div>`;
+            amendChangesHtml += '</div>';
+        }
+        amendChangesHtml += '</div>';
+    }
+
+    // Amendment purpose
+    const purposeHtml = (cat === 'amendment' && data.Purpose_of_Message) ?
+        `<div class="doc-info-item"><span class="doc-info-label">Purpose:</span> <span class="doc-info-value">${esc(data.Purpose_of_Message)}</span></div>` : '';
+    const amendDateHtml = (cat === 'amendment' && data.Amendment_Date) ?
+        `<div class="doc-info-item"><span class="doc-info-label">Amend Date:</span> <span class="doc-info-value">${esc(data.Amendment_Date)}</span></div>` : '';
+
+    // Build stamp summary counts for inline display
+    let stampSummaryParts = [];
+    if (docStamps.length) stampSummaryParts.push(`${docStamps.length} stamp${docStamps.length>1?'s':''}`);
+    if (docSeals.length) stampSummaryParts.push(`${docSeals.length} seal${docSeals.length>1?'s':''}`);
+    if (docSignatures.length) stampSummaryParts.push(`${docSignatures.length} signature${docSignatures.length>1?'s':''}`);
+    if (docCopyIndicators.length) stampSummaryParts.push(`${docCopyIndicators.length} copy mark${docCopyIndicators.length>1?'s':''}`);
+    if (docLogos.length) stampSummaryParts.push(`${docLogos.length} logo${docLogos.length>1?'s':''}`);
+    const stampSummaryText = stampSummaryParts.length ? stampSummaryParts.join(', ') : '';
+
+    // Store mark data for modal access (global registry to avoid inline JSON escaping issues)
+    const cardId = 'doc-' + Math.random().toString(36).substr(2,9);
+    const markData = {stamps: docStamps, seals: docSeals, signatures: docSignatures, copy_indicators: docCopyIndicators, logos: docLogos, title: docTitle, pages: d.page_reference||'?', stamps_per_page: stampPages};
+    if (!window._stampMarkRegistry) window._stampMarkRegistry = {};
+    window._stampMarkRegistry[cardId] = markData;
+
+    let marksRowHtml = '';
+    if (totalMarks > 0) {
+        marksRowHtml = `<div class="doc-info-item" style="grid-column:1/-1">
+            <span class="doc-info-label">Marks detected:</span>
+            <span class="doc-info-value" style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">
+                ${docStamps.length ? `<span class="mark-tag stamp-tag">${docStamps.length} Stamp${docStamps.length>1?'s':''}</span>` : ''}
+                ${docSeals.length ? `<span class="mark-tag seal-tag">${docSeals.length} Seal${docSeals.length>1?'s':''}</span>` : ''}
+                ${docSignatures.length ? `<span class="mark-tag sig-tag">${docSignatures.length} Signature${docSignatures.length>1?'s':''}</span>` : ''}
+                ${docCopyIndicators.length ? `<span class="mark-tag copy-ind-tag">${docCopyIndicators.length} Copy Mark${docCopyIndicators.length>1?'s':''}</span>` : ''}
+                ${docLogos.length ? `<span class="mark-tag logo-tag">${docLogos.length} Logo${docLogos.length>1?'s':''}</span>` : ''}
+                <button class="stamp-view-btn" onclick="showStampDetail(window._stampMarkRegistry['${cardId}'])">View Details</button>
+            </span>
+        </div>`;
+    }
+
+    const dimStyle = isDuplicateSkipped ? ' style="opacity:.7;border-left:4px solid #dc3545"' : isLcMismatch ? ' style="opacity:.7;border-left:4px solid #ef4444"' : isNotSelected ? ' style="opacity:.65;border-left:4px solid #f59e0b"' : '';
+    return `<div class="doc-card ${cat}${isDuplicateSkipped ? ' amendment-duplicate' : ''}${isLcMismatch ? ' lc-mismatch' : ''}${isNotSelected ? ' lc-not-selected' : ''}" id="${cardId}"${dimStyle}>
+        <div class="doc-card-header">
+            <div>
+                <div class="doc-card-title">${esc(docTitle)} ${amended} ${copyHtml} ${mismatchHtml}</div>
+                <div style="color:#666;font-size:.85em;margin-top:2px">
+                    Pages: ${d.page_reference||'?'} · ${d.source_file||''}
+                    ${stampHtml}
+                </div>
+            </div>
+            <span class="doc-card-badge badge-${cat}">${cat === 'swift_messages' ? ('SWIFT' + (data.mt_number ? ' MT'+data.mt_number : '')) : cat}</span>
+        </div>
+        <div class="doc-info">
+            ${dcNum ? `<div class="doc-info-item"><span class="doc-info-label">DC/LC#:</span> <span class="doc-info-value">${esc(dcNum)}</span></div>` : ''}
+            ${purposeHtml}
+            ${amendDateHtml}
+            <div class="doc-info-item">
+                <span class="doc-info-label">Confidence:</span>
+                <span class="doc-info-value">${confPct}%</span>
+                <span class="conf-bar"><span class="conf-bar-fill ${confClass}" style="width:${confPct}%"></span></span>
+            </div>
+            ${marksRowHtml}
+            ${d.copy_reason || data.copy_reason ? `<div class="doc-info-item" style="grid-column:1/-1"><span class="doc-info-label">Copy detection:</span> <span class="doc-info-value">${esc(String(d.copy_reason || data.copy_reason).substring(0,150))}</span></div>` : ''}
+        </div>
+        ${amendChangesHtml}
+        ${(d.document_summary || data.document_summary) ? (() => {
+            const sumId = 'sum_' + Math.random().toString(36).substr(2,9);
+            const rawSummary = d.document_summary || data.document_summary;
+            // Split by ' | ' but rejoin parts that belong to multi-line values (Line Items, etc.)
+            const rawParts = rawSummary.split(' | ');
+            const parts = [];
+            let cur = '';
+            for (const p of rawParts) {
+                const ci = p.indexOf(':');
+                if (ci > 0 && ci < 30 && !cur) {
+                    cur = p;
+                } else if (cur) {
+                    // Check if this part looks like a new label (word: ...) or is continuation
+                    const ci2 = p.indexOf(':');
+                    if (ci2 > 0 && ci2 < 30 && /^[A-Z][A-Za-z ]{1,28}$/.test(p.substring(0, ci2))) {
+                        parts.push(cur);
+                        cur = p;
+                    } else {
+                        cur += ' | ' + p;  // continuation
+                    }
+                } else {
+                    parts.push(p);
+                }
+            }
+            if (cur) parts.push(cur);
+            const visibleParts = parts.filter(p => p.trim());
+
+            function renderDocInfoValue(label, value) {
+                // Line items — render as table
+                if (label === 'Line Items' && value.includes('\n')) {
+                    const rows = value.split('\n').filter(r => r.trim());
+                    let tbl = '<table style="width:100%;border-collapse:collapse;margin-top:4px;font-size:.9em">';
+                    tbl += '<tr style="background:#d0e4ff"><th style="padding:3px 6px;text-align:left;border:1px solid #b0c8e8">Description</th><th style="padding:3px 6px;text-align:right;border:1px solid #b0c8e8">Qty</th><th style="padding:3px 6px;text-align:right;border:1px solid #b0c8e8">Unit Price</th><th style="padding:3px 6px;text-align:right;border:1px solid #b0c8e8">Total</th></tr>';
+                    for (const row of rows) {
+                        const cols = row.split(/\s{2,}|\|/).map(c => c.trim()).filter(Boolean);
+                        if (cols.length >= 2) {
+                            tbl += '<tr style="border-bottom:1px solid #d0ddf0">';
+                            tbl += '<td style="padding:2px 6px;border:1px solid #cdd">' + esc(cols[0] || '') + '</td>';
+                            tbl += '<td style="padding:2px 6px;text-align:right;border:1px solid #cdd">' + esc(cols[1] || '') + '</td>';
+                            tbl += '<td style="padding:2px 6px;text-align:right;border:1px solid #cdd">' + esc(cols[2] || '') + '</td>';
+                            tbl += '<td style="padding:2px 6px;text-align:right;border:1px solid #cdd">' + esc(cols[3] || '') + '</td>';
+                            tbl += '</tr>';
+                        } else {
+                            tbl += '<tr><td colspan="4" style="padding:2px 6px;border:1px solid #cdd">' + esc(row) + '</td></tr>';
+                        }
+                    }
+                    tbl += '</table>';
+                    return tbl;
+                }
+                // Multi-line value — preserve with pre-wrap
+                if (value.includes('\n')) {
+                    return '<span style="white-space:pre-wrap;color:#222">' + esc(value) + '</span>';
+                }
+                // Normal single-line value
+                return '<span style="color:#222">' + esc(value) + '</span>';
+            }
+
+            return `<div style="margin-top:8px">
+                <button onclick="const el=document.getElementById('${sumId}');el.style.display=el.style.display==='none'?'block':'none';this.textContent=el.style.display==='none'?'▶ Show Document Info (${visibleParts.length} fields)':'▼ Hide Document Info'" style="background:none;border:1px solid #1554ca;color:#1554ca;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:.8em;font-weight:600">▶ Show Document Info (${visibleParts.length} fields)</button>
+                <div id="${sumId}" style="display:none;margin-top:6px;padding:8px 10px;background:#f0f7ff;border-left:3px solid #1554ca;border-radius:4px;font-size:.82em;line-height:1.6;color:#333">
+                    ${visibleParts.map(p => {
+                        const colonIdx = p.indexOf(':');
+                        if (colonIdx > 0 && colonIdx < 30) {
+                            const label = p.substring(0, colonIdx).trim();
+                            const value = p.substring(colonIdx + 1).trim();
+                            return '<div style="padding:3px 0;border-bottom:1px solid #dce8f8"><span style="font-weight:700;color:#1554ca;min-width:130px;display:inline-block;vertical-align:top">' + esc(label) + ':</span> ' + renderDocInfoValue(label, value) + '</div>';
+                        }
+                        return '<div style="padding:2px 0;color:#444">' + esc(p) + '</div>';
+                    }).join('')}
+                </div>
+            </div>`;
+        })() : ''}
+        ${preview && !(d.document_summary || data.document_summary) ? `<div style="margin-top:8px;font-size:.8em;color:#888;font-style:italic">${esc(preview)}</div>` : ''}
+        ${cat === 'final_lc' ? `<div style="margin-top:10px"><button class="download-btn" style="background:#6f42c1" onclick="downloadFinalLcPdf('${esc(dcNum || data.DC_Number || '')}')">📄 Download Final LC PDF</button></div>` : ''}
+    </div>`;
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function switchDocTab(name, el) {
+    document.querySelectorAll('.doc-tab').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+    document.querySelectorAll('.doc-tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+}
+
+function closeDocsModal() { document.getElementById('docsModal').classList.remove('active'); }
+document.getElementById('docsModal').addEventListener('click', e => { if(e.target===document.getElementById('docsModal')) closeDocsModal(); });
+
+function showStampDetail(markData) {
+    const overlay = document.getElementById('stampDetailOverlay');
+    const body = document.getElementById('stampDetailBody');
+    const title = document.getElementById('stampDetailTitle');
+    title.textContent = `Stamps & Marks — ${markData.title || 'Document'} (Pages ${markData.pages || '?'})`;
+
+    let html = '';
+
+    // Stamps section
+    if (markData.stamps && markData.stamps.length) {
+        html += `<div class="stamp-detail-section">
+            <div class="stamp-detail-section-title"><span style="color:#dc2626">&#9679;</span> Stamps (${markData.stamps.length})</div>`;
+        for (const s of markData.stamps) {
+            const sType = s.type || 'stamp';
+            const sOwner = s.owner || '';
+            const sColor = s.color || '';
+            const sText = s.text || s.description || '';
+            const sPos = s.position || '';
+            const sDesc = s.description || '';
+            html += `<div class="stamp-detail-item stamp-item-stamp">
+                <div class="detail-type">${esc(sType.replace(/_/g,' '))}${sColor ? ' &middot; ' + esc(sColor) : ''}</div>
+                ${sOwner && sOwner !== 'unknown' ? `<div class="detail-text" style="color:#b91c1c;font-weight:700">By: ${esc(sOwner)}</div>` : ''}
+                ${sText ? `<div class="detail-text">"${esc(sText)}"</div>` : ''}
+                ${sDesc && sDesc !== sText ? `<div class="detail-meta">${esc(sDesc)}</div>` : ''}
+                <div class="detail-meta">${sPos ? 'Position: ' + esc(sPos.replace(/-/g,' ')) : ''}${s.page ? (sPos ? ' &middot; ' : '') + 'Page ' + s.page : ''}</div>
+            </div>`;
+        }
+        html += '</div>';
+    }
+
+    // Seals section
+    if (markData.seals && markData.seals.length) {
+        html += `<div class="stamp-detail-section">
+            <div class="stamp-detail-section-title"><span style="color:#a16207">&#9679;</span> Seals (${markData.seals.length})</div>`;
+        for (const s of markData.seals) {
+            const sType = s.type || 'seal';
+            const sOwner = s.owner || '';
+            const sColor = s.color || '';
+            const sText = s.text || s.description || '';
+            const sPos = s.position || '';
+            const sDesc = s.description || '';
+            html += `<div class="stamp-detail-item stamp-item-seal">
+                <div class="detail-type">${esc(sType.replace(/_/g,' '))}${sColor ? ' &middot; ' + esc(sColor) : ''}</div>
+                ${sOwner && sOwner !== 'unknown' ? `<div class="detail-text" style="color:#a16207;font-weight:700">By: ${esc(sOwner)}</div>` : ''}
+                ${sText ? `<div class="detail-text">"${esc(sText)}"</div>` : ''}
+                ${sDesc && sDesc !== sText ? `<div class="detail-meta">${esc(sDesc)}</div>` : ''}
+                <div class="detail-meta">${sPos ? 'Position: ' + esc(sPos.replace(/-/g,' ')) : ''}${s.page ? (sPos ? ' &middot; ' : '') + 'Page ' + s.page : ''}</div>
+            </div>`;
+        }
+        html += '</div>';
+    }
+
+    // Signatures section — grouped by page
+    if (markData.signatures && markData.signatures.length) {
+        html += `<div class="stamp-detail-section">
+            <div class="stamp-detail-section-title"><span style="color:#2563eb">&#9679;</span> Signatures (${markData.signatures.length})</div>`;
+        // Group signatures by page
+        const sigsByPage = {};
+        for (const s of markData.signatures) {
+            const pg = s.page || '?';
+            if (!sigsByPage[pg]) sigsByPage[pg] = [];
+            sigsByPage[pg].push(s);
+        }
+        const pageKeys = Object.keys(sigsByPage).sort((a,b) => (parseInt(a)||0) - (parseInt(b)||0));
+        for (const pg of pageKeys) {
+            const pageSigs = sigsByPage[pg];
+            // Show page header when there are multiple pages or multiple signatures on one page
+            if (pageKeys.length > 1 || pageSigs.length > 1) {
+                const multiNote = pageSigs.length > 1 ? ` <span style="color:#dc2626;font-weight:700">(${pageSigs.length} signatures on this page)</span>` : '';
+                html += `<div style="margin:8px 0 4px;padding:3px 8px;background:#dbeafe;border-radius:4px;font-size:0.82em;font-weight:600;color:#1e40af">Page ${pg}${multiNote}</div>`;
+            }
+            for (const s of pageSigs) {
+                const sType = s.type || 'handwritten';
+                const sWho = s.signatory || s.description || '';
+                const sDesc = s.description || '';
+                const sPos = s.position || '';
+                const sShape = s.shape || '';
+                const sNearText = s.text_near_signature || '';
+                html += `<div class="stamp-detail-item stamp-item-sig">
+                    <div class="detail-type">${esc(sType.replace(/_/g,' '))}${sShape && sShape !== 'unknown' ? ' &middot; ' + esc(sShape.replace(/_/g,' ')) : ''}</div>
+                    ${sWho && sWho !== 'unknown' ? `<div class="detail-text" style="color:#1d4ed8;font-weight:700">By: ${esc(sWho)}</div>` : ''}
+                    ${sDesc && sDesc !== sWho ? `<div class="detail-meta">${esc(sDesc)}</div>` : ''}
+                    ${sNearText ? `<div class="detail-meta" style="color:#6b7280;font-style:italic">Text: "${esc(sNearText)}"</div>` : ''}
+                    <div class="detail-meta">${sPos && sPos !== 'unknown' ? 'Position: ' + esc(sPos.replace(/-/g,' ')) : ''}${s.page && sPos && sPos !== 'unknown' ? ' &middot; Page ' + s.page : (!sPos || sPos === 'unknown') && s.page ? 'Page ' + s.page : ''}</div>
+                </div>`;
+            }
+        }
+        html += '</div>';
+    }
+
+    // Copy Indicators section
+    if (markData.copy_indicators && markData.copy_indicators.length) {
+        html += `<div class="stamp-detail-section">
+            <div class="stamp-detail-section-title"><span style="color:#15803d">&#9679;</span> Copy/Original Marks (${markData.copy_indicators.length})</div>`;
+        for (const c of markData.copy_indicators) {
+            const cText = c.text || '';
+            const cFmt = c.format || '';
+            const cPos = c.position || '';
+            html += `<div class="stamp-detail-item stamp-item-copy">
+                <div class="detail-type">${cFmt ? esc(cFmt) : 'mark'}</div>
+                ${cText ? `<div class="detail-text">"${esc(cText)}"</div>` : ''}
+                <div class="detail-meta">${cPos ? 'Position: ' + esc(cPos.replace(/-/g,' ')) : ''}${c.page ? (cPos ? ' &middot; ' : '') + 'Page ' + c.page : ''}</div>
+            </div>`;
+        }
+        html += '</div>';
+    }
+
+    // Logos section
+    if (markData.logos && markData.logos.length) {
+        html += `<div class="stamp-detail-section">
+            <div class="stamp-detail-section-title"><span style="color:#94a3b8">&#9679;</span> Logos (${markData.logos.length})</div>`;
+        for (const s of markData.logos) {
+            const sDesc = s.description || 'logo';
+            const sOwner = s.owner || '';
+            const sPos = s.position || '';
+            html += `<div class="stamp-detail-item stamp-item-logo">
+                ${sOwner && sOwner !== 'unknown' ? `<div class="detail-text" style="font-weight:700">${esc(sOwner)}</div>` : ''}
+                <div class="detail-text">${esc(sDesc)}</div>
+                <div class="detail-meta">${sPos ? 'Position: ' + esc(sPos.replace(/-/g,' ')) : ''}${s.page ? (sPos ? ' &middot; ' : '') + 'Page ' + s.page : ''}</div>
+            </div>`;
+        }
+        html += '</div>';
+    }
+
+    // Per-page breakdown
+    if (markData.stamps_per_page && markData.stamps_per_page.length) {
+        html += `<div class="stamp-detail-section" style="border-top:1px solid #e2e8f0;padding-top:12px;margin-top:8px">
+            <div class="stamp-detail-section-title">Per-Page Summary</div>`;
+        for (const pg of markData.stamps_per_page) {
+            const parts = [];
+            if (pg.stamps && pg.stamps.length) parts.push(`${pg.stamps.length} stamp${pg.stamps.length>1?'s':''}`);
+            if (pg.seals && pg.seals.length) parts.push(`${pg.seals.length} seal${pg.seals.length>1?'s':''}`);
+            if (pg.signatures && pg.signatures.length) parts.push(`${pg.signatures.length} sig${pg.signatures.length>1?'s':''}`);
+            if (pg.copy_indicators && pg.copy_indicators.length) parts.push(pg.copy_indicators.map(c => c.text||'mark').join(', '));
+            if (pg.logos && pg.logos.length) parts.push(`${pg.logos.length} logo${pg.logos.length>1?'s':''}`);
+            if (parts.length) {
+                html += `<div style="font-size:.82em;padding:4px 8px;margin:2px 0;background:#f8fafc;border-radius:4px">
+                    <strong>Page ${pg.page}:</strong> ${esc(parts.join(' | '))}${pg.is_stamp_only ? ' <em style="color:#dc2626">(stamp-only page)</em>' : ''}
+                </div>`;
+            }
+        }
+        html += '</div>';
+    }
+
+    if (!html) html = '<div style="color:#94a3b8;text-align:center;padding:20px">No marks detected</div>';
+
+    body.innerHTML = html;
+    overlay.classList.add('active');
+}
+
+function closeStampDetail() { document.getElementById('stampDetailOverlay').classList.remove('active'); }
+document.getElementById('stampDetailOverlay').addEventListener('click', e => { if(e.target===document.getElementById('stampDetailOverlay')) closeStampDetail(); });
+
+function goToChecklist(lcNumber) { window.open(`/checklist?lc=${lcNumber}&job_id=${currentJobId}`, '_blank'); }
+
+function downloadFinalLcPdf(lcNumber) {
+    if (!currentJobId || !lcNumber) { alert('No LC available for download'); return; }
+    const safeLc = lcNumber.replace(/[^a-zA-Z0-9_-]/g, '_');
+    window.open(`${API_BASE}/api/final-lc-pdf/${currentJobId}/${safeLc}`, '_blank');
+}
+
+function showError(msg) {
+    document.getElementById('spinner').style.display = 'none';
+    document.getElementById('results').innerHTML = `<div class="error-message"><strong>Error:</strong> ${msg}</div>`;
+    processBtn.disabled = false;
+}
+
+function viewJson(url) {
+    const w = window.open('','_blank');
+    w.document.write(`<html><head><title>LC JSON</title><style>body{font-family:monospace;background:#0f172a;color:#e5e7eb;padding:20px}pre{white-space:pre-wrap;background:#020617;padding:20px;border-radius:8px;border:1px solid #334155}h1{color:#38bdf8}</style></head><body><h1>📄 LC JSON Data</h1><pre id="j">Loading...</pre></body></html>`);
+    fetch(url).then(r=>r.json()).then(d=>{w.document.getElementById('j').textContent=JSON.stringify(d,null,2)}).catch(e=>{w.document.getElementById('j').textContent='Error: '+e});
+}
+
+// ── LC Selection Modal ──
+function showLcSelectionModal(lcOptions) {
+    const overlay = document.getElementById('lcSelectOverlay');
+    const body = document.getElementById('lcSelectBody');
+    let html = '<p style="margin-bottom:16px;color:#475569;font-size:.92em">The uploaded documents contain multiple different Letters of Credit. Select which LC should be used for Final LC consolidation and compliance verification. Other LCs will remain in the document list but will not be used.</p>';
+    for (const opt of lcOptions) {
+        const amt = opt.amount ? `${opt.currency || ''} ${opt.amount}`.trim() : '';
+        html += `<div class="lc-option-card" onclick="selectLc('${esc(opt.dc_number)}')">
+            <div class="lc-number">${esc(opt.dc_number)}</div>
+            <div class="lc-details">
+                ${opt.issue_date ? `<div><span class="lc-detail-label">Issue Date:</span> ${esc(opt.issue_date)}</div>` : ''}
+                ${amt ? `<div><span class="lc-detail-label">Amount:</span> ${esc(amt)}</div>` : ''}
+                ${opt.beneficiary ? `<div><span class="lc-detail-label">Beneficiary:</span> ${esc(opt.beneficiary).substring(0,60)}</div>` : ''}
+                ${opt.applicant ? `<div><span class="lc-detail-label">Applicant:</span> ${esc(opt.applicant).substring(0,60)}</div>` : ''}
+                <div><span class="lc-detail-label">Pages:</span> ${esc(opt.page_reference || '?')}</div>
+                <div><span class="lc-detail-label">Amendments:</span> ${opt.amendments_count || 0}</div>
+                ${opt.source_file ? `<div><span class="lc-detail-label">File:</span> ${esc(opt.source_file)}</div>` : ''}
+            </div>
+            <button class="lc-select-btn" onclick="event.stopPropagation();selectLc('${esc(opt.dc_number)}')">Select This LC</button>
+        </div>`;
+    }
+    body.innerHTML = html;
+    overlay.classList.add('active');
+}
+
+async function selectLc(dcNumber) {
+    const overlay = document.getElementById('lcSelectOverlay');
+    overlay.classList.remove('active');
+    document.getElementById('statusMessage').textContent = `LC selected: ${dcNumber}. Resuming processing...`;
+    document.getElementById('spinner').style.display = 'block';
+    resumeTimer();
+    try {
+        const resp = await fetch(`${API_BASE}/api/select-lc/${currentJobId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({lc_number: dcNumber})
+        });
+        if (!resp.ok) {
+            const err = await resp.json();
+            showError('LC selection failed: ' + (err.error || 'Unknown error'));
+            return;
+        }
+        // Resume status polling
+        statusCheckInterval = setInterval(checkStatus, 1000);
+    } catch (err) {
+        showError('LC selection failed: ' + err.message);
+    }
+}
+
+// ─── Cross-Document Consistency Section (results page) ───
+function renderCrossDocSection(r) {
+    const xdoc = r.cross_document_consistency;
+    if (!xdoc || !xdoc.checks || xdoc.checks.length === 0) return '';
+    const checks = xdoc.checks;
+    const passC = checks.filter(c => c.status === 'pass').length;
+    const failC = checks.filter(c => c.status === 'fail').length;
+    let html = `<div class="xdoc-section">
+        <h4><span style="font-size:1.2em">&#128196;</span> Cross-Document Consistency <span style="font-size:.8em;color:#888;font-weight:400">${passC}/${checks.length} consistent</span></h4>`;
+    checks.forEach(c => {
+        const st = c.status || 'info';
+        const field = c.field || c.check || '';
+        const detail = c.detail || '';
+        const discClass = c.discrepancy_class || '';
+        const discBadge = discClass === 'hard' ? '<span class="disc-badge hard">HARD</span>' : discClass === 'soft' ? '<span class="disc-badge soft">SOFT</span>' : '';
+        const icon = st === 'pass' ? '&#10003;' : st === 'fail' ? '&#10007;' : '&#9888;';
+        html += `<div class="xdoc-check ${st}">
+            <span style="font-weight:700;color:${st === 'pass' ? '#16a34a' : st === 'fail' ? '#dc2626' : '#d97706'}">${icon}</span>
+            <span class="xdoc-field-name">${esc(field.replace(/_/g, ' '))} ${discBadge}</span>
+            <span class="xdoc-detail">${esc(detail.substring(0, 120))}</span>
+            <span class="xdoc-status ${st}">${st === 'pass' ? 'MATCH' : st === 'fail' ? 'MISMATCH' : 'REVIEW'}</span>
+        </div>`;
+    });
+    html += '</div>';
+    return html;
+}
+
+// ─── Installment Compliance Section (results page) ───
+function renderInstallmentSection(r) {
+    const inst = r.installment_compliance;
+    if (!inst || (!inst.checks?.length && !inst.schedule?.length)) return '';
+    const schedule = inst.schedule || [];
+    const checks = inst.checks || [];
+    const summary = inst.summary || {};
+    let html = `<div class="inst-section">
+        <h4>&#128197; Installment Compliance (Art 32)${summary.total_installments ? ' — ' + summary.total_installments + ' installments' : ''}</h4>`;
+    if (schedule.length) {
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-bottom:10px">';
+        schedule.forEach((s, idx) => {
+            const st = s.status || 'pending';
+            const color = st === 'fulfilled' ? '#16a34a' : st === 'missed' ? '#dc2626' : '#888';
+            html += `<div style="background:#fff;padding:8px 12px;border-radius:6px;border:1px solid #e0e6ed;border-left:3px solid ${color}">
+                <div style="font-weight:700;font-size:.85em;color:#333">#${idx + 1} ${esc(s.period || '')}</div>
+                <div style="font-size:.82em;color:#666;margin-top:2px">${esc(s.description || '')}</div>
+                ${s.amount ? `<div style="font-size:.85em;font-weight:600;color:#333;margin-top:2px">${esc(s.amount)}</div>` : ''}
+                <div style="font-size:.75em;font-weight:800;color:${color};margin-top:4px">${st.toUpperCase()}</div>
+            </div>`;
+        });
+        html += '</div>';
+    }
+    checks.forEach(c => {
+        const st = c.status || 'info';
+        const icon = st === 'pass' ? '&#10003;' : st === 'fail' ? '&#10007;' : '&#9888;';
+        const color = st === 'pass' ? '#16a34a' : st === 'fail' ? '#dc2626' : '#d97706';
+        html += `<div style="display:flex;gap:8px;margin-bottom:4px;font-size:.88em">
+            <span style="color:${color};font-weight:700">${icon}</span>
+            <span>${esc(c.detail || c.check || '')}</span>
+        </div>`;
+    });
+    // Art 30 tolerance info
+    if (inst.tolerance_info) {
+        const tol = inst.tolerance_info;
+        html += `<div style="margin-top:8px;padding:6px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:.85em;color:#92400e">
+            <strong>Art 30 Tolerance:</strong> ${esc(tol.description || tol.type || '')}${tol.plus ? ' +' + tol.plus + '%' : ''}${tol.minus ? ' -' + tol.minus + '%' : ''}
+        </div>`;
+    }
+    html += '</div>';
+    return html;
+}
+</script>
+</body>
+</html>

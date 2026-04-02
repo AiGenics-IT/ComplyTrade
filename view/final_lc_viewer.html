@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Final LC Viewer - ComplyTrade</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f0f4f8; color: #1e293b; }
+        .header { background: linear-gradient(135deg, #1554ca 0%, #0f3a8e 100%); color: white; padding: 20px 30px; display: flex; align-items: center; justify-content: space-between; }
+        .header h1 { font-size: 1.5em; }
+        .header .dc-num { font-size: 1.1em; opacity: 0.9; }
+        .header .actions { display: flex; gap: 10px; }
+        .header button { padding: 8px 18px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.9em; }
+        .btn-save { background: #16a34a; color: white; }
+        .btn-save:hover { background: #15803d; }
+        .btn-download { background: #f59e0b; color: #1e293b; }
+        .btn-reset { background: #64748b; color: white; }
+        .container { max-width: 1200px; margin: 20px auto; padding: 0 20px; }
+        .section { background: white; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow: hidden; }
+        .section-header { background: #1a3a5c; color: white; padding: 12px 20px; font-size: 1.1em; font-weight: 600; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+        .section-header:hover { background: #1e4a6e; }
+        .section-header .toggle { font-size: 0.8em; }
+        .section-body { padding: 0; }
+        .field-row { display: flex; border-bottom: 1px solid #e2e8f0; }
+        .field-row:nth-child(even) { background: #f8fafc; }
+        .field-row:hover { background: #eff6ff; }
+        .field-tag { width: 80px; padding: 10px 15px; font-weight: 700; color: #1554ca; font-size: 0.85em; border-right: 1px solid #e2e8f0; display: flex; align-items: center; }
+        .field-name { width: 200px; padding: 10px 15px; font-weight: 600; color: #334155; font-size: 0.85em; border-right: 1px solid #e2e8f0; display: flex; align-items: center; }
+        .field-value { flex: 1; padding: 8px 12px; }
+        .field-value textarea { width: 100%; border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px 10px; font-family: inherit; font-size: 0.9em; resize: vertical; min-height: 32px; color: #1e293b; }
+        .field-value textarea:focus { outline: none; border-color: #1554ca; box-shadow: 0 0 0 2px rgba(21,84,202,0.15); }
+        .field-value textarea.modified { border-color: #f59e0b; background: #fffbeb; }
+        .clause-row { padding: 12px 20px; border-bottom: 1px solid #e2e8f0; display: flex; gap: 12px; }
+        .clause-row:nth-child(even) { background: #f8fafc; }
+        .clause-num { width: 40px; font-weight: 700; color: #1554ca; flex-shrink: 0; padding-top: 6px; }
+        .clause-text { flex: 1; }
+        .clause-text textarea { width: 100%; border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px 10px; font-family: inherit; font-size: 0.88em; resize: vertical; min-height: 60px; line-height: 1.5; }
+        .clause-text textarea:focus { outline: none; border-color: #1554ca; }
+        .clause-text textarea.modified { border-color: #f59e0b; background: #fffbeb; }
+        .status-bar { position: fixed; bottom: 0; left: 0; right: 0; background: #1e293b; color: white; padding: 10px 30px; display: flex; justify-content: space-between; align-items: center; font-size: 0.85em; z-index: 100; }
+        .status-bar .changes { color: #fbbf24; }
+        .loading { text-align: center; padding: 40px; color: #64748b; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <img src="/logo.png" alt="AiGenics" style="height:35px;margin-right:15px;vertical-align:middle;">
+            <h1 style="display:inline;vertical-align:middle;">Final Letter of Credit</h1>
+            <div class="dc-num" id="dcNum"></div>
+        </div>
+        <div class="actions">
+            <button class="btn-reset" onclick="resetAll()">Reset Changes</button>
+            <button class="btn-save" onclick="saveChanges()">Save Changes</button>
+            <button class="btn-download" onclick="downloadPDF()">Download PDF</button>
+        </div>
+    </div>
+    <div class="container" id="content">
+        <div class="loading">Loading Final LC...</div>
+    </div>
+    <div class="status-bar">
+        <span>ComplyTrade | AiGenics</span>
+        <span id="changeCount" class="changes">No changes</span>
+    </div>
+
+<script>
+const params = new URLSearchParams(window.location.search);
+const jobId = params.get('job_id');
+const lcNumber = params.get('lc');
+const API = window.location.origin;
+let originalData = {};
+let modifiedFields = {};
+let changeCount = 0;
+
+const TAG_NAMES = {
+    '20':'Documentary Credit Number','31C':'Date of Issue','31D':'Date and Place of Expiry',
+    '32B':'Currency Code, Amount','39A':'Tolerance','40A':'Form of Documentary Credit',
+    '40E':'Applicable Rules','41D':'Available With / By','42A':'Drawee','42C':'Drafts at',
+    '43P':'Partial Shipments','43T':'Transshipment','44A':'Place of Taking in Charge',
+    '44B':'Place of Final Destination','44C':'Latest Date of Shipment',
+    '44E':'Port of Loading','44F':'Port of Discharge','45A':'Description of Goods',
+    '46A':'Documents Required','47A':'Additional Conditions','48':'Period for Presentation',
+    '49':'Confirmation Instructions','50':'Applicant','51A':'Applicant Bank',
+    '59':'Beneficiary','71D':'Charges','78':'Instructions to Bank',
+};
+
+const CLAUSE_FIELDS = new Set(['45A','46A','47A','46B','47B','45B','78','79','72']);
+
+async function loadData() {
+    try {
+        const r = await fetch(`${API}/api/result/${jobId}`);
+        const data = await r.json();
+        if (!data.consolidated_lcs || !data.consolidated_lcs.length) {
+            document.getElementById('content').innerHTML = '<div class="loading">No Final LC data found.</div>';
+            return;
+        }
+        const lc = data.consolidated_lcs[0];
+        const cf = lc.data.consolidated_fields || {};
+        const clauses = {};
+
+        // Separate standalone fields from clause fields
+        const standaloneFields = {};
+        for (const [tag, val] of Object.entries(cf)) {
+            if (CLAUSE_FIELDS.has(tag)) {
+                // Will be handled from clauses
+            } else {
+                standaloneFields[tag] = typeof val === 'string' ? val : JSON.stringify(val);
+            }
+        }
+
+        // Get clauses from the LC data (from Step 6)
+        // The clauses might be in consolidated_fields as arrays or in a separate clauses dict
+        for (const tag of CLAUSE_FIELDS) {
+            const val = cf[tag];
+            if (Array.isArray(val)) {
+                clauses[tag] = val;
+            } else if (typeof val === 'string' && val.trim()) {
+                clauses[tag] = [val];
+            }
+        }
+
+        originalData = { standaloneFields, clauses };
+        document.getElementById('dcNum').textContent = 'DC: ' + (lc.lc_number || lc.dc_number || cf['20'] || '');
+        renderLC(standaloneFields, clauses);
+    } catch(e) {
+        document.getElementById('content').innerHTML = `<div class="loading">Error: ${e.message}</div>`;
+    }
+}
+
+function renderLC(fields, clauses) {
+    let html = '';
+
+    // LC Details section
+    html += '<div class="section">';
+    html += '<div class="section-header" onclick="toggleSection(this)"><span>LC Details</span><span class="toggle">-</span></div>';
+    html += '<div class="section-body">';
+    const sortedTags = Object.keys(fields).sort((a,b) => {
+        const na = parseInt(a) || 999, nb = parseInt(b) || 999;
+        return na - nb;
+    });
+    for (const tag of sortedTags) {
+        const name = TAG_NAMES[tag] || tag;
+        const val = fields[tag] || '';
+        const rows = Math.max(1, Math.ceil(val.length / 80));
+        html += `<div class="field-row">
+            <div class="field-tag">${tag}</div>
+            <div class="field-name">${esc(name)}</div>
+            <div class="field-value">
+                <textarea id="field_${tag}" rows="${rows}" onchange="markModified('field_${tag}','${tag}')">${esc(val)}</textarea>
+            </div>
+        </div>`;
+    }
+    html += '</div></div>';
+
+    // Clause sections
+    for (const [tag, clauseList] of Object.entries(clauses)) {
+        if (!clauseList || !clauseList.length) continue;
+        const name = TAG_NAMES[tag] || tag;
+        html += '<div class="section">';
+        html += `<div class="section-header" onclick="toggleSection(this)"><span>Field ${tag}: ${esc(name)}</span><span class="toggle">-</span></div>`;
+        html += '<div class="section-body">';
+        for (let i = 0; i < clauseList.length; i++) {
+            const clause = clauseList[i];
+            const text = typeof clause === 'string' ? clause : (clause.text || JSON.stringify(clause));
+            const rows = Math.max(2, Math.ceil(text.length / 80));
+            html += `<div class="clause-row">
+                <div class="clause-num">${i+1}.</div>
+                <div class="clause-text">
+                    <textarea id="clause_${tag}_${i}" rows="${rows}" onchange="markModified('clause_${tag}_${i}','${tag}',${i})">${esc(text)}</textarea>
+                </div>
+            </div>`;
+        }
+        html += '</div></div>';
+    }
+
+    document.getElementById('content').innerHTML = html;
+}
+
+function toggleSection(header) {
+    const body = header.nextElementSibling;
+    const toggle = header.querySelector('.toggle');
+    if (body.style.display === 'none') {
+        body.style.display = '';
+        toggle.textContent = '-';
+    } else {
+        body.style.display = 'none';
+        toggle.textContent = '+';
+    }
+}
+
+function markModified(elemId, tag, clauseIdx) {
+    const el = document.getElementById(elemId);
+    el.classList.add('modified');
+    modifiedFields[elemId] = { tag, clauseIdx, value: el.value };
+    changeCount = Object.keys(modifiedFields).length;
+    document.getElementById('changeCount').textContent = changeCount + ' change(s) pending';
+}
+
+function resetAll() {
+    if (!confirm('Reset all changes?')) return;
+    loadData();
+    modifiedFields = {};
+    changeCount = 0;
+    document.getElementById('changeCount').textContent = 'No changes';
+}
+
+function saveChanges() {
+    if (changeCount === 0) { alert('No changes to save.'); return; }
+    // TODO: POST changes to server
+    alert('Changes saved locally. Server-side save coming soon.');
+    document.querySelectorAll('.modified').forEach(el => el.classList.remove('modified'));
+    document.getElementById('changeCount').textContent = 'Changes saved';
+}
+
+function downloadPDF() {
+    window.open(`${API}/api/final-lc-pdf/${jobId}/${lcNumber || 'default'}`, '_blank');
+}
+
+function esc(s) {
+    if (!s) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+loadData();
+</script>
+</body>
+</html>

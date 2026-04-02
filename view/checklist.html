@@ -1,0 +1,2452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LC Verification Checklist</title>
+    <style>
+        :root{--primary:#1554ca;--secondary:#0d3b8a;--bg:#f0f2f5;--white:#fff;--text:#333;--border:#e0e6ed;--success:#16a34a;--success-bg:#dcfce7;--success-bdr:#bbf7d0;--danger:#dc2626;--danger-bg:#fee2e2;--danger-bdr:#fecaca;--warning:#d97706;--warning-bg:#fef3c7;--warning-bdr:#fde68a;--info:#2563eb;--info-bg:#dbeafe;--info-bdr:#bfdbfe;--amended:#856404;--amended-bg:#fff3cd;--amended-bdr:#ffeeba}
+        body{font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background:var(--bg);margin:0;padding:20px;display:flex;justify-content:center}
+        .wrapper{width:94%;max-width:1500px;background:var(--white);border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.1);display:flex;flex-direction:column;height:92vh;overflow:hidden;position:relative}
+
+        /* ── Header ── */
+        .header{padding:14px 24px;background:linear-gradient(135deg,var(--primary),var(--secondary));color:#fff;display:flex;justify-content:space-between;align-items:center}
+        .header h2{margin:0;font-size:1.15em}
+        .header-meta{font-size:.85em;opacity:.9}
+
+        /* ── Summary Bar ── */
+        .sbar{padding:8px 24px;background:#f8f9ff;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:44px}
+        .sp{display:inline-flex;align-items:center;gap:4px;padding:4px 14px;border-radius:20px;font-size:.8em;font-weight:700}
+        .sp-ok{background:var(--success-bg);color:var(--success)}.sp-fail{background:var(--danger-bg);color:var(--danger)}.sp-warn{background:var(--warning-bg);color:var(--warning)}.sp-info{background:var(--info-bg);color:var(--info)}.sp-t{background:#e8eaf6;color:var(--secondary)}
+        .verd{padding:5px 18px;border-radius:6px;font-weight:800;font-size:.82em;letter-spacing:.02em}
+        .verd.COMPLIANT{background:var(--success-bg);color:var(--success);border:1px solid var(--success-bdr)}
+        .verd.NON_COMPLIANT{background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger-bdr)}
+        .verd.REVIEW_REQUIRED{background:var(--warning-bg);color:var(--warning);border:1px solid var(--warning-bdr)}
+        .verd.PENDING{background:#f0f0f0;color:#888;border:1px solid #ddd}
+        .rbtn{background:var(--primary);color:#fff;border:none;padding:6px 22px;border-radius:6px;cursor:pointer;font-weight:700;font-size:.82em;font-family:inherit;transition:all .2s}
+        .rbtn:hover{background:var(--secondary);transform:translateY(-1px)}.rbtn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+        .rbtn.run{animation:pulse 1.5s ease infinite}
+        .rbtn.sec{background:#e2e8f0;color:var(--secondary)}.rbtn.sec:hover{background:#cbd5e1}
+        @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(21,84,202,.3)}50%{box-shadow:0 0 0 8px transparent}}
+
+        .main-content{display:flex;flex:1;overflow:hidden}
+
+        /* ── Left Pane ── */
+        .left-pane{width:38%;border-right:1px solid var(--border);display:flex;flex-direction:column;background:#fafbff;min-height:0;overflow:hidden}
+        .pane-header{padding:12px 18px;border-bottom:1px solid var(--border);font-weight:700;color:var(--secondary);background:#fff;display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
+        .scroll-area{flex:1;overflow-y:auto;padding:12px}
+        .filter-bar{padding:8px 12px;background:#f8f9ff;border-bottom:1px solid var(--border);display:flex;gap:5px;flex-wrap:wrap;flex-shrink:0}
+        .fchip{padding:4px 12px;border-radius:16px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:.78em;font-weight:500;transition:all .2s;font-family:inherit}
+        .fchip:hover,.fchip.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+
+        /* ── Clause Items ── */
+        .pi{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;background:#fff;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer;transition:all .15s;position:relative}
+        .pi:hover{border-color:var(--primary);background:#f8f9ff}
+        .pi.active{border-left:5px solid var(--primary);background:#f0f4ff;box-shadow:0 2px 8px rgba(21,84,202,.08)}
+        .pi.amended{border-right:4px solid var(--warning)}
+        /* Indicating sub-conditions: indented, lighter background */
+        .pi.indicating{margin-left:22px;background:#f8f9ff;border-left:3px solid #7c3aed;border-color:#e0d5fa}
+        .pi.indicating:hover{border-color:#7c3aed;background:#f0eaff}
+        .pi.indicating.active{border-left:4px solid #7c3aed;background:#ede9ff}
+        .sdot{width:10px;height:10px;border-radius:50%;margin-top:4px;flex-shrink:0}
+        .sdot.compliant{background:var(--success);box-shadow:0 0 4px rgba(22,163,74,.4)}
+        .sdot.non_compliant{background:var(--danger);box-shadow:0 0 4px rgba(220,38,38,.4)}
+        .sdot.review_required{background:var(--warning);box-shadow:0 0 4px rgba(217,119,6,.4)}
+        .sdot.not_verified,.sdot.pending{background:#d1d5db}
+        .fb{font-size:.7em;background:#e1e7ff;padding:2px 6px;border-radius:4px;color:var(--primary);font-weight:700;font-family:monospace}
+        .ab{font-size:.7em;background:var(--amended-bg);padding:2px 6px;border-radius:4px;color:var(--amended);font-weight:700;margin-left:4px}
+        .stag{font-size:.68em;padding:2px 8px;border-radius:4px;font-weight:700;margin-left:4px}
+        .stag.compliant{background:var(--success-bg);color:var(--success)}
+        .stag.non_compliant{background:var(--danger-bg);color:var(--danger)}
+        .stag.review_required{background:var(--warning-bg);color:var(--warning)}
+        .stag.ctrue{background:var(--success-bg);color:var(--success);border:1px solid var(--success-bdr);font-weight:800}
+        .stag.cfalse{background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger-bdr);font-weight:800}
+        .rbtn.dl{background:#0d3b8a;display:inline-flex;align-items:center;gap:4px}
+        .rbtn.dl:hover{background:#092c6b}
+
+        /* MT700 section */
+        .mt700sec{margin:10px 12px;background:#f8f9ff;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+        .mt700h{padding:10px 14px;background:linear-gradient(135deg,var(--primary),var(--secondary));color:#fff;font-weight:700;font-size:.82em;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+        .mt700h:hover{opacity:.95}
+        .mt700b{display:none;padding:8px 10px;max-height:280px;overflow-y:auto;font-size:.78em}
+        .mt700b.open{display:block}
+        .mt700r{display:flex;justify-content:space-between;padding:5px 8px;margin-bottom:2px;border-radius:4px;align-items:center}
+        .mt700r:nth-child(even){background:#f0f4ff}
+        .mt700r .ft{color:#888;font-weight:500;min-width:35px;font-family:monospace}.mt700r .fn{flex:1;color:var(--text);padding:0 8px}
+        .mt700r .fv{max-width:40%;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#555}
+
+        /* ── Right Pane ── */
+        .right-pane{width:62%;padding:0;overflow-y:auto;background:#fff}
+        .dh{padding:18px 24px 14px;border-bottom:1px solid var(--border);background:#fafbff}
+        .cbox{margin-top:10px;background:#f8f9ff;border:1px solid var(--border);padding:16px 18px;border-radius:8px;white-space:pre-wrap;font-size:.95em;line-height:1.65}
+        .db{padding:18px 24px 30px}
+
+        /* Verification sections */
+        .vban{display:flex;align-items:center;gap:14px;padding:14px 18px;border-radius:10px;margin-bottom:18px;font-weight:600}
+        .vban.compliant{background:var(--success-bg);border:1px solid var(--success-bdr);color:var(--success)}
+        .vban.non_compliant{background:var(--danger-bg);border:1px solid var(--danger-bdr);color:var(--danger)}
+        .vban.review_required{background:var(--warning-bg);border:1px solid var(--warning-bdr);color:var(--warning)}
+        .vban.not_verified{background:#f8f9ff;border:1px solid var(--border);color:#888}
+        .vban .vi{font-size:1.5em}.vban .vl{font-size:.95em}.vban .vs{font-size:.8em;font-weight:400;color:#666;margin-top:2px;max-width:100%}
+        .stit{font-size:.82em;font-weight:700;color:var(--secondary);text-transform:uppercase;letter-spacing:.04em;margin:18px 0 8px;border-bottom:1px solid #eee;padding-bottom:4px}
+        .chk{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;background:#fdfdfd;border:1px solid var(--border);border-radius:7px;margin-bottom:5px}
+        .chk .ci{font-size:1.1em;margin-top:1px;flex-shrink:0}
+        .chk .ci.pass{color:var(--success)}.chk .ci.fail{color:var(--danger)}.chk .ci.warning{color:var(--warning)}.chk .ci.info{color:var(--info)}
+        .chk .cn{font-size:.75em;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:.03em;margin-bottom:2px}
+        .chk .cd{font-size:.85em;color:var(--text);line-height:1.45}
+        .md{display:inline-flex;align-items:center;gap:5px;background:#f0f4ff;border:1px solid #d4ddff;border-radius:5px;padding:3px 10px;margin:2px;font-size:.76em;font-weight:500}
+        .md .dt{color:var(--primary);font-weight:600}.md .dp{color:#888;font-family:monospace;font-size:.92em}
+        .abox{background:var(--amended-bg);border:1px solid var(--amended-bdr);padding:14px 16px;border-radius:8px;margin-bottom:16px}
+        .abox h4{margin:0 0 8px;color:var(--amended);font-size:.95em}
+        .abox .ad{font-size:.85em;color:var(--amended);margin-bottom:4px;line-height:1.4}
+        .fr{display:flex;justify-content:space-between;padding:7px 12px;background:#f8f9ff;border-radius:6px;margin-bottom:3px;font-size:.88em}
+        .fr.amended{background:var(--amended-bg)}
+        .fl{color:#888;font-weight:500;min-width:150px}.fv{color:var(--text);flex:1;text-align:right;word-break:break-all;max-width:65%}
+        .asec{border-top:2px solid #eee;padding-top:16px;margin-top:20px}
+        .anote{width:100%;height:70px;padding:10px;border:1px solid #cbd5e0;border-radius:8px;font-family:inherit;font-size:.9em;resize:vertical;box-sizing:border-box}
+        .btn{background:var(--primary);color:#fff;border:none;padding:7px 16px;border-radius:6px;cursor:pointer;font-weight:600;font-size:.85em;transition:all .2s;font-family:inherit}
+        .btn:hover{opacity:.9}.btn-g{background:var(--success)}.btn-r{background:var(--danger)}
+
+        .loading-overlay{position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(255,255,255,.95);display:flex;flex-direction:column;justify-content:center;align-items:center;z-index:1000}
+        .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:2000;justify-content:center;align-items:center}
+        .modal.active{display:flex}
+        .modal-content{background:#fff;padding:24px;border-radius:12px;width:500px;max-width:90%;box-shadow:0 5px 15px rgba(0,0,0,.3)}
+        .modal-header{margin-bottom:16px;color:var(--secondary);border-bottom:1px solid #eee;padding-bottom:8px}
+        .fg{margin-bottom:12px}.fg label{display:block;font-weight:700;margin-bottom:4px;font-size:.85em}
+        .fg input,.fg textarea{width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;font-family:inherit}
+
+        /* Progress Toast */
+        .ptl{position:fixed;bottom:20px;right:20px;width:380px;max-height:300px;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.15);z-index:5000;overflow:hidden;display:none}
+        .ptl.active{display:block}
+        .ptl-h{padding:10px 14px;background:#f8f9ff;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-size:.85em;font-weight:700;color:var(--secondary)}
+        .ptl-b{padding:8px 10px;max-height:230px;overflow-y:auto;font-size:.78em;font-family:'Courier New',monospace;color:#666}
+        .ptl-b div{padding:3px 6px;border-radius:3px;margin-bottom:2px}
+        .ptl-b div:last-child{color:var(--primary);background:#f0f4ff;font-weight:600}
+
+        /* Ruleset Selection Panel */
+        .rsp{padding:10px 24px;background:#f0f4ff;border-bottom:1px solid var(--border);display:none}
+        .rsp.active{display:block}
+        .rsp-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+        .rsp-title{font-weight:700;font-size:.88em;color:var(--secondary)}
+        .rsp-40e{font-size:.82em;color:#666;background:#fff;padding:4px 12px;border-radius:6px;border:1px solid var(--border);display:inline-flex;align-items:center;gap:6px}
+        .rsp-40e b{color:var(--primary)}
+        .rsp-grid{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+        .rsp-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 14px;border-radius:8px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:.8em;font-weight:500;transition:all .15s;user-select:none}
+        .rsp-chip:hover{border-color:var(--primary);background:#f8f9ff}
+        .rsp-chip.checked{border-color:var(--primary);background:#e0e7ff;color:var(--primary);font-weight:700}
+        .rsp-chip.disabled{opacity:.45;cursor:not-allowed;background:#f5f5f5}
+        .rsp-chip input[type=checkbox]{margin:0;accent-color:var(--primary)}
+        .rsp-chip .auto-badge{font-size:.68em;background:var(--success-bg);color:var(--success);padding:1px 6px;border-radius:4px;font-weight:700}
+        .rsp-chip .na-badge{font-size:.68em;background:#f0f0f0;color:#999;padding:1px 6px;border-radius:4px}
+        .rsp-toggle{font-size:.78em;color:var(--primary);cursor:pointer;font-weight:600;text-decoration:underline}
+
+        /* Edit controls */
+        .edt-btn{background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:.72em;padding:2px 7px;color:#888;transition:all .15s;flex-shrink:0}
+        .edt-btn:hover{background:#f0f4ff;color:var(--primary);border-color:var(--primary)}
+        .edt-sel{padding:3px 6px;border:1px solid var(--primary);border-radius:4px;font-size:.8em;font-weight:600;font-family:inherit;background:#f8f9ff}
+        .edt-ta{width:100%;padding:6px 8px;border:1px solid var(--primary);border-radius:5px;font-family:inherit;font-size:.82em;resize:vertical;min-height:40px;box-sizing:border-box;margin-top:4px}
+        .edt-row{display:flex;gap:5px;margin-top:6px}
+        .edt-row .btn{padding:3px 12px;font-size:.75em}
+        .edit-bar{position:fixed;bottom:0;left:0;right:0;background:linear-gradient(135deg,#1e3a6e,#1554ca);color:#fff;padding:10px 24px;display:none;align-items:center;justify-content:center;gap:16px;z-index:6000;box-shadow:0 -4px 20px rgba(0,0,0,.2)}
+        .edit-bar.active{display:flex}
+        .edit-bar span{font-weight:600;font-size:.9em}
+        .edit-bar button{padding:6px 20px;border:none;border-radius:6px;font-weight:700;font-size:.85em;cursor:pointer;font-family:inherit}
+        .edit-bar .eb-apply{background:#16a34a;color:#fff}.edit-bar .eb-apply:hover{background:#15803d}
+        .edit-bar .eb-discard{background:rgba(255,255,255,.2);color:#fff}.edit-bar .eb-discard:hover{background:rgba(255,255,255,.3)}
+        .toast-msg{position:fixed;top:20px;right:20px;padding:10px 20px;border-radius:8px;font-weight:600;font-size:.88em;z-index:7000;box-shadow:0 4px 16px rgba(0,0,0,.15);animation:toastIn .3s ease}
+        .toast-msg.ok{background:var(--success-bg);color:var(--success);border:1px solid var(--success-bdr)}
+        .toast-msg.err{background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger-bdr)}
+        @keyframes toastIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+
+        /* ── Vessel Tracking Panel ── */
+        .vt-panel{position:fixed;top:60px;right:20px;width:400px;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.18);z-index:4000;display:none;overflow:hidden;max-height:80vh;font-size:.88em}
+        .vt-panel.active{display:block}
+        .vt-hdr{padding:12px 16px;background:linear-gradient(135deg,#0a3d7c,#1565c0);color:#fff;display:flex;justify-content:space-between;align-items:center}
+        .vt-hdr h4{margin:0;font-size:1em}
+        .vt-hdr .vt-close{cursor:pointer;opacity:.8;font-size:1.1em}.vt-hdr .vt-close:hover{opacity:1}
+        .vt-body{padding:14px 16px;max-height:60vh;overflow-y:auto}
+        .vt-search{display:flex;gap:8px;margin-bottom:12px}
+        .vt-search input{flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:.92em}
+        .vt-search button{padding:8px 16px;background:var(--primary);color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-family:inherit;font-size:.88em;white-space:nowrap}
+        .vt-search button:hover{background:var(--secondary)}
+        .vt-search button:disabled{opacity:.5;cursor:not-allowed}
+        .vt-status{margin-bottom:12px;padding:10px 12px;background:#f8f9ff;border:1px solid var(--border);border-radius:8px;display:none}
+        .vt-status.active{display:block}
+        .vt-vessel{font-weight:700;color:var(--secondary);font-size:1.05em;margin-bottom:6px}
+        .vt-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.75em;font-weight:700}
+        .vt-badge.tracking{background:var(--success-bg);color:var(--success)}.vt-badge.searching{background:var(--info-bg);color:var(--info)}.vt-badge.error{background:var(--danger-bg);color:var(--danger)}
+        .vt-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-top:8px}
+        .vt-grid .vt-lbl{font-size:.75em;color:#888;text-transform:uppercase;font-weight:600;letter-spacing:.03em}
+        .vt-grid .vt-val{font-size:.88em;color:var(--text);margin-bottom:4px}
+        .vt-ports{margin-top:10px;border-top:1px solid var(--border);padding-top:8px}
+        .vt-ports h5{margin:0 0 6px;font-size:.82em;color:var(--secondary)}
+        .vt-port-item{display:flex;justify-content:space-between;padding:4px 8px;font-size:.8em;border-radius:4px;margin-bottom:2px}
+        .vt-port-item:nth-child(even){background:#f8f9ff}
+        .vt-port-item .pe{font-weight:600;color:var(--primary);min-width:70px}.vt-port-item .pn{flex:1;color:var(--text)}.vt-port-item .pt{color:#888;font-size:.9em}
+        .vt-refresh{font-size:.72em;color:#999;margin-top:8px;text-align:right}
+        .vt-stop{margin-top:10px;text-align:center}
+        .vt-stop button{padding:5px 16px;background:var(--danger);color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:.82em}
+        .vt-stop button:hover{background:#b91c1c}
+        .vt-trigger{position:fixed;bottom:80px;right:20px;width:50px;height:50px;border-radius:50%;background:linear-gradient(135deg,#0a3d7c,#1565c0);color:#fff;border:none;cursor:pointer;font-size:1.3em;box-shadow:0 4px 16px rgba(0,0,0,.2);z-index:3500;display:flex;align-items:center;justify-content:center;transition:all .2s}
+        .vt-trigger:hover{transform:scale(1.1);box-shadow:0 6px 24px rgba(0,0,0,.3)}
+        .vt-trigger.has-data{background:linear-gradient(135deg,#15803d,#16a34a)}
+        @keyframes vtPulse{0%,100%{box-shadow:0 4px 16px rgba(0,0,0,.2)}50%{box-shadow:0 4px 16px rgba(21,101,192,.5)}}
+        .vt-trigger.polling{animation:vtPulse 2s ease infinite}
+
+        /* ── Amendment Status Bar ── */
+        .amend-bar{padding:8px 12px;background:#fff;border-bottom:1px solid var(--border);display:none;flex-shrink:0}
+        .amend-bar.active{display:block}
+        .amend-bar .ab-title{font-size:.78em;font-weight:700;color:var(--secondary);margin-bottom:4px}
+        .amend-item{display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:4px;font-size:.76em;margin-bottom:2px}
+        .amend-item.applied{background:var(--success-bg);color:var(--success)}
+        .amend-item.rejected{background:var(--danger-bg);color:var(--danger)}
+        .amend-item .ai-icon{font-weight:700;font-size:1em}
+        .amend-item .ai-num{font-weight:700}
+        .amend-item .ai-reason{color:#888;font-style:italic;margin-left:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
+        /* LC Mismatch Warning Banner */
+        .lc-mismatch-banner{display:none;padding:10px 14px;background:linear-gradient(135deg,#fef2f2,#fee2e2);border:2px solid #f87171;border-radius:8px;margin:8px 12px;font-size:.85em;flex-shrink:0;max-height:30vh;overflow-y:auto}
+        .lc-mismatch-banner.active{display:block}
+        .lc-mismatch-banner .mm-title{font-weight:700;color:#dc2626;font-size:.95em;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+        .lc-mismatch-banner .mm-item{display:flex;gap:6px;padding:3px 6px;background:#fff;border:1px solid #fca5a5;border-radius:4px;margin-bottom:3px;font-size:.88em;align-items:center}
+        .lc-mismatch-banner .mm-type{font-weight:700;color:#991b1b;min-width:100px}
+        .lc-mismatch-banner .mm-ref{color:#dc2626;font-family:monospace;font-weight:700}
+        .lc-mismatch-badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:.68em;font-weight:800;background:#fef2f2;color:#dc2626;border:1px solid #fca5a5;letter-spacing:.02em}
+
+        /* ── Sub-Conditions Section ── */
+        .sc-sec{margin:10px 12px;background:#f8fafb;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+        .sc-h{padding:10px 14px;background:linear-gradient(135deg,#0d6efd,#0b5ed7);color:#fff;font-weight:700;font-size:.82em;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+        .sc-h:hover{opacity:.95}
+        .sc-b{display:none;padding:8px 10px;max-height:400px;overflow-y:auto}
+        .sc-b.open{display:block}
+        .sc-item{display:flex;align-items:flex-start;gap:8px;padding:7px 10px;margin-bottom:3px;border-radius:6px;border:1px solid #eee;background:#fff;transition:all .15s}
+        .sc-item:hover{border-color:var(--primary);background:#fafbff}
+        .sc-icon{font-size:1.05em;flex-shrink:0;margin-top:1px}
+        .sc-icon.pass{color:var(--success)}.sc-icon.fail{color:var(--danger)}.sc-icon.warning{color:var(--warning)}.sc-icon.info{color:var(--info)}
+        .sc-body{flex:1;min-width:0}
+        .sc-label{font-size:.82em;font-weight:700;color:var(--text);margin-bottom:1px;display:flex;align-items:center;gap:6px}
+        .sc-cat{font-size:.65em;padding:1px 6px;border-radius:10px;font-weight:600;text-transform:uppercase;letter-spacing:.03em;flex-shrink:0}
+        .sc-cat.format{background:#e8eaf6;color:#3949ab}.sc-cat.copies{background:#fce4ec;color:#c62828}.sc-cat.content{background:#e0f2f1;color:#00695c}
+        .sc-cat.issuer{background:#fff3e0;color:#e65100}.sc-cat.party{background:#f3e5f5;color:#6a1b9a}.sc-cat.port{background:#e1f5fe;color:#01579b}
+        .sc-cat.reference{background:#fafafa;color:#616161}.sc-cat.certification{background:#ede7f6;color:#4527a0}.sc-cat.compliance{background:#ffebee;color:#b71c1c}
+        .sc-detail{font-size:.78em;color:#888;line-height:1.35;margin-top:2px}
+        .sc-stag{font-size:.68em;padding:1px 7px;border-radius:4px;font-weight:800;flex-shrink:0}
+        .sc-stag.pass{background:var(--success-bg);color:var(--success);border:1px solid var(--success-bdr)}
+        .sc-stag.fail{background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger-bdr)}
+        .sc-stag.warning{background:var(--warning-bg);color:var(--warning);border:1px solid var(--warning-bdr)}
+        .sc-stag.info{background:var(--info-bg);color:var(--info);border:1px solid var(--info-bdr)}
+        .sc-summary{display:flex;gap:8px;padding:6px 10px;margin-bottom:6px;background:#f0f4ff;border-radius:6px;font-size:.78em;font-weight:600}
+        .sc-summary .sc-sp{display:inline-flex;align-items:center;gap:3px}
+        .sc-summary .sc-sp.ok{color:var(--success)}.sc-summary .sc-sp.fail{color:var(--danger)}.sc-summary .sc-sp.warn{color:var(--warning)}
+
+        /* ── Hard/Soft Discrepancy Badges ── */
+        .disc-badge{display:inline-block;padding:1px 7px;border-radius:4px;font-size:.65em;font-weight:800;letter-spacing:.04em;margin-left:4px;vertical-align:middle}
+        .disc-badge.hard{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}
+        .disc-badge.soft{background:#fff7ed;color:#9a3412;border:1px solid #fdba74}
+
+        /* ── ISBP Non-Discrepancy Badge ── */
+        .isbp-badge{display:inline-block;padding:1px 7px;border-radius:4px;font-size:.65em;font-weight:800;letter-spacing:.04em;margin-left:4px;vertical-align:middle;background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd}
+
+        /* ── Art 14(h) Non-Documentary Condition ── */
+        .art14h-badge{display:inline-block;padding:1px 7px;border-radius:4px;font-size:.65em;font-weight:800;letter-spacing:.04em;margin-left:4px;vertical-align:middle;background:#f0fdf4;color:#166534;border:1px solid #86efac}
+
+        /* ── Cross-Document Consistency Section ── */
+        .xdoc-sec{margin:10px 12px;background:#f8fafb;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+        .xdoc-h{padding:10px 14px;background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;font-weight:700;font-size:.82em;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+        .xdoc-h:hover{opacity:.95}
+        .xdoc-b{display:none;padding:8px 10px;max-height:400px;overflow-y:auto}
+        .xdoc-b.open{display:block}
+        .xdoc-item{display:flex;align-items:flex-start;gap:8px;padding:7px 10px;margin-bottom:3px;border-radius:6px;border:1px solid #eee;background:#fff;transition:all .15s}
+        .xdoc-item:hover{border-color:var(--primary);background:#fafbff}
+        .xdoc-field{font-size:.78em;font-weight:700;color:var(--secondary);min-width:80px}
+        .xdoc-detail{font-size:.78em;color:#666;flex:1}
+        .xdoc-stag{font-size:.68em;padding:1px 7px;border-radius:4px;font-weight:800;flex-shrink:0}
+        .xdoc-stag.pass{background:var(--success-bg);color:var(--success);border:1px solid var(--success-bdr)}
+        .xdoc-stag.fail{background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger-bdr)}
+        .xdoc-stag.warning{background:var(--warning-bg);color:var(--warning);border:1px solid var(--warning-bdr)}
+
+        /* ── Installment Compliance Section ── */
+        .inst-sec{margin:10px 12px;background:#f8fafb;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+        .inst-h{padding:10px 14px;background:linear-gradient(135deg,#0369a1,#0284c7);color:#fff;font-weight:700;font-size:.82em;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+        .inst-h:hover{opacity:.95}
+        .inst-b{display:none;padding:8px 10px;max-height:400px;overflow-y:auto}
+        .inst-b.open{display:block}
+    </style>
+</head>
+<body>
+<div class="wrapper">
+    <div id="loading" class="loading-overlay">
+        <div style="text-align:center">
+            <div style="font-size:2em;margin-bottom:10px">⏳</div>
+            <strong>Fetching Consolidated LC Data...</strong>
+            <p id="debug-status" style="font-size:.8em;color:#666"></p>
+        </div>
+    </div>
+
+    <div class="header">
+        <h2 id="lc-title">LC Verification</h2>
+        <div id="lc-meta" class="header-meta">Loading...</div>
+    </div>
+
+    <div class="sbar" id="sbar">
+        <span class="sp sp-t"><b id="stot">0</b>&nbsp;clauses</span>
+        <div id="varea" style="margin-left:auto;display:flex;align-items:center;gap:8px"></div>
+    </div>
+
+    <!-- Ruleset Selection Panel -->
+    <div class="rsp" id="rsp">
+        <div class="rsp-header">
+            <div style="display:flex;align-items:center;gap:12px">
+                <span class="rsp-title">Applicable Rules</span>
+                <span class="rsp-40e" id="rsp40e">40E: <b>—</b></span>
+            </div>
+            <span class="rsp-toggle" onclick="toggleRsp()">Hide</span>
+        </div>
+        <div class="rsp-grid" id="rspGrid"></div>
+    </div>
+
+    <div class="main-content">
+        <div class="left-pane">
+            <div class="pane-header">
+                <span>Clause Checklist</span>
+                <div style="font-size:.85em;color:#888" id="ptxt">0/0 verified</div>
+            </div>
+            <div class="filter-bar" id="fbar"></div>
+            <div class="amend-bar" id="amendBar"></div>
+            <div class="lc-mismatch-banner" id="lcMismatchBanner"></div>
+            <div class="scroll-area" id="pcont"></div>
+            <div style="padding:10px 12px;border-top:1px solid var(--border);background:#fff">
+                <button class="btn" style="width:100%" onclick="openEditor()">+ Add Manual Clause</button>
+            </div>
+        </div>
+        <div class="right-pane" id="ws">
+            <div style="text-align:center;margin-top:80px;color:#a0aec0">
+                <div style="font-size:3em">📋</div>
+                <h3>Select a clause to verify</h3>
+                <p>Run verification to check all clauses against shipping documents.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="clauseModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header"><h3 id="modal-title" style="margin:0">Edit Clause</h3></div>
+        <input type="hidden" id="edit-index">
+        <div class="fg"><label>SWIFT Field (46A, 47A, etc.)</label><input type="text" id="field-type" placeholder="47A"></div>
+        <div class="fg"><label>Clause Number</label><input type="text" id="field-num" placeholder="5"></div>
+        <div class="fg"><label>Clause Text</label><textarea id="field-text" rows="5"></textarea></div>
+        <div style="display:flex;gap:8px;margin-top:16px">
+            <button class="btn btn-g" onclick="saveClause()">Save</button>
+            <button id="delete-btn" class="btn btn-r" style="display:none" onclick="deleteClause()">Delete</button>
+            <button class="btn" style="background:#999" onclick="closeEditor()">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<div id="ptl" class="ptl">
+    <div class="ptl-h"><span>⚡ Verification Progress</span><span style="cursor:pointer;color:#999" onclick="document.getElementById('ptl').classList.remove('active')">✕</span></div>
+    <div class="ptl-b" id="ptlb"></div>
+</div>
+
+<div id="editBar" class="edit-bar">
+    <span id="editCount">Unsaved edits</span>
+    <button class="eb-apply" onclick="applyEdits()">Apply Changes</button>
+    <button class="eb-discard" onclick="discardEdits()">Discard</button>
+</div>
+
+<!-- Vessel Tracking Floating Button -->
+<button class="vt-trigger" id="vtTrigger" onclick="toggleVesselPanel()" title="Vessel Tracking">&#9875;</button>
+
+<!-- Vessel Tracking Panel -->
+<div class="vt-panel" id="vtPanel">
+    <div class="vt-hdr">
+        <h4>&#9875; Vessel Tracking</h4>
+        <span class="vt-close" onclick="toggleVesselPanel()">&times;</span>
+    </div>
+    <div class="vt-body">
+        <div class="vt-search">
+            <input type="text" id="vtName" placeholder="Vessel name (e.g. MV PACIFIC STAR)" onkeydown="if(event.key==='Enter')startVesselTrack()">
+            <button id="vtTrackBtn" onclick="startVesselTrack()">Track</button>
+        </div>
+        <div class="vt-status" id="vtStatus"></div>
+    </div>
+</div>
+
+<script>
+const API=window.location.origin;
+let D={pts:[],lc:'',jid:'',cf:{},sf:{},docs:[]};
+let filter='all',selIdx=null,vid=null,vres=null,vsum=null,vElapsed=null,notes={},mt700comp=null,urr725comp=null,isbp821comp=null,isp98comp=null,fecomp=null,vesselcomp=null,amtdatecomp=null;
+let crossDocConsistency=null,installmentCompliance=null;
+let availableRulesets=[],detectedRulesets=[],rspVisible=true;
+let hasEdits=false,editCount=0;
+
+// ── SWIFT MT700 Tag → Human Label map ──
+const _TAG_LABELS={
+    '20':'Documentary Credit Number','27':'Sequence of Total','31C':'Date of Issue',
+    '31D':'Date and Place of Expiry','32B':'Currency Code, Amount','39A':'Percentage Credit Amount Tolerance',
+    '39B':'Maximum Credit Amount','40A':'Form of Documentary Credit','40E':'Applicable Rules',
+    '41A':'Available With / By','41D':'Available With / By','42A':'Drawee Bank','42C':'Drafts At','42a':'Drawee','43P':'Partial Shipments',
+    '43T':'Transhipment','44A':'Place of Taking in Charge','44E':'Port of Loading',
+    '44F':'Port of Discharge','44B':'Place of Final Destination','44C':'Latest Date of Shipment',
+    '44D':'Shipment Period','45A':'Description of Goods','46A':'Documents Required',
+    '47A':'Additional Conditions','48':'Period for Presentation','49':'Confirmation Instructions',
+    '50':'Applicant','51A':'Applicant Bank','51D':'Applicant Bank','52A':'Issuing Bank','52D':'Issuing Bank','53A':'Reimbursing Bank','57A':'Advise Through Bank',
+    '59':'Beneficiary','71D':'Charges','72':'Sender to Receiver Info',
+    '78':'Instructions to Pay/Accept/Negotiate','79':'Narrative',
+    '22A':'Purpose of Message','23':'Reference','26E':'Amendment Number',
+    '30':'Amendment Date','31B':'Date of Availability','33B':'Decrease Amount',
+    '34B':'Increase Amount','42P':'Negotiation / Deferred Payment',
+    '44H':'Latest Date of Shipment','45B':'Description of Goods (Additional)',
+    '46B':'Documents Required (Amendment)','46C':'Other Documents',
+    '47B':'Additional Conditions (Amendment)','51D':'Applicant Bank',
+    '52A':'Issuing Bank','52D':'Issuing Bank (Details)',
+    '53D':'Sender Bank Account','57D':'Advise Through Bank (Details)',
+    '71B':'Bank-to-Bank Charges','72Z':'Sender to Receiver Info',
+    '77A':'Instructions to Bank (Free)','77B':'Discrepancy Procedures',
+    '77C':'Forwarding Bank Details','79A':'Amendment Text',
+    'DC_Number':'Documentary Credit Number','Amount':'LC Amount / Currency',
+    'Date_of_Issue':'Date of Issue','Date_Place_Expiry':'Expiry Date / Place',
+    'Applicable_Rules':'Applicable Rules','Available_With_By':'Available With / By',
+    'Partial_Shipments':'Partial Shipments','Transshipment':'Transhipment',
+    'Port_of_Loading':'Port of Loading','Port_of_Discharge':'Port of Discharge',
+    'Latest_Shipment_Date':'Latest Date of Shipment','Applicant':'Applicant',
+    'Beneficiary':'Beneficiary','Presentation_Period':'Period for Presentation',
+    'Confirmation_Instructions':'Confirmation Instructions','Tolerance':'Tolerance (+/-)',
+    'Charges':'Charges','Reimbursing_Bank':'Reimbursing Bank','Advise_Bank':'Advising Bank',
+    'Form_of_Credit':'Form of Documentary Credit','Issuing_Bank_Code':'Issuing Bank',
+    'Issuing_Bank_Details':'Issuing Bank Details','Drafts_at':'Drafts At',
+};
+
+// ── Field Key → SWIFT Tag mapping ──
+const _FIELD_TO_TAG={
+    DC_Number:'20',Amount:'32B',Date_of_Issue:'31C',Date_Place_Expiry:'31D',
+    Applicable_Rules:'40E',Available_With_By:'41A',Available_With_By_Details:'41A',
+    Partial_Shipments:'43P',Transshipment:'43T',Port_of_Loading:'44E',
+    Port_of_Discharge:'44F',Latest_Shipment_Date:'44C',Applicant:'50',
+    Beneficiary:'59',Presentation_Period:'48',Confirmation_Instructions:'49',
+    Tolerance:'39A',Maximum_Credit_Amount:'39B',Charges:'71D',
+    Reimbursing_Bank:'53A',Advise_Bank:'57A',Advise_Bank_Details:'57A',
+    Form_of_Credit:'40A',Issuing_Bank_Code:'Issuing Bank',
+    Issuing_Bank_Details:'Issuing Bank',Drafts_at:'42C',
+    Drawee_Accepting_Bank:'42a',Drawee_Contact:'42a',
+    Place_of_Receipt:'44B',Dispatch_From:'44D',
+    Description_of_Goods:'45A',Documents_Required:'46A',
+    Additional_Conditions:'47A',Instructions_to_Bank:'78',
+    Instructions_to_Bank_Free:'78',Sender_to_Receiver_Information:'72',
+    Charges_Bank_to_Bank:'71D',
+    Date_of_Availability:'31B',Negotiation_Deferred_Payment:'42P',
+    Place_of_Expiry:'44A',Latest_Date_of_Shipment:'44H',
+    Applicant_Bank:'51D',Amendment_Number:'26E',Amendment_Date:'30',
+};
+
+// ── Format YYMMDD SWIFT dates → DD-Mon-YYYY ──
+const _MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function _fmtSwiftDate(raw){
+    if(!raw)return raw;
+    const m=String(raw).match(/\b(\d{6})\b/);
+    if(!m)return raw;
+    const d=m[1];
+    const yr=parseInt(d.substring(0,2)),mo=parseInt(d.substring(2,4))-1,dy=parseInt(d.substring(4,6));
+    if(mo<0||mo>11||dy<1||dy>31)return raw;
+    const fullYr=yr>50?1900+yr:2000+yr;
+    return raw.replace(m[1],`${String(dy).padStart(2,'0')}-${_MONTHS[mo]}-${fullYr}`);
+}
+function _fmtAllDates(text){
+    if(!text)return text;
+    return text.replace(/\b(\d{6})\b/g,(match)=>{
+        const yr=parseInt(match.substring(0,2)),mo=parseInt(match.substring(2,4))-1,dy=parseInt(match.substring(4,6));
+        if(mo<0||mo>11||dy<1||dy>31)return match;
+        const fullYr=yr>50?1900+yr:2000+yr;
+        return `${String(dy).padStart(2,'0')}-${_MONTHS[mo]}-${fullYr}`;
+    });
+}
+
+// All known ruleset titles (matching compliance_rulesets DB naming)
+const KNOWN_RULESETS=['UCP 600','URR 725','ISBP 821','ISP98','eUCP','URDG 758','FE Manual Export','FE Manual Import','IPO 2022'];
+// Internal bank rules — always auto-checked if uploaded (not dependent on 40E)
+const ALWAYS_ON_RULES=['FE Manual Export','FE Manual Import','IPO 2022'];
+
+function setS(m){document.getElementById('debug-status').innerText=m}
+
+// ─── 40E Parser (mirrors backend _parse_applicable_rulesets) ───
+function parse40E(val){
+    if(!val)return[];
+    const up=(val||"").toUpperCase(),found=[];
+    if(up.includes('UCP')||up.includes('600'))found.push('UCP 600');
+    if(up.includes('URR')||(up.includes('725')&&!up.includes('ISBP')))found.push('URR 725');
+    if(up.includes('ISBP')||up.includes('821')||up.includes('745'))found.push('ISBP 821');
+    if(up.includes('ISP')&&!up.includes('ISBP'))found.push('ISP98');
+    else if(up.includes('ISP98'))found.push('ISP98');
+    if(up.includes('EUCP'))found.push('eUCP');
+    if(up.includes('URDG')||(up.includes('758')&&!up.includes('ISBP')))found.push('URDG 758');
+    if(up.includes('FE MANUAL')||up.includes('FE MAN')||up.includes('FOREIGN EXCHANGE')){found.push('FE Manual Export');found.push('FE Manual Import')}
+    return found;
+}
+
+// ─── Init ───
+async function init(){
+    setS("Initializing...");
+    const p=new URLSearchParams(location.search);
+    const lc=p.get('lc'),jid=p.get('job_id');
+    if(!lc||!jid){document.getElementById('loading').innerHTML='<div style="color:red;padding:20px;text-align:center"><h2>Missing lc or job_id parameter</h2></div>';return}
+    try{
+        setS(`Fetching results for job: ${jid}`);
+        const r=await fetch(`${API}/api/result/${jid}`);
+        if(!r.ok)throw new Error(`Server ${r.status}`);
+        const data=await r.json();
+        const flc=(data.consolidated_lcs||[]).find(i=>i.lc_number===lc);
+        if(!flc)throw new Error(`LC #${lc} not found.`);
+        const cf=flc.consolidated_fields||flc.data?.consolidated_fields||{};
+        // Get pre-split clauses from Final LC (Step 6 splits 46A/47A/45A etc.)
+        const _flcData = flc.data || flc;
+        const _clauses = _flcData.clauses || {};
+        const pts=[];
+        // ── Fully dynamic checklist from ALL FLC fields ──
+        // Clause fields: these should use pre-split clauses when available
+        const _CLAUSE_FIELDS = new Set([
+            'Documents_Required','Additional_Conditions','Description_of_Goods',
+            'Description_of_Goods_Additional','Other_Documents',
+            'Amendment_Details','Amendment_Text','Undertaking_Text',
+            'Discrepancy_Procedures',
+            // SWIFT tag keys that are clause fields
+            '46A','46B','47A','47B','45A','45B','79','77A','77B',
+        ]);
+        // Skip internal/metadata fields + instructions to bank (78)
+        const _SKIP = new Set([
+            'document_category','document_type','classification_confidence',
+            'has_stamps','stamp_details','is_stamp_only','swift_format',
+            'classification_method','text_preview','has_signatures',
+            'marking_status','has_seals','has_logos',
+            'Sequence','Purpose_of_Message','LC_Type_Code','Reference',
+            'Related_DC','Decrease_Amount','Increase_Amount',
+            'Documents_Required_Amendment','Additional_Conditions_Amendment',
+            'Sender_Bank_Account_Details','signatures','stamps_per_page',
+            'amendment_changes','logos','sender_institution','receiver_institution',
+            'mt_number','mt_description','Sending_Institution','Issuing_Bank_Code',
+            'page_count','page_reference','page_numbers','source_file',
+            'object_type','is_continuation','is_header_only',
+            'rejected_amendments','amendments_applied','total_amendments',
+            'vlm_corrected','field_label','classification_source',
+            'classifications',
+            // Instructions to Bank — not relevant for document verification
+            '78','F78','Instructions_to_Bank','Instructions_to_Bank_Free',
+            // Sequence of Total — not relevant
+            '27','F27',
+            // Sender to Receiver Info — bank internal
+            '72','F72','Sender_to_Receiver_Information','Sender_to_Receiver_Info',
+        ]);
+        // Human labels
+        const _LABELS={
+            DC_Number:'Documentary Credit Number',Amount:'LC Amount / Currency',
+            Date_of_Issue:'Date of Issue',Date_Place_Expiry:'Expiry Date / Place',
+            Date_of_Availability:'Date of Availability',Form_of_Credit:'Form of Documentary Credit',
+            Applicable_Rules:'Applicable Rules',Available_With_By:'Available With / By',
+            Available_With_By_Details:'Available With / By (Details)',
+            Drafts_at:'Drafts At',Drawee_Accepting_Bank:'Drawee / Accepting Bank',
+            Drawee_Contact:'Drawee',Negotiation_Deferred_Payment:'Negotiation / Deferred Payment',
+            Partial_Shipments:'Partial Shipments',Transshipment:'Transhipment',
+            Place_of_Expiry:'Place of Taking in Charge',Place_of_Receipt:'Place of Final Destination',
+            Latest_Shipment_Date:'Latest Date of Shipment',Dispatch_From:'Dispatch From / Shipment Period',
+            Port_of_Loading:'Port of Loading',Port_of_Discharge:'Port of Discharge',
+            Applicant:'Applicant',Applicant_Bank:'Applicant Bank',Beneficiary:'Beneficiary',
+            Issuing_Bank_Code:'Issuing Bank',Issuing_Bank_Details:'Issuing Bank (Details)',
+            Advise_Bank:'Advising Bank',Advise_Bank_Details:'Advising Bank (Details)',
+            Reimbursing_Bank:'Reimbursing Bank',Presentation_Period:'Period for Presentation',
+            Confirmation_Instructions:'Confirmation Instructions',Tolerance:'Tolerance (+/-)',
+            Maximum_Credit_Amount:'Maximum Credit Amount',Charges:'Charges',
+            Charges_Bank_to_Bank:'Charges (Bank to Bank)',Forwarding_Bank_Details:'Forwarding Bank Details',
+            Port_of_Loading:'Port of Loading / Dispatch',Port_of_Discharge:'Port of Discharge / Destination',
+            Latest_Date_of_Shipment:'Latest Date of Shipment',
+            Place_of_Expiry:'Place of Taking in Charge / Expiry',
+            Place_of_Receipt:'Place of Final Destination / Receipt',
+            Negotiation_Deferred_Payment:'Negotiation / Deferred Payment',
+            Amendment_Number:'Amendment Number',Amendment_Date:'Amendment Date',
+        };
+        const _label=k=>_LABELS[k]||(k.replace(/_/g,' '));
+        // Clean SWIFT field values for display
+        const _cleanSwiftVal=(tag,v)=>{
+            if(!v)return v;
+            let s=String(v);
+            // Strip "Identifier Code:" / "Name and Address:" labels
+            s=s.replace(/^Identifier\s+Code:?\s*/i,'').replace(/^Name\s+and\s+Address:?\s*/i,'');
+            s=s.replace(/^Code:?\s*/i,'').replace(/^Narrative:?\s*/i,'');
+            s=s.replace(/^Currency:?\s*/i,'').replace(/^Amount:?\s*/i,'');
+            s=s.replace(/^Date:?\s*/i,'').replace(/^Place:?\s*/i,'');
+            s=s.replace(/^Days:?\s*/i,'').replace(/^Number:?\s*/i,'').replace(/^Total:?\s*/i,'');
+            // Strip known field name prefixes (e.g. "Documentary Credit Number 0525ILC...")
+            const _FIELD_LABELS=['Documentary Credit Number','Date of Issue','Date and Place of Expiry',
+                'Currency Code, Amount','Form of Documentary Credit','Applicable Rules',
+                'Partial Shipments','Transhipment','Transshipment','Latest Date of Shipment',
+                'Port of Loading/Airport of Departure','Port of Discharge/Airport of Destination',
+                'Description of Goods and/or Services','Documents Required','Additional Conditions',
+                'Period for Presentation in Days','Confirmation Instructions','Applicant',
+                'Beneficiary','Charges','Percentage Credit Amount Tolerance','Drafts at',
+                'Instructions to the Paying/Accepting/Negotiating Bank'];
+            for(const lbl of _FIELD_LABELS) s=s.replace(new RegExp('^'+lbl.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\s*','i'),'');
+            // Format: if starts with SWIFT BIC (8-11 uppercase letters), put on separate line
+            const bicMatch=s.match(/^([A-Z]{4}[A-Z]{2}[A-Z0-9]{2,5})\s+(.+)/);
+            if(bicMatch && (tag||'').match(/^(41|42|51|52|53|57)/)){
+                s=bicMatch[2]+' ('+bicMatch[1]+')';
+            }
+            // Clean "Tolerance 1: X/ Tolerance 2: Y" → "+X% / -Y%"
+            const tolMatch=s.match(/(\d+)\s*\/\s*[\s\S]*?(\d+)/);
+            if(tolMatch && (tag||'').match(/^39/)){
+                s=`+${tolMatch[1]}% / -${tolMatch[2]}%`;
+            }
+            return s.trim();
+        };
+        const _valText=v=>{
+            if(v===null||v===undefined)return '';
+            if(Array.isArray(v))return v.map(x=>typeof x==='object'&&x!==null?String(x.text||x.value||''):String(x)).join('; ');
+            if(typeof v==='object')return String(v.text||v.value||JSON.stringify(v));
+            return String(v);
+        };
+        // Iterate ALL keys in consolidated_fields
+        const _clauseQueue=[];
+        const _clauseFieldsUsed=new Set(); // track which fields we handle via pre-split clauses
+        // First: use pre-split clauses from Step 6 (properly separated)
+        for(const[tag,clauseList]of Object.entries(_clauses)){
+            if(_SKIP.has(tag)||!clauseList)continue;
+            if(Array.isArray(clauseList)&&clauseList.length>0){
+                _clauseFieldsUsed.add(tag);
+                _clauseQueue.push([tag, clauseList]);
+            }
+        }
+        for(const[fk,val]of Object.entries(cf)){
+            if(_SKIP.has(fk)||!val)continue;
+            // Skip clause fields already handled from pre-split clauses
+            if(_clauseFieldsUsed.has(fk))continue;
+            // Clause fields not in pre-split → queue raw value for Part 2
+            if(_CLAUSE_FIELDS.has(fk)){
+                _clauseQueue.push([fk,val]);continue;
+            }
+            // If value is array of clause dicts → also Part 2
+            if(Array.isArray(val)&&val.length>0&&typeof val[0]==='object'&&(val[0].text||val[0].value)){
+                _clauseQueue.push([fk,val]);continue;
+            }
+            // Standalone LC field — strip the label prefix from display text
+            const vt=_cleanSwiftVal(fk, _valText(val));
+            if(!vt.trim())continue;
+            const amended=typeof val==='object'&&!Array.isArray(val)?!!val.amended:false;
+            const aby=typeof val==='object'&&!Array.isArray(val)?(val.amended_by||[]):[];
+            const swiftTag=_FIELD_TO_TAG[fk]||fk;
+            const tagLabel=_TAG_LABELS[swiftTag]||_TAG_LABELS[fk]||_label(fk);
+            // Don't repeat label in text — badge already shows it
+            pts.push({id:pts.length+1,sf:swiftTag,sfr:swiftTag,cn:null,text:_fmtAllDates(vt),amended,aby,src:fk,lcFieldKey:fk,swiftTag,tagLabel,checked:false,v:null,isLcField:true});
+        }
+        // ── Helper: split INDICATING/STATING sub-conditions from clause text ──
+        // Returns array of condition strings found after INDICATING: keyword
+        function _splitIndicating(text){
+            const m=text.match(/(?:INDICATING|MENTIONING|STATING|SHOWING|CERTIFYING|CONFIRMING|EVIDENCING|MUST\s+(?:INCLUDE|STATE|SHOW|INDICATE|MENTION)|SHOULD\s+(?:INCLUDE|STATE|SHOW|INDICATE)|WHICH\s+MUST\s+(?:INCLUDE|STATE)|MUST\s+CONTAIN|TO\s+INCLUDE|INCLUDING\s+BUT\s+NOT\s+LIMITED\s+TO)\s*:?\s+(.+)/is);
+            if(!m)return[];
+            const body=m[1].trim();
+            // Try (1)...(2)... numbered
+            const numParts=body.split(/\s*\((\d+)\)\s*/);
+            if(numParts.length>=4){
+                const conds=[];
+                for(let i=1;i<numParts.length-1;i+=2){
+                    const c=(numParts[i+1]||'').trim().replace(/[,;.]+$/,'');
+                    if(c&&c.length>3)conds.push(c);
+                }
+                if(conds.length>=2)return conds;
+            }
+            // Try N)... numbered
+            const nParts=body.split(/\s*(\d{1,2})\)\s*/);
+            if(nParts.length>=4){
+                const conds=[];
+                for(let i=1;i<nParts.length-1;i+=2){
+                    const c=(nParts[i+1]||'').trim().replace(/[,;.]+$/,'');
+                    if(c&&c.length>3)conds.push(c);
+                }
+                if(conds.length>=2)return conds;
+            }
+            // Try dash list
+            const dashItems=body.match(/(?:^|\n)\s*[-•]\s*(.+?)(?=\n\s*[-•]|\n\n|$)/gm);
+            if(dashItems&&dashItems.length>=2)return dashItems.map(s=>s.replace(/^\s*[-•]\s*/,'').trim().replace(/[,;.]+$/,'')).filter(s=>s.length>3);
+            // Try semi-colon
+            const semis=body.split(/;\s*/);
+            if(semis.length>=3)return semis.map(s=>s.trim().replace(/[.,]+$/,'')).filter(s=>s.length>3);
+            // Try comma (3+ items only)
+            const commas=body.split(/,\s+/);
+            if(commas.length>=3)return commas.map(s=>s.trim().replace(/[.]+$/,'')).filter(s=>s.length>3);
+            return[];
+        }
+
+        // Track seen clause texts for deduplication
+        const _seenClauseTexts=new Set();
+
+        // ── Helper: push a clause item + its indicating sub-conditions ──
+        function _pushClause(sf,sfr,cn,text,amended,aby,src){
+            // Skip duplicate clause texts (same text seen before under this src field)
+            const _normTxt=(text||'').replace(/\s+/g,' ').trim().toUpperCase();
+            const _dedupKey=src+'||'+_normTxt;
+            if(_seenClauseTexts.has(_dedupKey))return;
+            _seenClauseTexts.add(_dedupKey);
+            // Skip single-word or very short meaningless fragments
+            if(_normTxt.split(/\s+/).length<=2&&_normTxt.length<20)return;
+            const _swTag=_FIELD_TO_TAG[src]||sf;
+            const _tLabel=_TAG_LABELS[_swTag]||_TAG_LABELS[sf]||_TAG_LABELS[src]||_label(src);
+            pts.push({id:pts.length+1,sf,sfr,cn,text,amended,aby,src,checked:false,v:null,isLcField:true,swiftTag:_swTag,tagLabel:_tLabel});
+            const indConds=_splitIndicating((text||"").toUpperCase());
+            indConds.forEach((cond,idx)=>{
+                pts.push({
+                    id:pts.length+1,sf,sfr,
+                    cn:cn?`${cn}.${idx+1}`:String(idx+1),
+                    text:cond,
+                    amended,aby,src,checked:false,v:null,
+                    isIndicatingCond:true,
+                    parentClause:cn,
+                });
+            });
+        }
+
+        // Part 2: Clause fields — split into individual items
+        for(const[fn,fd]of _clauseQueue){
+            if(Array.isArray(fd)){
+                fd.forEach((c,idx)=>{
+                    if(typeof c==='object'){
+                        // Step 6 clause format: {text, clause_number, clause_id, parent_tag}
+                        const t=c.text||c.clause_text||c.value||'';
+                        if(!t.trim())return;
+                        const cn=c.clause_number||c.clause_id||(idx+1);
+                        _pushClause(c.swift_field||c.parent_tag||fn, c.swift_field_ref||c.parent_tag||fn, cn, t, c.amended||false, c.amended_by||[], fn);
+                    }else if(String(c).trim()){
+                        _pushClause(fn,fn,idx+1,String(c),false,[],fn);
+                    }
+                });
+            }else if(typeof fd==='string'&&fd.trim()){
+                // Raw unsplit string — try to split by numbered patterns
+                const numbered=fd.split(/\n\s*\d+\)\s+/);
+                if(numbered.length>=2){
+                    // First item is preamble (skip if empty), rest are clauses
+                    const items=fd.match(/\d+\)\s+[^]*?(?=\n\s*\d+\)|$)/g);
+                    if(items){
+                        items.forEach((item,idx)=>{
+                            const cleaned=item.replace(/^\d+\)\s+/,'').trim();
+                            if(cleaned)_pushClause(fn,fn,idx+1,cleaned,false,[],fn);
+                        });
+                    }else{
+                        _pushClause(fn,fn,null,fd,false,[],fn);
+                    }
+                }else{
+                    _pushClause(fn,fn,null,fd,false,[],fn);
+                }
+            }else if(typeof fd==='object'){
+                const t=fd.text||fd.value||'';
+                if(t.trim())_pushClause(fn,fn,null,t,fd.amended||false,fd.amended_by||[],fn);
+            }
+        }
+        const sfl={};
+        for(const[k,v]of Object.entries(cf)){if(!Array.isArray(v)&&typeof v==='object'&&v.value!==undefined)sfl[k]=v}
+        D={pts,lc:flc.lc_number,jid,cf,sf:sfl,docs:data.documents||[],warnings:data.warnings||[],idate:flc.original_issue_date||'',acnt:flc.amendments_applied||0,arcnt:flc.amendments_rejected||0,asum:flc.amendments_summary||[]};
+        document.getElementById('lc-title').innerText=`LC Verification: ${D.lc}`;
+        const amMeta=D.arcnt>0?`${D.acnt} amendments (${D.arcnt} rejected)`:`${D.acnt} amendments`;
+        document.getElementById('lc-meta').innerHTML=`Issue: ${D.idate} &middot; ${amMeta} &middot; ${pts.length} clauses &middot; ${D.docs.length} docs`;
+        await loadV();
+        await loadRulesets();
+        document.getElementById('loading').style.display='none';
+        renderAll();
+        renderRulesetPanel();
+    }catch(e){setS("Error: "+e.message);document.getElementById('loading').style.display='none';alert("Error: "+e.message)}
+}
+
+// ─── Ruleset Panel ───
+async function loadRulesets(){
+    try{
+        const r=await fetch(`${API}/api/compliance/rulesets`);
+        if(r.ok){const d=await r.json();availableRulesets=(d.rulesets||[]).map(rs=>rs.title)}
+    }catch(_){}
+    // Parse 40E
+    const ar=D.sf.Applicable_Rules||D.cf.Applicable_Rules;
+    const val40e=ar?(typeof ar==='object'?ar.value:ar):'';
+    detectedRulesets=parse40E(val40e);
+}
+
+function renderRulesetPanel(){
+    const panel=document.getElementById('rsp');
+    const grid=document.getElementById('rspGrid');
+    const label40e=document.getElementById('rsp40e');
+
+    const ar=D.sf.Applicable_Rules||D.cf.Applicable_Rules;
+    const val40e=ar?(typeof ar==='object'?ar.value:ar):'';
+    label40e.innerHTML=val40e?`40E: <b>${esc(val40e.substring(0,60))}</b>`:'40E: <b>Not specified</b>';
+
+    const uploadedUp=availableRulesets.map(t=>(t||'').toUpperCase());
+    grid.innerHTML=KNOWN_RULESETS.map(rs=>{
+        const isUploaded=uploadedUp.includes((rs||'').toUpperCase());
+        const isDetected=detectedRulesets.includes(rs);
+        // Auto-check: 40E-detected rules + internal bank rules (FE Manual, IPO) if uploaded
+        const isChecked=isUploaded&&(isDetected||ALWAYS_ON_RULES.includes(rs));
+        const disabledAttr=isUploaded?'':'disabled';
+        const checkedAttr=isChecked?'checked':'';
+        return`<label class="rsp-chip${isChecked?' checked':''}${!isUploaded?' disabled':''}" data-rs="${rs}">
+            <input type="checkbox" ${checkedAttr} ${disabledAttr} onchange="onRsToggle(this)">
+            <span>${rs}</span>
+            ${isDetected?'<span class="auto-badge">40E</span>':''}
+            ${!isUploaded?'<span class="na-badge">not uploaded</span>':''}
+        </label>`;
+    }).join('');
+    panel.classList.add('active');
+}
+
+function onRsToggle(cb){
+    const chip=cb.closest('.rsp-chip');
+    chip.classList.toggle('checked',cb.checked);
+}
+
+function getSelectedRulesets(){
+    const chips=document.querySelectorAll('#rspGrid .rsp-chip input[type=checkbox]:checked');
+    return Array.from(chips).map(cb=>cb.closest('.rsp-chip').dataset.rs);
+}
+
+function toggleRsp(){
+    const panel=document.getElementById('rsp');
+    const grid=document.getElementById('rspGrid');
+    const toggle=panel.querySelector('.rsp-toggle');
+    rspVisible=!rspVisible;
+    grid.style.display=rspVisible?'flex':'none';
+    toggle.textContent=rspVisible?'Hide':'Show rules';
+}
+
+async function loadV(){
+    try{
+        const r=await fetch(`${API}/api/verify/history/${D.jid}`);if(!r.ok)return;
+        const d=await r.json();
+        const l=(d.verifications||[]).find(v=>v.lc_number===D.lc&&v.status==='completed');
+        if(!l)return;vid=l.verification_id;
+        const rr=await fetch(`${API}/api/verify/result/${l.verification_id}`);if(!rr.ok)return;
+        const vd=await rr.json();vres=vd.results||[];vsum=vd.summary||null;vElapsed=vd.elapsed_seconds||null;mt700comp=vd.mt700_compliance||null;urr725comp=vd.urr725_compliance||null;isbp821comp=vd.isbp821_compliance||null;isp98comp=vd.isp98_compliance||null;fecomp=vd.fe_manual_compliance||null;vesselcomp=vd.vessel_compliance||null;amtdatecomp=vd.amount_date_compliance||null;crossDocConsistency=vd.cross_document_consistency||null;installmentCompliance=vd.installment_compliance||null;mapV();injectVesselChecks();autoPopulateVessel();
+    }catch(_){}
+}
+
+function mapV(){
+    if(!vres)return;
+    const used=new Set();
+    vres.forEach(vr=>{
+        // Try exact clause number match first
+        let pt=D.pts.find(p=>!used.has(p)&&p.cn&&p.cn===vr.clauseNumber);
+        // Fallback: match LC field items by swiftTag/type (43P, 43T, 44E, etc.)
+        if(!pt&&vr.is_lc_field&&vr.type){
+            pt=D.pts.find(p=>!used.has(p)&&p.isLcField&&(p.sf===vr.type||p.sfr===vr.type||p.swiftTag===vr.type));
+        }
+        // Fallback: match by lc_field_label in text
+        if(!pt&&vr.lc_field_label){
+            const lbl=vr.lc_field_label.trim();
+            if(lbl.length>=6)pt=D.pts.find(p=>!used.has(p)&&p.text&&p.text.startsWith(lbl));
+        }
+        // Fallback: first 80 chars of text (trimmed)
+        if(!pt){
+            const vrTxt=(vr.requirement||'').trim().substring(0,80);
+            pt=D.pts.find(p=>!used.has(p)&&p.text&&p.text.trim().substring(0,80)===vrTxt);
+        }
+        // Fallback: first 50 chars (more lenient)
+        if(!pt){
+            const vrTxt50=(vr.requirement||'').trim().substring(0,50);
+            if(vrTxt50.length>=20)pt=D.pts.find(p=>!used.has(p)&&p.text&&p.text.trim().substring(0,50)===vrTxt50);
+        }
+        // Fallback: clause number match for document requirement clauses (F46A-1, F46A-2, etc.)
+        if(!pt&&vr.clauseNumber){
+            const vrCn=String(vr.clauseNumber);
+            pt=D.pts.find(p=>!used.has(p)&&p.cn&&String(p.cn)===vrCn);
+        }
+        if(pt){
+            used.add(pt);pt.v=vr;
+            // Mark as checked for compliant OR pass status
+            if(vr.status==='compliant'||vr.status==='pass')pt.checked=true;
+        }
+    });
+}
+
+function injectVesselChecks(){
+    // Remove any previously injected vessel checks
+    D.pts=D.pts.filter(p=>!p.isVesselCheck);
+    if(!vesselcomp||!vesselcomp.checks||vesselcomp.checks.length===0)return;
+    const vname=vesselcomp.vessel_name||'Unknown Vessel';
+    const checkLabels={
+        vessel_tracking:'Vessel Tracking Status',
+        vessel_name_consistency:'Vessel Name Consistency',
+        vessel_port_of_loading:'Port of Loading Verification (AIS)',
+        vessel_port_of_discharge:'Port of Discharge / Destination (AIS)',
+        vessel_eta_shipment_date:'ETA vs Latest Shipment Date',
+        vessel_movement_status:'Vessel Movement Status',
+        vessel_type_cargo:'Vessel Type vs Cargo Match'
+    };
+    vesselcomp.checks.forEach((c,ci)=>{
+        const st=c.status==='pass'?'compliant':c.status==='fail'?'non_compliant':c.status==='warning'?'review_required':'not_verified';
+        const label=checkLabels[c.check]||((c.check||'')).replace(/_/g,' ').replace(/\b\w/g,l=>l.toUpperCase());
+        D.pts.push({
+            id:D.pts.length+1,
+            sf:'VESSEL',
+            sfr:'VESSEL',
+            cn:null,
+            text:`[${vname}] ${label}: ${c.detail||''}`,
+            amended:false,
+            aby:[],
+            src:'Vessel Tracking',
+            checked:c.status==='pass',
+            isVesselCheck:true,
+            vesselCheckIdx:ci,
+            v:{
+                status:st,
+                summary:c.detail||'',
+                requirement:label,
+                clauseNumber:null,
+                checks:[c],
+                rule_checks:[],
+                matched_documents:[]
+            }
+        });
+    });
+}
+
+// ─── Render ───
+function renderAll(){renderLCMismatch();renderSB();renderF();renderAmendBar();renderMT700();renderCrossDocConsistency();renderInstallmentCompliance();renderP();if(selIdx!==null)selPt(selIdx)}
+
+function renderLCMismatch(){
+    const banner=document.getElementById('lcMismatchBanner');
+    if(!banner)return;
+    const mmWarnings=(D.warnings||[]).filter(w=>w.code==='lc_number_mismatch');
+    const noRefWarnings=(D.warnings||[]).filter(w=>w.code==='lc_number_missing');
+    if(!mmWarnings.length&&!noRefWarnings.length){banner.classList.remove('active');banner.innerHTML='';return}
+    let h='';
+    if(mmWarnings.length){
+        h+='<div class="mm-title">&#9888; LC NUMBER MISMATCH DETECTED</div>';
+        for(const w of mmWarnings){
+            const docs=w.mismatched_documents||[];
+            h+=`<div style="font-size:.85em;color:#991b1b;margin-bottom:6px">${docs.length} document(s) reference a DIFFERENT LC number:</div>`;
+            for(const d of docs){
+                h+=`<div class="mm-item"><span class="mm-type">${esc(d.document_type)}</span><span style="color:#888">pg ${esc(String(d.page_reference))}</span><span style="color:#666">&rarr;</span><span class="mm-ref">${esc(d.referenced_lc)}</span><span style="color:#888;font-size:.85em">(expected: ${esc(d.expected_lc)})</span></div>`;
+            }
+        }
+    }
+    if(noRefWarnings.length){
+        h+='<div class="mm-title" style="color:#b45309;border-bottom-color:#fde68a">&#9888; LC NUMBER NOT FOUND IN DOCUMENTS</div>';
+        for(const w of noRefWarnings){
+            const docs=w.documents_missing_lc||[];
+            h+=`<div style="font-size:.85em;color:#92400e;margin-bottom:6px">${docs.length} document(s) do not reference LC ${esc(w.message?.match(/LC \S+/)?.[0]||'')}:</div>`;
+            for(const d of docs){
+                h+=`<div class="mm-item" style="border-left:3px solid #f59e0b"><span class="mm-type">${esc(d.document_type)}</span><span style="color:#888">pg ${esc(String(d.page_reference))}</span><span style="color:#b45309;font-size:.85em">&#9656; No LC number found in document</span></div>`;
+            }
+        }
+    }
+    banner.innerHTML=h;
+    banner.classList.add('active');
+}
+
+function renderAmendBar(){
+    const bar=document.getElementById('amendBar');
+    if(!D.asum||!D.asum.length||!D.asum.some(a=>a.status)){bar.classList.remove('active');return}
+    const hasRejected=D.asum.some(a=>a.status==='REJECTED');
+    if(!hasRejected){bar.classList.remove('active');return}
+    let h='<div class="ab-title">Amendment Status</div>';
+    D.asum.forEach(a=>{
+        const isRejected=a.status==='REJECTED';
+        const cls=isRejected?'rejected':'applied';
+        const icon=isRejected?'&#10007;':'&#10003;';
+        h+=`<div class="amend-item ${cls}"><span class="ai-icon">${icon}</span><span class="ai-num">#${esc(String(a.amendment_number))}</span>`;
+        h+=`<span>${isRejected?'REJECTED':'Applied'}</span>`;
+        if(isRejected&&a.rejection_reason)h+=`<span class="ai-reason" title="${esc(a.rejection_reason)}">${esc(a.rejection_reason)}</span>`;
+        if(isRejected&&a.rejection_source)h+=`<span class="ai-reason">(${esc(a.rejection_source)})</span>`;
+        h+='</div>';
+    });
+    bar.innerHTML=h;
+    bar.classList.add('active');
+}
+
+function renderSB(){
+    const el=document.getElementById('sbar'),s=vsum,n=D.pts.length;
+    let pills=`<span class="sp sp-t"><b>${n}</b>&nbsp;clauses</span>`,vh='';
+    if(s){
+        const etime=vElapsed?`<span class="sp" style="background:#e0f2fe;color:#0369a1" title="Verification processing time">⏱ ${vElapsed>=60?Math.floor(vElapsed/60)+'m '+Math.round(vElapsed%60)+'s':Math.round(vElapsed)+'s'}</span>`:'';
+        pills=`<span class="sp sp-ok"><b>${s.compliant}</b> Compliant</span>
+            <span class="sp sp-fail"><b>${s.non_compliant}</b> Failed</span>
+            <span class="sp sp-warn"><b>${s.review_required||0}</b> Review</span>
+            <span class="sp sp-info"><b>${s.not_verified||0}</b> Unverified</span>
+            <span class="sp sp-t">${s.compliance_rate||'—'}</span>${etime}`;
+        vh=`<span class="verd ${s.overall_verdict}">${s.overall_verdict.replace(/_/g,' ')}</span>
+            ${s.non_compliant>0?`<button class="rbtn" style="background:linear-gradient(135deg,#dc2626,#b91c1c)" onclick="showDiscrepancySummary()">&#9888; ${s.non_compliant} Discrepancies</button>`:''}
+            <button class="rbtn dl" onclick="downloadReport()">📄 Download Report</button>
+            <button class="rbtn sec" id="rbtn" onclick="runV()">↻ Re-run</button>`;
+    }else{
+        vh=`<span class="verd PENDING">NOT VERIFIED</span>
+            <button class="rbtn" id="rbtn" onclick="runV()">▶ Run Verification</button>`;
+    }
+    el.innerHTML=pills+`<span id="v-timer" class="sp" style="background:#e0f2fe;color:#0369a1;display:none;font-family:monospace">⏱ 0s</span>`
+        +`<div id="varea" style="margin-left:auto;display:flex;align-items:center;gap:8px">${vh}</div>`;
+}
+
+function renderF(){
+    const el=document.getElementById('fbar');
+    const c={all:D.pts.length,'46A':0,'47A':0,'45A':0,VESSEL:0,lcfield:0,amended:0,fail:0,review:0};
+    D.pts.forEach(p=>{if(p.sf==='46A')c['46A']++;else if(p.sf==='47A')c['47A']++;else if(p.sf==='45A')c['45A']++;else if(p.sf==='VESSEL')c.VESSEL++;else if(p.isLcField)c.lcfield++;if(p.amended)c.amended++;if(p.v?.status==='non_compliant')c.fail++;if(p.v?.status==='review_required')c.review++});
+    const fs=[['all',`All (${c.all})`]];
+    if(c.lcfield)fs.push(['lcfield',`LC Fields (${c.lcfield})`]);
+    fs.push(['46A',`46A Docs (${c['46A']})`],['47A',`47A Conditions (${c['47A']})`]);
+    if(c['45A'])fs.push(['45A',`45A Goods (${c['45A']})`]);
+    if(c.VESSEL)fs.push(['VESSEL',`⚓ Vessel (${c.VESSEL})`]);
+    if(c.amended)fs.push(['amended',`⚡ Amended (${c.amended})`]);
+    if(c.fail)fs.push(['fail',`✗ Failed (${c.fail})`]);
+    if(c.review)fs.push(['review',`⚠ Review (${c.review})`]);
+    el.innerHTML=fs.map(([k,l])=>`<span class="fchip${filter===k?' active':''}" onclick="setFlt('${k}')">${l}</span>`).join('');
+}
+
+function setFlt(f){filter=f;renderF();renderP()}
+
+function renderP(){
+    const el=document.getElementById('pcont');
+    const fp=D.pts.filter(p=>{
+        if(filter==='all')return true;if(filter==='amended')return p.amended;
+        if(filter==='fail')return p.v?.status==='non_compliant';
+        if(filter==='review')return p.v?.status==='review_required';
+        if(filter==='VESSEL')return p.isVesselCheck;
+        if(filter==='lcfield')return !!p.isLcField;
+        return p.sf===filter;
+    });
+    if(!fp.length){el.innerHTML='<p style="text-align:center;color:#999;padding:30px">No clauses match this filter</p>';updProg();return}
+    el.innerHTML=fp.map(p=>{
+        const i=D.pts.indexOf(p),vs=p.v?.status||'pending',sh=p.text.substring(0,160);
+        const isLc=!!p.isLcField;
+        const isInd=!!p.isIndicatingCond;
+        const tagDisplay=p.isVesselCheck?'⚓ VESSEL':isInd?'↳ condition':(isLc?(p.swiftTag||p.sf):(p.sfr||p.sf));
+        const tagStyle=p.isVesselCheck?'background:linear-gradient(135deg,#0a3d7c,#1565c0);color:#fff':
+                        isInd?'background:#ede9ff;color:#6d28d9;border:1px solid #c4b5fd':
+                        isLc?'background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff':'';
+        const tagLbl=isLc&&p.tagLabel&&!isInd?`<span style="font-size:.7em;color:#7c3aed;font-weight:600;margin-left:2px">${esc(p.tagLabel)}</span>`:'';
+        return`<div class="pi${isInd?' indicating':''}${selIdx===i?' active':''}${p.amended?' amended':''}" onclick="selPt(${i})" data-i="${i}" title="${esc(p.text)}">
+            <div class="sdot ${vs}"></div>
+            <div style="flex:1;min-width:0;overflow:hidden">
+                <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-bottom:3px">
+                    <span class="fb" ${tagStyle?`style="${tagStyle}"`:''}>${esc(tagDisplay)}</span>
+                    ${tagLbl}
+                    ${p.cn?`<span style="font-size:.76em;color:#888">Cl.${p.cn}</span>`:''}
+                    ${p.amended?'<span class="ab" style="white-space:nowrap">⚡ Amended</span>':''}
+                    ${p.v?`<span class="stag ${vs}" style="white-space:nowrap">${slab(vs)}</span>`:''}
+                    ${p.v?`<span class="stag ${vs==='compliant'?'ctrue':'cfalse'}" style="white-space:nowrap">${vs==='compliant'?'TRUE':'FALSE'}</span>`:''}
+                    ${p.v&&_getDiscBadge(p.v)?_getDiscBadge(p.v):''}
+                    ${p.v&&_hasIsbpBadge(p.v)?'<span class="isbp-badge">ISBP</span>':''}
+                    ${p.v&&_hasArt14h(p.v)?'<span class="art14h-badge">14(h)</span>':''}
+                </div>
+                <div style="font-size:.84em;color:#555;display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden;line-height:1.4;word-break:break-word">${esc(p.text)}${p.text.length>500?'…':''}</div>
+            </div>
+            <input type="checkbox" ${p.checked?'checked':''} onclick="event.stopPropagation();D.pts[${i}].checked=this.checked;updProg();" style="margin-top:3px;flex-shrink:0">
+        </div>`;
+    }).join('');
+    updProg();
+}
+
+function selPt(i){
+    selIdx=i;
+    document.querySelectorAll('.pi').forEach(e=>{e.classList.toggle('active',parseInt(e.dataset.i)===i)});
+    const p=D.pts[i],v=p.v,ws=document.getElementById('ws');
+    let h='';
+
+    // Header
+    if(p.isVesselCheck){
+        const vc=vesselcomp||{};
+        const vd=vc.vessel_details||{};
+        const vp=vc.position||{};
+        const chk=(vc.checks||[])[p.vesselCheckIdx]||{};
+        const st=chk.status||'info';
+        const stIcon=st==='pass'?'✅':st==='fail'?'❌':st==='warning'?'⚠️':'ℹ️';
+        const stColor=st==='pass'?'var(--success)':st==='fail'?'var(--danger)':st==='warning'?'var(--warn)':'#888';
+        h+=`<div class="dh"><div style="display:flex;justify-content:space-between;align-items:center">
+            <div><span class="fb" style="font-size:.85em;background:linear-gradient(135deg,#0a3d7c,#1565c0);color:#fff;padding:2px 10px;border-radius:4px">⚓ VESSEL</span>
+            <span style="margin-left:8px;color:#666;font-size:.9em">${esc(vc.vessel_name||'Unknown')}</span></div>
+            <div><span class="stag ${st==='pass'?'ctrue':st==='fail'?'cfalse':'review_required'}" style="font-size:.8em">${s(t||'').toUpperCase()}</span></div>
+        </div>
+        <div class="cbox" style="border-left:3px solid ${stColor}">${stIcon} ${esc(chk.detail||'')}</div></div><div class="db">`;
+        // Vessel info card
+        h+=`<div style="background:linear-gradient(135deg,#f0f7ff,#e8f0fe);border:1px solid #c3dafe;border-radius:8px;padding:12px 14px;margin-bottom:12px">
+            <div style="font-weight:700;color:#0a3d7c;font-size:1em;margin-bottom:6px">⚓ ${esc(vc.vessel_name||'Unknown Vessel')}
+            <span class="vt-badge ${vc.tracking_status==='tracking'?'tracking':'searching'}" style="margin-left:8px">${esc((vc.tracking_status||'').toUpperCase())}</span></div>`;
+        if(vd.mmsi||vd.imo||vd.vessel_type||vd.flag){
+            h+=`<div style="font-size:.8em;color:#555;margin-bottom:6px">`;
+            if(vd.mmsi)h+=`MMSI: ${vd.mmsi} `;
+            if(vd.imo)h+=`· IMO: ${vd.imo} `;
+            if(vd.vessel_type)h+=`· Type: ${esc(vd.vessel_type)} `;
+            if(vd.flag)h+=`· Flag: ${esc(vd.flag)}`;
+            h+=`</div>`;
+        }
+        if(vp.lat!==undefined&&vp.lat!==null){
+            h+=`<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;font-size:.8em">
+                <div><span style="color:#888;display:block;font-size:.85em">Position</span><b>${vp.lat}, ${vp.lng}</b></div>
+                <div><span style="color:#888;display:block;font-size:.85em">Speed</span><b>${vp.speed||'—'} kn</b></div>
+                <div><span style="color:#888;display:block;font-size:.85em">Destination</span><b>${esc(vp.destination||'—')}</b></div>
+                <div><span style="color:#888;display:block;font-size:.85em">ETA</span><b>${vp.eta?_fmtVtDate(vp.eta):'—'}</b></div>
+            </div>`;
+        }
+        h+=`</div>`;
+        // All vessel checks summary
+        h+=`<div class="stit">All Vessel Compliance Checks</div>`;
+        (vc.checks||[]).forEach((c,ci)=>{
+            const cst=c.status||'info';
+            const cicon=cst==='pass'?'✓':cst==='fail'?'✗':cst==='warning'?'⚠':'ℹ';
+            const ccolor=cst==='pass'?'var(--success)':cst==='fail'?'var(--danger)':cst==='warning'?'var(--warn)':'#888';
+            const isCurrent=ci===p.vesselCheckIdx;
+            h+=`<div style="display:flex;gap:8px;margin-bottom:6px;font-size:.85em;padding:6px 8px;border-radius:6px;${isCurrent?'background:rgba(21,101,192,.08);border:1px solid #c3dafe':'background:var(--bg)'}">
+                <span style="color:${ccolor};font-weight:700;min-width:18px;text-align:center">${cicon}</span>
+                <span style="flex:1">${esc(c.detail||'')}</span>
+                <span style="font-size:.75em;color:${ccolor};font-weight:700">${cs(t||'').toUpperCase()}</span>
+            </div>`;
+        });
+        // Port calls
+        const calls=vc.port_calls||[];
+        if(calls.length>0){
+            h+=`<div class="stit">Recent Port Calls</div>`;
+            calls.slice(0,6).forEach(c=>{
+                h+=`<div class="vt-port-item">
+                    <span class="pe">${esc(c.event||'')}</span>
+                    <span class="pn">${esc(c.port_name||'')}${c.unloco?' ('+esc(c.unloco)+')':''}</span>
+                    <span class="pt">${c.time_utc?_fmtVtDate(c.time_utc):''}</span>
+                </div>`;
+            });
+        }
+    }else{
+    const _isLcF=!!p.isLcField;
+    const _dtag=_isLcF?(p.swiftTag||p.sf):(p.sfr||p.sf);
+    const _dtagLbl=_isLcF&&p.tagLabel?` — ${p.tagLabel}`:'';
+    const _dtagStyle=_isLcF?'background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;padding:3px 12px;border-radius:5px;font-size:.88em':'font-size:.85em';
+    const _clauseText=_fmtAllDates(p.text);
+    h+=`<div class="dh"><div style="display:flex;justify-content:space-between;align-items:center">
+        <div><span class="fb" style="${_dtagStyle}">${_isLcF?':':''}${esc(_dtag)}${esc(_dtagLbl)}</span>
+        ${p.cn?`<span style="margin-left:8px;color:#666;font-size:.9em">Clause ${p.cn}</span>`:''}</div>
+        <div style="display:flex;gap:6px"><span style="font-size:.8em;color:#888">${p.src.replace(/_/g,' ')}</span>
+        <button class="btn" style="padding:3px 10px;font-size:.75em;background:#e2e8f0;color:var(--secondary)" onclick="openEditor(${i})">✎ Edit</button></div>
+    </div><div class="cbox">${esc(_clauseText)}</div></div><div class="db">`;
+
+    // Amendment
+    if(p.amended&&p.aby.length){
+        h+='<div class="abox"><h4>⚡ This clause was amended</h4>';
+        p.aby.forEach(a=>{h+=`<div class="ad"><strong>Amendment #${a.amendment_number}</strong> (${a.amendment_date||''}) — Page ${a.amendment_page||'?'}<br><em>${esc(a.change_description||a.change||'')}</em></div>`});
+        h+='</div>';
+    }
+
+    // Verification
+    if(v){
+        const ic={compliant:'✅',non_compliant:'❌',review_required:'⚠️',not_verified:'ℹ️'};
+        const vi=D.pts.indexOf(p);const vri=vres?vres.indexOf(v):-1;
+        // Build detailed summary: include key check details
+        let detailSummary=esc(v.summary);
+        const allChks=[...(v.checks||[]),...(v.rule_checks||[])];
+        const failChks=allChks.filter(c=>c.status==='fail');
+        const warnChks=allChks.filter(c=>c.status==='warning');
+        const passChks=allChks.filter(c=>c.status==='pass');
+        if(failChks.length||warnChks.length){
+            let lines=[];
+            failChks.forEach(c=>{lines.push(`<div style="margin-top:4px;padding:4px 8px;background:rgba(220,38,38,.08);border-radius:4px;font-size:.82em"><span style="color:#dc2626;font-weight:700">✗ ${esc(((c.check||'')).replace(/_/g,' '))}</span>: ${esc((c.detail||'').substring(0,200))}</div>`)});
+            warnChks.forEach(c=>{lines.push(`<div style="margin-top:4px;padding:4px 8px;background:rgba(217,119,6,.08);border-radius:4px;font-size:.82em"><span style="color:#d97706;font-weight:700">⚠ ${esc(((c.check||'')).replace(/_/g,' '))}</span>: ${esc((c.detail||'').substring(0,200))}</div>`)});
+            detailSummary+=lines.join('');
+        }else if(passChks.length){
+            let lines=[];
+            passChks.slice(0,3).forEach(c=>{lines.push(`<div style="margin-top:4px;padding:4px 8px;background:rgba(22,163,74,.06);border-radius:4px;font-size:.82em"><span style="color:#16a34a;font-weight:700">✓ ${esc(((c.check||'')).replace(/_/g,' '))}</span>: ${esc((c.detail||'').substring(0,150))}</div>`)});
+            if(passChks.length>3)lines.push(`<div style="margin-top:2px;font-size:.78em;color:#888">+${passChks.length-3} more checks passed</div>`);
+            detailSummary+=lines.join('');
+        }
+        h+=`<div class="vban ${v.status}"><span class="vi">${ic[v.status]||'❓'}</span><div style="flex:1"><div class="vl">${slab(v.status)}</div><div class="vs">${detailSummary}</div></div>${vri>=0?`<button class="edt-btn" onclick="editClauseStatus(${vri},${i})" title="Edit status">✎ Status</button>`:''}</div>`;
+
+        // ── LC Field Verification Detail (for is_lc_field items) ──
+        if(_isLcF && v.is_lc_field && v.lc_field_label){
+            h+=`<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:10px 14px;margin-bottom:12px">
+                <div style="font-size:.78em;color:#7c3aed;font-weight:700;margin-bottom:4px">LC FIELD :${esc(v.lc_field_tag||p.swiftTag||'')} — ${esc(v.lc_field_label)}</div>
+                ${v.lc_field_value?`<div style="font-size:.85em;color:#555;line-height:1.4">${esc(_fmtAllDates(v.lc_field_value))}</div>`:''}
+            </div>`;
+        }
+
+        if(v.matched_documents?.length){
+            h+='<div class="stit">Matched Documents</div><div style="margin-bottom:14px;display:flex;flex-wrap:wrap;gap:3px">';
+            v.matched_documents.forEach(d=>{
+                const cpCls=d.copy_status==='original'?'color:#15803d;background:#dcfce7;border:1px solid #bbf7d0':d.copy_status==='copy'||d.copy_status==='non_negotiable_copy'?'color:#3730a3;background:#e0e7ff;border:1px solid #c7d2fe':d.copy_status==='notification'?'color:#6b7280;background:#f3f4f6;border:1px solid #d1d5db':'color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0';
+                const cpLbl=d.copy_label||d.copy_status||'';
+                const markStatus=d.marking_status||'';
+                const markIcon=markStatus==='stamped_and_signed'?'<span title="Stamped & Signed" style="font-size:.75em;padding:1px 5px;border-radius:3px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-weight:700">S&S</span>':markStatus==='stamped_only'?'<span title="Stamped" style="font-size:.75em;padding:1px 5px;border-radius:3px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-weight:700">S</span>':markStatus==='signed_only'?'<span title="Signed" style="font-size:.75em;padding:1px 5px;border-radius:3px;background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe;font-weight:700">Sig</span>':'';
+                // Check if this doc has LC mismatch
+                const mmDoc=(D.docs||[]).find(md=>md.page_reference===d.page&&md.lc_mismatch);
+                const mmBadge=mmDoc?`<span class="lc-mismatch-badge" title="References ${esc(mmDoc.referenced_lc||'?')} instead of ${esc(mmDoc.expected_lc||'?')}">WRONG LC</span>`:'';
+                h+=`<span class="md"><span class="dt">${esc(d.type)}</span><span class="dp">pg ${d.page}</span>${d.title?`<span style="color:#888">— ${esc(d.title.substring(0,35))}</span>`:''}${cpLbl?`<span style="padding:1px 6px;border-radius:3px;font-size:.7em;font-weight:700;${cpCls}">${esc(cpLbl)}</span>`:''}${markIcon}${mmBadge}</span>`});
+            h+='</div>';
+        }
+
+        // Extracted Document Fields
+        const allEF=(v.matched_documents||[]).filter(d=>d.extracted_fields&&Object.keys(d.extracted_fields).length>0);
+        if(allEF.length){
+            h+='<div class="stit">Extracted Document Fields</div>';
+            allEF.forEach(d=>{
+                const ef=d.extracted_fields;
+                h+=`<div style="margin-bottom:10px;background:#f8fbff;border:1px solid #e0e6ed;border-radius:6px;padding:10px 14px">`;
+                h+=`<div style="font-weight:700;font-size:.82em;color:var(--primary);margin-bottom:6px">${esc(d.type)} (pg ${d.page})</div>`;
+                Object.entries(ef).forEach(([k,val])=>{
+                    const label=k.replace(/_/g,' ').replace(/\b\w/g,l=>l.toUpperCase());
+                    let sv='';
+                    if(k==='line_items'&&Array.isArray(val)&&val.length>0){
+                        // Render line items as a small table
+                        let tbl='<table style="width:100%;border-collapse:collapse;font-size:.8em;margin-top:4px">';
+                        tbl+='<thead><tr style="background:#e8edf5">';
+                        tbl+='<th style="padding:3px 6px;text-align:left;border:1px solid #d0d9e8">Description</th>';
+                        tbl+='<th style="padding:3px 6px;text-align:right;border:1px solid #d0d9e8">Qty</th>';
+                        tbl+='<th style="padding:3px 6px;text-align:right;border:1px solid #d0d9e8">Unit Price</th>';
+                        tbl+='<th style="padding:3px 6px;text-align:right;border:1px solid #d0d9e8">Total</th>';
+                        tbl+='</tr></thead><tbody>';
+                        val.forEach(item=>{
+                            tbl+=`<tr>
+                                <td style="padding:2px 6px;border:1px solid #d0d9e8">${esc(item.description||'')}</td>
+                                <td style="padding:2px 6px;text-align:right;border:1px solid #d0d9e8">${esc(item.quantity||'')}</td>
+                                <td style="padding:2px 6px;text-align:right;border:1px solid #d0d9e8">${esc(item.unit_price||'')}</td>
+                                <td style="padding:2px 6px;text-align:right;border:1px solid #d0d9e8;font-weight:600">${esc(item.line_total||'')}</td>
+                            </tr>`;
+                        });
+                        tbl+='</tbody></table>';
+                        h+=`<div class="fr" style="flex-direction:column;align-items:flex-start"><span class="fl" style="font-size:.82em;margin-bottom:2px">${esc(label)}</span>${tbl}</div>`;
+                        return;
+                    } else if(k==='invoice_items_text'&&typeof val==='string'){
+                        // Render VLM line items text preserving newlines
+                        const lines=val.split('\n').filter(l=>l.trim());
+                        let tbl='<div style="font-size:.8em;font-family:monospace;background:#f8f9ff;border:1px solid #d0d9e8;border-radius:4px;padding:6px;margin-top:2px;white-space:pre-wrap;line-height:1.5">';
+                        tbl+=esc(val.substring(0,800))+(val.length>800?'\n…':'');
+                        tbl+='</div>';
+                        h+=`<div class="fr" style="flex-direction:column;align-items:flex-start"><span class="fl" style="font-size:.82em;margin-bottom:2px">${esc(label)}</span>${tbl}</div>`;
+                        return;
+                    } else if(typeof val==='object'&&val!==null){
+                        sv=JSON.stringify(val).substring(0,200);
+                    } else {
+                        sv=typeof val==='number'?val.toLocaleString():String(val).substring(0,300);
+                    }
+                    // Preserve newlines in multi-line values (goods description, addresses)
+                    const svDisplay=sv.includes('\n')
+                        ?`<span style="white-space:pre-wrap">${esc(sv)}</span>`
+                        :esc(sv);
+                    h+=`<div class="fr"><span class="fl" style="min-width:140px;font-size:.82em">${esc(label)}</span><span class="fv" style="font-size:.82em">${svDisplay}</span></div>`;
+                });
+                h+=`</div>`;
+            });
+        }
+
+        if(v.checks?.length){
+            h+='<div class="stit">Compliance Checks</div>';
+            const ci={pass:'✓',fail:'✗',warning:'⚠',info:'ℹ'};
+            v.checks.forEach((c,cj)=>{
+                const cmp=c.status==='pass'?'TRUE':c.status==='fail'?'FALSE':'—';
+                const cmpCls=c.status==='pass'?'ctrue':c.status==='fail'?'cfalse':'';
+                const lcRef=c.lc_ref?`<span style="color:var(--primary);font-weight:700;margin-left:6px;font-size:.85em">[${esc(c.lc_ref)}]</span>`:'';
+                const discClass=c.discrepancy_class||'';
+                const discBadge=discClass==='hard'?'<span class="disc-badge hard">HARD</span>':discClass==='soft'?'<span class="disc-badge soft">SOFT</span>':'';
+                const isbpFiltered=c.isbp_non_discrepancy||false;
+                const isbpBadge=isbpFiltered?'<span class="isbp-badge">ISBP NON-DISC</span>':'';
+                const art14h=c.art14h_non_documentary||false;
+                const art14hBadge=art14h?'<span class="art14h-badge">Art 14(h) DISREGARDED</span>':'';
+                const remDiv=c.remediation?`<div style="margin-top:5px;padding:5px 8px;background:#fff3cd;border-left:3px solid #e6a817;border-radius:3px;font-size:.82em;color:#7a5c00"><strong>Remediation:</strong> ${esc(c.remediation)}</div>`:'';
+                h+=`<div class="chk" data-edit-id="checks-${vri}-${cj}"${isbpFiltered?' style="border-left:3px solid #7c3aed;opacity:.85"':art14h?' style="border-left:3px solid #16a34a;opacity:.8"':''}><span class="ci ${c.status}">${ci[c.status]||'?'}</span><div style="flex:1"><div class="cn">${((c.check||'')).replace(/_/g,' ')} ${lcRef}${cmpCls?`<span class="stag ${cmpCls}" style="margin-left:6px">${cmp}</span>`:''}${discBadge}${isbpBadge}${art14hBadge}</div><div class="cd">${esc(cleanDetail(c.detail))}</div>${remDiv}`;
+                if(c.documents_found?.length){
+                    h+='<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:2px">';
+                    c.documents_found.forEach(d=>{h+=`<span class="md"><span class="dt">${esc(d.type)}</span><span class="dp">pg ${d.page}</span>${d.title?`<span style="color:#888">${esc(d.title.substring(0,28))}</span>`:''}<span style="color:#aaa;font-family:monospace;font-size:.9em">${(d.confidence*100).toFixed(0)}%</span></span>`});
+                    h+='</div>';
+                }
+                h+=`</div>${vri>=0?`<button class="edt-btn" onclick="editChk(${vri},${cj},'checks',${i})" title="Edit check">✎</button>`:''}</div>`;
+            });
+        }
+
+        if(v.rule_checks?.length){
+            h+='<div class="stit">UCP 600 / Rule-Based Checks</div>';
+            const ci={pass:'✓',fail:'✗',warning:'⚠',info:'ℹ'};
+            v.rule_checks.forEach((c,cj)=>{
+                const ref=c.rule_reference||{};
+                const refTxt=ref.article?`Art ${ref.article}${ref.sub_article?' §'+ref.sub_article:''}`:'';
+                const cmp=c.status==='pass'?'TRUE':c.status==='fail'?'FALSE':'—';
+                const cmpCls=c.status==='pass'?'ctrue':c.status==='fail'?'cfalse':'';
+                const discClass=c.discrepancy_class||'';
+                const discBadge=discClass==='hard'?'<span class="disc-badge hard">HARD</span>':discClass==='soft'?'<span class="disc-badge soft">SOFT</span>':'';
+                const isbpFiltered=c.isbp_non_discrepancy||false;
+                const isbpBadge=isbpFiltered?'<span class="isbp-badge">ISBP NON-DISC</span>':'';
+                const art14h=c.art14h_non_documentary||false;
+                const art14hBadge=art14h?'<span class="art14h-badge">Art 14(h) DISREGARDED</span>':'';
+                const borderColor=isbpFiltered?'#7c3aed':art14h?'#16a34a':c.status==='fail'?'var(--danger)':c.status==='warning'?'var(--warning)':'var(--info)';
+                const ruleRemDiv=c.remediation?`<div style="margin-top:5px;padding:5px 8px;background:#fff3cd;border-left:3px solid #e6a817;border-radius:3px;font-size:.82em;color:#7a5c00"><strong>Remediation:</strong> ${esc(c.remediation)}</div>`:'';
+                h+=`<div class="chk" data-edit-id="rule_checks-${vri}-${cj}" style="border-left:3px solid ${borderColor}${isbpFiltered?';opacity:.85':''}${art14h?';opacity:.8':''}">
+                    <span class="ci ${c.status}">${ci[c.status]||'?'}</span>
+                    <div style="flex:1">
+                        <div class="cn">${((c.check||'')).replace(/_/g,' ')} ${refTxt?`<span style="color:var(--primary);font-weight:700;margin-left:6px">[${refTxt}]</span>`:''} ${cmpCls?`<span class="stag ${cmpCls}" style="margin-left:6px">${cmp}</span>`:''}${discBadge}${isbpBadge}${art14hBadge}</div>
+                        <div class="cd">${esc(cleanDetail(c.detail))}</div>
+                        ${c.severity?`<span style="font-size:.7em;color:#888;margin-top:2px;display:inline-block">Severity: ${c.severity}</span>`:''}
+                        ${ruleRemDiv}
+                    </div>
+                    ${vri>=0?`<button class="edt-btn" onclick="editChk(${vri},${cj},'rule_checks',${i})" title="Edit check">✎</button>`:''}
+                </div>`;
+            });
+        }
+
+        // ── Sub-Conditions Breakdown ──
+        if(v.sub_conditions?.length){
+            const scPass=v.sub_conditions.filter(s=>s.status==='pass').length;
+            const scFail=v.sub_conditions.filter(s=>s.status==='fail').length;
+            const scWarn=v.sub_conditions.filter(s=>s.status==='warning').length;
+            const scTotal=v.sub_conditions.length;
+            const scPct=scTotal>0?Math.round(scPass/scTotal*100):0;
+            const scIc={pass:'✓',fail:'✗',warning:'⚠',info:'ℹ'};
+            h+=`<div class="sc-sec"><div class="sc-h" onclick="this.nextElementSibling.classList.toggle('open')">
+                <span>Requirement Sub-Conditions: ${scPass}/${scTotal} verified (${scPct}%)</span>
+                <span style="display:flex;gap:8px;align-items:center">
+                    ${scFail>0?`<span style="background:rgba(220,38,38,.15);padding:2px 8px;border-radius:10px;font-size:.85em">✗ ${scFail}</span>`:''}
+                    ${scWarn>0?`<span style="background:rgba(217,119,6,.15);padding:2px 8px;border-radius:10px;font-size:.85em">⚠ ${scWarn}</span>`:''}
+                    <span>▾</span>
+                </span>
+            </div><div class="sc-b open">`;
+            // Summary bar
+            h+=`<div class="sc-summary"><span class="sc-sp ok">✓ ${scPass} Pass</span><span class="sc-sp fail">✗ ${scFail} Fail</span><span class="sc-sp warn">⚠ ${scWarn} Review</span></div>`;
+            v.sub_conditions.forEach(sc=>{
+                const stag=sc.status==='pass'?'PASS':sc.status==='fail'?'FAIL':sc.status==='warning'?'REVIEW':'INFO';
+                h+=`<div class="sc-item"><span class="sc-icon ${sc.status}">${scIc[sc.status]||'?'}</span>
+                    <div class="sc-body"><div class="sc-label">${esc(sc.label)} <span class="sc-cat ${sc.category||''}">${esc(sc.category||'')}</span></div>
+                    <div class="sc-detail">${esc(cleanDetail(sc.detail||''))}</div></div>
+                    <span class="sc-stag ${sc.status}">${stag}</span></div>`;
+            });
+            h+=`</div></div>`;
+        }
+    }else{
+        h+=`<div class="vban not_verified"><span class="vi">⏳</span><div><div class="vl">Not Yet Verified</div><div class="vs">Click "Run Verification" in the top bar to check all clauses against shipping documents.</div></div></div>`;
+    }
+
+    } // close vessel vs normal clause branching
+
+    // ── Discrepancies Summary (all failed checks for this item) ──
+    if(v && (v.status==='non_compliant' || v.status==='review_required')){
+        const allFails=[...(v.checks||[]),...(v.rule_checks||[])].filter(c=>c.status==='fail'||c.status==='warning');
+        if(allFails.length){
+            h+=`<div style="background:linear-gradient(135deg,#fef2f2,#fff1f2);border:2px solid #fca5a5;border-radius:10px;padding:14px 16px;margin-bottom:16px">
+                <div style="font-weight:800;color:#dc2626;font-size:.88em;margin-bottom:8px;display:flex;align-items:center;gap:6px">
+                    <span style="font-size:1.1em">&#9888;</span> Discrepancies Found (${allFails.length})
+                </div>`;
+            allFails.forEach((c,idx)=>{
+                const isFail=c.status==='fail';
+                const sevColor=isFail?'#dc2626':'#d97706';
+                const sevBg=isFail?'#fee2e2':'#fef3c7';
+                const sevLabel=isFail?'NON-COMPLIANT':'REVIEW';
+                const ref=(c.rule_reference&&c.rule_reference.article)?` [Art ${c.rule_reference.article}${c.rule_reference.sub_article?' §'+c.rule_reference.sub_article:''}]`:'';
+                const discClass=c.discrepancy_class||'';
+                const discBadge=discClass==='hard'?'<span class="disc-badge hard">HARD</span>':discClass==='soft'?'<span class="disc-badge soft">SOFT</span>':'';
+                h+=`<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;margin-bottom:4px;background:#fff;border:1px solid ${isFail?'#fecaca':'#fde68a'};border-radius:6px">
+                    <span style="font-weight:800;color:${sevColor};min-width:22px;font-size:.9em">${idx+1}.</span>
+                    <div style="flex:1;min-width:0">
+                        <div style="font-weight:700;font-size:.82em;color:#333">${esc(((c.check||'')).replace(/_/g,' '))}${ref} ${discBadge}</div>
+                        <div style="font-size:.8em;color:#666;margin-top:2px;line-height:1.35">${esc((c.detail||'').substring(0,250))}</div>
+                    </div>
+                    <span style="background:${sevBg};color:${sevColor};padding:2px 8px;border-radius:4px;font-size:.68em;font-weight:800;flex-shrink:0">${sevLabel}</span>
+                </div>`;
+            });
+            h+=`</div>`;
+        }
+    }
+
+    // LC Fields
+    h+='<div class="stit">LC Key Fields</div><div style="margin-bottom:16px">';
+    ['Amount','Applicant','Beneficiary','Port_of_Loading','Port_of_Discharge','Latest_Shipment_Date','Tolerance','Presentation_Period','Form_of_Credit'].forEach(k=>{
+        const f=D.sf[k];
+        const swTag=_FIELD_TO_TAG[k]||'';
+        const fmtVal=_fmtAllDates(String(f?.value||''));
+        if(f)h+=`<div class="fr${f.amended?' amended':''}"><span class="fl">${k.replace(/_/g,' ')}${swTag?` <span style="color:var(--primary);font-family:monospace;font-size:.85em">:${swTag}</span>`:''}</span><span class="fv">${esc(fmtVal.substring(0,80))}${fmtVal.length>80?'...':''} ${f.amended?'⚡':''}</span></div>`;
+    });
+    h+='</div>';
+
+    // Auditor
+    const sn=notes[i]||'';
+    h+=`<div class="asec"><div class="stit">Auditor Notes</div>
+        <textarea class="anote" id="an-${i}" placeholder="Note any discrepancies or observations..." onchange="notes[${i}]=this.value">${esc(sn)}</textarea>
+        <div style="margin-top:10px;display:flex;gap:8px">
+            <button class="btn btn-g" onclick="markOk(${i})">✓ Mark Verified</button>
+            <button class="btn btn-r" onclick="markFail(${i})">✗ Flag Discrepancy</button>
+        </div>
+    </div></div>`;
+
+    ws.innerHTML=h;ws.scrollTop=0;
+}
+
+function markOk(i){
+    const note=document.getElementById(`an-${i}`)?.value||'';
+    const cn=D.pts[i].cn;
+    // Find all points in the same clause (same clause number + same swift field)
+    const siblings=[];
+    if(cn){
+        const sf=D.pts[i].sf;
+        D.pts.forEach((p,j)=>{if(p.cn===cn&&p.sf===sf)siblings.push(j)});
+    }
+    // If no clause grouping or only one point, just mark the single point
+    const targets=siblings.length>1?siblings:[i];
+    let editTriggered=false;
+    for(const idx of targets){
+        D.pts[idx].checked=true;
+        const v=D.pts[idx].v;
+        if(v&&D.pts[idx].isVesselCheck){
+            // Vessel check: update synthetic v object + underlying vesselcomp check
+            v.status='compliant';
+            v.summary=note.trim()?'Auditor: '+note.trim():'Manually marked compliant by auditor';
+            (v.checks||[]).forEach(c=>{if(c.status==='fail'||c.status==='warning'){c.status='pass';if(!c.detail.includes('[Auditor override]'))c.detail+=' [Auditor override]'}});
+            const vci=D.pts[idx].vesselCheckIdx;
+            if(vesselcomp&&vesselcomp.checks&&vesselcomp.checks[vci])vesselcomp.checks[vci].status='pass';
+            editTriggered=true;
+        }else if(v&&vres){
+            const vri=vres.indexOf(v);
+            if(vri>=0){
+                vres[vri].status='compliant';
+                vres[vri].summary=note.trim()?'Auditor: '+note.trim():'Manually marked compliant by auditor';
+                (vres[vri].checks||[]).forEach(c=>{if(c.status==='fail'||c.status==='warning')c.status='pass'});
+                (vres[vri].checks||[]).forEach(c=>{if(!c.detail.includes('[Auditor override]'))c.detail+=' [Auditor override]'});
+                (vres[vri].rule_checks||[]).forEach(c=>{if(c.status==='fail'||c.status==='warning'){c.status='pass';if(!c.detail.includes('[Auditor override]'))c.detail+=' [Auditor override]'}});
+                editTriggered=true;
+            }
+        }
+    }
+    if(editTriggered){afterEdit(i)}
+    const cnt=targets.length>1?` (${targets.length} points in clause ${cn})`:'';
+    flash(i,'var(--success-bg)','var(--success)',`✓ Marked as COMPLIANT by auditor${cnt}`);
+}
+function markFail(i){
+    const n=document.getElementById(`an-${i}`)?.value||'';
+    if(!n.trim()){alert('Please add a note describing the discrepancy before flagging.');document.getElementById(`an-${i}`)?.focus();return}
+    const cn=D.pts[i].cn;
+    const siblings=[];
+    if(cn){
+        const sf=D.pts[i].sf;
+        D.pts.forEach((p,j)=>{if(p.cn===cn&&p.sf===sf)siblings.push(j)});
+    }
+    const targets=siblings.length>1?siblings:[i];
+    let editTriggered=false;
+    for(const idx of targets){
+        notes[idx]=n;D.pts[idx].checked=false;
+        const v=D.pts[idx].v;
+        if(v&&D.pts[idx].isVesselCheck){
+            v.status='non_compliant';
+            v.summary='Auditor flagged: '+n.trim();
+            const vci=D.pts[idx].vesselCheckIdx;
+            if(vesselcomp&&vesselcomp.checks&&vesselcomp.checks[vci])vesselcomp.checks[vci].status='fail';
+            editTriggered=true;
+        }else if(v&&vres){
+            const vri=vres.indexOf(v);
+            if(vri>=0){
+                vres[vri].status='non_compliant';
+                vres[vri].summary='Auditor flagged: '+n.trim();
+                editTriggered=true;
+            }
+        }
+    }
+    if(editTriggered){afterEdit(i)}
+    const cnt=targets.length>1?` (${targets.length} points in clause ${cn})`:'';
+    flash(i,'var(--danger-bg)','var(--danger)',`✗ Flagged as NON-COMPLIANT by auditor${cnt}`);
+}
+function flash(i,bg,c,t){
+    const sec=document.querySelector('.asec');if(!sec)return;
+    const d=document.createElement('div');d.style.cssText=`background:${bg};color:${c};padding:8px 14px;border-radius:6px;font-weight:700;margin-top:8px;font-size:.9em`;
+    d.textContent=t;sec.appendChild(d);setTimeout(()=>d.remove(),2000);
+}
+function updProg(){const t=D.pts.length,c=D.pts.filter(p=>p.checked).length;document.getElementById('ptxt').innerText=`${c}/${t} verified`}
+
+// ─── Verification Timer ───
+let _vTimerStart=null,_vTimerInterval=null;
+function _startVTimer(){
+    _vTimerStart=Date.now();
+    const te=document.getElementById('v-timer');
+    if(te)te.style.display='inline-flex';
+    _vTimerInterval=setInterval(()=>{
+        const el=Math.floor((Date.now()-_vTimerStart)/1000);
+        const m=Math.floor(el/60),s=el%60;
+        const te=document.getElementById('v-timer');
+        if(te)te.textContent=`⏱ ${m>0?m+'m ':''}${s}s`;
+    },1000);
+}
+function _stopVTimer(){
+    if(_vTimerInterval){clearInterval(_vTimerInterval);_vTimerInterval=null}
+    const el=_vTimerStart?Math.floor((Date.now()-_vTimerStart)/1000):0;
+    const m=Math.floor(el/60),s=el%60;
+    const te=document.getElementById('v-timer');
+    if(te){te.textContent=`⏱ ${m>0?m+'m ':''}${s}s`;te.style.background='#dcfce7';te.style.color='#16a34a'}
+}
+
+// ─── Verification ───
+async function runV(){
+    const b=document.getElementById('rbtn');if(b){b.disabled=true;b.classList.add('run');b.textContent='⟳ Running...'}
+    _startVTimer();
+    const lg=document.getElementById('ptl'),lb=document.getElementById('ptlb');
+    lg.classList.add('active');lb.innerHTML='<div>Starting verification...</div>';
+    // Collect selected rulesets from panel
+    const selRs=getSelectedRulesets();
+    const body=selRs.length>0?JSON.stringify({rulesets:selRs}):JSON.stringify({});
+    lb.innerHTML+=`<div>Rulesets: ${selRs.length>0?selRs.join(', '):'auto-detect from 40E'}</div>`;
+    try{
+        const r=await fetch(`${API}/api/verify/${D.jid}/${D.lc}`,{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:body
+        });
+        if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||`Server ${r.status}`)}
+        const d=await r.json();vid=d.verification_id;
+        lb.innerHTML+=`<div>ID: ${d.verification_id.substring(0,8)}...</div>`;
+        await poll(d.verification_id,lb);
+    }catch(e){
+        _stopVTimer();
+        lb.innerHTML+=`<div style="color:var(--danger);font-weight:700">Error: ${e.message}</div>`;
+        if(b){b.disabled=false;b.classList.remove('run');b.textContent='▶ Run Verification'}
+    }
+}
+
+async function poll(id,el){
+    let a=0,lastLogCount=0,stalledTicks=0;
+    while(a<900){
+        await slp(1000);a++;
+        try{
+            const r=await fetch(`${API}/api/verify/status/${id}`);if(!r.ok)continue;
+            const d=await r.json();
+            const logs=d.progress_log||[];
+            if(logs.length){
+                el.innerHTML=logs.map(l=>`<div>${l.message}</div>`).join('');
+                if(logs.length>lastLogCount){stalledTicks=0;lastLogCount=logs.length}
+                else{stalledTicks++;if(stalledTicks%15===0)el.innerHTML+=`<div style="color:#888;font-style:italic">Still processing... (${Math.floor(a/60)}m ${a%60}s elapsed)</div>`}
+                el.scrollTop=el.scrollHeight;
+            }
+            if(d.status==='completed'){
+                _stopVTimer();
+                el.innerHTML+=`<div style="color:var(--success);font-weight:700">✓ ✓ Verification complete! Fetching results...</div>`;el.scrollTop=el.scrollHeight;
+                const rr=await fetch(`${API}/api/verify/result/${id}`);
+                if(rr.ok){const vd=await rr.json();vres=vd.results||[];vsum=vd.summary||null;vElapsed=vd.elapsed_seconds||a;mt700comp=vd.mt700_compliance||null;urr725comp=vd.urr725_compliance||null;isbp821comp=vd.isbp821_compliance||null;isp98comp=vd.isp98_compliance||null;fecomp=vd.fe_manual_compliance||null;vesselcomp=vd.vessel_compliance||null;amtdatecomp=vd.amount_date_compliance||null;crossDocConsistency=vd.cross_document_consistency||null;installmentCompliance=vd.installment_compliance||null;mapV();injectVesselChecks();autoPopulateVessel();renderAll()}
+                setTimeout(()=>document.getElementById('ptl').classList.remove('active'),3000);return;
+            }
+            if(d.status==='failed'){
+                _stopVTimer();
+                el.innerHTML+=`<div style="color:var(--danger);font-weight:700">✗ ${d.message}</div>`;
+                const b=document.getElementById('rbtn');if(b){b.disabled=false;b.classList.remove('run');b.textContent='▶ Retry'}return;
+            }
+        }catch(_){}
+    }
+    el.innerHTML+='<div style="color:var(--warning)">Polling timed out after 15 minutes. Refreshing page to check results...</div>';
+    el.scrollTop=el.scrollHeight;
+    setTimeout(()=>location.reload(),3000);
+}
+
+// ─── Editor ───
+function openEditor(i=null){
+    document.getElementById('edit-index').value=i!==null?i:'';
+    document.getElementById('modal-title').innerText=i!==null?'Edit Clause':'Add Manual Clause';
+    document.getElementById('delete-btn').style.display=i!==null?'block':'none';
+    if(i!==null){const p=D.pts[i];document.getElementById('field-type').value=p.sf;document.getElementById('field-num').value=p.cn||'';document.getElementById('field-text').value=p.text}
+    else{document.getElementById('field-type').value='47A';document.getElementById('field-num').value='';document.getElementById('field-text').value=''}
+    document.getElementById('clauseModal').classList.add('active');
+}
+function closeEditor(){document.getElementById('clauseModal').classList.remove('active')}
+function saveClause(){
+    const idx=document.getElementById('edit-index').value;
+    const sf=document.getElementById('field-type').value||'MANUAL',cn=document.getElementById('field-num').value||null,text=document.getElementById('field-text').value||'No content',ref=cn?`${sf}-${cn}`:sf;
+    if(idx!=='')Object.assign(D.pts[idx],{sf,cn,sfr:ref,text});
+    else D.pts.push({id:D.pts.length+1,sf,sfr:ref,cn,text,amended:false,aby:[],src:'Manual',checked:false,v:null});
+    renderAll();closeEditor();
+}
+function deleteClause(){
+    const idx=document.getElementById('edit-index').value;
+    if(idx!==''&&confirm('Delete this clause?')){D.pts.splice(idx,1);D.pts.forEach((p,i)=>p.id=i+1);selIdx=null;renderAll();closeEditor();
+    document.getElementById('ws').innerHTML='<div style="text-align:center;margin-top:80px;color:#a0aec0"><div style="font-size:3em">📋</div><h3>Select a clause</h3></div>'}
+}
+
+// ─── MT700 Field Compliance ───
+function renderMT700(){
+    let el=document.getElementById('mt700sec');
+    if(!mt700comp){if(el)el.remove();return}
+    const s=mt700comp.summary||{};
+    if(!el){
+        el=document.createElement('div');el.id='mt700sec';el.className='mt700sec';
+        const leftPane=document.querySelector('.left-pane .scroll-area');
+        if(leftPane)leftPane.parentNode.insertBefore(el,leftPane);
+    }
+    let h=`<div class="mt700h" onclick="this.nextElementSibling.classList.toggle('open')">
+        <span>MT700 Field Compliance: ${s.compliant||0}/${s.total||0}</span>
+        <span style="font-weight:400;font-size:.9em">${s.non_compliant?'⚠ '+s.non_compliant+' issues':'✓ All OK'} ▾</span>
+    </div><div class="mt700b">`;
+
+    h+='<div style="font-weight:700;margin-bottom:4px;color:var(--secondary)">Mandatory Fields</div>';
+    (mt700comp.mandatory_fields||[]).forEach(f=>{
+        const ok=f.compliant;
+        h+=`<div class="mt700r" style="${!ok?'background:var(--danger-bg)':''}">
+            <span class="ft">${f.tag}</span>
+            <span class="fn">${esc(f.name)}</span>
+            <span class="fv" title="${esc(f.value)}">${esc((f.value||'').substring(0,40))}</span>
+            <span class="stag ${ok?'ctrue':'cfalse'}" style="margin-left:4px;font-size:.7em">${ok?'TRUE':'FALSE'}</span>
+        </div>`;
+    });
+
+    h+='<div style="font-weight:700;margin:8px 0 4px;color:var(--secondary)">Optional Fields</div>';
+    (mt700comp.optional_fields||[]).forEach(f=>{
+        const ok=f.compliant;
+        h+=`<div class="mt700r">
+            <span class="ft">${f.tag}</span>
+            <span class="fn">${esc(f.name)}</span>
+            <span class="fv" title="${esc(f.value)}">${esc((f.value||f.status||'').substring(0,40))}</span>
+            <span class="stag ${ok?'ctrue':'cfalse'}" style="margin-left:4px;font-size:.7em">${ok?'TRUE':'FALSE'}</span>
+        </div>`;
+    });
+
+    if(mt700comp.mt701_checks?.length){
+        h+='<div style="font-weight:700;margin:8px 0 4px;color:var(--secondary)">MT701 Checks</div>';
+        mt700comp.mt701_checks.forEach(c=>{
+            const ok=c.compliant;
+            h+=`<div class="mt700r" style="${!ok?'background:var(--danger-bg)':''}">
+                <span class="fn">${esc(c.name||c.check||'')}</span>
+                <span class="fv">${esc((c.detail||'').substring(0,60))}</span>
+                <span class="stag ${ok?'ctrue':'cfalse'}" style="margin-left:4px;font-size:.7em">${ok?'TRUE':'FALSE'}</span>
+            </div>`;
+        });
+    }
+
+    // ─── Generic Ruleset Section Renderer ───
+    function renderRulesetSection(comp, title, rsKey){
+        if(!comp || !comp.checks || comp.checks.length===0) return '';
+        let s='';
+        const sm=comp.summary||{};
+        s+='<div style="font-weight:700;margin:12px 0 4px;color:var(--secondary);border-top:1px solid var(--border);padding-top:8px">';
+        s+=`${esc(title)}: ${sm.passed||0}/${sm.total||0}`;
+        s+=`<span style="font-weight:400;font-size:.9em;margin-left:8px">${sm.failed?'⚠ '+sm.failed+' issues':'✓ All OK'}</span></div>`;
+        comp.checks.forEach((c,cj)=>{
+            const ok=c.status==='pass';
+            const warn=c.status==='warning';
+            const info=c.status==='info';
+            const ref=c.rule_reference||{};
+            const refTxt=ref.short||ref.sub_point||(ref.article?`Art ${ref.article}`:'');
+            s+=`<div class="mt700r" data-rs-edit="${rsKey}-${cj}" style="${!ok&&!warn&&!info?'background:var(--danger-bg)':warn?'background:var(--warning-bg)':info?'background:#f0f4ff':''}">
+                <span class="ft" style="min-width:50px">${refTxt?esc(refTxt):''}</span>
+                <span class="fn">${esc(c.check||'')}</span>
+                <span class="fv" title="${esc(c.detail||'')}">${esc((c.detail||'').substring(0,60))}</span>
+                <span class="stag ${ok?'ctrue':warn?'review_required':info?'':'cfalse'}" style="margin-left:4px;font-size:.7em">${ok?'PASS':warn?'WARN':info?'INFO':'FAIL'}</span>
+                ${rsKey?`<button class="edt-btn" onclick="editRsChk('${rsKey}',${cj})" title="Edit">✎</button>`:''}
+            </div>`;
+        });
+        return s;
+    }
+
+    // ─── URR 725 Reimbursement Compliance Section ───
+    h+=renderRulesetSection(urr725comp, 'URR 725 Reimbursement', 'urr725');
+
+    // ─── ISBP 821 Document Examination Section ───
+    h+=renderRulesetSection(isbp821comp, 'ISBP 821 Document Examination', 'isbp821');
+
+    // ─── ISP98 Standby Practices Section ───
+    h+=renderRulesetSection(isp98comp, 'ISP98 Standby Practices', 'isp98');
+
+    // ─── FE Manual Foreign Exchange Section ───
+    h+=renderRulesetSection(fecomp, 'FE Manual Foreign Exchange', 'fe');
+
+    // ─── Vessel Tracking & Compliance Section ───
+    h+=renderVesselCompliance();
+
+    // ─── Amount & Date Cross-Validation Section ───
+    h+=renderAmountDateCompliance();
+
+    // ─── Cross-Document Consistency in MT700 panel ───
+    h+=renderCrossDocInMT700();
+
+    // ─── Installment Compliance in MT700 panel ───
+    h+=renderInstallmentInMT700();
+
+    h+='</div>';
+    el.innerHTML=h;
+}
+
+function renderVesselCompliance(){
+    if(!vesselcomp||!vesselcomp.checks||vesselcomp.checks.length===0)return '';
+    const s=vesselcomp.summary||{};
+    const v=vesselcomp.vessel_details||{};
+    const p=vesselcomp.position||{};
+    const calls=vesselcomp.port_calls||[];
+    const checks=vesselcomp.checks||[];
+    const statusBg=s.failed>0?'var(--danger-bg)':s.warnings>0?'var(--warn-bg)':'var(--success-bg)';
+    const statusColor=s.failed>0?'var(--danger)':s.warnings>0?'var(--warn)':'var(--success)';
+
+    let h=`<div style="margin-top:18px;border:1px solid var(--border);border-radius:10px;overflow:hidden">
+        <div style="padding:10px 14px;background:linear-gradient(135deg,#0a3d7c,#1565c0);color:#fff;display:flex;justify-content:space-between;align-items:center">
+            <span style="font-weight:700;font-size:.95em">&#9875; Vessel Tracking & Compliance</span>
+            <span style="background:${statusBg};color:${statusColor};padding:2px 10px;border-radius:10px;font-size:.75em;font-weight:700">${s.passed||0}P / ${s.failed||0}F / ${s.warnings||0}W</span>
+        </div>
+        <div style="padding:12px 14px">`;
+
+    // Vessel info
+    h+=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-weight:700;color:var(--secondary);font-size:1.02em">${esc(vesselcomp.vessel_name||'Unknown')}</span>
+        <span class="vt-badge ${vesselcomp.tracking_status==='tracking'?'tracking':'searching'}">${esc((vesselcomp.tracking_status||'').toUpperCase())}</span>
+    </div>`;
+
+    if(v.mmsi||v.flag||v.vessel_type){
+        h+=`<div style="font-size:.78em;color:#888;margin-bottom:8px">`;
+        if(v.mmsi)h+=`MMSI: ${v.mmsi}`;
+        if(v.imo)h+=` · IMO: ${v.imo}`;
+        if(v.vessel_type)h+=` · ${esc(v.vessel_type)}`;
+        if(v.flag)h+=` · ${esc(v.flag)}`;
+        h+=`</div>`;
+    }
+
+    if(p.lat!==undefined&&p.lat!==null){
+        h+=`<div class="vt-grid" style="margin-bottom:8px">
+            <div><div class="vt-lbl">Position</div><div class="vt-val">${p.lat}, ${p.lng}</div></div>
+            <div><div class="vt-lbl">Speed</div><div class="vt-val">${p.speed||'—'} kn</div></div>
+            <div><div class="vt-lbl">Destination</div><div class="vt-val">${esc(p.destination||'—')}</div></div>
+            <div><div class="vt-lbl">ETA</div><div class="vt-val">${p.eta?_fmtVtDate(p.eta):'—'}</div></div>
+        </div>`;
+    }
+
+    // Compliance checks
+    h+=`<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px">`;
+    for(const c of checks){
+        const st=c.status||'info';
+        const icon=st==='pass'?'&#10003;':st==='fail'?'&#10007;':st==='warning'?'&#9888;':'&#8505;';
+        const color=st==='pass'?'var(--success)':st==='fail'?'var(--danger)':st==='warning'?'var(--warn)':'#888';
+        h+=`<div style="display:flex;gap:8px;margin-bottom:6px;font-size:.85em">
+            <span style="color:${color};font-weight:700;min-width:18px;text-align:center">${icon}</span>
+            <span>${esc(c.detail||'')}</span>
+        </div>`;
+    }
+    h+=`</div>`;
+
+    // Port calls summary
+    if(calls.length>0){
+        h+=`<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px">
+            <div style="font-size:.82em;font-weight:700;color:var(--secondary);margin-bottom:4px">Recent Port Calls</div>`;
+        for(const c of calls.slice(0,6)){
+            h+=`<div class="vt-port-item">
+                <span class="pe">${esc(c.event||'')}</span>
+                <span class="pn">${esc(c.port_name||'')}${c.unloco?' ('+esc(c.unloco)+')':''}</span>
+                <span class="pt">${c.time_utc?_fmtVtDate(c.time_utc):''}</span>
+            </div>`;
+        }
+        h+=`</div>`;
+    }
+
+    h+=`</div></div>`;
+    return h;
+}
+
+function renderAmountDateCompliance(){
+    if(!amtdatecomp||!amtdatecomp.checks||amtdatecomp.checks.length===0)return '';
+    const s=amtdatecomp.summary||{};
+    const amts=amtdatecomp.amounts||{};
+    const dts=amtdatecomp.dates||{};
+    const checks=amtdatecomp.checks||[];
+    const statusBg=s.failed>0?'var(--danger-bg)':s.warnings>0?'var(--warn-bg)':'var(--success-bg)';
+    const statusColor=s.failed>0?'var(--danger)':s.warnings>0?'var(--warn)':'var(--success)';
+
+    let h=`<div style="margin-top:18px;border:1px solid var(--border);border-radius:10px;overflow:hidden">
+        <div style="padding:10px 14px;background:linear-gradient(135deg,#0d5f13,#2e7d32);color:#fff;display:flex;justify-content:space-between;align-items:center">
+            <span style="font-weight:700;font-size:.95em">&#128176; Amount & Date Cross-Validation</span>
+            <span style="background:${statusBg};color:${statusColor};padding:2px 10px;border-radius:10px;font-size:.75em;font-weight:700">${s.passed||0}P / ${s.failed||0}F / ${s.warnings||0}W</span>
+        </div>
+        <div style="padding:12px 14px">`;
+
+    // Amount summary bar
+    const lcA=amts.lc_amount||{};
+    const invA=amts.invoice_total||{};
+    if(lcA.value!==undefined||invA.value!==undefined){
+        const fmtAmt=(v,c)=>v!==undefined&&v!==null?(c?c+' ':'')+Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'N/A';
+        const withinTol=amts.within_tolerance;
+        const tolColor=withinTol===true?'var(--success)':withinTol===false?'var(--danger)':'#888';
+        const tolLabel=withinTol===true?'WITHIN TOLERANCE':withinTol===false?'EXCEEDS TOLERANCE':'N/A';
+        h+=`<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center">
+                <div>
+                    <div style="font-size:.7em;color:#888;text-transform:uppercase;letter-spacing:.5px">LC Amount</div>
+                    <div style="font-weight:700;font-size:1.05em;color:var(--secondary)">${fmtAmt(lcA.value,lcA.currency)}</div>
+                </div>
+                <div>
+                    <div style="font-size:.7em;color:#888;text-transform:uppercase;letter-spacing:.5px">Invoice Total</div>
+                    <div style="font-weight:700;font-size:1.05em">${fmtAmt(invA.value,invA.currency)}</div>
+                </div>
+                <div>
+                    <div style="font-size:.7em;color:#888;text-transform:uppercase;letter-spacing:.5px">Tolerance (${esc(amts.tolerance||'N/A')})</div>
+                    <div style="font-weight:700;font-size:.9em;color:${tolColor}">${tolLabel}</div>
+                </div>
+            </div>
+        </div>`;
+    }
+
+    // Date timeline
+    const dlabels=[['LC Issue','lc_issue'],['Latest Shipment','latest_shipment'],['BL Date','bl_date'],['Pres. Deadline','presentation_deadline'],['LC Expiry','lc_expiry']];
+    const hasAnyDate=dlabels.some(([,k])=>dts[k]);
+    if(hasAnyDate){
+        h+=`<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+            <div style="font-size:.72em;color:#888;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Date Timeline</div>
+            <div style="display:flex;align-items:center;gap:0;overflow-x:auto">`;
+        let first=true;
+        for(const [lbl,key] of dlabels){
+            const val=dts[key]||'';
+            if(!val)continue;
+            if(!first)h+=`<span style="color:#bbb;font-size:.8em;padding:0 6px">&#10132;</span>`;
+            h+=`<div style="text-align:center;flex-shrink:0">
+                <div style="font-size:.68em;color:#888">${lbl}</div>
+                <div style="font-size:.82em;font-weight:600;color:var(--secondary)">${esc(val)}</div>
+            </div>`;
+            first=false;
+        }
+        h+=`</div></div>`;
+    }
+
+    // Individual checks
+    h+=`<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px">`;
+    for(const c of checks){
+        const st=c.status||'info';
+        const icon=st==='pass'?'&#10003;':st==='fail'?'&#10007;':st==='warning'?'&#9888;':'&#8505;';
+        const color=st==='pass'?'var(--success)':st==='fail'?'var(--danger)':st==='warning'?'var(--warn)':'#888';
+        h+=`<div style="display:flex;gap:8px;margin-bottom:6px;font-size:.85em">
+            <span style="color:${color};font-weight:700;min-width:18px;text-align:center">${icon}</span>
+            <span>${esc(c.detail||'')}</span>
+        </div>`;
+    }
+    h+=`</div>`;
+
+    h+=`</div></div>`;
+    return h;
+}
+
+// ─── Cross-Document Consistency in MT700 panel ───
+function renderCrossDocInMT700(){
+    if(!crossDocConsistency||!crossDocConsistency.checks||crossDocConsistency.checks.length===0)return '';
+    const checks=crossDocConsistency.checks||[];
+    const passC=checks.filter(c=>c.status==='pass').length;
+    const failC=checks.filter(c=>c.status==='fail').length;
+    let h=`<div style="margin-top:18px;border:1px solid var(--border);border-radius:10px;overflow:hidden">
+        <div style="padding:10px 14px;background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;display:flex;justify-content:space-between;align-items:center">
+            <span style="font-weight:700;font-size:.95em">&#128196; Cross-Document Consistency</span>
+            <span style="background:${failC?'var(--danger-bg)':'var(--success-bg)'};color:${failC?'var(--danger)':'var(--success)'};padding:2px 10px;border-radius:10px;font-size:.75em;font-weight:700">${passC}/${checks.length}</span>
+        </div><div style="padding:12px 14px">`;
+    checks.forEach(c=>{
+        const st=c.status||'info';
+        const icon=st==='pass'?'&#10003;':st==='fail'?'&#10007;':st==='warning'?'&#9888;':'&#8505;';
+        const color=st==='pass'?'var(--success)':st==='fail'?'var(--danger)':st==='warning'?'var(--warning)':'#888';
+        const field=c.field||c.check||'';
+        const discClass=c.discrepancy_class||'';
+        const discBadge=discClass==='hard'?'<span class="disc-badge hard">HARD</span>':discClass==='soft'?'<span class="disc-badge soft">SOFT</span>':'';
+        h+=`<div class="mt700r" style="${st==='fail'?'background:var(--danger-bg)':st==='warning'?'background:var(--warning-bg)':''}">
+            <span style="color:${color};font-weight:700;min-width:18px;text-align:center">${icon}</span>
+            <span class="fn">${esc(field.replace(/_/g,' '))} ${discBadge}</span>
+            <span class="fv" title="${esc(c.detail||'')}">${esc((c.detail||'').substring(0,60))}</span>
+            <span class="stag ${st==='pass'?'ctrue':st==='fail'?'cfalse':'review_required'}" style="margin-left:4px;font-size:.7em">${st==='pass'?'MATCH':st==='fail'?'MISMATCH':'REVIEW'}</span>
+        </div>`;
+    });
+    h+='</div></div>';
+    return h;
+}
+
+// ─── Installment Compliance in MT700 panel ───
+function renderInstallmentInMT700(){
+    if(!installmentCompliance||(!installmentCompliance.checks?.length&&!installmentCompliance.schedule?.length))return '';
+    const checks=installmentCompliance.checks||[];
+    const schedule=installmentCompliance.schedule||[];
+    const summary=installmentCompliance.summary||{};
+    const failC=checks.filter(c=>c.status==='fail').length;
+    let h=`<div style="margin-top:18px;border:1px solid var(--border);border-radius:10px;overflow:hidden">
+        <div style="padding:10px 14px;background:linear-gradient(135deg,#0369a1,#0284c7);color:#fff;display:flex;justify-content:space-between;align-items:center">
+            <span style="font-weight:700;font-size:.95em">&#128197; Installment Compliance (Art 32)</span>
+            <span style="background:${failC?'var(--danger-bg)':'var(--success-bg)'};color:${failC?'var(--danger)':'var(--success)'};padding:2px 10px;border-radius:10px;font-size:.75em;font-weight:700">${summary.total_installments||schedule.length||'?'} installments</span>
+        </div><div style="padding:12px 14px">`;
+    if(schedule.length){
+        schedule.forEach((inst,idx)=>{
+            const st=inst.status||'pending';
+            const color=st==='fulfilled'?'var(--success)':st==='missed'?'var(--danger)':'#888';
+            h+=`<div class="mt700r"><span class="ft">#${idx+1}</span><span class="fn">${esc(inst.description||inst.period||'')}</span>
+                <span class="fv">${esc(inst.amount||'')}</span>
+                <span style="color:${color};font-weight:700;font-size:.75em;margin-left:4px">${s(t||'').toUpperCase()}</span></div>`;
+        });
+    }
+    checks.forEach(c=>{
+        const st=c.status||'info';
+        const icon=st==='pass'?'&#10003;':st==='fail'?'&#10007;':st==='warning'?'&#9888;':'&#8505;';
+        const color=st==='pass'?'var(--success)':st==='fail'?'var(--danger)':st==='warning'?'var(--warning)':'#888';
+        h+=`<div style="display:flex;gap:8px;margin-bottom:4px;font-size:.82em">
+            <span style="color:${color};font-weight:700;min-width:18px;text-align:center">${icon}</span>
+            <span style="flex:1">${esc(c.detail||c.check||'')}</span>
+        </div>`;
+    });
+    // Art 30 tolerance info
+    if(installmentCompliance.tolerance_info){
+        const tol=installmentCompliance.tolerance_info;
+        h+=`<div style="margin-top:6px;padding:5px 10px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:.78em;color:#92400e">
+            <b>Art 30 Tolerance:</b> ${esc(tol.description||tol.type||'')}${tol.plus?' +'+tol.plus+'%':''}${tol.minus?' -'+tol.minus+'%':''}
+        </div>`;
+    }
+    h+='</div></div>';
+    return h;
+}
+
+// ─── Cross-Document Consistency Section (left pane) ───
+function renderCrossDocConsistency(){
+    let el=document.getElementById('xdocSec');
+    if(!crossDocConsistency||!crossDocConsistency.checks||crossDocConsistency.checks.length===0){if(el)el.remove();return}
+    const checks=crossDocConsistency.checks||[];
+    const passC=checks.filter(c=>c.status==='pass').length;
+    const failC=checks.filter(c=>c.status==='fail').length;
+    const warnC=checks.filter(c=>c.status==='warning').length;
+    if(!el){
+        el=document.createElement('div');el.id='xdocSec';el.className='xdoc-sec';
+        const leftPane=document.querySelector('.left-pane .scroll-area');
+        if(leftPane)leftPane.parentNode.insertBefore(el,leftPane);
+    }
+    let h=`<div class="xdoc-h" onclick="this.nextElementSibling.classList.toggle('open')">
+        <span>Cross-Document Consistency: ${passC}/${checks.length}</span>
+        <span style="font-weight:400;font-size:.9em">${failC?'&#9888; '+failC+' mismatches':'&#10003; Consistent'} &#9662;</span>
+    </div><div class="xdoc-b">`;
+    checks.forEach(c=>{
+        const st=c.status||'info';
+        const icon=st==='pass'?'&#10003;':st==='fail'?'&#10007;':st==='warning'?'&#9888;':'&#8505;';
+        const field=c.field||c.check||'';
+        const detail=c.detail||'';
+        const discClass=c.discrepancy_class||'';
+        const discBadge=discClass==='hard'?'<span class="disc-badge hard">HARD</span>':discClass==='soft'?'<span class="disc-badge soft">SOFT</span>':'';
+        h+=`<div class="xdoc-item">
+            <span class="xdoc-field">${esc(field.replace(/_/g,' '))} ${discBadge}</span>
+            <span class="xdoc-detail">${esc(detail)}</span>
+            <span class="xdoc-stag ${st}">${st==='pass'?'MATCH':st==='fail'?'MISMATCH':'REVIEW'}</span>
+        </div>`;
+    });
+    h+='</div>';
+    el.innerHTML=h;
+}
+
+// ─── Installment Compliance Section (left pane) ───
+function renderInstallmentCompliance(){
+    let el=document.getElementById('instSec');
+    if(!installmentCompliance||(!installmentCompliance.checks?.length&&!installmentCompliance.schedule?.length)){if(el)el.remove();return}
+    if(!el){
+        el=document.createElement('div');el.id='instSec';el.className='inst-sec';
+        const leftPane=document.querySelector('.left-pane .scroll-area');
+        if(leftPane)leftPane.parentNode.insertBefore(el,leftPane);
+    }
+    const checks=installmentCompliance.checks||[];
+    const schedule=installmentCompliance.schedule||[];
+    const summary=installmentCompliance.summary||{};
+    const st=summary.status||'info';
+    let h=`<div class="inst-h" onclick="this.nextElementSibling.classList.toggle('open')">
+        <span>Installment Compliance (Art 32)${summary.total_installments?' — '+summary.total_installments+' installments':''}</span>
+        <span style="font-weight:400;font-size:.9em">${st==='pass'||st==='compliant'?'&#10003; OK':st==='fail'?'&#9888; Issue':'&#8505; Info'} &#9662;</span>
+    </div><div class="inst-b">`;
+    // Show schedule if present
+    if(schedule.length){
+        h+='<div style="font-weight:700;font-size:.78em;color:var(--secondary);margin-bottom:6px">Installment Schedule</div>';
+        schedule.forEach((inst,idx)=>{
+            const instSt=inst.status||'pending';
+            const stColor=instSt==='fulfilled'?'var(--success)':instSt==='missed'?'var(--danger)':'#888';
+            h+=`<div style="display:flex;gap:8px;margin-bottom:4px;font-size:.82em;padding:5px 8px;border-radius:4px;background:#f8f9ff;border:1px solid #eee">
+                <span style="font-weight:700;color:var(--secondary);min-width:25px">#${idx+1}</span>
+                <span style="flex:1">${esc(inst.description||inst.period||'')}</span>
+                <span style="color:${stColor};font-weight:700;font-size:.85em">${esc((instSt||'').toUpperCase())}</span>
+            </div>`;
+        });
+    }
+    // Show checks
+    if(checks.length){
+        h+='<div style="font-weight:700;font-size:.78em;color:var(--secondary);margin:8px 0 6px">Compliance Checks</div>';
+        checks.forEach(c=>{
+            const cst=c.status||'info';
+            const icon=cst==='pass'?'&#10003;':cst==='fail'?'&#10007;':cst==='warning'?'&#9888;':'&#8505;';
+            const color=cst==='pass'?'var(--success)':cst==='fail'?'var(--danger)':cst==='warning'?'var(--warning)':'#888';
+            h+=`<div style="display:flex;gap:8px;margin-bottom:4px;font-size:.82em">
+                <span style="color:${color};font-weight:700;min-width:18px;text-align:center">${icon}</span>
+                <span style="flex:1">${esc(c.detail||c.check||'')}</span>
+            </div>`;
+        });
+    }
+    // Show tolerance info if present
+    if(installmentCompliance.tolerance_info){
+        const tol=installmentCompliance.tolerance_info;
+        h+=`<div style="margin-top:8px;padding:6px 10px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:.78em;color:#92400e">
+            <span style="font-weight:700">Art 30 Tolerance:</span> ${esc(tol.description||tol.type||'')}${tol.plus?' +'+tol.plus+'%':''}${tol.minus?' -'+tol.minus+'%':''}
+        </div>`;
+    }
+    h+='</div>';
+    el.innerHTML=h;
+}
+
+// ─── Discrepancy Summary Panel ───
+function showDiscrepancySummary(){
+    const ws=document.getElementById('ws');
+    selIdx=null;
+    document.querySelectorAll('.pi').forEach(e=>e.classList.remove('active'));
+    let h=`<div class="dh"><div style="display:flex;justify-content:space-between;align-items:center">
+        <div><span class="fb" style="background:linear-gradient(135deg,#dc2626,#b91c1c);color:#fff;padding:3px 14px;border-radius:5px;font-size:.9em">DISCREPANCIES SUMMARY</span></div>
+        <span style="font-size:.82em;color:#888">${vsum?vsum.non_compliant+' non-compliant, '+(vsum.review_required||0)+' review required':''}</span>
+    </div></div><div class="db">`;
+    // Collect all failed items
+    let discNo=0;
+    if(vres){
+        const failItems=vres.filter(vr=>vr.status==='non_compliant'||vr.status==='review_required');
+        if(failItems.length===0){
+            h+='<div style="text-align:center;padding:40px;color:#16a34a;font-size:1.1em;font-weight:700">No discrepancies found — all checks passed.</div>';
+        }else{
+            // Step 5: Cross-document checks
+            const crossChecks=[];
+            const docChecks=[];
+            failItems.forEach(vr=>{
+                const allChks=[...(vr.checks||[]),...(vr.rule_checks||[])].filter(c=>c.status==='fail'||c.status==='warning');
+                allChks.forEach(c=>{
+                    const entry={check:c.check,detail:c.detail,status:c.status,severity:c.severity||'major',rule_ref:c.rule_reference,req:vr.requirement||'',discrepancy_class:c.discrepancy_class||'',remediation:c.remediation||''};
+                    if(c.check.includes('consistency')||c.check.includes('cross_check')||c.check.includes('carrier_name'))crossChecks.push(entry);
+                    else docChecks.push(entry);
+                });
+            });
+            if(crossChecks.length){
+                h+=`<div style="margin-bottom:16px"><div style="font-weight:800;color:var(--secondary);font-size:.9em;margin-bottom:8px;padding-bottom:4px;border-bottom:2px solid var(--primary)">Step 5: Document Consistency & Cross-Checks</div>`;
+                crossChecks.forEach(c=>{
+                    discNo++;
+                    const isFail=c.status==='fail';
+                    h+=`<div style="display:flex;gap:10px;padding:8px 10px;margin-bottom:4px;background:${isFail?'#fef2f2':'#fffbeb'};border:1px solid ${isFail?'#fecaca':'#fde68a'};border-radius:6px">
+                        <span style="font-weight:800;color:${isFail?'#dc2626':'#d97706'};min-width:24px">${discNo}.</span>
+                        <div style="flex:1"><div style="font-weight:700;font-size:.82em">${esc(((c.check||'')).replace(/_/g,' '))}</div>
+                        <div style="font-size:.8em;color:#666;margin-top:2px">${esc((c.detail||'').substring(0,300))}</div></div>
+                        <span style="background:${isFail?'#fee2e2':'#fef3c7'};color:${isFail?'#dc2626':'#d97706'};padding:2px 8px;border-radius:4px;font-size:.68em;font-weight:800">${isFail?'FAIL':'REVIEW'}</span>
+                    </div>`;
+                });
+                h+=`</div>`;
+            }
+            // Step 6: All discrepancies table
+            h+=`<div style="font-weight:800;color:var(--secondary);font-size:.9em;margin-bottom:8px;padding-bottom:4px;border-bottom:2px solid #dc2626">Step 6: All Discrepancies (${docChecks.length+crossChecks.length})</div>`;
+            docChecks.forEach(c=>{
+                discNo++;
+                const isFail=c.status==='fail';
+                const ref=(c.rule_ref&&c.rule_ref.article)?` [Art ${c.rule_ref.article}]`:'';
+                const dcl=c.discrepancy_class||'';
+                const dclBadge=dcl==='hard'?'<span class="disc-badge hard">HARD</span>':dcl==='soft'?'<span class="disc-badge soft">SOFT</span>':'';
+                const discRemDiv=c.remediation?`<div style="margin-top:5px;padding:4px 7px;background:#fff3cd;border-left:3px solid #e6a817;border-radius:3px;font-size:.78em;color:#7a5c00"><strong>Remediation:</strong> ${esc(c.remediation)}</div>`:'';
+                h+=`<div style="display:flex;gap:10px;padding:8px 10px;margin-bottom:4px;background:${isFail?'#fef2f2':'#fffbeb'};border:1px solid ${isFail?'#fecaca':'#fde68a'};border-radius:6px">
+                    <span style="font-weight:800;color:${isFail?'#dc2626':'#d97706'};min-width:24px">${discNo}.</span>
+                    <div style="flex:1"><div style="font-weight:700;font-size:.82em">${esc(((c.check||'')).replace(/_/g,' '))}${ref} ${dclBadge}</div>
+                    <div style="font-size:.78em;color:#888;margin-top:1px">${esc((c.req||'').substring(0,100))}</div>
+                    <div style="font-size:.8em;color:#666;margin-top:2px">${esc((c.detail||'').substring(0,300))}</div>${discRemDiv}</div>
+                    <span style="background:${isFail?'#fee2e2':'#fef3c7'};color:${isFail?'#dc2626':'#d97706'};padding:2px 8px;border-radius:4px;font-size:.68em;font-weight:800;flex-shrink:0">${(c.severity||'MAJOR').toUpperCase()||'MAJOR'}</span>
+                </div>`;
+            });
+        }
+    }
+    h+=`</div>`;
+    ws.innerHTML=h;ws.scrollTop=0;
+}
+
+// ─── Download Report ───
+async function downloadReport(){
+    try{
+        const url=`${API}/api/report/${D.jid}/${D.lc}`;
+        const r=await fetch(url);
+        if(!r.ok){const e=await r.json().catch(()=>({}));alert(e.error||'Failed to generate report');return}
+        const blob=await r.blob();
+        const a=document.createElement('a');
+        a.href=URL.createObjectURL(blob);
+        a.download=`${D.lc}_compliance_report.pdf`;
+        document.body.appendChild(a);a.click();document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+    }catch(e){alert('Download failed: '+e.message)}
+}
+
+// ─── Helpers ───
+function slab(s){return{compliant:'Compliant',non_compliant:'Non-Compliant',review_required:'Review Required',not_verified:'Not Verified',pending:'Pending'}[s]||s}
+// Helper: get highest discrepancy_class badge from a verification result's checks
+function _getDiscBadge(v){
+    if(!v)return '';
+    const allChks=[...(v.checks||[]),...(v.rule_checks||[])];
+    const hasHard=allChks.some(c=>c.discrepancy_class==='hard'&&(c.status==='fail'||c.status==='warning'));
+    const hasSoft=allChks.some(c=>c.discrepancy_class==='soft'&&(c.status==='fail'||c.status==='warning'));
+    if(hasHard)return '<span class="disc-badge hard">HARD</span>';
+    if(hasSoft)return '<span class="disc-badge soft">SOFT</span>';
+    return '';
+}
+// Helper: check if any check has isbp_non_discrepancy flag
+function _hasIsbpBadge(v){
+    if(!v)return false;
+    return[...(v.checks||[]),...(v.rule_checks||[])].some(c=>c.isbp_non_discrepancy);
+}
+// Helper: check if any check has art14h_non_documentary flag
+function _hasArt14h(v){
+    if(!v)return false;
+    return[...(v.checks||[]),...(v.rule_checks||[])].some(c=>c.art14h_non_documentary);
+}
+function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+function cleanDetail(s){
+  if(!s)return s;
+  // Strip internal TFO manual references e.g. "/ TFO §6.5" or ". TFO §4.7 compliant."
+  s=s.replace(/\s*\/\s*TFO\s*[§$]\s*[\d.]+/g,'');
+  s=s.replace(/[.,]?\s*TFO\s*[§$]\s*[\d.]+\b[^.;]*/g,'');
+  return s;
+}
+function slp(ms){return new Promise(r=>setTimeout(r,ms))}
+
+// ─── Inline Editing ───
+function markEdited(){hasEdits=true;editCount++;document.getElementById('editBar').classList.add('active');document.getElementById('editCount').textContent=`${editCount} edit(s) pending`}
+
+function showToast(msg,ok){
+    const t=document.createElement('div');t.className='toast-msg '+(ok?'ok':'err');t.textContent=msg;
+    document.body.appendChild(t);setTimeout(()=>t.remove(),3000);
+}
+
+// Auto-recalculate a clause's overall status from its checks + rule_checks
+function recalcClause(ci){
+    const v=vres[ci];if(!v)return;
+    const all=[...(v.checks||[]),...(v.rule_checks||[])];
+    if(!all.length)return;
+    const hasFail=all.some(c=>c.status==='fail');
+    const hasWarn=all.some(c=>c.status==='warning');
+    if(hasFail){v.status='non_compliant';v.summary='One or more checks failed'}
+    else if(hasWarn){v.status='review_required';v.summary='Some checks require review'}
+    else{v.status='compliant';v.summary='All checks passed'}
+}
+
+// After any edit: recalc summary, update mapV, re-render everything
+function afterEdit(pi){
+    recalcSummary();
+    markEdited();
+    selIdx=pi;
+    renderAll();
+    showToast('Edit saved — click Apply Changes to persist',true);
+}
+
+// Edit a clause overall status (ci=vres index, pi=D.pts index)
+function editClauseStatus(ci,pi){
+    const v=vres[ci];if(!v)return;
+    const el=document.getElementById('vban-edit-'+ci);
+    if(el)return; // already editing
+    const ban=document.querySelector('.vban');if(!ban)return;
+    const opts=['compliant','non_compliant','review_required','not_verified'];
+    let h=`<select id="vban-edit-${ci}" class="edt-sel" style="margin-left:10px">`;
+    opts.forEach(o=>{h+=`<option value="${o}"${v.status===o?' selected':''}>${slab(o)}</option>`});
+    h+=`</select> <button class="btn" style="padding:2px 10px;font-size:.72em;margin-left:4px" onclick="saveClauseStatus(${ci},${pi})">Save</button>`;
+    const span=document.createElement('span');span.innerHTML=h;span.style.marginLeft='8px';
+    ban.appendChild(span);
+}
+
+function saveClauseStatus(ci,pi){
+    const sel=document.getElementById('vban-edit-'+ci);if(!sel)return;
+    const nv=sel.value;
+    vres[ci].status=nv;
+    vres[ci].summary=nv==='compliant'?'Manually marked compliant by auditor':nv==='non_compliant'?'Manually marked non-compliant by auditor':nv==='review_required'?'Marked for review by auditor':'Status set by auditor';
+    afterEdit(pi);
+}
+
+// Edit an individual check within a clause (checks or rule_checks)
+// ci=vres index, cj=check index within array, arr='checks'|'rule_checks', pi=D.pts index
+function editChk(ci,cj,arr,pi){
+    const v=vres[ci];if(!v)return;
+    const list=v[arr];if(!list||!list[cj])return;
+    const c=list[cj];
+    const id=`chk-edit-${arr}-${ci}-${cj}`;
+    const el=document.getElementById(id);if(el)return;
+    const row=document.querySelector(`[data-edit-id="${arr}-${ci}-${cj}"]`);if(!row)return;
+    const opts=['pass','fail','warning','info'];
+    let h=`<div id="${id}" style="padding:8px;background:#f8f9ff;border:1px solid var(--primary);border-radius:6px;margin-top:6px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <label style="font-size:.75em;font-weight:700;color:#666">Status:</label>
+            <select class="edt-sel" id="${id}-st">`;
+    opts.forEach(o=>{h+=`<option value="${o}"${c.status===o?' selected':''}>${(o||'').toUpperCase()}</option>`});
+    h+=`</select></div>
+        <label style="font-size:.75em;font-weight:700;color:#666">Detail:</label>
+        <textarea class="edt-ta" id="${id}-dt">${esc(c.detail||'')}</textarea>
+        <div class="edt-row">
+            <button class="btn btn-g" onclick="saveChk(${ci},${cj},'${arr}',${pi})">Save</button>
+            <button class="btn" style="background:#999" onclick="selPt(${pi})">Cancel</button>
+        </div></div>`;
+    row.insertAdjacentHTML('afterend',h);
+}
+
+function saveChk(ci,cj,arr,pi){
+    const id=`chk-edit-${arr}-${ci}-${cj}`;
+    const st=document.getElementById(id+'-st')?.value;
+    const dt=document.getElementById(id+'-dt')?.value;
+    if(st)vres[ci][arr][cj].status=st;
+    if(dt!==undefined)vres[ci][arr][cj].detail=dt;
+    recalcClause(ci); // auto-update clause overall status from checks
+    afterEdit(pi);
+}
+
+// Edit a ruleset check (urr725, isbp821, isp98, fe_manual)
+function editRsChk(rsKey,cj){
+    const comp={urr725:urr725comp,isbp821:isbp821comp,isp98:isp98comp,fe:fecomp}[rsKey];
+    if(!comp||!comp.checks||!comp.checks[cj])return;
+    const c=comp.checks[cj];
+    const id=`rs-edit-${rsKey}-${cj}`;
+    const el=document.getElementById(id);if(el)return;
+    const row=document.querySelector(`[data-rs-edit="${rsKey}-${cj}"]`);if(!row)return;
+    const opts=['pass','fail','warning','info'];
+    let h=`<div id="${id}" style="padding:8px;background:#f8f9ff;border:1px solid var(--primary);border-radius:6px;margin:4px 0">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <label style="font-size:.75em;font-weight:700;color:#666">Status:</label>
+            <select class="edt-sel" id="${id}-st">`;
+    opts.forEach(o=>{h+=`<option value="${o}"${c.status===o?' selected':''}>${(o||'').toUpperCase()}</option>`});
+    h+=`</select></div>
+        <label style="font-size:.75em;font-weight:700;color:#666">Detail:</label>
+        <textarea class="edt-ta" id="${id}-dt">${esc(c.detail||'')}</textarea>
+        <div class="edt-row">
+            <button class="btn btn-g" onclick="saveRsChk('${rsKey}',${cj})">Save</button>
+            <button class="btn" style="background:#999" onclick="renderMT700()">Cancel</button>
+        </div></div>`;
+    row.insertAdjacentHTML('afterend',h);
+}
+
+function saveRsChk(rsKey,cj){
+    const comp={urr725:urr725comp,isbp821:isbp821comp,isp98:isp98comp,fe:fecomp}[rsKey];
+    if(!comp)return;
+    const id=`rs-edit-${rsKey}-${cj}`;
+    const st=document.getElementById(id+'-st')?.value;
+    const dt=document.getElementById(id+'-dt')?.value;
+    if(st)comp.checks[cj].status=st;
+    if(dt!==undefined)comp.checks[cj].detail=dt;
+    // Recalc ruleset summary
+    const checks=comp.checks;
+    comp.summary={total:checks.length,passed:checks.filter(c=>c.status==='pass').length,failed:checks.filter(c=>c.status==='fail').length,warnings:checks.filter(c=>c.status==='warning').length};
+    recalcSummary();
+    markEdited();
+    renderAll();
+    showToast('Ruleset check edited — click Apply Changes to persist',true);
+}
+
+// Recalculate overall verification summary from vres
+function recalcSummary(){
+    if(!vres)return;
+    let comp=0,nc=0,rr=0,nv=0;
+    vres.forEach(v=>{
+        if(v.status==='compliant')comp++;
+        else if(v.status==='non_compliant')nc++;
+        else if(v.status==='review_required')rr++;
+        else nv++;
+    });
+    const total=vres.length;
+    const rate=total>0?((comp/total)*100).toFixed(1)+'%':'0%';
+    const verdict=nc>0?'NON_COMPLIANT':rr>0?'REVIEW_REQUIRED':'COMPLIANT';
+    vsum={total_clauses:total,compliant:comp,non_compliant:nc,review_required:rr,not_verified:nv,compliance_rate:rate,overall_verdict:verdict,overall_message:`${comp}/${total} clauses compliant (edited)`};
+    // Also remap into D.pts
+    mapV();
+}
+
+// Apply edits to backend
+async function applyEdits(){
+    if(!vid){showToast('No verification to update',false);return}
+    recalcSummary();
+    const body={results:vres,summary:vsum};
+    if(mt700comp)body.mt700_compliance=mt700comp;
+    if(urr725comp)body.urr725_compliance=urr725comp;
+    if(isbp821comp)body.isbp821_compliance=isbp821comp;
+    if(isp98comp)body.isp98_compliance=isp98comp;
+    if(fecomp)body.fe_manual_compliance=fecomp;
+    if(crossDocConsistency)body.cross_document_consistency=crossDocConsistency;
+    if(installmentCompliance)body.installment_compliance=installmentCompliance;
+    try{
+        const r=await fetch(`${API}/api/verify/update/${vid}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||'Server error')}
+        hasEdits=false;editCount=0;
+        document.getElementById('editBar').classList.remove('active');
+        showToast('Changes saved — report will reflect edits',true);
+        renderAll();
+    }catch(e){showToast('Failed to save: '+e.message,false)}
+}
+
+// Discard edits — reload from server
+async function discardEdits(){
+    if(!vid)return;
+    try{
+        const rr=await fetch(`${API}/api/verify/result/${vid}`);
+        if(rr.ok){
+            const vd=await rr.json();
+            vres=vd.results||[];vsum=vd.summary||null;vElapsed=vd.elapsed_seconds||null;
+            mt700comp=vd.mt700_compliance||null;urr725comp=vd.urr725_compliance||null;
+            isbp821comp=vd.isbp821_compliance||null;isp98comp=vd.isp98_compliance||null;
+            fecomp=vd.fe_manual_compliance||null;vesselcomp=vd.vessel_compliance||null;
+            amtdatecomp=vd.amount_date_compliance||null;
+            crossDocConsistency=vd.cross_document_consistency||null;
+            installmentCompliance=vd.installment_compliance||null;
+            mapV();autoPopulateVessel();
+        }
+    }catch(_){}
+    hasEdits=false;editCount=0;
+    document.getElementById('editBar').classList.remove('active');
+    showToast('Edits discarded',true);
+    renderAll();
+}
+
+// ══════════════════════════════════════════
+// VESSEL TRACKING
+// ══════════════════════════════════════════
+let vtJobId=null,vtData=null,vtPollTimer=null;
+
+function toggleVesselPanel(){
+    const p=document.getElementById('vtPanel');
+    p.classList.toggle('active');
+    // Pre-fill vessel name from LC data if available
+    if(!document.getElementById('vtName').value && D.cf){
+        const vn=_findVesselName();
+        if(vn)document.getElementById('vtName').value=vn;
+    }
+}
+
+function _findVesselName(){
+    // Try to extract vessel name from consolidated fields or documents
+    const cf=D.cf||{};
+    // Check common fields where vessel name might appear
+    for(const k of ['Vessel_Name','vessel_name','Carrying_Vessel']){
+        const v=cf[k];
+        if(v){return typeof v==='object'?v.value:v}
+    }
+    // Search in shipping documents
+    for(const doc of (D.docs||[])){
+        const df=doc.fields||doc.extracted_fields||{};
+        for(const k of ['vessel_name','Vessel_Name','vessel','Carrying_Vessel']){
+            if(df[k])return typeof df[k]==='object'?df[k].value||df[k]:df[k];
+        }
+    }
+    return '';
+}
+
+async function startVesselTrack(){
+    const name=document.getElementById('vtName').value.trim();
+    if(name.length<3){showToast('Vessel name must be at least 3 characters',false);return}
+    const btn=document.getElementById('vtTrackBtn');
+    btn.disabled=true;btn.textContent='Searching...';
+    const st=document.getElementById('vtStatus');
+    st.classList.add('active');
+    st.innerHTML='<div style="text-align:center;color:#888">Searching for vessel...</div>';
+    try{
+        const r=await fetch(`${API}/api/vessel/track`,{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({
+                vessel_name:name,
+                port_of_loading:_getLCField('Port_of_Loading'),
+                port_of_discharge:_getLCField('Port_of_Discharge'),
+                lc_number:D.lc||''
+            })
+        });
+        const d=await r.json();
+        if(d.error){throw new Error(d.error)}
+        vtJobId=d.job_id;
+        vtData=d;
+        renderVesselStatus(d);
+        btn.textContent='Tracking';
+        document.getElementById('vtTrigger').classList.add('has-data','polling');
+        // Start polling every 100 seconds
+        startVesselPolling();
+    }catch(e){
+        st.innerHTML=`<div style="color:var(--danger);font-weight:600">Error: ${esc(e.message)}</div>`;
+        btn.disabled=false;btn.textContent='Track';
+    }
+}
+
+function _getLCField(name){
+    const cf=D.cf||{};
+    const v=cf[name];
+    if(!v)return '';
+    return typeof v==='object'?(v.value||''):v;
+}
+
+function renderVesselStatus(d){
+    const st=document.getElementById('vtStatus');
+    st.classList.add('active');
+    const v=d.vessel||{};
+    const p=d.position||{};
+    const calls=d.port_calls||[];
+    const status=d.status||'unknown';
+    const badgeCls=status==='tracking'?'tracking':status==='error'?'error':'searching';
+
+    let html=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div class="vt-vessel">${esc(v.name||'Unknown')}</div>
+        <span class="vt-badge ${badgeCls}">${esc(status.toUpperCase())}</span>
+    </div>`;
+
+    if(v.mmsi||v.imo){
+        html+=`<div style="font-size:.78em;color:#888;margin-bottom:8px">`;
+        if(v.mmsi)html+=`MMSI: ${v.mmsi}`;
+        if(v.imo)html+=` &middot; IMO: ${v.imo}`;
+        if(v.vessel_type)html+=` &middot; ${esc(v.vessel_type)}`;
+        if(v.flag)html+=` &middot; ${esc(v.flag)}`;
+        html+=`</div>`;
+    }
+
+    if(p.lat!==undefined && p.lat!==null){
+        html+=`<div class="vt-grid">
+            <div><div class="vt-lbl">Position</div><div class="vt-val">${p.lat}, ${p.lng}</div></div>
+            <div><div class="vt-lbl">Speed</div><div class="vt-val">${p.speed||'—'} kn</div></div>
+            <div><div class="vt-lbl">Course</div><div class="vt-val">${p.course||'—'}&deg;</div></div>
+            <div><div class="vt-lbl">Nav Status</div><div class="vt-val">${esc(p.nav_status||'—')}</div></div>
+            <div><div class="vt-lbl">Destination</div><div class="vt-val">${esc(p.destination||'—')}</div></div>
+            <div><div class="vt-lbl">ETA</div><div class="vt-val">${p.eta?_fmtVtDate(p.eta):'—'}</div></div>
+            <div><div class="vt-lbl">Draught</div><div class="vt-val">${p.draught||'—'} m</div></div>
+            <div><div class="vt-lbl">Updated</div><div class="vt-val">${p.last_updated?_fmtVtDate(p.last_updated):'—'}</div></div>
+        </div>`;
+    }
+
+    if(calls.length>0){
+        html+=`<div class="vt-ports"><h5>Recent Port Calls</h5>`;
+        for(const c of calls.slice(0,8)){
+            html+=`<div class="vt-port-item">
+                <span class="pe">${esc(c.event||'')}</span>
+                <span class="pn">${esc(c.port_name||'')}${c.unloco?' ('+esc(c.unloco)+')':''}</span>
+                <span class="pt">${c.time_utc?_fmtVtDate(c.time_utc):''}</span>
+            </div>`;
+        }
+        html+=`</div>`;
+    }
+
+    html+=`<div class="vt-refresh">Next refresh in ~100s &middot; Job: ${esc((d.job_id||'').substring(0,12))}</div>`;
+    html+=`<div class="vt-stop"><button onclick="stopVesselTrack()">Stop Tracking</button></div>`;
+    st.innerHTML=html;
+}
+
+function _fmtVtDate(s){
+    if(!s)return '—';
+    try{
+        const d=new Date(s);
+        if(isNaN(d.getTime()))return s;
+        return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'})+' '+d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+    }catch(_){return s}
+}
+
+function startVesselPolling(){
+    if(vtPollTimer)clearInterval(vtPollTimer);
+    vtPollTimer=setInterval(async()=>{
+        if(!vtJobId)return;
+        try{
+            const r=await fetch(`${API}/api/vessel/status/${vtJobId}`);
+            if(!r.ok)return;
+            const d=await r.json();
+            if(d.error)return;
+            vtData=d;
+            renderVesselStatus(d);
+        }catch(_){}
+    },100000); // 100 seconds
+}
+
+async function stopVesselTrack(){
+    if(!vtJobId)return;
+    if(vtPollTimer){clearInterval(vtPollTimer);vtPollTimer=null}
+    try{
+        await fetch(`${API}/api/vessel/track/${vtJobId}`,{method:'DELETE'});
+    }catch(_){}
+    vtJobId=null;vtData=null;
+    document.getElementById('vtStatus').classList.remove('active');
+    document.getElementById('vtStatus').innerHTML='';
+    document.getElementById('vtTrackBtn').disabled=false;
+    document.getElementById('vtTrackBtn').textContent='Track';
+    document.getElementById('vtTrigger').classList.remove('has-data','polling');
+}
+
+function autoPopulateVessel(){
+    // Auto-populate vessel panel from verification results (no manual button needed)
+    if(!vesselcomp||vesselcomp.tracking_status==='unavailable')return;
+    const v=vesselcomp.vessel_details||{};
+    const p=vesselcomp.position||{};
+    const calls=vesselcomp.port_calls||[];
+    // Populate the floating vessel panel with tracking data
+    vtData={vessel:v,position:p,port_calls:calls,status:vesselcomp.tracking_status,job_id:''};
+    vtJobId=null; // Don't poll — data comes from verification
+    // Show the trigger button with data indicator
+    const trigger=document.getElementById('vtTrigger');
+    trigger.classList.add('has-data');
+    trigger.title=`Vessel: ${vesselcomp.vessel_name||'Unknown'} — Click to view`;
+    // Pre-fill name
+    const nameInput=document.getElementById('vtName');
+    if(nameInput&&!nameInput.value)nameInput.value=vesselcomp.vessel_name||'';
+    // Auto-render in the status area
+    const st=document.getElementById('vtStatus');
+    if(st){
+        st.classList.add('active');
+        renderVesselStatus(vtData);
+    }
+    // Update search button to show status
+    const btn=document.getElementById('vtTrackBtn');
+    if(btn){btn.textContent='Auto-tracked';btn.disabled=true}
+}
+
+window.addEventListener('DOMContentLoaded',init);
+</script>
+</body>
+</html>
