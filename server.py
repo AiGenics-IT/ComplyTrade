@@ -1407,7 +1407,7 @@ def _process_pipeline(job_id: str):
         s1 = step01_raw_ocr.run(pdf_path, os.path.join(results_dir, 'step01'), _p)
         if s1.get('error'):
             raise Exception(f"Step 1 failed: {s1['error']}")
-        job['step_results']['step01'] = s1  # Full data — raw text needed by extracted-text viewer
+        job['step_results']['step01'] = _to_dict(s1)  # Full data — convert dataclasses to dicts
         _p(f"Step 1 done: {s1['total_pages']} pages in {s1['elapsed_seconds']}s")
 
         # ── Step 2: OCR Cleaning ──
@@ -1415,7 +1415,7 @@ def _process_pipeline(job_id: str):
         job['current_step'] = 2
         _p("Step 2: OCR Text Cleaning...")
         s2 = step02_ocr_cleaning.run(s1, os.path.join(results_dir, 'step02'), _p)
-        job['step_results']['step02'] = s2  # Full data — text needed by result endpoint
+        job['step_results']['step02'] = _to_dict(s2)  # Full data — convert dataclasses to dicts
 
         # ── Step 3: Page Sequencing ──
         # Group pages into logical document packets (e.g., pages 3-5 = one BL).
