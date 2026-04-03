@@ -201,9 +201,9 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
                         return pg_num, _content.strip(), True  # True = full replacement
                 return pg_num, None, False
 
-            # Always do full extraction — VLM reads the image and extracts ALL text.
-            # GLM text is provided as reference so VLM knows what was already captured.
-            # If VLM returns more content than GLM, we use VLM output as replacement.
+            # VLM does full extraction — GLM text provided as reference.
+            # VLM output is compared to GLM: if VLM found significantly MORE,
+            # it replaces GLM. Otherwise GLM is kept (it's the trusted primary).
             _prompt = (
                 "Extract ALL text from this trade finance document page. "
                 "Read every single line visible in the image.\n\n"
@@ -233,11 +233,13 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
             if _resp.status_code == 200:
                 _content = _resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
                 if _content and len(_content.strip()) > 10:
-                    # Use VLM output if it captured more than GLM
-                    if len(_content.strip()) > len(cleaned) * 0.8:
-                        return pg_num, _content.strip(), True  # Replace GLM with VLM
-                    else:
-                        return pg_num, _content.strip(), False  # Append as addition
+                    _vlm_len = len(_content.strip())
+                    _glm_len = len(cleaned)
+                    # Only replace if VLM got significantly MORE (30%+) than GLM
+                    if _vlm_len > _glm_len * 1.3:
+                        return pg_num, _content.strip(), True  # VLM has much more — replace
+                    # If similar length, keep GLM (trusted primary)
+                    return pg_num, None, False
             return pg_num, None, False
         except Exception:
             return pg_num, None, False
@@ -252,11 +254,15 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
                 for p in pages_out:
                     if p.page_number == pg_num:
                         if is_replacement:
-                            # GLM returned garbage — replace entirely with VLM extraction
                             vlm_replacements += 1
+                            _was_garbage = _is_garbage_text(p.cleaned_text) or len(p.cleaned_text) < 20
                             p.cleaned_text = new_text
-                            p.corrections.append({'original': 'GLM_GARBAGE', 'corrected': new_text, 'rule': 'vlm_full_extraction'})
-                            _progress(f"  Page {pg_num}: GLM garbage detected — VLM re-extracted ({len(new_text)} chars)")
+                            _rule = 'vlm_full_extraction' if _was_garbage else 'vlm_replacement'
+                            p.corrections.append({'original': 'GLM_GARBAGE' if _was_garbage else 'GLM_INCOMPLETE', 'corrected': new_text, 'rule': _rule})
+                            if _was_garbage:
+                                _progress(f"  Page {pg_num}: GLM garbage detected — VLM re-extracted ({len(new_text)} chars)")
+                            else:
+                                _progress(f"  Page {pg_num}: VLM found 30%+ more content — replaced GLM ({len(new_text)} vs {len(p.raw_text)} chars)")
                         else:
                             # Normal addition — append missing text
                             vlm_additions += 1
