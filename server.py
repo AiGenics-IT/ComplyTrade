@@ -168,6 +168,15 @@ def extracted_text_page():
     raise HTTPException(404, "Extracted text viewer not found")
 
 
+@app.get("/api/page-image/{job_id}/{page_num}")
+def get_page_image(job_id: str, page_num: int):
+    """Serve a page image from the step01 images directory."""
+    img_path = os.path.join(RESULTS_DIR, job_id, 'step01', 'images', f'page_{page_num:03d}.png')
+    if os.path.exists(img_path):
+        return FileResponse(img_path, media_type="image/png")
+    raise HTTPException(404, "Page image not found")
+
+
 @app.get("/api/extracted-text/{job_id}")
 def get_extracted_text(job_id: str):
     """Return all extracted text for every page — GLM raw, cleaned, VLM additions, final."""
