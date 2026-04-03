@@ -202,19 +202,23 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
                 return pg_num, None, False
 
             # Normal mode: compare GLM text against image, find missing text
+            # Estimate how much text the page should have vs what GLM extracted
+            # If GLM got very little text for a page that clearly has more, do full extraction
             _prompt = (
-                "This is a scanned trade finance document page. Compare the image with the OCR text below.\n"
-                "The OCR may have MISSED some text — especially numbered clauses, text near page edges, "
-                "or text at the bottom of the page.\n\n"
-                "OCR TEXT:\n%s\n\n"
-                "TASK:\n"
-                "1. Read EVERY line of text in the image\n"
-                "2. Check if ANY text visible in the image is NOT in the OCR text above\n"
-                "3. Check text at the TOP and BOTTOM of the page\n"
-                "4. Check if any text is CUT OFF (incomplete)\n\n"
-                "If you find missing text, return ONLY the missing text exactly as it appears.\n"
-                "If the OCR text is complete, return ONLY: COMPLETE\n"
-                "Do NOT rewrite or repeat the OCR text."
+                "Look at this document page image carefully. The OCR system extracted this text:\n\n"
+                "---OCR TEXT---\n%s\n---END OCR---\n\n"
+                "TASK: Compare the OCR text above with ALL text visible in the image.\n\n"
+                "STEP 1: Count roughly how many lines of text are in the IMAGE.\n"
+                "STEP 2: Count how many lines are in the OCR TEXT.\n"
+                "STEP 3: If the image has SIGNIFICANTLY MORE text than the OCR (e.g. the image shows "
+                "a full invoice/document but OCR only has a few lines), the OCR is INCOMPLETE.\n\n"
+                "If OCR is INCOMPLETE or MISSING text:\n"
+                "- Return ALL the missing text exactly as it appears in the image\n"
+                "- Include headers, addresses, line items, tables, amounts, totals\n"
+                "- Include column headers and all rows\n"
+                "- Note stamps as [STAMP] and signatures as [SIGNATURE]\n\n"
+                "If OCR text truly covers ALL visible text in the image, return ONLY: COMPLETE\n\n"
+                "Do NOT repeat text that is already in the OCR output."
             ) % cleaned
             _resp = _requests.post(QWEN_VLM_URL, json={
                 "model": QWEN_VLM_MODEL,
@@ -222,7 +226,7 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
                     {"type": "image_url", "image_url": {"url": "data:image/png;base64," + _img_b64}},
                     {"type": "text", "text": _prompt}
                 ]}],
-                "max_tokens": 2000, "temperature": 0.1
+                "max_tokens": 4000, "temperature": 0.1
             }, timeout=int(VLM_TIMEOUT))
             if _resp.status_code == 200:
                 _content = _resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
