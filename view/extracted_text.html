@@ -127,7 +127,7 @@
     </div>
 <script>
 const P=new URLSearchParams(location.search),jobId=P.get('job_id'),API=location.origin;
-let pages=[],si=-1,tab='final',zm=1,imgOn=true,hits=[],hi=-1,fit=true;
+let pages=[],si=-1,tab='final',zm=1,imgOn=true,hits=[],hi=-1,fit=true,rot=0;
 
 function e(s){return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):'';}
 function ct(t){const l=t.toLowerCase();return l==='lc'||l==='mt700'?'lc':l==='amendment'||l==='mt707'?'amd':'';}
@@ -172,7 +172,7 @@ function sel(i){
     // Image — use w=800 for fast loading
     const img=document.getElementById('pi');
     img.src=`${API}/api/page-image/${jobId}/${p.page_number}?w=800`;
-    img.style.transform='';img.style.maxWidth='100%';zm=1;fit=true;
+    img.style.transform='';img.style.maxWidth='100%';zm=1;fit=true;rot=0;
     // Image toolbar
     rImgBar();
     // Tabs above text pane
@@ -189,22 +189,26 @@ function sel(i){
         <span class="pg-type-lbl">${e(p.document_type||'')}</span>${cs}${vb}
         <span class="spacer"></span>
         <div class="srch"><input id="sin" placeholder="Search in text..." oninput="doS()" onkeydown="if(event.key==='Enter'){event.shiftKey?pH():nH()}"><span class="si" id="sif"></span><button class="btn" onclick="pH()" title="Prev">&#9650;</button><button class="btn" onclick="nH()" title="Next">&#9660;</button></div>
-        <button class="btn" onclick="cpT(this)">Copy</button>`;
+        <button class="btn" onclick="cpT(this)">Copy</button>
+        ${!imgOn?'<button class="btn" onclick="togImg()" style="background:#dbeafe;color:#1554ca">Show Image</button>':''}`;
     showT();
 }
 
 function rImgBar(){
     document.getElementById('it').innerHTML=`
         <span class="zlbl" id="zl">${fit?'Fit':Math.round(zm*100)+'%'}</span>
-        <button class="ibtn" onclick="zI(-0.15)">&#8722;</button>
-        <button class="ibtn" onclick="zI(0.15)">&#43;</button>
+        <button class="ibtn" onclick="zI(-0.15)" title="Zoom out">&#8722;</button>
+        <button class="ibtn" onclick="zI(0.15)" title="Zoom in">&#43;</button>
         <div class="sep"></div>
         <button class="ibtn ${fit?'active':''}" onclick="zFit()">Fit</button>
         <button class="ibtn" onclick="z100()">100%</button>
         <button class="ibtn" onclick="z200()">200%</button>
         <div class="sep"></div>
+        <button class="ibtn" onclick="rotL()" title="Rotate left">&#8634;</button>
+        <button class="ibtn" onclick="rotR()" title="Rotate right">&#8635;</button>
+        <div class="sep"></div>
         <button class="ibtn" onclick="fullImg()">Full Res</button>
-        <button class="ibtn" onclick="togImg()">${imgOn?'&#10005; Hide':'Show'}</button>`;
+        <button class="ibtn" onclick="togImg()">&#10005; Hide</button>`;
 }
 
 function sTab(t,btn){tab=t;hits=[];hi=-1;const sin=document.getElementById('sin');if(sin)sin.value='';document.getElementById('sif').textContent='';document.querySelectorAll('.tb').forEach(b=>b.classList.remove('active'));btn.classList.add('active');showT();}
@@ -240,10 +244,12 @@ function cpT(btn){navigator.clipboard.writeText(gT()).then(()=>{btn.textContent=
 
 // Image controls
 function zI(d){fit=false;zm=Math.max(0.2,Math.min(4,zm+d));applyZm();}
-function zFit(){fit=true;zm=1;const img=document.getElementById('pi');img.style.maxWidth='100%';img.style.transform='';img.style.transformOrigin='';rImgBar();}
+function zFit(){fit=true;zm=1;const img=document.getElementById('pi');img.style.maxWidth='100%';img.style.transform=rot?`rotate(${rot}deg)`:'';img.style.transformOrigin='center center';rImgBar();}
 function z100(){fit=false;zm=1;applyZm();}
 function z200(){fit=false;zm=2;applyZm();}
-function applyZm(){const img=document.getElementById('pi');img.style.maxWidth='none';img.style.transform=`scale(${zm})`;img.style.transformOrigin='top left';rImgBar();}
+function applyZm(){const img=document.getElementById('pi');img.style.maxWidth='none';img.style.transform=`scale(${zm}) rotate(${rot}deg)`;img.style.transformOrigin='top left';rImgBar();}
+function rotL(){rot=(rot-90)%360;fit?zFit():applyZm();}
+function rotR(){rot=(rot+90)%360;fit?zFit():applyZm();}
 function fullImg(){
     const p=pages[si];if(!p)return;
     const img=document.getElementById('pi');
@@ -254,7 +260,9 @@ function togImg(){
     imgOn=!imgOn;
     document.getElementById('ip').classList.toggle('hidden',!imgOn);
     document.getElementById('rh').style.display=imgOn?'':'none';
-    rImgBar();
+    if(imgOn)rImgBar();
+    // Re-render toolbar to show/hide "Show Image" button
+    if(si>=0)sel(si);
 }
 
 // Resize
