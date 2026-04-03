@@ -201,27 +201,22 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
                         return pg_num, _content.strip(), True  # True = full replacement
                 return pg_num, None, False
 
-            # VLM does full extraction — GLM text provided as reference.
-            # VLM output is compared to GLM: if VLM found significantly MORE,
-            # it replaces GLM. Otherwise GLM is kept (it's the trusted primary).
+            # VLM always does full extraction — it captures data GLM misses
+            # (amounts, headers, table values) even when char counts are similar.
+            # VLM output replaces GLM when VLM succeeds.
+            # GLM is the fallback when VLM fails or returns too little.
             _prompt = (
                 "Extract ALL text from this trade finance document page. "
                 "Read every single line visible in the image.\n\n"
-                "The OCR system already extracted SOME text (shown below for reference only "
-                "— do NOT limit yourself to this):\n"
-                "---REFERENCE---\n%s\n---END---\n\n"
-                "Now extract the COMPLETE text from the image. Include:\n"
-                "- Company name, address, phone, fax, website from the header\n"
-                "- All TO/FROM address details\n"
-                "- Date, invoice/document number, reference numbers\n"
-                "- ALL column headers and ALL rows with their values\n"
-                "- ALL amounts, quantities, unit prices in their proper columns\n"
-                "- ALL totals, subtotals, summary tables\n"
-                "- HS codes, NTN numbers, LC numbers, weight, country of origin\n"
-                "- Certifications, payment terms, shipping terms\n"
+                "RULES:\n"
+                "- Extract text exactly as it appears, do NOT add markdown, bold, or table formatting\n"
+                "- Preserve original line breaks\n"
+                "- Include ALL numbers, amounts, quantities exactly as shown\n"
+                "- Include company names, addresses, phone/fax numbers\n"
+                "- Include ALL column values (QTY, UNIT PRICE, AMOUNT) for each row\n"
                 "- Note stamps as [STAMP] and signatures as [SIGNATURE]\n\n"
-                "Return the FULL extracted text. Do NOT return COMPLETE."
-            ) % cleaned
+                "Return PLAIN TEXT only. No markdown. No bold. No table separators."
+            )
             _resp = _requests.post(QWEN_VLM_URL, json={
                 "model": QWEN_VLM_MODEL,
                 "messages": [{"role": "user", "content": [
@@ -233,13 +228,17 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
             if _resp.status_code == 200:
                 _content = _resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
                 if _content and len(_content.strip()) > 10:
-                    _vlm_len = len(_content.strip())
-                    _glm_len = len(cleaned)
-                    # Only replace if VLM got significantly MORE (30%+) than GLM
-                    if _vlm_len > _glm_len * 1.3:
-                        return pg_num, _content.strip(), True  # VLM has much more — replace
-                    # If similar length, keep GLM (trusted primary)
-                    return pg_num, None, False
+                    # Strip any markdown VLM might still add
+                    import re as _re
+                    _clean = _re.sub(r'\*\*([^*]+)\*\*', r'\1', _content)
+                    _clean = _re.sub(r'\*([^*]+)\*', r'\1', _clean)
+                    _clean = _re.sub(r'#{1,6}\s+', '', _clean)
+                    _clean = _re.sub(r'-{3,}\|?', '', _clean)
+                    _clean = _clean.strip()
+                    # Use VLM if it got reasonable content (at least 50% of GLM length)
+                    if len(_clean) >= len(cleaned) * 0.5:
+                        return pg_num, _clean, True  # Replace with VLM
+            # VLM failed or returned too little — keep GLM
             return pg_num, None, False
         except Exception:
             return pg_num, None, False
@@ -256,13 +255,14 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
                         if is_replacement:
                             vlm_replacements += 1
                             _was_garbage = _is_garbage_text(p.cleaned_text) or len(p.cleaned_text) < 20
+                            _glm_len = len(p.cleaned_text)
                             p.cleaned_text = new_text
-                            _rule = 'vlm_full_extraction' if _was_garbage else 'vlm_replacement'
-                            p.corrections.append({'original': 'GLM_GARBAGE' if _was_garbage else 'GLM_INCOMPLETE', 'corrected': new_text, 'rule': _rule})
+                            _rule = 'vlm_full_extraction' if _was_garbage else 'vlm_primary'
+                            p.corrections.append({'original': f'GLM:{_glm_len}chars', 'corrected': new_text, 'rule': _rule})
                             if _was_garbage:
-                                _progress(f"  Page {pg_num}: GLM garbage detected — VLM re-extracted ({len(new_text)} chars)")
+                                _progress(f"  Page {pg_num}: GLM garbage — VLM extracted ({len(new_text)} chars)")
                             else:
-                                _progress(f"  Page {pg_num}: VLM found 30%+ more content — replaced GLM ({len(new_text)} vs {len(p.raw_text)} chars)")
+                                _progress(f"  Page {pg_num}: VLM primary ({len(new_text)} chars, GLM was {_glm_len})")
                         else:
                             # Normal addition — append missing text
                             vlm_additions += 1
