@@ -201,24 +201,26 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
                         return pg_num, _content.strip(), True  # True = full replacement
                 return pg_num, None, False
 
-            # Normal mode: compare GLM text against image, find missing text
-            # Estimate how much text the page should have vs what GLM extracted
-            # If GLM got very little text for a page that clearly has more, do full extraction
+            # Always do full extraction — VLM reads the image and extracts ALL text.
+            # GLM text is provided as reference so VLM knows what was already captured.
+            # If VLM returns more content than GLM, we use VLM output as replacement.
             _prompt = (
-                "Look at this document page image carefully. The OCR system extracted this text:\n\n"
-                "---OCR TEXT---\n%s\n---END OCR---\n\n"
-                "TASK: Compare the OCR text above with ALL text visible in the image.\n\n"
-                "STEP 1: Count roughly how many lines of text are in the IMAGE.\n"
-                "STEP 2: Count how many lines are in the OCR TEXT.\n"
-                "STEP 3: If the image has SIGNIFICANTLY MORE text than the OCR (e.g. the image shows "
-                "a full invoice/document but OCR only has a few lines), the OCR is INCOMPLETE.\n\n"
-                "If OCR is INCOMPLETE or MISSING text:\n"
-                "- Return ALL the missing text exactly as it appears in the image\n"
-                "- Include headers, addresses, line items, tables, amounts, totals\n"
-                "- Include column headers and all rows\n"
+                "Extract ALL text from this trade finance document page. "
+                "Read every single line visible in the image.\n\n"
+                "The OCR system already extracted SOME text (shown below for reference only "
+                "— do NOT limit yourself to this):\n"
+                "---REFERENCE---\n%s\n---END---\n\n"
+                "Now extract the COMPLETE text from the image. Include:\n"
+                "- Company name, address, phone, fax, website from the header\n"
+                "- All TO/FROM address details\n"
+                "- Date, invoice/document number, reference numbers\n"
+                "- ALL column headers and ALL rows with their values\n"
+                "- ALL amounts, quantities, unit prices in their proper columns\n"
+                "- ALL totals, subtotals, summary tables\n"
+                "- HS codes, NTN numbers, LC numbers, weight, country of origin\n"
+                "- Certifications, payment terms, shipping terms\n"
                 "- Note stamps as [STAMP] and signatures as [SIGNATURE]\n\n"
-                "If OCR text truly covers ALL visible text in the image, return ONLY: COMPLETE\n\n"
-                "Do NOT repeat text that is already in the OCR output."
+                "Return the FULL extracted text. Do NOT return COMPLETE."
             ) % cleaned
             _resp = _requests.post(QWEN_VLM_URL, json={
                 "model": QWEN_VLM_MODEL,
@@ -230,8 +232,12 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
             }, timeout=int(VLM_TIMEOUT))
             if _resp.status_code == 200:
                 _content = _resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
-                if 'COMPLETE' not in _content.upper()[:20] and len(_content.strip()) > 10:
-                    return pg_num, _content.strip(), False
+                if _content and len(_content.strip()) > 10:
+                    # Use VLM output if it captured more than GLM
+                    if len(_content.strip()) > len(cleaned) * 0.8:
+                        return pg_num, _content.strip(), True  # Replace GLM with VLM
+                    else:
+                        return pg_num, _content.strip(), False  # Append as addition
             return pg_num, None, False
         except Exception:
             return pg_num, None, False
