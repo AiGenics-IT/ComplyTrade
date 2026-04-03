@@ -70,7 +70,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
-from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -169,12 +169,26 @@ def extracted_text_page():
 
 
 @app.get("/api/page-image/{job_id}/{page_num}")
-def get_page_image(job_id: str, page_num: int):
-    """Serve a page image from the step01 images directory."""
+def get_page_image(job_id: str, page_num: int, w: int = 0):
+    """Serve a page image, optionally resized for faster loading."""
     img_path = os.path.join(RESULTS_DIR, job_id, 'step01', 'images', f'page_{page_num:03d}.png')
-    if os.path.exists(img_path):
-        return FileResponse(img_path, media_type="image/png")
-    raise HTTPException(404, "Page image not found")
+    if not os.path.exists(img_path):
+        raise HTTPException(404, "Page image not found")
+    if w and w < 2000:
+        try:
+            from PIL import Image as _PILImage
+            import io as _io
+            img = _PILImage.open(img_path)
+            ratio = w / img.width
+            new_h = int(img.height * ratio)
+            img = img.resize((w, new_h), _PILImage.LANCZOS)
+            buf = _io.BytesIO()
+            img.save(buf, format='JPEG', quality=85)
+            buf.seek(0)
+            return StreamingResponse(buf, media_type="image/jpeg")
+        except Exception:
+            pass
+    return FileResponse(img_path, media_type="image/png")
 
 
 @app.get("/api/extracted-text/{job_id}")

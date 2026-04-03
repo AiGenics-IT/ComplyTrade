@@ -7,361 +7,267 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f0f4f8; color: #1e293b; }
-        .header { background: linear-gradient(135deg, #1554ca 0%, #0f3a8e 100%); color: white; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; }
-        .header h1 { font-size: 1.2em; display: inline; vertical-align: middle; }
-        .header-right { font-size: 0.82em; opacity: 0.8; }
-        .layout { display: flex; height: calc(100vh - 52px); }
+        .header { background: linear-gradient(135deg, #1554ca 0%, #0f3a8e 100%); color: white; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; }
+        .header h1 { font-size: 1.15em; display: inline; vertical-align: middle; }
+        .layout { display: flex; height: calc(100vh - 48px); }
 
         /* Sidebar */
-        .sidebar { width: 240px; min-width: 240px; background: #fff; border-right: 1px solid #dde3ed; display: flex; flex-direction: column; }
-        .sidebar-header { padding: 12px 14px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-weight: 700; font-size: 0.82em; color: #475569; display: flex; justify-content: space-between; }
-        .sidebar-search { padding: 6px 10px; border-bottom: 1px solid #e2e8f0; }
-        .sidebar-search input { width: 100%; padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 5px; font-size: 0.8em; outline: none; }
-        .sidebar-search input:focus { border-color: #1554ca; box-shadow: 0 0 0 2px rgba(21,84,202,0.12); }
-        .page-list { flex: 1; overflow-y: auto; }
-        .page-item { padding: 8px 14px; cursor: pointer; border-bottom: 1px solid #f1f5f9; transition: background 0.12s; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
-        .page-item:hover { background: #eff6ff; }
-        .page-item.active { background: #dbeafe; border-left: 3px solid #1554ca; }
-        .pg-num { font-weight: 700; font-size: 0.88em; min-width: 20px; }
-        .pg-badge { font-size: 0.68em; color: #fff; background: #16a34a; padding: 1px 6px; border-radius: 8px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px; }
-        .pg-badge.lc { background: #2563eb; }
-        .pg-badge.amendment { background: #7c3aed; }
-        .pg-badge.vlm-badge { background: #d97706; font-size: 0.62em; }
-        .pg-chars { font-size: 0.7em; color: #94a3b8; white-space: nowrap; }
+        .sidebar { width: 220px; min-width: 220px; background: #fff; border-right: 1px solid #dde3ed; display: flex; flex-direction: column; }
+        .sb-head { padding: 10px 12px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-weight: 700; font-size: 0.8em; color: #475569; display: flex; justify-content: space-between; }
+        .sb-search { padding: 5px 8px; border-bottom: 1px solid #e2e8f0; }
+        .sb-search input { width: 100%; padding: 4px 7px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 0.78em; outline: none; }
+        .sb-search input:focus { border-color: #1554ca; }
+        .pg-list { flex: 1; overflow-y: auto; }
+        .pi { padding: 7px 12px; cursor: pointer; border-bottom: 1px solid #f1f5f9; display: flex; justify-content: space-between; align-items: center; gap: 4px; transition: background 0.1s; }
+        .pi:hover { background: #eff6ff; }
+        .pi.active { background: #dbeafe; border-left: 3px solid #1554ca; }
+        .pn { font-weight: 700; font-size: 0.85em; min-width: 16px; }
+        .pb { font-size: 0.65em; color: #fff; background: #16a34a; padding: 1px 5px; border-radius: 6px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 90px; }
+        .pb.lc { background: #2563eb; } .pb.amd { background: #7c3aed; } .pb.vlm { background: #d97706; font-size: 0.6em; }
+        .pc { font-size: 0.68em; color: #94a3b8; }
 
-        /* Main area */
+        /* Main */
         .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 
-        /* Stats */
-        .stats { display: flex; gap: 12px; padding: 14px 20px; flex-wrap: wrap; background: #fff; border-bottom: 1px solid #e2e8f0; }
-        .stat { text-align: center; flex: 1; min-width: 100px; }
-        .stat-val { font-size: 1.3em; font-weight: 800; color: #1e293b; }
-        .stat-val.vlm-c { color: #d97706; }
-        .stat-val.final-c { color: #16a34a; }
-        .stat-lbl { font-size: 0.72em; color: #64748b; }
+        /* Stats row */
+        .stats { display: flex; gap: 0; background: #fff; border-bottom: 1px solid #e2e8f0; }
+        .st { flex: 1; text-align: center; padding: 10px 8px; border-right: 1px solid #f1f5f9; }
+        .st:last-child { border-right: none; }
+        .sv { font-size: 1.2em; font-weight: 800; }
+        .sv.v1 { color: #1554ca; } .sv.v2 { color: #1e293b; } .sv.v3 { color: #d97706; } .sv.v4 { color: #16a34a; }
+        .sl { font-size: 0.7em; color: #64748b; }
 
-        /* Toolbar */
-        .toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 20px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; }
-        .toolbar .tabs { display: flex; gap: 0; }
-        .tab-btn { padding: 6px 14px; cursor: pointer; font-size: 0.8em; font-weight: 600; color: #64748b; border: 1px solid #e2e8f0; background: #fff; border-bottom: none; margin-bottom: -1px; transition: all 0.15s; }
-        .tab-btn:first-child { border-radius: 6px 0 0 0; }
-        .tab-btn:last-child { border-radius: 0 6px 0 0; }
-        .tab-btn.active { color: #1554ca; background: #eff6ff; border-color: #1554ca; }
-        .tab-btn.vlm-t { color: #92400e; }
-        .tab-btn.vlm-t.active { color: #d97706; background: #fffbeb; border-color: #d97706; }
-        .search-box { margin-left: auto; display: flex; align-items: center; gap: 4px; }
-        .search-box input { padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 5px; font-size: 0.78em; width: 180px; outline: none; }
-        .search-box input:focus { border-color: #1554ca; }
-        .search-info { font-size: 0.72em; color: #94a3b8; min-width: 60px; }
-        .tool-btn { background: #e2e8f0; border: none; padding: 5px 10px; border-radius: 5px; font-size: 0.75em; cursor: pointer; color: #475569; font-weight: 600; }
-        .tool-btn:hover { background: #cbd5e1; }
-        .tool-btn.copied { background: #dcfce7; color: #16a34a; }
+        /* Toolbar — single row */
+        .toolbar { display: flex; align-items: center; gap: 6px; padding: 6px 14px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; flex-wrap: nowrap; }
+        .tabs { display: flex; gap: 0; }
+        .tb { padding: 5px 12px; cursor: pointer; font-size: 0.78em; font-weight: 600; color: #64748b; background: #fff; border: 1px solid #e2e8f0; transition: all 0.12s; }
+        .tb:first-child { border-radius: 5px 0 0 5px; }
+        .tb:last-child { border-radius: 0 5px 5px 0; }
+        .tb + .tb { border-left: none; }
+        .tb.active { color: #fff; background: #1554ca; border-color: #1554ca; }
+        .tb.vt { color: #92400e; }
+        .tb.vt.active { background: #d97706; border-color: #d97706; color: #fff; }
+        .pg-info { font-size: 0.8em; color: #334155; font-weight: 700; }
+        .pg-type-lbl { font-size: 0.75em; color: #64748b; }
+        .badge-sm { padding: 1px 6px; border-radius: 6px; font-size: 0.68em; font-weight: 600; }
+        .badge-orig { background: #dcfce7; color: #166534; }
+        .badge-copy { background: #fef3c7; color: #92400e; }
+        .badge-vlm { background: #fef3c7; color: #d97706; }
+        .spacer { flex: 1; }
+        .srch { display: flex; align-items: center; gap: 3px; }
+        .srch input { padding: 4px 7px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 0.76em; width: 150px; outline: none; }
+        .srch input:focus { border-color: #1554ca; }
+        .si { font-size: 0.7em; color: #94a3b8; min-width: 50px; text-align: center; }
+        .btn { background: #e2e8f0; border: none; padding: 4px 8px; border-radius: 4px; font-size: 0.74em; cursor: pointer; color: #475569; font-weight: 600; }
+        .btn:hover { background: #cbd5e1; }
+        .btn.ok { background: #dcfce7; color: #16a34a; }
 
-        /* Content: side by side */
-        .content-area { flex: 1; display: flex; overflow: hidden; }
-        .img-pane { width: 45%; min-width: 200px; background: #1e293b; display: flex; align-items: center; justify-content: center; overflow: auto; position: relative; border-right: 2px solid #334155; }
-        .img-pane img { max-width: 100%; max-height: 100%; object-fit: contain; }
-        .img-pane .no-img { color: #64748b; font-size: 0.9em; }
-        .img-controls { position: absolute; bottom: 10px; right: 10px; display: flex; gap: 4px; }
-        .img-controls button { background: rgba(255,255,255,0.15); border: none; color: #fff; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em; backdrop-filter: blur(4px); }
-        .img-controls button:hover { background: rgba(255,255,255,0.3); }
-        .text-pane { flex: 1; overflow-y: auto; padding: 16px 20px; background: #fff; }
-        .text-pane pre { font-family: 'Consolas', 'Courier New', monospace; font-size: 0.82em; line-height: 1.7; white-space: pre-wrap; word-break: break-word; color: #334155; }
-        .text-pane.vlm-bg { background: #fffbeb; }
+        /* Content split */
+        .content { flex: 1; display: flex; overflow: hidden; }
 
-        /* Search highlight */
-        mark { background: #fbbf24; color: #1e293b; padding: 0 1px; border-radius: 2px; }
-        mark.current { background: #f97316; color: #fff; }
+        /* Image pane */
+        .img-pane { width: 40%; min-width: 200px; background: #1a1a2e; display: flex; flex-direction: column; position: relative; }
+        .img-pane.hidden { display: none; }
+        .img-toolbar { display: flex; align-items: center; gap: 4px; padding: 4px 8px; background: #0f0f23; justify-content: flex-end; }
+        .img-toolbar .ibtn { background: rgba(255,255,255,0.1); border: none; color: #ccc; padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: 0.72em; font-weight: 600; }
+        .img-toolbar .ibtn:hover { background: rgba(255,255,255,0.25); color: #fff; }
+        .img-toolbar .ibtn.active { background: rgba(59,130,246,0.5); color: #fff; }
+        .img-toolbar .sep { width: 1px; height: 16px; background: rgba(255,255,255,0.15); }
+        .img-toolbar .zlbl { color: #888; font-size: 0.7em; min-width: 35px; text-align: center; }
+        .img-wrap { flex: 1; overflow: auto; display: flex; align-items: flex-start; justify-content: center; padding: 8px; }
+        .img-wrap img { transition: transform 0.15s; cursor: grab; max-width: 100%; }
 
         /* Resize handle */
-        .resize-handle { width: 5px; background: #334155; cursor: col-resize; flex-shrink: 0; }
-        .resize-handle:hover { background: #1554ca; }
+        .rhandle { width: 4px; background: #334155; cursor: col-resize; flex-shrink: 0; }
+        .rhandle:hover { background: #3b82f6; }
 
-        /* No selection */
-        .no-sel { display: flex; align-items: center; justify-content: center; height: 100%; color: #94a3b8; flex-direction: column; gap: 8px; }
-        .no-sel .icon { font-size: 2.5em; }
+        /* Text pane */
+        .txt-pane { flex: 1; display: flex; flex-direction: column; background: #fff; overflow: hidden; }
+        .txt-pane.vlm-bg pre { background: #fffbeb; }
+        .txt-tabs { display: flex; gap: 0; padding: 0 14px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; align-items: flex-end; }
+        .txt-tabs .tb { margin-bottom: -1px; border-bottom: 2px solid transparent; border-radius: 0; border: none; background: none; padding: 8px 14px; }
+        .txt-tabs .tb.active { border-bottom: 2px solid #1554ca; color: #1554ca; background: #fff; }
+        .txt-tabs .tb.vt.active { border-bottom-color: #d97706; color: #d97706; }
+        .txt-pane pre { font-family: 'Consolas', 'Courier New', monospace; font-size: 0.8em; line-height: 1.7; white-space: pre-wrap; word-break: break-word; color: #334155; flex: 1; overflow-y: auto; padding: 14px 18px; margin: 0; }
 
-        .loading { text-align: center; padding: 60px; color: #64748b; }
-
-        /* Toggle image */
-        .img-pane.hidden { display: none; }
+        mark { background: #fbbf24; padding: 0 1px; border-radius: 2px; }
+        mark.cur { background: #f97316; color: #fff; }
+        .no-sel { display: flex; align-items: center; justify-content: center; height: 100%; color: #94a3b8; flex-direction: column; gap: 6px; font-size: 0.9em; }
     </style>
 </head>
 <body>
     <div class="header">
-        <div>
-            <img src="/logo.png" alt="AiGenics" style="height:26px;margin-right:8px;vertical-align:middle">
-            <h1>Extracted Text Viewer</h1>
-        </div>
-        <div class="header-right" id="jobInfo"></div>
+        <div><img src="/logo.png" alt="" style="height:24px;margin-right:8px;vertical-align:middle"><h1>Extracted Text Viewer</h1></div>
+        <div style="font-size:0.8em;opacity:0.8" id="ji"></div>
     </div>
     <div class="layout">
         <div class="sidebar">
-            <div class="sidebar-header"><span>Pages</span><span id="pgCount"></span></div>
-            <div class="sidebar-search"><input type="text" id="sideSearch" placeholder="Filter pages..." oninput="filterPages()"></div>
-            <div class="page-list" id="pageList"></div>
+            <div class="sb-head"><span>Pages</span><span id="pgC"></span></div>
+            <div class="sb-search"><input id="sf" placeholder="Filter..." oninput="filterPg()"></div>
+            <div class="pg-list" id="pl"></div>
         </div>
         <div class="main">
-            <div class="stats" id="stats"></div>
-            <div id="viewerWrap" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
-                <div class="no-sel" id="noSel"><div class="icon">&#128196;</div><div>Select a page from the sidebar</div></div>
-                <div id="toolbarWrap" style="display:none">
-                    <div class="toolbar" id="toolbar"></div>
-                </div>
-                <div class="content-area" id="contentArea" style="display:none">
-                    <div class="img-pane" id="imgPane">
-                        <img id="pageImg" src="" alt="Page image">
-                        <div class="img-controls">
-                            <button onclick="zoomImg(-0.2)" title="Zoom out">-</button>
-                            <button onclick="zoomImg(0)" title="Reset">Fit</button>
-                            <button onclick="zoomImg(0.2)" title="Zoom in">+</button>
-                            <button onclick="toggleImg()" title="Hide image">&#x2715;</button>
-                        </div>
+            <div class="stats" id="sts"></div>
+            <div id="vw" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+                <div class="no-sel" id="ns">&#128196;<br>Select a page</div>
+                <div id="tbw" style="display:none"><div class="toolbar" id="tb"></div></div>
+                <div class="content" id="ct" style="display:none">
+                    <div class="txt-pane" id="tp">
+                        <div class="txt-tabs" id="ttabs"></div>
+                        <pre id="tc"></pre>
                     </div>
-                    <div class="resize-handle" id="resizeHandle"></div>
-                    <div class="text-pane" id="textPane"><pre id="textContent"></pre></div>
+                    <div class="rhandle" id="rh"></div>
+                    <div class="img-pane" id="ip">
+                        <div class="img-toolbar" id="it"></div>
+                        <div class="img-wrap" id="iw"><img id="pi" src="" alt="Page"></div>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
-
 <script>
-const params = new URLSearchParams(location.search);
-const jobId = params.get('job_id');
-const API = location.origin;
-let allPages = [], selIdx = -1, curTab = 'final', imgZoom = 1, imgVisible = true;
-let searchHits = [], searchIdx = -1;
+const P=new URLSearchParams(location.search),jobId=P.get('job_id'),API=location.origin;
+let pages=[],si=-1,tab='final',zm=1,imgOn=true,hits=[],hi=-1,fit=true;
 
-function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
-function classifyType(t) {
-    if (!t) return '';
-    const l = t.toLowerCase();
-    return l === 'lc' || l === 'mt700' || l.includes('letter of credit') ? 'lc' : l === 'amendment' || l === 'mt707' ? 'amendment' : '';
+function e(s){return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):'';}
+function ct(t){const l=t.toLowerCase();return l==='lc'||l==='mt700'?'lc':l==='amendment'||l==='mt707'?'amd':'';}
+
+async function init(){
+    try{
+        const r=await fetch(`${API}/api/extracted-text/${jobId}`);
+        if(!r.ok)throw new Error(`Server ${r.status}`);
+        const d=await r.json();pages=d.pages||[];
+        document.getElementById('ji').textContent=`Job: ${jobId.substring(0,8)}... | ${d.total_pages} pages`;
+        document.getElementById('pgC').textContent=d.total_pages;
+        const vp=pages.filter(p=>p.vlm_added).length;
+        document.getElementById('sts').innerHTML=`
+            <div class="st"><div class="sv v1">${d.total_pages}</div><div class="sl">Pages</div></div>
+            <div class="st"><div class="sv v2">${d.total_glm_chars.toLocaleString()}</div><div class="sl">GLM Chars</div></div>
+            <div class="st"><div class="sv v3">${vp}</div><div class="sl">VLM Enhanced</div></div>
+            <div class="st"><div class="sv v4">${d.total_final_chars.toLocaleString()}</div><div class="sl">Final Chars</div></div>`;
+        rList();if(pages.length)sel(0);
+    }catch(ex){document.getElementById('ns').innerHTML=`<div style="color:#dc2626">Error: ${ex.message}</div>`;}
 }
 
-async function loadData() {
-    try {
-        const r = await fetch(`${API}/api/extracted-text/${jobId}`);
-        if (!r.ok) throw new Error(`Server ${r.status}`);
-        const data = await r.json();
-        allPages = data.pages || [];
-        document.getElementById('jobInfo').textContent = `Job: ${jobId.substring(0,8)}... | ${data.total_pages} pages`;
-        document.getElementById('pgCount').textContent = data.total_pages;
-        const vlmP = allPages.filter(p => p.vlm_added).length;
-        document.getElementById('stats').innerHTML = `
-            <div class="stat"><div class="stat-val">${data.total_pages}</div><div class="stat-lbl">Pages</div></div>
-            <div class="stat"><div class="stat-val">${data.total_glm_chars.toLocaleString()}</div><div class="stat-lbl">GLM Characters</div></div>
-            <div class="stat"><div class="stat-val vlm-c">${vlmP}</div><div class="stat-lbl">VLM Enhanced</div></div>
-            <div class="stat"><div class="stat-val final-c">${data.total_final_chars.toLocaleString()}</div><div class="stat-lbl">Final Characters</div></div>`;
-        renderPageList();
-        if (allPages.length) selectPage(0);
-    } catch(e) {
-        document.getElementById('noSel').innerHTML = `<div style="color:#dc2626">Error: ${e.message}</div>`;
-    }
+function rList(){
+    let h='';pages.forEach((p,i)=>{
+        const dt=p.document_type||'Unknown',cls=ct(dt),vb=p.vlm_added?'<span class="pb vlm">VLM</span>':'';
+        h+=`<div class="pi" id="p${i}" onclick="sel(${i})"><div style="display:flex;align-items:center;gap:5px"><span class="pn">${p.page_number}</span><span class="pb ${cls}">${e(dt)}</span>${vb}</div><span class="pc">${p.final_chars.toLocaleString()}</span></div>`;
+    });document.getElementById('pl').innerHTML=h;
 }
 
-function renderPageList() {
-    let h = '';
-    allPages.forEach((p, i) => {
-        const dt = p.document_type || 'Unknown';
-        const cls = classifyType(dt);
-        const vlm = p.vlm_added ? '<span class="pg-badge vlm-badge">VLM</span>' : '';
-        h += `<div class="page-item" id="pi${i}" onclick="selectPage(${i})">
-            <div style="display:flex;align-items:center;gap:6px">
-                <span class="pg-num">${p.page_number}</span>
-                <span class="pg-badge ${cls}">${esc(dt)}</span>${vlm}
-            </div>
-            <span class="pg-chars">${p.final_chars.toLocaleString()}</span>
-        </div>`;
-    });
-    document.getElementById('pageList').innerHTML = h;
+function filterPg(){
+    const q=document.getElementById('sf').value.toLowerCase();
+    document.querySelectorAll('.pi').forEach((el,i)=>{const p=pages[i];el.style.display=`page ${p.page_number} ${p.document_type||''}`.toLowerCase().includes(q)?'':'none';});
 }
 
-function filterPages() {
-    const q = document.getElementById('sideSearch').value.toLowerCase();
-    document.querySelectorAll('.page-item').forEach((el, i) => {
-        const p = allPages[i];
-        const t = `page ${p.page_number} ${p.document_type||''} ${p.copy_status||''}`.toLowerCase();
-        el.style.display = t.includes(q) ? '' : 'none';
-    });
+function sel(i){
+    si=i;tab='final';hits=[];hi=-1;
+    document.querySelectorAll('.pi').forEach(x=>x.classList.remove('active'));
+    const el=document.getElementById(`p${i}`);if(el){el.classList.add('active');el.scrollIntoView({block:'nearest'});}
+    const p=pages[i];
+    document.getElementById('ns').style.display='none';
+    document.getElementById('tbw').style.display='';
+    document.getElementById('ct').style.display='flex';
+    // Image — use w=800 for fast loading
+    const img=document.getElementById('pi');
+    img.src=`${API}/api/page-image/${jobId}/${p.page_number}?w=800`;
+    img.style.transform='';img.style.maxWidth='100%';zm=1;fit=true;
+    // Image toolbar
+    rImgBar();
+    // Tabs above text pane
+    const hc=p.cleaned_text&&p.cleaned_text!==p.raw_text,hv=p.vlm_additions&&p.vlm_additions.length>0;
+    let tabs=`<div class="tb active" onclick="sTab('final',this)">Final</div><div class="tb" onclick="sTab('raw',this)">GLM Raw</div>`;
+    if(hc)tabs+=`<div class="tb" onclick="sTab('cleaned',this)">Cleaned</div>`;
+    if(hv)tabs+=`<div class="tb vt" onclick="sTab('vlm',this)">VLM Added</div>`;
+    document.getElementById('ttabs').innerHTML=tabs;
+    // Toolbar — page info + search + copy
+    const cs=p.copy_status?`<span class="badge-sm ${p.copy_status==='original'?'badge-orig':'badge-copy'}">${e((p.copy_status||'').toUpperCase())}</span>`:'';
+    const vb=hv?'<span class="badge-sm badge-vlm">VLM ENHANCED</span>':'';
+    document.getElementById('tb').innerHTML=`
+        <span class="pg-info">Page ${p.page_number}</span>
+        <span class="pg-type-lbl">${e(p.document_type||'')}</span>${cs}${vb}
+        <span class="spacer"></span>
+        <div class="srch"><input id="sin" placeholder="Search in text..." oninput="doS()" onkeydown="if(event.key==='Enter'){event.shiftKey?pH():nH()}"><span class="si" id="sif"></span><button class="btn" onclick="pH()" title="Prev">&#9650;</button><button class="btn" onclick="nH()" title="Next">&#9660;</button></div>
+        <button class="btn" onclick="cpT(this)">Copy</button>`;
+    showT();
 }
 
-function selectPage(idx) {
-    selIdx = idx;
-    curTab = 'final';
-    searchHits = []; searchIdx = -1;
-    document.getElementById('searchIn')&&(document.getElementById('searchIn').value='');
-    document.querySelectorAll('.page-item').forEach(el => el.classList.remove('active'));
-    const el = document.getElementById(`pi${idx}`);
-    if (el) { el.classList.add('active'); el.scrollIntoView({block:'nearest'}); }
-
-    const p = allPages[idx];
-    document.getElementById('noSel').style.display = 'none';
-    document.getElementById('toolbarWrap').style.display = '';
-    document.getElementById('contentArea').style.display = 'flex';
-
-    // Image
-    const imgEl = document.getElementById('pageImg');
-    imgEl.src = `${API}/api/page-image/${jobId}/${p.page_number}`;
-    imgEl.style.transform = '';
-    imgZoom = 1;
-
-    // Tabs
-    const hasClean = p.cleaned_text && p.cleaned_text !== p.raw_text;
-    const hasVlm = p.vlm_additions && p.vlm_additions.length > 0;
-    let tabs = `<div class="tabs">
-        <div class="tab-btn active" onclick="switchTab('final',this)">Final</div>
-        <div class="tab-btn" onclick="switchTab('raw',this)">GLM Raw</div>`;
-    if (hasClean) tabs += `<div class="tab-btn" onclick="switchTab('cleaned',this)">Cleaned</div>`;
-    if (hasVlm) tabs += `<div class="tab-btn vlm-t" onclick="switchTab('vlm',this)">VLM Added</div>`;
-    tabs += `</div>`;
-
-    const copyStatus = p.copy_status ? `<span style="background:#fef3c7;color:#92400e;padding:1px 7px;border-radius:8px;font-size:.7em;font-weight:600">${esc((p.copy_status||'').toUpperCase())}</span>` : '';
-    const vlmBadge = hasVlm ? '<span style="background:#fef3c7;color:#d97706;padding:1px 7px;border-radius:8px;font-size:.7em;font-weight:600">VLM ENHANCED</span>' : '';
-    const imgToggle = `<button class="tool-btn" onclick="toggleImg()" id="imgTogBtn">${imgVisible?'Hide':'Show'} Image</button>`;
-
-    document.getElementById('toolbar').innerHTML = `
-        ${tabs}
-        <span style="font-weight:700;font-size:.82em;color:#334155;margin-left:8px">Pg ${p.page_number}</span>
-        <span style="font-size:.78em;color:#64748b">${esc(p.document_type||'')}</span>
-        ${copyStatus} ${vlmBadge}
-        <div class="search-box">
-            <input type="text" id="searchIn" placeholder="Search in text..." oninput="doSearch()" onkeydown="if(event.key==='Enter'){event.shiftKey?prevHit():nextHit()}">
-            <span class="search-info" id="searchInfo"></span>
-            <button class="tool-btn" onclick="prevHit()" title="Previous">&#9650;</button>
-            <button class="tool-btn" onclick="nextHit()" title="Next">&#9660;</button>
-        </div>
-        <button class="tool-btn" onclick="copyText(this)">Copy</button>
-        ${imgToggle}`;
-
-    showText();
+function rImgBar(){
+    document.getElementById('it').innerHTML=`
+        <span class="zlbl" id="zl">${fit?'Fit':Math.round(zm*100)+'%'}</span>
+        <button class="ibtn" onclick="zI(-0.15)">&#8722;</button>
+        <button class="ibtn" onclick="zI(0.15)">&#43;</button>
+        <div class="sep"></div>
+        <button class="ibtn ${fit?'active':''}" onclick="zFit()">Fit</button>
+        <button class="ibtn" onclick="z100()">100%</button>
+        <button class="ibtn" onclick="z200()">200%</button>
+        <div class="sep"></div>
+        <button class="ibtn" onclick="fullImg()">Full Res</button>
+        <button class="ibtn" onclick="togImg()">${imgOn?'&#10005; Hide':'Show'}</button>`;
 }
 
-function switchTab(tab, btn) {
-    curTab = tab;
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    searchHits = []; searchIdx = -1;
-    if (document.getElementById('searchIn')) document.getElementById('searchIn').value = '';
-    document.getElementById('searchInfo').textContent = '';
-    showText();
+function sTab(t,btn){tab=t;hits=[];hi=-1;const sin=document.getElementById('sin');if(sin)sin.value='';document.getElementById('sif').textContent='';document.querySelectorAll('.tb').forEach(b=>b.classList.remove('active'));btn.classList.add('active');showT();}
+
+function showT(){
+    const p=pages[si];if(!p)return;
+    const tp=document.getElementById('tp');tp.className='txt-pane';
+    let t='';
+    switch(tab){case 'raw':t=p.raw_text||'';break;case 'cleaned':t=p.cleaned_text||'';break;case 'vlm':t=p.vlm_additions||'';tp.className='txt-pane vlm-bg';break;default:t=p.final_text||'';}
+    document.getElementById('tc').innerHTML=e(t);
 }
 
-function showText() {
-    const p = allPages[selIdx];
-    if (!p) return;
-    let text = '';
-    const tp = document.getElementById('textPane');
-    tp.className = 'text-pane';
-    switch(curTab) {
-        case 'raw': text = p.raw_text || ''; break;
-        case 'cleaned': text = p.cleaned_text || ''; break;
-        case 'vlm': text = p.vlm_additions || ''; tp.className = 'text-pane vlm-bg'; break;
-        default: text = p.final_text || '';
-    }
-    document.getElementById('textContent').innerHTML = esc(text);
-}
-
-function getCurrentText() {
-    const p = allPages[selIdx];
-    if (!p) return '';
-    switch(curTab) {
-        case 'raw': return p.raw_text || '';
-        case 'cleaned': return p.cleaned_text || '';
-        case 'vlm': return p.vlm_additions || '';
-        default: return p.final_text || '';
-    }
-}
+function gT(){const p=pages[si];if(!p)return '';switch(tab){case 'raw':return p.raw_text||'';case 'cleaned':return p.cleaned_text||'';case 'vlm':return p.vlm_additions||'';default:return p.final_text||'';}}
 
 // Search
-function doSearch() {
-    const q = document.getElementById('searchIn').value;
-    if (!q || q.length < 2) {
-        searchHits = []; searchIdx = -1;
-        document.getElementById('searchInfo').textContent = '';
-        showText();
-        return;
-    }
-    const text = getCurrentText();
-    const escaped = esc(text);
-    const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'gi');
-    searchHits = [];
-    let m, count = 0;
-    let highlighted = escaped.replace(new RegExp(esc(q).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'gi'), (match) => {
-        searchHits.push(count);
-        return `<mark id="sh${count++}">${match}</mark>`;
-    });
-    document.getElementById('textContent').innerHTML = highlighted;
-    document.getElementById('searchInfo').textContent = count ? `${count} found` : 'No matches';
-    if (count > 0) { searchIdx = 0; highlightCurrent(); }
-    else { searchIdx = -1; }
+function doS(){
+    const q=document.getElementById('sin').value;
+    if(!q||q.length<2){hits=[];hi=-1;document.getElementById('sif').textContent='';showT();return;}
+    const text=gT(),escaped=e(text);let cnt=0;
+    const re=new RegExp(e(q).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi');
+    hits=[];
+    const hl=escaped.replace(re,m=>{hits.push(cnt);return `<mark id="h${cnt++}">${m}</mark>`;});
+    document.getElementById('tc').innerHTML=hl;
+    document.getElementById('sif').textContent=cnt?`${cnt} found`:'None';
+    if(cnt>0){hi=0;hCur();}else hi=-1;
 }
-
-function highlightCurrent() {
-    document.querySelectorAll('mark.current').forEach(m => m.classList.remove('current'));
-    if (searchIdx >= 0) {
-        const el = document.getElementById(`sh${searchIdx}`);
-        if (el) { el.classList.add('current'); el.scrollIntoView({block:'center'}); }
-        document.getElementById('searchInfo').textContent = `${searchIdx+1}/${searchHits.length}`;
-    }
-}
-function nextHit() { if (searchHits.length) { searchIdx = (searchIdx + 1) % searchHits.length; highlightCurrent(); } }
-function prevHit() { if (searchHits.length) { searchIdx = (searchIdx - 1 + searchHits.length) % searchHits.length; highlightCurrent(); } }
+function hCur(){document.querySelectorAll('mark.cur').forEach(m=>m.classList.remove('cur'));if(hi>=0){const el=document.getElementById(`h${hi}`);if(el){el.classList.add('cur');el.scrollIntoView({block:'center'});}document.getElementById('sif').textContent=`${hi+1}/${hits.length}`;}}
+function nH(){if(hits.length){hi=(hi+1)%hits.length;hCur();}}
+function pH(){if(hits.length){hi=(hi-1+hits.length)%hits.length;hCur();}}
 
 // Copy
-function copyText(btn) {
-    const text = getCurrentText();
-    navigator.clipboard.writeText(text).then(() => {
-        btn.textContent = 'Copied!'; btn.classList.add('copied');
-        setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
-    });
+function cpT(btn){navigator.clipboard.writeText(gT()).then(()=>{btn.textContent='Copied!';btn.classList.add('ok');setTimeout(()=>{btn.textContent='Copy';btn.classList.remove('ok');},1200);});}
+
+// Image controls
+function zI(d){fit=false;zm=Math.max(0.2,Math.min(4,zm+d));applyZm();}
+function zFit(){fit=true;zm=1;const img=document.getElementById('pi');img.style.maxWidth='100%';img.style.transform='';img.style.transformOrigin='';rImgBar();}
+function z100(){fit=false;zm=1;applyZm();}
+function z200(){fit=false;zm=2;applyZm();}
+function applyZm(){const img=document.getElementById('pi');img.style.maxWidth='none';img.style.transform=`scale(${zm})`;img.style.transformOrigin='top left';rImgBar();}
+function fullImg(){
+    const p=pages[si];if(!p)return;
+    const img=document.getElementById('pi');
+    img.src=`${API}/api/page-image/${jobId}/${p.page_number}`;// no ?w= = full res
+    fit=false;zm=1;applyZm();
+}
+function togImg(){
+    imgOn=!imgOn;
+    document.getElementById('ip').classList.toggle('hidden',!imgOn);
+    document.getElementById('rh').style.display=imgOn?'':'none';
+    rImgBar();
 }
 
-// Image zoom
-function zoomImg(delta) {
-    const img = document.getElementById('pageImg');
-    if (delta === 0) { imgZoom = 1; img.style.transform = ''; img.style.maxWidth = '100%'; return; }
-    imgZoom = Math.max(0.3, Math.min(3, imgZoom + delta));
-    img.style.maxWidth = 'none';
-    img.style.transform = `scale(${imgZoom})`;
-    img.style.transformOrigin = 'top left';
-}
-
-// Toggle image pane
-function toggleImg() {
-    const pane = document.getElementById('imgPane');
-    const handle = document.getElementById('resizeHandle');
-    imgVisible = !imgVisible;
-    pane.classList.toggle('hidden', !imgVisible);
-    handle.style.display = imgVisible ? '' : 'none';
-    const btn = document.getElementById('imgTogBtn');
-    if (btn) btn.textContent = imgVisible ? 'Hide Image' : 'Show Image';
-}
-
-// Resize handle
-(function() {
-    const handle = document.getElementById('resizeHandle');
-    const imgPane = document.getElementById('imgPane');
-    let startX, startW;
-    handle.addEventListener('mousedown', e => {
-        startX = e.clientX; startW = imgPane.offsetWidth;
-        document.addEventListener('mousemove', onMove);
-        document.addEventListener('mouseup', () => document.removeEventListener('mousemove', onMove), {once:true});
-    });
-    function onMove(e) {
-        const w = startW + (e.clientX - startX);
-        if (w > 150 && w < window.innerWidth * 0.7) imgPane.style.width = w + 'px';
-    }
+// Resize
+(function(){
+    const rh=document.getElementById('rh'),ip=document.getElementById('ip');let sx,sw;
+    rh.addEventListener('mousedown',ev=>{sx=ev.clientX;sw=ip.offsetWidth;document.addEventListener('mousemove',mv);document.addEventListener('mouseup',()=>document.removeEventListener('mousemove',mv),{once:true});});
+    function mv(ev){const w=sw+(ev.clientX-sx);if(w>120&&w<window.innerWidth*0.7)ip.style.width=w+'px';}
 })();
 
-// Keyboard shortcuts
-document.addEventListener('keydown', e => {
-    if (e.target.tagName === 'INPUT') return;
-    if (e.key === 'ArrowDown' && selIdx < allPages.length - 1) { selectPage(selIdx + 1); e.preventDefault(); }
-    if (e.key === 'ArrowUp' && selIdx > 0) { selectPage(selIdx - 1); e.preventDefault(); }
-});
+// Keyboard
+document.addEventListener('keydown',ev=>{if(ev.target.tagName==='INPUT')return;if(ev.key==='ArrowDown'&&si<pages.length-1){sel(si+1);ev.preventDefault();}if(ev.key==='ArrowUp'&&si>0){sel(si-1);ev.preventDefault();}});
 
-loadData();
+init();
 </script>
 </body>
 </html>
