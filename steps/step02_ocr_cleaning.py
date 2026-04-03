@@ -158,12 +158,25 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
         'Preserve line breaks and formatting', 'Missing even ONE character',
     ]
 
+    _GLM_NO_TEXT_MARKERS = [
+        'completely blank', 'completely white', 'no text', 'does not contain any text',
+        'impossible to extract', 'illegible', 'cannot be accurately', 'blank or a placeholder',
+        'The provided image', 'appears to be a blank',
+    ]
+
     def _is_garbage_text(text: str) -> bool:
-        """Detect if GLM returned its own prompt instead of actual page text."""
+        """Detect if GLM returned its own prompt or a 'no text' description."""
         if not text:
             return True
+        # Prompt echo detection
         hits = sum(1 for m in _GARBAGE_MARKERS if m in text)
-        return hits >= 3  # 3+ markers = definitely prompt text, not page content
+        if hits >= 3:
+            return True
+        # GLM "no text found" descriptions — not actual document content
+        no_text_hits = sum(1 for m in _GLM_NO_TEXT_MARKERS if m.lower() in text.lower())
+        if no_text_hits >= 2:
+            return True
+        return False
 
     def _vlm_check_page(page_out):
         pg_num = page_out.page_number
