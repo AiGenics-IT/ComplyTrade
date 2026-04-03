@@ -22,7 +22,7 @@ BUILD_TAG = "2026-04-02-P24"
 # ── Processing ──
 MAX_CONCURRENT_OCR = 4
 MAX_CONCURRENT_VLM = 4
-OCR_TIMEOUT = 120       # seconds per page
+OCR_TIMEOUT = 300       # seconds per page
 VLM_TIMEOUT = 600       # seconds per VLM call (96GB GPU handles large images)
 CONFIDENCE_THRESHOLD = 0.98  # Below this → REVIEW status
 
