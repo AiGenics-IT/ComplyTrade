@@ -823,10 +823,11 @@ def get_report(job_id: str):
     if job_id not in _jobs:
         raise HTTPException(404, "Job not found")
     results_dir = os.path.join(RESULTS_DIR, job_id)
-    # Search for the generated PDF report file
-    for f in Path(results_dir).rglob("*_compliance_report.pdf"):
-        return FileResponse(str(f), media_type="application/pdf",
-                            filename=f.name)
+    # Search for the generated PDF report file (matches both naming conventions)
+    for pattern in ("*_compliance_report.pdf", "ComplyTrade_Report*.pdf"):
+        for f in Path(results_dir).rglob(pattern):
+            return FileResponse(str(f), media_type="application/pdf",
+                                filename=f.name)
     raise HTTPException(404, "Report not generated yet")
 
 
@@ -1283,8 +1284,9 @@ def verify_update(verification_id: str):
 def get_report_by_lc(job_id: str, lc_number: str):
     """Get compliance report for a specific LC number."""
     results_dir = os.path.join(RESULTS_DIR, job_id)
-    for f in Path(results_dir).rglob("*compliance_report*.pdf"):
-        return FileResponse(str(f), media_type="application/pdf", filename=f.name)
+    for pattern in ("*compliance_report*.pdf", "ComplyTrade_Report*.pdf"):
+        for f in Path(results_dir).rglob(pattern):
+            return FileResponse(str(f), media_type="application/pdf", filename=f.name)
     raise HTTPException(404, "Report not generated yet")
 
 
