@@ -84,124 +84,68 @@ C_ROW_ALT   = colors.HexColor('#f8fafc')   # Alternating row (very light blue-gr
 # ── Custom Styles ────────────────────────────────────────────────────────────
 
 def _build_styles():
-    """
-    Build paragraph styles for the report.
-
-    Defines styles for cover page elements, section headers, cell text,
-    and footer -- all using the ComplyTrade brand colors matching the old system.
-    """
+    """Build paragraph styles for the report."""
     styles = getSampleStyleSheet()
 
-    # Cover page title -- large, centered, brand blue
     styles.add(ParagraphStyle(
-        'CoverTitle',
-        parent=styles['Title'],
-        fontSize=38, leading=46,
-        textColor=BRAND_BLUE,
-        spaceAfter=4,
-        alignment=TA_CENTER,
-        fontName='Helvetica-Bold',
+        'CoverTitle', parent=styles['Title'],
+        fontSize=38, leading=46, textColor=BRAND_BLUE,
+        spaceAfter=4, alignment=TA_CENTER, fontName='Helvetica-Bold',
     ))
-    # Cover page subtitle
     styles.add(ParagraphStyle(
-        'CoverSubtitle',
-        parent=styles['Title'],
-        fontSize=20, leading=26,
-        textColor=DARK_NAVY,
-        alignment=TA_CENTER,
-        spaceAfter=4,
-        fontName='Helvetica',
+        'CoverSubtitle', parent=styles['Title'],
+        fontSize=20, leading=26, textColor=DARK_NAVY,
+        alignment=TA_CENTER, spaceAfter=4, fontName='Helvetica',
     ))
-    # Cover page decision banner (COMPLIANT / DISCREPANT / REVIEW REQUIRED)
     styles.add(ParagraphStyle(
-        'CoverDecision',
-        parent=styles['Normal'],
-        fontSize=20,
-        alignment=TA_CENTER,
-        spaceAfter=8 * mm,
-        spaceBefore=8 * mm,
+        'CoverDecision', parent=styles['Normal'],
+        fontSize=20, alignment=TA_CENTER,
+        spaceAfter=8 * mm, spaceBefore=8 * mm,
     ))
-    # Section headers -- brand blue, bold
     styles.add(ParagraphStyle(
-        'SectionHeader',
-        parent=styles['Heading1'],
-        fontSize=17, leading=22,
-        textColor=BRAND_BLUE,
-        fontName='Helvetica-Bold',
-        spaceBefore=16, spaceAfter=10,
+        'SectionHeader', parent=styles['Heading1'],
+        fontSize=17, leading=22, textColor=BRAND_BLUE,
+        fontName='Helvetica-Bold', spaceBefore=16, spaceAfter=10,
         borderPadding=(0, 0, 2, 0),
     ))
-    # Clause sub-headers
     styles.add(ParagraphStyle(
-        'SubHeader',
-        parent=styles['Heading2'],
-        fontSize=13, leading=17,
-        textColor=DARK_NAVY,
-        fontName='Helvetica-Bold',
-        spaceBefore=12, spaceAfter=7,
+        'SubHeader', parent=styles['Heading2'],
+        fontSize=13, leading=17, textColor=DARK_NAVY,
+        fontName='Helvetica-Bold', spaceBefore=12, spaceAfter=7,
     ))
-    # Table cell text -- standard size
     styles.add(ParagraphStyle(
-        'CellText',
-        parent=styles['Normal'],
-        fontSize=9, leading=12,
-        fontName='Helvetica',
-        wordWrap='CJK',
+        'CellText', parent=styles['Normal'],
+        fontSize=9, leading=12, fontName='Helvetica', wordWrap='CJK',
     ))
-    # Table cell text -- bold variant
     styles.add(ParagraphStyle(
-        'CellTextBold',
-        parent=styles['Normal'],
-        fontSize=9, leading=12,
-        fontName='Helvetica-Bold',
+        'CellTextBold', parent=styles['Normal'],
+        fontSize=9, leading=12, fontName='Helvetica-Bold',
     ))
-    # Table cell header -- white text for navy header rows
     styles.add(ParagraphStyle(
-        'CellTextHeader',
-        parent=styles['Normal'],
-        fontSize=9, leading=12,
-        fontName='Helvetica-Bold',
-        textColor=WHITE,
+        'CellTextHeader', parent=styles['Normal'],
+        fontSize=9, leading=12, fontName='Helvetica-Bold', textColor=WHITE,
     ))
-    # Small text header -- white, for tighter tables
     styles.add(ParagraphStyle(
-        'SmallTextHeader',
-        parent=styles['Normal'],
-        fontSize=8, leading=10.5,
-        fontName='Helvetica-Bold',
-        textColor=WHITE,
+        'SmallTextHeader', parent=styles['Normal'],
+        fontSize=8, leading=10.5, fontName='Helvetica-Bold', textColor=WHITE,
     ))
-    # Table cell text -- smaller variant for dense data
     styles.add(ParagraphStyle(
-        'CellTextSmall',
-        parent=styles['Normal'],
-        fontSize=8, leading=10.5,
-        textColor=DARK_GRAY,
-        fontName='Helvetica',
-        wordWrap='CJK',
+        'CellTextSmall', parent=styles['Normal'],
+        fontSize=8, leading=10.5, textColor=DARK_GRAY,
+        fontName='Helvetica', wordWrap='CJK',
     ))
-    # Body text
     styles.add(ParagraphStyle(
-        'BodyText14',
-        parent=styles['Normal'],
-        fontSize=10, leading=14,
-        fontName='Helvetica',
+        'BodyText14', parent=styles['Normal'],
+        fontSize=10, leading=14, fontName='Helvetica',
     ))
-    # Finding items in executive summary
     styles.add(ParagraphStyle(
-        'FindingItem',
-        parent=styles['Normal'],
-        fontSize=9.5, leading=14,
-        fontName='Helvetica',
+        'FindingItem', parent=styles['Normal'],
+        fontSize=9.5, leading=14, fontName='Helvetica',
         leftIndent=8, spaceBefore=3, spaceAfter=3,
     ))
-    # Footer text
     styles.add(ParagraphStyle(
-        'FooterText',
-        parent=styles['Normal'],
-        fontSize=7,
-        textColor=DARK_GRAY,
-        alignment=TA_CENTER,
+        'FooterText', parent=styles['Normal'],
+        fontSize=7, textColor=DARK_GRAY, alignment=TA_CENTER,
     ))
 
     return styles
@@ -210,7 +154,7 @@ def _build_styles():
 # ── Helper Functions ─────────────────────────────────────────────────────────
 
 def _safe_str(val, max_len=300) -> str:
-    """Safely convert a value to string, truncating if needed to prevent table overflow."""
+    """Safely convert a value to string, truncating if needed."""
     if val is None:
         return ''
     s = str(val).strip()
@@ -219,61 +163,152 @@ def _safe_str(val, max_len=300) -> str:
     return s
 
 
+def _esc(t):
+    """Escape HTML entities for ReportLab Paragraph."""
+    return str(t).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;') if t else ''
+
+
 def _result_color(result: str) -> colors.Color:
-    """Get the appropriate color for a result value (green/red/amber)."""
     r = result.upper().strip()
     if r in ('PASS', 'COMPLIED'):
         return GREEN
     elif r in ('FAIL', 'NOT COMPLIED'):
         return RED
     else:
-        return AMBER   # REVIEW, REVIEW REQUIRED, etc.
-
-
-def _result_badge(result: str, compliance: str, styles) -> Paragraph:
-    """Create a colored compliance badge as a Paragraph for table cells."""
-    c = _result_color(compliance)
-    hex_color = c.hexval() if hasattr(c, 'hexval') else '#616161'
-    return Paragraph(
-        f'<font color="{hex_color}"><b>{_safe_str(compliance, 20)}</b></font>',
-        styles['CellText'],
-    )
+        return AMBER
 
 
 def _decision_color(decision: str) -> colors.Color:
-    """Get color for the overall compliance decision on the cover page."""
     d = decision.upper()
-    if 'COMPLIANT' in d and 'DISCREPANT' not in d:
-        return GREEN    # Fully compliant
-    elif 'DISCREPANT' in d:
-        return RED      # Has failures -- do not pay without resolution
+    if 'COMPLIANT' in d and 'DISCREPANT' not in d and 'REVIEW' not in d:
+        return GREEN
+    elif 'DISCREPANT' in d or 'NOT COMPLIED' in d:
+        return RED
     else:
-        return AMBER    # Needs review -- escalate to senior officer
+        return AMBER
+
+
+def _extract_lc_fields(step06_data: Dict) -> Dict:
+    """
+    Extract LC fields from step06 result structure.
+
+    step06 returns: {
+        'final_lc': {'dc_number': '...', 'consolidated_fields': {'20': '...', '31C': '...'}, ...},
+        ...
+    }
+    OR it may already be the consolidated_fields dict directly.
+    OR it may be from the saved JSON with top-level keys.
+
+    This function normalizes all formats into a flat dict with useful keys.
+    """
+    lc = {}
+
+    # Try to get consolidated_fields from nested structure
+    cf = {}
+    if 'final_lc' in step06_data:
+        fl = step06_data['final_lc']
+        if isinstance(fl, dict):
+            cf = fl.get('consolidated_fields', {})
+            lc['dc_number'] = fl.get('dc_number', '')
+            lc['swift_format'] = fl.get('swift_format', '')
+        elif hasattr(fl, 'consolidated_fields'):
+            cf = fl.consolidated_fields
+            lc['dc_number'] = getattr(fl, 'dc_number', '')
+            lc['swift_format'] = getattr(fl, 'swift_format', '')
+    elif 'consolidated_fields' in step06_data:
+        cf = step06_data['consolidated_fields']
+        lc['dc_number'] = step06_data.get('dc_number', '')
+        lc['swift_format'] = step06_data.get('swift_format', '')
+    else:
+        # Might already be a flat dict with DC_Number, F20 etc
+        cf = step06_data
+
+    # Map SWIFT tags to readable fields
+    lc['lc_number'] = (
+        lc.get('dc_number', '') or
+        cf.get('20', '') or cf.get('F20', '') or
+        cf.get('DC_Number', '') or cf.get('LC_Number', '') or
+        step06_data.get('dc_number', '') or 'N/A'
+    )
+    lc['date_of_issue'] = cf.get('31C', cf.get('F31C', cf.get('Date_of_Issue', '')))
+    lc['expiry_date'] = cf.get('31D', cf.get('F31D', cf.get('Date_Place_Expiry', '')))
+    lc['amount'] = cf.get('32B', cf.get('F32B', cf.get('Amount', '')))
+    lc['applicant'] = cf.get('50', cf.get('F50', cf.get('Applicant', '')))
+    lc['beneficiary'] = cf.get('59', cf.get('F59', cf.get('Beneficiary', '')))
+    lc['issuing_bank'] = cf.get('52A', cf.get('F52A', cf.get('Issuing_Bank', '')))
+    lc['advising_bank'] = cf.get('57A', cf.get('F57A', cf.get('Advising_Bank', '')))
+    lc['available_with'] = cf.get('41A', cf.get('F41A', cf.get('Available_With', '')))
+    lc['drafts_at'] = cf.get('42C', cf.get('F42C', cf.get('Drafts_At', '')))
+    lc['partial_shipment'] = cf.get('43P', cf.get('F43P', cf.get('Partial_Shipments', '')))
+    lc['transhipment'] = cf.get('43T', cf.get('F43T', cf.get('Transhipment', '')))
+    lc['port_loading'] = cf.get('44E', cf.get('F44E', cf.get('Port_of_Loading', '')))
+    lc['port_discharge'] = cf.get('44F', cf.get('F44F', cf.get('Port_of_Discharge', '')))
+    lc['latest_shipment'] = cf.get('44C', cf.get('F44C', cf.get('Latest_Shipment_Date', '')))
+    lc['form_of_credit'] = cf.get('40A', cf.get('F40A', cf.get('Form_of_Credit', '')))
+    lc['applicable_rules'] = cf.get('40E', cf.get('F40E', cf.get('Applicable_Rules', '')))
+    lc['tolerance'] = cf.get('39A', cf.get('F39A', cf.get('Tolerance', '')))
+    lc['presentation_period'] = cf.get('48', cf.get('F48', cf.get('Period_for_Presentation', '')))
+
+    return lc
+
+
+# ── SWIFT Tag Label Map ──────────────────────────────────────────────────────
+
+_TAG_LABELS = {
+    '20': 'Documentary Credit Number', 'F20': 'Documentary Credit Number',
+    '31C': 'Date of Issue', 'F31C': 'Date of Issue',
+    '31D': 'Date and Place of Expiry', 'F31D': 'Date and Place of Expiry',
+    '32B': 'Currency Code, Amount', 'F32B': 'Currency Code, Amount',
+    '39A': 'Percentage Credit Amount Tolerance', 'F39A': 'Percentage Credit Amount Tolerance',
+    '40A': 'Form of Documentary Credit', 'F40A': 'Form of Documentary Credit',
+    '40E': 'Applicable Rules', 'F40E': 'Applicable Rules',
+    '41A': 'Available With ... By ...', 'F41A': 'Available With ... By ...',
+    '42C': 'Drafts At', 'F42C': 'Drafts At',
+    '43P': 'Partial Shipments', 'F43P': 'Partial Shipments',
+    '43T': 'Transhipment', 'F43T': 'Transhipment',
+    '44A': 'Place of Taking in Charge', 'F44A': 'Place of Taking in Charge',
+    '44B': 'Place of Final Destination', 'F44B': 'Place of Final Destination',
+    '44C': 'Latest Date of Shipment', 'F44C': 'Latest Date of Shipment',
+    '44E': 'Port of Loading', 'F44E': 'Port of Loading',
+    '44F': 'Port of Discharge', 'F44F': 'Port of Discharge',
+    '48': 'Period for Presentation', 'F48': 'Period for Presentation',
+    '49': 'Confirmation Instructions', 'F49': 'Confirmation Instructions',
+    '50': 'Applicant', 'F50': 'Applicant',
+    '51A': 'Applicant Bank', 'F51A': 'Applicant Bank',
+    '52A': 'Issuing Bank', 'F52A': 'Issuing Bank',
+    '53A': 'Reimbursing Bank', 'F53A': 'Reimbursing Bank',
+    '57A': 'Advise Through Bank', 'F57A': 'Advise Through Bank',
+    '59': 'Beneficiary', 'F59': 'Beneficiary',
+    '71B': 'Charges', 'F71B': 'Charges',
+    '71D': 'Charges Details', 'F71D': 'Charges Details',
+    '77B': 'Regulatory Reporting', 'F77B': 'Regulatory Reporting',
+    '45A': 'Description of Goods and/or Services', 'F45A': 'Description of Goods and/or Services',
+    '46A': 'Documents Required', 'F46A': 'Documents Required',
+    '47A': 'Additional Conditions', 'F47A': 'Additional Conditions',
+    '78': 'Instructions to Paying/Accepting/Negotiating Bank', 'F78': 'Instructions to Paying/Accepting/Negotiating Bank',
+    '72': 'Sender to Receiver Information', 'F72': 'Sender to Receiver Information',
+    '79': 'Narrative', 'F79': 'Narrative',
+}
+
+def _get_field_description(clause_ref: str) -> str:
+    """Get human-readable field description from clause ref like '46A-1' or 'F46A-1'."""
+    tag = clause_ref.split('-')[0].upper()
+    # Remove leading F if present for lookup
+    tag_no_f = tag[1:] if tag.startswith('F') else tag
+    tag_with_f = 'F' + tag_no_f
+    return _TAG_LABELS.get(tag, _TAG_LABELS.get(tag_no_f, _TAG_LABELS.get(tag_with_f, '')))
 
 
 # ── Cover Page ───────────────────────────────────────────────────────────────
 
-def _build_cover(lc_fields: Dict, decision: str, stats: Dict, styles) -> List:
-    """
-    Build cover page flowables matching the old ComplianceReportPDF styling.
-
-    The cover page shows:
-    - ComplyTrade branding with decorative lines
-    - LETTER OF CREDIT COMPLIANCE REPORT badge
-    - LC Number display with underline
-    - Overall compliance decision (large, color-coded banner)
-    - Key LC details table
-    - Verification summary counts
-    """
+def _build_cover(lc: Dict, decision: str, stats: Dict, styles) -> List:
+    """Build cover page with LC details and overall compliance decision."""
     elements = []
     page_width = A4[0] - 44 * mm
 
     # Top decorative line
     elements.append(Spacer(1, 50 * mm))
-    elements.append(HRFlowable(
-        width='80%', thickness=3,
-        color=BRAND_BLUE, spaceAfter=12,
-    ))
+    elements.append(HRFlowable(width='80%', thickness=3, color=BRAND_BLUE, spaceAfter=12))
     elements.append(Spacer(1, 6 * mm))
 
     elements.append(Paragraph('ComplyTrade', styles['CoverTitle']))
@@ -285,7 +320,7 @@ def _build_cover(lc_fields: Dict, decision: str, stats: Dict, styles) -> List:
     )))
     elements.append(Spacer(1, 14 * mm))
 
-    # Report type badge -- navy background, white text
+    # Report type badge
     badge_data = [[Paragraph(
         '<b>LETTER OF CREDIT COMPLIANCE REPORT</b>',
         ParagraphStyle('BadgeText', parent=styles['Normal'],
@@ -301,21 +336,18 @@ def _build_cover(lc_fields: Dict, decision: str, stats: Dict, styles) -> List:
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
     ]))
     elements.append(badge_table)
-    elements.append(Spacer(1, 14 * mm))
+    elements.append(Spacer(1, 10 * mm))
 
     # LC Number display
-    lc_number = _safe_str(
-        lc_fields.get('DC_Number') or lc_fields.get('F20') or lc_fields.get('LC_Number', 'N/A')
-    )
+    lc_number = lc.get('lc_number', 'N/A') or 'N/A'
     lc_info_data = [
         [Paragraph('<font color="#6b7280">LC Number</font>', ParagraphStyle(
             'LCLabel', parent=styles['Normal'], fontSize=10, leading=14,
             alignment=TA_CENTER, fontName='Helvetica',
         ))],
-        [Paragraph(f'<b>{lc_number}</b>', ParagraphStyle(
+        [Paragraph(f'<b>{_esc(lc_number)}</b>', ParagraphStyle(
             'LCValue', parent=styles['Normal'], fontSize=22, leading=28,
-            alignment=TA_CENTER, fontName='Helvetica-Bold',
-            textColor=DARK_NAVY,
+            alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=DARK_NAVY,
         ))],
     ]
     lc_info_table = Table(lc_info_data, colWidths=[130 * mm])
@@ -327,7 +359,43 @@ def _build_cover(lc_fields: Dict, decision: str, stats: Dict, styles) -> List:
         ('LINEBELOW', (0, 1), (0, 1), 1.5, BRAND_BLUE),
     ]))
     elements.append(lc_info_table)
-    elements.append(Spacer(1, 10 * mm))
+    elements.append(Spacer(1, 8 * mm))
+
+    # LC Key Details table
+    _detail_rows = []
+    _detail_fields = [
+        ('Applicant', lc.get('applicant', '')),
+        ('Beneficiary', lc.get('beneficiary', '')),
+        ('Amount', lc.get('amount', '')),
+        ('Date of Issue', lc.get('date_of_issue', '')),
+        ('Date / Place of Expiry', lc.get('expiry_date', '')),
+        ('Latest Shipment', lc.get('latest_shipment', '')),
+        ('Port of Loading', lc.get('port_loading', '')),
+        ('Port of Discharge', lc.get('port_discharge', '')),
+        ('Applicable Rules', lc.get('applicable_rules', '')),
+    ]
+    for label, val in _detail_fields:
+        val_str = _safe_str(val, 120)
+        if val_str:
+            _detail_rows.append([
+                Paragraph(f'<b><font size="8" color="#444444">{_esc(label)}</font></b>',
+                          styles['CellTextSmall']),
+                Paragraph(f'<font size="8">{_esc(val_str)}</font>',
+                          styles['CellTextSmall']),
+            ])
+
+    if _detail_rows:
+        _dt = Table(_detail_rows, colWidths=[page_width * 0.35, page_width * 0.65])
+        _dt.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.3, MID_GRAY),
+            ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#F0F4FA')),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(_dt)
+        elements.append(Spacer(1, 6 * mm))
 
     # Report date
     report_date = datetime.now().strftime('%B %d, %Y')
@@ -336,11 +404,11 @@ def _build_cover(lc_fields: Dict, decision: str, stats: Dict, styles) -> List:
         ParagraphStyle('DateText', alignment=TA_CENTER, parent=styles['Normal']),
     ))
 
-    # Decision banner -- green COMPLIANT or red DISCREPANT
-    elements.append(Spacer(1, 10 * mm))
+    # Decision banner
+    elements.append(Spacer(1, 8 * mm))
     dec_color = _decision_color(decision)
     _dec_row = [[Paragraph(
-        f'<b><font size="14" color="white">DECISION: {decision}</font></b>',
+        f'<b><font size="14" color="white">DECISION: {_esc(decision)}</font></b>',
         ParagraphStyle('DecisionText', parent=styles['Normal'], alignment=TA_CENTER),
     )]]
     _dec_tbl = Table(_dec_row, colWidths=[page_width])
@@ -352,11 +420,22 @@ def _build_cover(lc_fields: Dict, decision: str, stats: Dict, styles) -> List:
     ]))
     elements.append(_dec_tbl)
 
-    elements.append(Spacer(1, 20 * mm))
-    elements.append(HRFlowable(
-        width='80%', thickness=1,
-        color=MID_GRAY, spaceAfter=8,
+    # Verification stats
+    elements.append(Spacer(1, 6 * mm))
+    tp = stats.get('total_pass', 0)
+    tf = stats.get('total_fail', 0)
+    tr = stats.get('total_review', 0)
+    elements.append(Paragraph(
+        f'<font size="9" color="#6b7280">'
+        f'<font color="#16a34a"><b>{tp}</b></font> Passed  |  '
+        f'<font color="#dc2626"><b>{tf}</b></font> Failed  |  '
+        f'<font color="#d97706"><b>{tr}</b></font> Review Required'
+        f'</font>',
+        ParagraphStyle('StatsText', alignment=TA_CENTER, parent=styles['Normal']),
     ))
+
+    elements.append(Spacer(1, 12 * mm))
+    elements.append(HRFlowable(width='80%', thickness=1, color=MID_GRAY, spaceAfter=8))
     elements.append(Paragraph(
         '<font size="8" color="#9ca3af">Confidential \u2014 For authorized recipients only</font>',
         ParagraphStyle('ConfText', alignment=TA_CENTER, parent=styles['Normal']),
@@ -369,19 +448,13 @@ def _build_cover(lc_fields: Dict, decision: str, stats: Dict, styles) -> List:
 # ── Executive Summary ────────────────────────────────────────────────────────
 
 def _build_executive_summary(
+    decision: str,
     critical_findings: List[Dict],
     review_items: List[Dict],
+    stats: Dict,
     styles,
 ) -> List:
-    """
-    Build executive summary section matching the old ComplianceReportPDF styling.
-
-    Shows:
-    1. Decision box (green/red full-width banner)
-    2. Critical Findings (red) -- numbered list with LC clause references
-    3. Review Required (orange) -- numbered list
-    4. Summary counts at bottom
-    """
+    """Build executive summary with consistent decision and findings."""
     elements = []
     page_width = A4[0] - 44 * mm
 
@@ -389,13 +462,10 @@ def _build_executive_summary(
     elements.append(Paragraph("Executive Summary", styles['SectionHeader']))
     elements.append(HRFlowable(width="100%", thickness=1.5, color=BRAND_BLUE, spaceAfter=8))
 
-    # Decision box -- full-width colored banner
-    _disc_count = len(critical_findings)
-    _status_text = 'DOCUMENTS DISCREPANT' if _disc_count > 0 else 'DOCUMENTS COMPLIANT'
-    _status_color = RED if _disc_count > 0 else GREEN
-
+    # Decision box -- uses the SAME decision as cover page
+    _status_color = _decision_color(decision)
     _dec_row = [[Paragraph(
-        f'<b><font size="14" color="white">DECISION: {_status_text}</font></b>',
+        f'<b><font size="14" color="white">DECISION: {_esc(decision)}</font></b>',
         ParagraphStyle('DecisionText', parent=styles['Normal'], alignment=TA_CENTER),
     )]]
     _dec_tbl = Table(_dec_row, colWidths=[page_width])
@@ -408,51 +478,94 @@ def _build_executive_summary(
     elements.append(_dec_tbl)
     elements.append(Spacer(1, 6 * mm))
 
-    def _esc(t):
-        return str(t).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;') if t else ''
+    # Stats summary
+    tp = stats.get('total_pass', 0)
+    tf = stats.get('total_fail', 0)
+    tr = stats.get('total_review', 0)
+    total = tp + tf + tr
+    elements.append(Paragraph(
+        f'<font size="10">Total Checks: <b>{total}</b>  |  '
+        f'<font color="#16a34a"><b>{tp} Passed</b></font>  |  '
+        f'<font color="#dc2626"><b>{tf} Failed</b></font>  |  '
+        f'<font color="#d97706"><b>{tr} Review</b></font></font>',
+        styles['BodyText14'],
+    ))
+    elements.append(Spacer(1, 6 * mm))
 
-    # ── Critical Findings (red) ──
+    # Critical Findings (red)
     if critical_findings:
         elements.append(Paragraph(
-            '<b><font color="#C00000">Critical Findings:</font></b>', styles['Normal']))
+            '<b><font color="#C00000">Critical Findings (Discrepancies):</font></b>', styles['Normal']))
         elements.append(Spacer(1, 2 * mm))
-        for i, cf_item in enumerate(critical_findings[:30], 1):
-            detail = _esc(_safe_str(cf_item.get('condition', '') or cf_item.get('findings', cf_item.get('found_text', '')), 200))
-            ref = cf_item.get('clause_ref', '')
-            if ref:
-                detail += f' <font color="#666666">[{_esc(ref)}]</font>'
-            elements.append(Paragraph(
-                f'<font size="9">{i}. {detail}</font>',
-                styles['CellTextSmall']))
+
+        # Build a table for critical findings
+        _cf_hdr = [
+            Paragraph('<b><font color="white">#</font></b>', styles['SmallTextHeader']),
+            Paragraph('<b><font color="white">Clause</font></b>', styles['SmallTextHeader']),
+            Paragraph('<b><font color="white">Document</font></b>', styles['SmallTextHeader']),
+            Paragraph('<b><font color="white">Finding</font></b>', styles['SmallTextHeader']),
+        ]
+        _cf_rows = [_cf_hdr]
+        for i, cf in enumerate(critical_findings[:30], 1):
+            finding = _esc(_safe_str(
+                cf.get('result', '') or cf.get('condition', '') or cf.get('findings', ''), 150))
+            _cf_rows.append([
+                Paragraph(f'<font size="8">{i}</font>', styles['CellTextSmall']),
+                Paragraph(f'<font size="8"><b>{_esc(cf.get("clause_ref", ""))}</b></font>', styles['CellTextSmall']),
+                Paragraph(f'<font size="8">{_esc(cf.get("document_checked", ""))}</font>', styles['CellTextSmall']),
+                Paragraph(f'<font size="8" color="#C00000">{finding}</font>', styles['CellTextSmall']),
+            ])
+
+        _cf_tbl = Table(_cf_rows, colWidths=[page_width * 0.06, page_width * 0.14, page_width * 0.20, page_width * 0.60])
+        _cf_styles = [
+            ('BACKGROUND', (0, 0), (-1, 0), RED),
+            ('GRID', (0, 0), (-1, -1), 0.3, MID_GRAY),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+        ]
+        for ri in range(1, len(_cf_rows)):
+            _cf_styles.append(('BACKGROUND', (0, ri), (-1, ri),
+                               LIGHT_RED if ri % 2 == 1 else WHITE))
+        _cf_tbl.setStyle(TableStyle(_cf_styles))
+        elements.append(_cf_tbl)
         elements.append(Spacer(1, 5 * mm))
     else:
-        elements.append(Paragraph(
-            '<font color="#16a34a"><b>No critical findings.</b></font>',
-            styles['Normal'],
-        ))
-        elements.append(Spacer(1, 5 * mm))
-
-    # ── Review Required (orange) ──
-    if review_items:
-        elements.append(Paragraph(
-            '<b><font color="#C55A11">Review Required:</font></b>', styles['Normal']))
-        elements.append(Spacer(1, 2 * mm))
-        for i, ri in enumerate(review_items[:20], 1):
-            detail = _esc(_safe_str(ri.get('condition', ''), 200))
-            ref = ri.get('clause_ref', '')
-            if ref:
-                detail += f' <font color="#666666">[{_esc(ref)}]</font>'
+        if tf == 0 and tr == 0:
             elements.append(Paragraph(
-                f'<font size="9" color="#C55A11">{i}. {detail}</font>',
-                styles['CellTextSmall']))
+                '<font color="#16a34a"><b>All checks passed. No discrepancies found.</b></font>',
+                styles['Normal'],
+            ))
+        elif tf == 0:
+            elements.append(Paragraph(
+                '<b>No critical failures.</b> Some items require manual review (see details below).',
+                styles['Normal'],
+            ))
         elements.append(Spacer(1, 5 * mm))
 
-    # Summary line
-    elements.append(Spacer(1, 4 * mm))
-    elements.append(Paragraph(
-        f'<font size="8" color="#666666">Critical Findings: {len(critical_findings)}'
-        f', Review Required: {len(review_items)}</font>',
-        styles['CellTextSmall']))
+    # Review Required (orange) -- only show top items
+    if review_items:
+        _review_display = [r for r in review_items
+                           if r.get('condition', '').strip()
+                           and r.get('condition', '').strip() != 'N/A'][:15]
+        if _review_display:
+            elements.append(Paragraph(
+                '<b><font color="#C55A11">Items Requiring Manual Review:</font></b>', styles['Normal']))
+            elements.append(Spacer(1, 2 * mm))
+            for i, ri in enumerate(_review_display, 1):
+                detail = _esc(_safe_str(ri.get('condition', ''), 200))
+                ref = ri.get('clause_ref', '')
+                doc = ri.get('document_checked', '')
+                suffix = ''
+                if ref:
+                    suffix += f' <font color="#666666">[{_esc(ref)}]</font>'
+                if doc:
+                    suffix += f' <font color="#888888">({_esc(doc)})</font>'
+                elements.append(Paragraph(
+                    f'<font size="9">{i}. {detail}{suffix}</font>',
+                    styles['CellTextSmall']))
+            elements.append(Spacer(1, 5 * mm))
 
     elements.append(PageBreak())
     return elements
@@ -460,20 +573,24 @@ def _build_executive_summary(
 
 # ── Clause-by-Clause Tables ─────────────────────────────────────────────────
 
-def _build_section_tables(sections: List[Dict], styles) -> List:
-    """
-    Build clause-by-clause verification tables matching the old ComplianceReportPDF.
+def _is_informational_only(clause: Dict) -> bool:
+    """Check if a clause has only N/A / INFORMATIONAL rows (no real verification)."""
+    rows = clause.get('rows', [])
+    if not rows:
+        return True
+    for r in rows:
+        cond = str(r.get('condition', '')).strip()
+        result = str(r.get('result', '')).strip().upper()
+        if cond and cond != 'N/A' and result != 'INFORMATIONAL':
+            return False
+    return True
 
-    Each clause gets:
-    - LAYER 1: Navy field label bar (LC Field + Field Description)
-    - LAYER 2: Light blue field value bar
-    - LAYER 3: 5-column table (Condition | Found Text | Document Checked | Result | Compliance)
-    - LAYER 4: Result bar (green "Result: Complied" or red "Result: Not Complied")
-    """
+
+def _build_section_tables(sections: List[Dict], styles) -> List:
+    """Build clause-by-clause verification tables."""
     elements = []
     page_width = A4[0] - 44 * mm
 
-    # Colors matching the old system's clause-by-clause section
     _NAVY_C     = colors.HexColor('#1F3864')
     _TEAL_C     = colors.HexColor('#1F4E79')
     _FIELD_BG_C = colors.HexColor('#EBF5FD')
@@ -481,14 +598,13 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
     _DISC_BG_C  = colors.HexColor('#FCE4D6')
     _RESULT_OK_BG = colors.HexColor('#E2EFDA')
     _RESULT_NG_BG = colors.HexColor('#FCE4D6')
+    _RESULT_RV_BG = colors.HexColor('#FFF9E6')
     _RESULT_OK_FG = colors.HexColor('#375623')
     _RESULT_NG_FG = colors.HexColor('#C00000')
+    _RESULT_RV_FG = colors.HexColor('#C55A11')
     _AMBER_BG   = colors.HexColor('#FFF9E6')
 
     _cw = [page_width * 0.28, page_width * 0.14, page_width * 0.14, page_width * 0.30, page_width * 0.14]
-
-    def _esc(t):
-        return str(t).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;') if t else ''
 
     def _sym_text(comp):
         c = str(comp).lower().strip()
@@ -498,30 +614,53 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
             return 'Fail', '#C00000'
         if c in ('review', 'warning', 'review_required', 'review required'):
             return 'Review', '#C55A11'
+        if c in ('info', 'informational'):
+            return 'Info', '#777777'
         return 'N/A', '#777777'
 
     for section in sections:
         section_name = section.get('section_name', 'Unknown')
 
-        # Section header
+        # Count non-informational clauses in this section
+        real_clauses = [c for c in section.get('clauses', []) if not _is_informational_only(c)]
+        if not real_clauses:
+            continue  # Skip sections with only informational clauses
+
+        # Section header with stats
+        sp = section.get('total_pass', 0)
+        sf = section.get('total_fail', 0)
+        sr_count = section.get('total_review', 0)
         elements.append(Spacer(1, 4 * mm))
         elements.append(Paragraph(
-            f'<b><font color="#1F3864" size="11">{_esc(section_name)}</font></b>',
+            f'<b><font color="#1F3864" size="13">{_esc(section_name)}</font></b>'
+            f'  <font color="#888888" size="8">({sp}P / {sf}F / {sr_count}R)</font>',
             styles['Normal']))
-        elements.append(Spacer(1, 2 * mm))
+        elements.append(HRFlowable(width="100%", thickness=1, color=BRAND_BLUE, spaceAfter=4))
 
-        clauses = section.get('clauses', [])
-        for clause in clauses:
+        for clause in section.get('clauses', []):
+            # Skip purely informational clauses
+            if _is_informational_only(clause):
+                continue
+
             clause_ref = clause.get('clause_ref', '')
             clause_text = _safe_str(clause.get('clause_text', ''), 500)
             overall = clause.get('overall_result', 'REVIEW REQUIRED')
             overall_lower = overall.lower().strip()
 
+            # Get field description
+            field_desc = _get_field_description(clause_ref) or ''
+
             # LAYER 1: Field label bar (navy)
+            ref_display = clause_ref
+            if field_desc:
+                desc_text = f'{_esc(field_desc)}'
+            else:
+                desc_text = ''
+
             _l1 = [[
-                Paragraph(f'<b><font color="white">LC Field: {_esc(clause_ref)}</font></b>',
+                Paragraph(f'<b><font color="white">LC Field: {_esc(ref_display)}</font></b>',
                           styles['CellTextSmall']),
-                Paragraph(f'<font color="white">Field Description: {_esc(clause_text[:200])}</font>',
+                Paragraph(f'<font color="white">Field Description: {desc_text}</font>',
                           styles['CellTextSmall']),
             ]]
             _t1 = Table(_l1, colWidths=[page_width * 0.25, page_width * 0.75])
@@ -535,10 +674,10 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
             ]))
             elements.append(_t1)
 
-            # LAYER 2: Field value bar (light blue)
+            # LAYER 2: Field value bar (light blue) -- show the actual LC clause text
             if clause_text:
                 _l2 = [[Paragraph(
-                    f'<font size="8"><b>Field Value:</b> {_esc(clause_text)}</font>',
+                    f'<font size="8"><b>LC Clause:</b> {_esc(clause_text[:400])}</font>',
                     styles['CellTextSmall'])]]
                 _t2 = Table(_l2, colWidths=[page_width])
                 _t2.setStyle(TableStyle([
@@ -553,11 +692,15 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
 
             # LAYER 3: 5-column verification table
             rows_data = clause.get('rows', [])
-            if not rows_data:
+            # Filter out purely N/A informational rows
+            real_rows = [r for r in rows_data
+                         if str(r.get('condition', '')).strip() not in ('', 'N/A')
+                         or str(r.get('result', '')).strip().upper() not in ('', 'INFORMATIONAL', 'N/A')]
+
+            if not real_rows:
                 elements.append(Spacer(1, 4 * mm))
                 continue
 
-            # Column headers (teal background, white text)
             _hdr = [Paragraph(f'<b><font color="white">{h}</font></b>', styles['CellTextSmall'])
                     for h in ['Condition(s)', 'Findings', 'Document Checked', 'Result', 'Compliance']]
             _tbl_data = [_hdr]
@@ -572,14 +715,16 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
                 ('ALIGN', (4, 0), (4, -1), 'CENTER'),
             ]
 
-            for ri, row in enumerate(rows_data):
+            for ri, row in enumerate(real_rows):
                 compliance_val = str(row.get('compliance', '')).lower()
                 result_val = _safe_str(row.get('result', ''), 200)
                 _is_fail = compliance_val in ('fail', 'false', 'not complied', 'non_compliant')
+                _is_pass = compliance_val in ('pass', 'complied')
                 _is_rev = compliance_val in ('review', 'warning', 'review_required', 'review required')
                 _row_bg = (_DISC_BG_C if _is_fail else
+                           _ODD_BG_C if _is_pass else
                            _AMBER_BG if _is_rev else
-                           (_ODD_BG_C if ri % 2 == 0 else WHITE))
+                           (WHITE if ri % 2 == 0 else colors.HexColor('#F8F9FA')))
                 _s, _sc = _sym_text(row.get('compliance', 'na'))
 
                 _tbl_data.append([
@@ -604,14 +749,17 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
             # LAYER 4: Result bar
             _is_complied = overall_lower in ('complied', 'pass', 'compliant')
             _is_review = overall_lower in ('review', 'review required', 'review_required')
-            _r_bg = _RESULT_OK_BG if _is_complied else _RESULT_NG_BG
-            _r_fg = _RESULT_OK_FG if _is_complied else _RESULT_NG_FG
-            _r_label = ('Result: Complied' if _is_complied else
-                        'Result: Review Required' if _is_review else
-                        'Result: Not Complied')
-            _r_sym = 'PASS' if _is_complied else ('REVIEW' if _is_review else 'FAIL')
-            _r_fg_h = f"#{_r_fg.hexval()[2:]}" if hasattr(_r_fg, 'hexval') else '#375623'
+            if _is_complied:
+                _r_bg, _r_fg = _RESULT_OK_BG, _RESULT_OK_FG
+                _r_label, _r_sym = 'Result: Complied', 'PASS'
+            elif _is_review:
+                _r_bg, _r_fg = _RESULT_RV_BG, _RESULT_RV_FG
+                _r_label, _r_sym = 'Result: Review Required', 'REVIEW'
+            else:
+                _r_bg, _r_fg = _RESULT_NG_BG, _RESULT_NG_FG
+                _r_label, _r_sym = 'Result: Not Complied', 'FAIL'
 
+            _r_fg_h = f"#{_r_fg.hexval()[2:]}" if hasattr(_r_fg, 'hexval') else '#375623'
             _rr = [[
                 Paragraph(f'<b><font color="{_r_fg_h}">{_r_label}</font></b>',
                           styles['CellTextSmall']),
@@ -639,19 +787,11 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
 # ── Footer ───────────────────────────────────────────────────────────────────
 
 def _footer_callback(canvas, doc):
-    """
-    Draw footer, AiGenics watermark, and logo on each page.
-
-    Called by ReportLab for every page during PDF generation.
-    Matches the old ComplianceReportPDF styling:
-    - Diagonal "AiGenics" watermark (30% opacity)
-    - Footer bar: "ComplyTrade | AiGenics | Generated: timestamp | Page N"
-    - AiGenics logo in top-right corner
-    """
+    """Draw footer, AiGenics watermark, and logo on each page."""
     canvas.saveState()
     page_w, page_h = A4
 
-    # ── Diagonal watermark (30% opacity) ──
+    # Diagonal watermark (30% opacity)
     canvas.setFont('Helvetica-Bold', 60)
     canvas.setFillColor(colors.Color(0.85, 0.85, 0.85, alpha=0.3))
     canvas.translate(page_w / 2, page_h / 2)
@@ -660,7 +800,7 @@ def _footer_callback(canvas, doc):
     canvas.rotate(-45)
     canvas.translate(-page_w / 2, -page_h / 2)
 
-    # ── Footer ──
+    # Footer
     canvas.setFont('Helvetica', 7)
     canvas.setFillColor(DARK_GRAY)
     y = 12 * mm
@@ -670,14 +810,14 @@ def _footer_callback(canvas, doc):
         f'ComplyTrade | AiGenics  |  Generated: {timestamp}  |  Page {doc.page}',
     )
 
-    # ── AiGenics logo in top-right corner ──
+    # AiGenics logo in top-right corner
     try:
         logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'view', 'logo.png')
         if os.path.exists(logo_path):
             canvas.drawImage(logo_path, page_w - 45 * mm, page_h - 15 * mm,
                              width=30 * mm, height=10 * mm, preserveAspectRatio=True, mask='auto')
     except Exception:
-        pass  # Logo is optional -- continue without it
+        pass
 
     canvas.restoreState()
 
@@ -686,42 +826,26 @@ def _footer_callback(canvas, doc):
 
 def generate_pdf(
     consolidated: Dict,
-    lc_fields: Dict,
+    lc_fields_raw: Dict,
     output_path: str,
     progress_fn=None,
 ) -> str:
-    """
-    Generate the final compliance report PDF.
-
-    Assembles all report sections (cover, executive summary, clause tables)
-    into a ReportLab document and builds the PDF file.
-
-    Args:
-        consolidated: Step 19 output dict (sections, findings, decision)
-        lc_fields:    Final LC consolidated fields (for cover page)
-        output_path:  path for the output PDF file
-        progress_fn:  callback for progress messages
-
-    Returns:
-        absolute path to generated PDF
-    """
+    """Generate the final compliance report PDF."""
     if progress_fn is None:
         def progress_fn(msg): pass
 
     styles = _build_styles()
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-    # Configure the PDF document with A4 page size and margins (matching old system)
     doc = SimpleDocTemplate(
-        output_path,
-        pagesize=A4,
-        topMargin=22 * mm,
-        bottomMargin=22 * mm,
-        leftMargin=22 * mm,
-        rightMargin=22 * mm,
-        title='ComplyTrade Compliance Report',
-        author='ComplyTrade',
+        output_path, pagesize=A4,
+        topMargin=22 * mm, bottomMargin=22 * mm,
+        leftMargin=22 * mm, rightMargin=22 * mm,
+        title='ComplyTrade Compliance Report', author='ComplyTrade',
     )
+
+    # Extract LC fields from step06 structure
+    lc = _extract_lc_fields(lc_fields_raw)
 
     decision = consolidated.get('overall_decision', 'REVIEW REQUIRED')
     stats = {
@@ -732,30 +856,31 @@ def generate_pdf(
 
     elements = []
 
-    # 1. Cover page -- LC details and overall decision
+    # 1. Cover page
     progress_fn("Building cover page...")
-    elements.extend(_build_cover(lc_fields, decision, stats, styles))
+    elements.extend(_build_cover(lc, decision, stats, styles))
 
-    # 2. Executive Summary -- critical findings and review items
+    # 2. Executive Summary
     progress_fn("Building executive summary...")
     elements.extend(_build_executive_summary(
+        decision,
         consolidated.get('critical_findings', []),
         consolidated.get('review_items', []),
+        stats,
         styles,
     ))
 
-    # 3-4. Section tables -- clause-by-clause verification details
+    # 3. Section tables
     progress_fn("Building clause-by-clause tables...")
     sections = consolidated.get('sections', [])
     elements.extend(_build_section_tables(sections, styles))
 
-    # Build the PDF -- _footer_callback draws watermark and footer on every page
+    # Build PDF
     progress_fn("Rendering PDF...")
     doc.build(elements, onFirstPage=_footer_callback, onLaterPages=_footer_callback)
 
     abs_path = str(Path(output_path).resolve())
     progress_fn(f"PDF generated: {abs_path}")
-
     return abs_path
 
 
@@ -770,17 +895,11 @@ def run(
     """
     Execute Step 20: Final Compliance Report Generation.
 
-    Generates a professional PDF report from the consolidated verification data.
-    The filename includes the LC number and timestamp for easy identification.
-
     Args:
         consolidated: Step 19 output dict
-        lc_fields:    Final LC consolidated fields dict
+        lc_fields:    Step 06 result dict (contains final_lc with consolidated_fields)
         output_dir:   directory for step output
         progress_fn:  callback for progress messages
-
-    Returns:
-        dict with step results including pdf_path
     """
     t0 = time.time()
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -790,12 +909,9 @@ def run(
 
     progress_fn("Step 20: Final Compliance Report Generation")
 
-    # Build filename from LC number -- sanitized for filesystem safety
-    lc_number = _safe_str(
-        lc_fields.get('DC_Number') or lc_fields.get('F20') or lc_fields.get('LC_Number', 'report'),
-        50,
-    )
-    # Replace non-alphanumeric characters with underscores
+    # Extract LC number for filename
+    lc = _extract_lc_fields(lc_fields)
+    lc_number = lc.get('lc_number', 'report') or 'report'
     safe_name = ''.join(c if c.isalnum() or c in '-_' else '_' for c in lc_number)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     pdf_filename = f'ComplyTrade_Report_{safe_name}_{timestamp}.pdf'
@@ -809,6 +925,7 @@ def run(
             'step_name': 'Final Compliance Report Generation',
             'pdf_path': abs_path,
             'pdf_filename': pdf_filename,
+            'report_path': abs_path,
             'overall_decision': consolidated.get('overall_decision', 'REVIEW REQUIRED'),
             'total_clauses': consolidated.get('total_clauses', 0),
             'total_rows': consolidated.get('total_rows', 0),
@@ -829,7 +946,7 @@ def run(
         }
         progress_fn(f"Step 20 FAILED: {str(e)}")
 
-    # Save result metadata (separate from the PDF itself)
+    # Save result metadata
     meta_path = Path(output_dir) / 'step20_result.json'
     with open(meta_path, 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
