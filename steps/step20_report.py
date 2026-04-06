@@ -662,10 +662,8 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
     for section in sections:
         section_name = section.get('section_name', 'Unknown')
 
-        # Count non-informational clauses in this section
-        real_clauses = [c for c in section.get('clauses', []) if not _is_informational_only(c)]
-        if not real_clauses:
-            continue  # Skip sections with only informational clauses
+        if not section.get('clauses', []):
+            continue
 
         # Section header with stats
         sp = section.get('total_pass', 0)
@@ -679,29 +677,22 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
         elements.append(HRFlowable(width="100%", thickness=1, color=BRAND_BLUE, spaceAfter=4))
 
         for clause in section.get('clauses', []):
-            # Skip purely informational clauses
-            if _is_informational_only(clause):
-                continue
 
             clause_ref = clause.get('clause_ref', '')
             clause_text = _safe_str(clause.get('clause_text', ''), 500)
             overall = clause.get('overall_result', 'REVIEW REQUIRED')
             overall_lower = overall.lower().strip()
 
-            # Get field description
+            # Get field description — show clause text if available, else generic label
             field_desc = _get_field_description(clause_ref) or ''
+            # Use actual clause text for the header description
+            header_desc = clause_text[:200] if clause_text else field_desc
 
             # LAYER 1: Field label bar (navy)
-            ref_display = clause_ref
-            if field_desc:
-                desc_text = f'{_esc(field_desc)}'
-            else:
-                desc_text = ''
-
             _l1 = [[
-                Paragraph(f'<b><font color="white">LC Field: {_esc(ref_display)}</font></b>',
+                Paragraph(f'<b><font color="white">LC Field: {_esc(clause_ref)}</font></b>',
                           styles['CellTextSmall']),
-                Paragraph(f'<font color="white">Field Description: {desc_text}</font>',
+                Paragraph(f'<font color="white">{_esc(header_desc)}</font>',
                           styles['CellTextSmall']),
             ]]
             _t1 = Table(_l1, colWidths=[page_width * 0.25, page_width * 0.75])
@@ -733,18 +724,7 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
 
             # LAYER 3: 5-column verification table
             rows_data = clause.get('rows', [])
-            # Filter out purely N/A informational rows — keep rows with real verification data
-            real_rows = []
-            for _r in rows_data:
-                _rc = str(_r.get('condition', '')).strip().upper()
-                _rr = str(_r.get('result', '')).strip().upper()
-                _rf = str(_r.get('findings', _r.get('found_text', ''))).strip()
-                _rd = str(_r.get('document_checked', '')).strip()
-                if _rr == 'INFORMATIONAL' or _rc == 'INFORMATIONAL':
-                    continue
-                if (not _rc or _rc == 'N/A') and (not _rf or _rf == 'N/A') and (not _rd or _rd == 'N/A'):
-                    continue
-                real_rows.append(_r)
+            real_rows = rows_data
 
             if not real_rows:
                 elements.append(Spacer(1, 4 * mm))

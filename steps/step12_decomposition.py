@@ -105,13 +105,23 @@ Your task: decompose an LC clause into individual, checkable conditions.
 TRADE FINANCE KNOWLEDGE:
 - "FULL SET" means 3/3 originals (e.g., "FULL SET OF BILLS OF LADING" = 3 original BLs required)
 - "ISSUING BANK" refers to the actual bank that issued the LC — use the bank name if provided
-- "ACCEPTABLE" or "MAY" = optional/permissive — do NOT create a mandatory condition for these
+- "ACCEPTABLE" or "MAY" = optional/permissive — do NOT create mandatory conditions for these
 - "IN DUPLICATE" = 2 copies, "IN TRIPLICATE" = 3 copies
-- Do NOT create conditions for:
-  * Copy count or number of documents required (that is checked separately)
-  * Document presence/existence (that is checked separately)
-  * Bank-internal obligations (advising, confirming, reimbursement)
-  * Sanctions screening
+
+RETURN EMPTY ARRAY [] ONLY for these specific clause types:
+  * Bank-to-bank obligations: clauses that start with "NEGOTIATING BANK MUST...", "ADVISING BANK MUST..." (these are bank duties, not document requirements)
+  * Fee/charge clauses: "DISCREPANCY HANDLING CHARGES", "BANK CHARGES WILL BE DEDUCTED"
+  * Document forwarding: "ALL DOCUMENTS TO BE FORWARDED TO US BY COURIER"
+  * Permissive overrides: "THIRD PARTY DOCUMENTS ARE ACCEPTABLE", "LARGER QUANTITIES ACCEPTABLE", "CHARTER PARTY BL ACCEPTABLE" (these ALLOW something, they don't require anything)
+  * Date validity: "DOCUMENTS DATED PRIOR TO... NOT ACCEPTABLE" (handled separately)
+
+IMPORTANT: If the clause is about a DOCUMENT REQUIREMENT (F46A), ALWAYS decompose it — never return empty array for F46A clauses.
+
+DOCUMENT IDENTIFICATION:
+  * "SHIPMENT ADVICE" or "BENEFICIARY SHIPMENT ADVICE" = check on document type "Shipment Advice"
+  * "CERTIFICATE FROM SHIPPING COMPANY OR THEIR AUTHORIZED AGENTS" = check on "Shipping Company Certificate" or "Agent Certificate"
+  * "INSURANCE" only when it says "INSURANCE POLICY" or "INSURANCE CERTIFICATE" — NOT when it says "INSURANCE COVERED BY APPLICANT" (that means applicant handles insurance, beneficiary sends advice)
+  * When clause says "INSURANCE COVERED BY APPLICANT", the checkable part is the SHIPMENT ADVICE, not insurance
 
 RULES:
 1. Each condition must be independently verifiable against a SINGLE document
@@ -121,14 +131,20 @@ RULES:
 4. document_to_check: the document type to check (e.g., "Bill of Lading", "Commercial Invoice", "Insurance Policy")
 5. look_for_value: the specific value, text, or pattern to search for in the document
 
+FIELD-SPECIFIC GUIDANCE:
+- F45A (Description of Goods): Extract conditions for quantity, goods name, unit price, trade terms (CFR/CIF/FOB), port of destination, proforma invoice reference. Check these on BOTH Commercial Invoice AND Bill of Lading.
+- F46A (Documents Required): Extract every requirement — signature, copies, addressee, content requirements, certifications, specific clauses to include.
+- F47A (Additional Conditions): Extract each condition. If it says something is "ACCEPTABLE" or "ALLOWED", note it as a permissive condition.
+- For certificates: extract issuer requirement, language, content, and addressee conditions.
+
+IMPORTANT: ALWAYS return at least one condition for every clause. Never return an empty array unless the clause is truly a bank-internal instruction (like reimbursement terms). Every document requirement and goods description has checkable conditions.
+
 Respond ONLY with a JSON array. Each element:
 {
   "condition_text": "...",
   "document_to_check": "...",
   "look_for_value": "..."
-}
-
-If the clause is purely informational or non-checkable, return an empty array: []"""
+}"""
 
 
 # User prompt template — fills in the specific clause and LC context

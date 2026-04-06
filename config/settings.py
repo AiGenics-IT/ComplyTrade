@@ -19,7 +19,7 @@ QWEN_VLM_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-7B-Instruct"
 # ── Server ──
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8082
-BUILD_TAG = "2026-04-06-P32"
+BUILD_TAG = "2026-04-06-P34"
 
 # ── Processing ──
 MAX_CONCURRENT_OCR = 4

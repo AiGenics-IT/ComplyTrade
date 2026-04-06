@@ -261,11 +261,41 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     pages = step2_result.get('pages', [])
     _progress(f"Classifying {len(pages)} pages with Qwen VLM...")
 
-    # ── Phase 1: Classify every page with Qwen ──
-    classifications = []
+    # ── Phase 0: SWIFT pre-classification (code-based, 100% accurate) ──
+    # Detect LC/Amendment pages from OCR text BEFORE sending to VLM.
+    # This prevents Fusion-format pages from being misclassified as "Blank Page".
+    _swift_preclassified = {}  # page_number -> classification dict
 
-    # Build tasks for concurrent VLM calls
-    tasks = []
+    _SWIFT_LC_PATTERNS = [
+        r'Message\s+type:\s*700',
+        r'(?:^|\n)\s*:20:',              # Alliance F20
+        r'(?:^|\n)\s*F20\s*:',           # Fusion F20
+        r'(?:^|\n)\s*:46A:',             # Alliance F46A
+        r'(?:^|\n)\s*F46A\s*:',          # Fusion F46A
+        r'(?:^|\n)\s*:31C:',             # Alliance date of issue
+        r'(?:^|\n)\s*F31C\s*:',          # Fusion date of issue
+        r'Documentary\s+Credit\s+Number',
+        r'Form\s+of\s+Documentary\s+Credit',
+    ]
+    _SWIFT_AMEND_PATTERNS = [
+        r'Message\s+type:\s*707',
+        r'(?:^|\n)\s*26E:\s*Number\s+of\s+Amendment',
+        r'(?:^|\n)\s*26E:',              # Alliance amendment number
+        r'Number\s+of\s+Amendment',
+        r'Date\s+of\s+Amendment',
+        r'Increase\s+of\s+Documentary\s+Credit',
+        r'Decrease\s+of\s+Documentary\s+Credit',
+    ]
+    _SWIFT_CONTINUATION_PATTERNS = [
+        r'(?:^|\n)\s*:45A:',             # Description of goods (often on page 2+)
+        r'(?:^|\n)\s*F45A\s*:',
+        r'(?:^|\n)\s*:47A:',             # Additional conditions (often continuation)
+        r'(?:^|\n)\s*F47A\s*:',
+        r'(?:^|\n)\s*:78:',              # Instructions
+        r'(?:^|\n)\s*F78\s*:',
+    ]
+
+    all_page_data = []
     for page in pages:
         if hasattr(page, 'page_number'):
             pg_num = page.page_number
@@ -275,13 +305,66 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             pg_num = page.get('page_number', 0)
             text = page.get('cleaned_text', page.get('raw_text', ''))
             img_path = page.get('page_image_path', '')
+        all_page_data.append((pg_num, img_path, text))
 
-        tasks.append((pg_num, img_path, text))
+    prev_swift_type = None
+    for pg_num, img_path, text in sorted(all_page_data, key=lambda x: x[0]):
+        text_upper = text.upper() if text else ''
+
+        # Check for Amendment first (more specific)
+        is_amendment = any(re.search(p, text, re.IGNORECASE) for p in _SWIFT_AMEND_PATTERNS)
+        # Check for LC
+        is_lc = any(re.search(p, text, re.IGNORECASE) for p in _SWIFT_LC_PATTERNS)
+        # Check for continuation SWIFT fields
+        is_swift_cont = any(re.search(p, text, re.IGNORECASE) for p in _SWIFT_CONTINUATION_PATTERNS)
+
+        if is_amendment:
+            _swift_preclassified[pg_num] = {
+                'page_number': pg_num, 'document_type': 'Amendment',
+                'is_continuation': False, 'confidence': 0.99,
+                'stamps': [], 'signatures': [], 'seals': [], 'logos': [],
+                'copy_status': 'original', 'copy_label': '', 'marking_status': 'unsigned',
+                'doc_hint': 'SWIFT MT707 Amendment detected from text patterns',
+            }
+            prev_swift_type = 'Amendment'
+            _progress(f"  Page {pg_num}: PRE-CLASSIFIED as Amendment (SWIFT pattern)")
+        elif is_lc:
+            _swift_preclassified[pg_num] = {
+                'page_number': pg_num, 'document_type': 'LC',
+                'is_continuation': False, 'confidence': 0.99,
+                'stamps': [], 'signatures': [], 'seals': [], 'logos': [],
+                'copy_status': 'original', 'copy_label': '', 'marking_status': 'unsigned',
+                'doc_hint': 'SWIFT MT700 LC detected from text patterns',
+            }
+            prev_swift_type = 'LC'
+            _progress(f"  Page {pg_num}: PRE-CLASSIFIED as LC (SWIFT pattern)")
+        elif is_swift_cont and prev_swift_type:
+            # Has SWIFT fields but no message type header — continuation of previous LC/Amendment
+            _swift_preclassified[pg_num] = {
+                'page_number': pg_num, 'document_type': prev_swift_type,
+                'is_continuation': True, 'confidence': 0.95,
+                'stamps': [], 'signatures': [], 'seals': [], 'logos': [],
+                'copy_status': 'original', 'copy_label': '', 'marking_status': 'unsigned',
+                'doc_hint': f'SWIFT continuation of {prev_swift_type} (F-tags detected)',
+            }
+            _progress(f"  Page {pg_num}: PRE-CLASSIFIED as {prev_swift_type} continuation (SWIFT fields)")
+        else:
+            prev_swift_type = None  # Reset — next page needs its own SWIFT detection
+
+    _progress(f"  Pre-classified {len(_swift_preclassified)} pages as SWIFT (LC/Amendment)")
+
+    # ── Phase 1: ALL pages go to VLM for classification + stamp/signature detection ──
+    # SWIFT pre-classification is used to OVERRIDE VLM's document_type if VLM gets it wrong,
+    # but VLM still runs on every page to extract stamps, signatures, seals, logos, copy status.
+    classifications = []
+    vlm_tasks = list(all_page_data)
+
+    _progress(f"Sending ALL {len(vlm_tasks)} pages to VLM for classification + visual detection...")
 
     # Run VLM classification concurrently
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_VLM) as executor:
         futures = {}
-        for pg_num, img_path, text in tasks:
+        for pg_num, img_path, text in vlm_tasks:
             future = executor.submit(_classify_page_vlm, pg_num, img_path, text)
             futures[future] = pg_num
 
@@ -290,6 +373,20 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             pg_num = futures[future]
             try:
                 result = future.result()
+
+                # If this page was pre-classified as SWIFT, override VLM's document_type
+                # but KEEP VLM's stamps, signatures, seals, logos, copy_status
+                if pg_num in _swift_preclassified:
+                    pre = _swift_preclassified[pg_num]
+                    vlm_doc_type = result.get('document_type', 'unknown')
+                    # Override document_type and is_continuation from SWIFT detection
+                    result['document_type'] = pre['document_type']
+                    result['is_continuation'] = pre['is_continuation']
+                    result['confidence'] = max(result.get('confidence', 0), pre['confidence'])
+                    if vlm_doc_type.lower() in ('blank page', 'blank_page', 'unknown'):
+                        result['doc_hint'] = f"SWIFT {pre['document_type']} (VLM said '{vlm_doc_type}' — overridden)"
+                        _progress(f"  Page {pg_num}: OVERRIDE {vlm_doc_type}→{pre['document_type']} (SWIFT pattern)")
+
                 classifications.append(result)
                 doc_type = result.get('document_type', '?')
                 conf = result.get('confidence', 0)
@@ -301,7 +398,7 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                 done_count += 1
                 _progress(f"  Page {pg_num}: {doc_type} (conf={conf:.2f}, cont={is_cont}, "
                           f"stamps={stamps_count}, sigs={sigs_count}, copy={copy_st}) "
-                          f"[{done_count}/{len(tasks)}]")
+                          f"[{done_count}/{len(vlm_tasks)}]")
 
             except Exception as e:
                 _progress(f"  Page {pg_num}: ERROR - {e}")

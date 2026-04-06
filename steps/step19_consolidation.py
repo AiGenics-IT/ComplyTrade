@@ -213,7 +213,8 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
         ref = row.get('clause_ref', 'UNKNOWN')
         clause_map.setdefault(ref, []).append(row)
         if not clause_text_map.get(ref):
-            clause_text_map[ref] = row.get('clause_text', '')
+            clause_text_map[ref] = (row.get('original_clause_text', '')
+                                    or row.get('clause_text', ''))
 
     progress_fn(f"Grouped into {len(clause_map)} clause refs")
 
@@ -330,7 +331,7 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
         for cg in sec.clauses:
             for vr in cg.rows:
                 # Skip purely informational rows
-                if vr.result == 'INFORMATIONAL' or vr.condition == 'Informational':
+                if vr.result == 'INFORMATIONAL' or (vr.condition or '').strip().upper() == 'INFORMATIONAL':
                     continue
                 if not vr.condition and not vr.findings and not vr.document_checked:
                     continue
@@ -353,9 +354,34 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
                         _seen_review.add(_dedup_key)
                         review_items.append(entry)
 
+            # For clauses with NO real rows but review_count > 0, add clause-level review entry
+            if cg.review_count > 0 and not any(
+                vr.compliance == 'REVIEW REQUIRED' and vr.result != 'INFORMATIONAL'
+                and (vr.condition or '').strip().upper() != 'INFORMATIONAL'
+                for vr in cg.rows
+            ):
+                # This clause was not decomposed — add as review with clause text
+                _clause_text = cg.clause_text or clause_text_map.get(cg.clause_ref, '')
+                if _clause_text:
+                    _dedup_key = f"{cg.clause_ref}||NOT_DECOMPOSED"
+                    if _dedup_key not in _seen_review:
+                        _seen_review.add(_dedup_key)
+                        review_items.append({
+                            'clause_ref': cg.clause_ref,
+                            'clause_text': _clause_text[:200],
+                            'condition': _clause_text[:150],
+                            'findings': 'Clause not decomposed — requires manual review',
+                            'result': 'MANUAL REVIEW NEEDED',
+                            'document_checked': 'All Documents',
+                        })
+
     # Sort findings by clause_ref for consistent ordering in the report
     critical.sort(key=lambda x: _sort_clause_ref(x['clause_ref']))
     review_items.sort(key=lambda x: _sort_clause_ref(x['clause_ref']))
+
+    # Use deduplicated counts for summary (matches what user sees in executive summary)
+    _dedup_fail = len(critical)
+    _dedup_review = len(review_items)
 
     output = ConsolidatedOutput(
         sections=sections,
@@ -363,8 +389,8 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
         total_clauses=len(clause_groups),
         total_rows=sum(s.total_pass + s.total_fail + s.total_review for s in sections),
         total_pass=tp,
-        total_fail=tf,
-        total_review=tr,
+        total_fail=_dedup_fail,
+        total_review=_dedup_review,
         critical_findings=critical,
         review_items=review_items,
     )
