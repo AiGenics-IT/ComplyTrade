@@ -72,6 +72,16 @@
     .phase-header.p1{color:#0369a1;background:#f0f9ff}
     .phase-header.p2{color:#7c3aed;background:#faf5ff}
 
+    /* Docs table */
+    .docs-tbl{width:100%;border-collapse:collapse;font-size:.85em;margin-top:8px}
+    .docs-tbl th{background:var(--secondary);color:#fff;padding:8px 10px;text-align:left;font-size:.82em}
+    .docs-tbl td{padding:6px 10px;border-bottom:1px solid #f1f5f9;vertical-align:top}
+    .docs-tbl tr:hover td{background:#f8fafc}
+    .doc-type-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.78em;font-weight:600}
+    .doc-type-badge.lc{background:#e0f2fe;color:#0369a1}
+    .doc-type-badge.ship{background:#f3e8ff;color:#7c3aed}
+    .doc-type-badge.amend{background:#fef3c7;color:#92400e}
+
     /* Modal */
     .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;align-items:center;justify-content:center;backdrop-filter:blur(2px)}
     .modal-overlay.active{display:flex}
@@ -126,6 +136,17 @@
 
     <div id="jobs-container">
         <div class="empty"><h3>Loading...</h3></div>
+    </div>
+</div>
+
+<!-- Identified Documents Modal -->
+<div class="modal-overlay" id="docs-modal" onclick="if(event.target===this)this.classList.remove('active')">
+    <div class="modal-box" style="max-width:750px;max-height:85vh;overflow-y:auto">
+        <h3 style="color:var(--primary);margin-bottom:10px">Identified Documents</h3>
+        <div id="docs-body" style="font-size:.88em"><p style="color:var(--muted)">Loading...</p></div>
+        <div class="modal-actions" style="margin-top:14px">
+            <button class="mbtn mbtn-cancel" onclick="document.getElementById('docs-modal').classList.remove('active')">Close</button>
+        </div>
     </div>
 </div>
 
@@ -242,6 +263,7 @@ function renderJobs(jobs) {
             actions += `<a class="abtn report" href="/api/report/${j.job_id}/${encodeURIComponent(lc)}" target="_blank">Report</a>`;
         }
         actions += `<a class="abtn text" href="/extracted-text?job_id=${j.job_id}">Text</a>`;
+        actions += `<button class="abtn" style="background:#6d28d9" onclick="showDocs('${j.job_id}')">Docs</button>`;
         actions += `<button class="abtn pdf" onclick="deleteJob('${j.job_id}')">Delete</button>`;
 
         html += `<tr>
@@ -323,6 +345,48 @@ function showToast(msg, success) {
 }
 
 function showSteps() { document.getElementById('steps-modal').classList.add('active'); }
+
+async function showDocs(jobId) {
+    const body = document.getElementById('docs-body');
+    body.innerHTML = '<p style="color:var(--muted)">Loading documents...</p>';
+    document.getElementById('docs-modal').classList.add('active');
+    try {
+        const r = await fetch(`${API}/api/result/${jobId}`);
+        if (!r.ok) throw new Error('Failed to load');
+        const data = await r.json();
+        const docs = data.identified_objects || data.documents || [];
+        if (!docs.length) { body.innerHTML = '<p style="color:var(--muted)">No documents identified yet.</p>'; return; }
+
+        let html = `<p style="margin-bottom:8px;color:var(--muted)">${docs.length} documents identified</p>`;
+        html += '<table class="docs-tbl"><thead><tr><th>#</th><th>Document Type</th><th>Pages</th><th>Copy</th><th>Details</th></tr></thead><tbody>';
+        docs.forEach((d, i) => {
+            const dd = d.data || d;
+            const dt = dd.document_type || d.object_type || d.type || 'Unknown';
+            const isLc = dt.toLowerCase().includes('lc') || dt.toLowerCase().includes('mt7') || d.category === 'lc';
+            const isAmend = dt.toLowerCase().includes('amendment') || dt.toLowerCase().includes('707') || d.category === 'amendment';
+            const badgeCls = isAmend ? 'amend' : isLc ? 'lc' : 'ship';
+            const pages = (d.pages || d.page_numbers || []).join(', ') || d.page_reference || '—';
+            const copy = dd.copy_status || dd.copy_label || dd.marking_status || '—';
+            const details = [];
+            if (dd.document_number || dd.bl_number || dd.invoice_number) details.push('No: ' + (dd.document_number || dd.bl_number || dd.invoice_number));
+            if (dd.document_date || dd.bl_date) details.push('Date: ' + (dd.document_date || dd.bl_date));
+            if (dd.document_amount) details.push('Amt: ' + dd.document_amount);
+            if (dd.issued_by) details.push('By: ' + dd.issued_by);
+            if (dd.document_summary) details.push(dd.document_summary.substring(0, 60));
+            html += `<tr>
+                <td>${i+1}</td>
+                <td><span class="doc-type-badge ${badgeCls}">${esc(dt)}</span></td>
+                <td>${esc(pages)}</td>
+                <td>${esc(copy)}</td>
+                <td style="font-size:.82em;color:var(--muted)">${esc(details.join(' | ') || '—')}</td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+        body.innerHTML = html;
+    } catch (e) {
+        body.innerHTML = `<p style="color:var(--danger)">Failed to load: ${esc(e.message)}</p>`;
+    }
+}
 
 function copyId(id, el) {
     try {

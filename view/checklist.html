@@ -1010,7 +1010,12 @@ function renderSB(){
             <button class="rbtn" id="rbtn" onclick="runV()">▶ Run Verification</button>
             <button class="rbtn sec" id="cbtn" onclick="cancelV()" style="display:none;background:#dc2626;color:#fff">✕ Cancel</button>`;
     }
-    el.innerHTML=pills+`<span id="v-timer" class="sp" style="background:#e0f2fe;color:#0369a1;display:none;font-family:monospace">⏱ 0s</span>`
+    const _oldTimer=document.getElementById('v-timer');
+    const _timerText=_oldTimer?_oldTimer.textContent:'⏱ 0s';
+    const _timerBg=_oldTimer?_oldTimer.style.background:'#e0f2fe';
+    const _timerColor=_oldTimer?_oldTimer.style.color:'#0369a1';
+    const _timerDisplay=_oldTimer?_oldTimer.style.display:'none';
+    el.innerHTML=pills+`<span id="v-timer" class="sp" style="background:${_timerBg};color:${_timerColor};display:${_timerDisplay};font-family:monospace">${_timerText}</span>`
         +`<div id="varea" style="margin-left:auto;display:flex;align-items:center;gap:8px">${vh}</div>`;
 }
 

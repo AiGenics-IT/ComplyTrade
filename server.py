@@ -1465,7 +1465,7 @@ def start_verification(job_id: str, lc_number: str, background_tasks: Background
     job = _jobs[job_id]
     # Check if verification is currently running (not failed/completed)
     if job.get('review_approved') and job.get('status') == 'processing':
-        return {"status": "already_running", "message": "Verification is currently in progress"}
+        return {"verification_id": job.get('verification_id', ''), "status": "already_running", "message": "Verification is currently in progress"}
     job['review_approved'] = True
     job['status'] = 'processing'
     verification_id = str(uuid.uuid4())

@@ -157,6 +157,7 @@ def _find_matching_docs(doc_to_check: str, packets: list) -> list:
             break
 
     matches = []
+
     for pkt in packets:
         if not pkt:
             continue
@@ -173,10 +174,9 @@ def _find_matching_docs(doc_to_check: str, packets: list) -> list:
             continue
 
         for alias in target_aliases:
+            # Only match if the document type actually contains the target alias
+            # or the target alias contains the document type (exact/substring match)
             if alias in pkt_type or pkt_type in alias:
-                matches.append(pkt if isinstance(pkt, dict) else asdict(pkt))
-                break
-            elif any(word in pkt_type for word in alias.split() if len(word) >= 3):
                 matches.append(pkt if isinstance(pkt, dict) else asdict(pkt))
                 break
 
@@ -204,10 +204,35 @@ def _pkt_images(pkt: dict) -> list:
 
 
 def _pkt_visual_metadata(pkt: dict) -> str:
-    """Extract stamps, signatures, seals, copy/original status from packet."""
+    """Extract ALL metadata from packet: classification, extracted fields, stamps, signatures."""
     if not pkt:
         return ""
     parts = []
+    # Document identification from Step 8/9
+    doc_num = pkt.get("document_number", "") or pkt.get("bl_number", "") or pkt.get("invoice_number", "")
+    if doc_num:
+        parts.append(f"Document Number: {doc_num}")
+    doc_date = pkt.get("document_date", "") or pkt.get("bl_date", "")
+    if doc_date:
+        parts.append(f"Document Date: {doc_date}")
+    doc_amount = pkt.get("document_amount", "")
+    if doc_amount:
+        parts.append(f"Document Amount: {doc_amount}")
+    issued_by = pkt.get("issued_by", "")
+    if issued_by:
+        parts.append(f"Issued By: {issued_by}")
+    lc_ref = pkt.get("lc_reference", "")
+    if lc_ref:
+        parts.append(f"LC Reference: {lc_ref}")
+    doc_summary = pkt.get("document_summary", "")
+    if doc_summary:
+        parts.append(f"Summary: {doc_summary[:150]}")
+    # Extracted fields from Step 9
+    ef = pkt.get("extracted_fields", {})
+    if isinstance(ef, dict) and ef:
+        for k, v in ef.items():
+            if v and str(v).strip() and k not in ('text', 'raw_text', 'cleaned_text'):
+                parts.append(f"Extracted [{k}]: {str(v)[:100]}")
     # Copy/Original status
     copy_status = pkt.get("copy_status", pkt.get("copy_label", ""))
     if copy_status:
@@ -362,9 +387,11 @@ CRITICAL RULES (follow strictly):
 4. Shipment BEFORE latest date = PASS. Shipment AFTER latest date = check F47A first. If F47A allows late shipment, mark REVIEW.
 5. CHARTER PARTY: If F47A says "CHARTER PARTY BL ACCEPTABLE", then charter party BL = PASS.
 6. Name matching: key words must match (UNITED BANK = UNITED BANK LIMITED = UBL). Minor spelling differences are acceptable.
-7. Amount: check with tolerance if F39A specifies percentage tolerance.
+7. Amount: The invoice/draft amount can be LESS than the LC amount (partial/short shipment) — only EXCEEDING the LC amount + tolerance is a discrepancy.
 8. THIRD PARTY: If F47A says "THIRD PARTY DOCUMENTS ACCEPTABLE", third party documents = PASS.
-9. When in doubt, mark REVIEW with clear reasoning rather than FAIL.
+9. CERTIFICATION: If the condition asks for origin certification and the document says "We certify the goods are of [COUNTRY] origin" or similar statement, that IS a valid certification = PASS. Do not fail just because the exact word "CERTIFICATE" is not used — any statement certifying origin, quality, weight, etc. is a certification.
+10. DOCUMENT VERIFICATION: If the document text does NOT look like the expected document type (e.g., the condition checks a "Phytosanitary Certificate" but the document text looks like a quality certificate or inspection report), mark as REVIEW with "Document type may be misclassified".
+11. When in doubt, mark REVIEW with clear reasoning rather than FAIL.
 
 Return ONLY valid JSON:
 {{

@@ -225,23 +225,43 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
         pc = fc = rc = 0
 
         for r in group_rows:
-            result = r.get('result', 'REVIEW').upper()
-            # Map result to compliance label
-            if result == 'PASS':
+            result_text = r.get('result', 'REVIEW').upper()
+            # Check compliance field FIRST (Step 14 puts verdict here),
+            # then fall back to result field
+            raw_compliance = (r.get('compliance', '') or '').upper().strip()
+            if raw_compliance in ('PASS', 'COMPLIED', 'COMPLIANT'):
                 pc += 1
                 compliance = 'COMPLIED'
-            elif result == 'FAIL':
+            elif raw_compliance in ('FAIL', 'NOT COMPLIED', 'NON_COMPLIANT', 'DISCREPANT'):
+                fc += 1
+                compliance = 'NOT COMPLIED'
+            elif raw_compliance in ('REVIEW', 'REVIEW REQUIRED', 'REVIEW_REQUIRED'):
+                rc += 1
+                compliance = 'REVIEW REQUIRED'
+            elif result_text in ('PASS', 'COMPLIED'):
+                pc += 1
+                compliance = 'COMPLIED'
+            elif result_text in ('FAIL', 'NOT COMPLIED'):
                 fc += 1
                 compliance = 'NOT COMPLIED'
             else:
                 rc += 1
                 compliance = 'REVIEW REQUIRED'
 
+            # condition = the LC requirement text (what we're checking)
+            # result = the VLM's short summary of what it found
+            _condition = r.get('condition', '') or r.get('condition_text', '')
+            _result = result_text
+            # If condition is empty, use the clause_text (the original LC clause)
+            if not _condition:
+                _condition = r.get('clause_text', '') or clause_text_map.get(ref, '')
+            # If condition still empty but result has text, keep result as result only
+            # DON'T copy result into condition — they must be different
             vrows.append(VerificationRow(
-                condition=r.get('condition', '') or r.get('condition_text', '') or r.get('result', ''),
+                condition=_condition,
                 findings=r.get('findings', '') or r.get('found_text', ''),
                 document_checked=r.get('document_checked', ''),
-                result=result,
+                result=_result,
                 compliance=compliance,
                 dependency_notes=r.get('dependency_notes', []),
                 reconciled=r.get('reconciled', False),
@@ -265,8 +285,10 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
         section_name = _classify_section(ref)
         section_clauses.setdefault(section_name, []).append(cg)
 
-    # Step 4: Build SectionGroups in defined order
-    section_order = list(_SECTION_MAP.keys()) + ['Other']
+    # Step 4: Build SectionGroups in LC field sequence order
+    # Key Terms first (LC header fields), then documents, conditions, goods
+    section_order = ['Key Terms', 'Document Requirements', 'Additional Conditions',
+                     'Description of Goods', 'Instructions', 'Other']
     sections = []
     for idx, sec_name in enumerate(section_order):
         if sec_name not in section_clauses:
@@ -299,22 +321,37 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
         decision = 'COMPLIANT'
 
     # Step 5: Collect critical findings (FAILs) and review items for the executive summary
+    # Deduplicate: same clause_ref + document_checked + result = show once
     critical = []
     review_items = []
+    _seen_critical = set()
+    _seen_review = set()
     for sec in sections:
         for cg in sec.clauses:
             for vr in cg.rows:
+                # Skip purely informational rows
+                if vr.result == 'INFORMATIONAL' or vr.condition == 'Informational':
+                    continue
+                if not vr.condition and not vr.findings and not vr.document_checked:
+                    continue
                 entry = {
                     'clause_ref': cg.clause_ref,
                     'clause_text': cg.clause_text[:200],
                     'condition': vr.condition,
                     'findings': vr.findings,
+                    'result': vr.result,
                     'document_checked': vr.document_checked,
                 }
-                if vr.result == 'FAIL':
-                    critical.append(entry)
-                elif vr.result == 'REVIEW':
-                    review_items.append(entry)
+                # Dedup key: clause + document + result (prevents "MISSING" x3)
+                _dedup_key = f"{cg.clause_ref}|{vr.document_checked}|{vr.result}"
+                if vr.compliance == 'NOT COMPLIED':
+                    if _dedup_key not in _seen_critical:
+                        _seen_critical.add(_dedup_key)
+                        critical.append(entry)
+                elif vr.compliance == 'REVIEW REQUIRED':
+                    if _dedup_key not in _seen_review:
+                        _seen_review.add(_dedup_key)
+                        review_items.append(entry)
 
     # Sort findings by clause_ref for consistent ordering in the report
     critical.sort(key=lambda x: _sort_clause_ref(x['clause_ref']))

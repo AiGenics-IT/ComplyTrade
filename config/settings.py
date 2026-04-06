@@ -19,14 +19,14 @@ QWEN_VLM_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-7B-Instruct"
 # ── Server ──
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8082
-BUILD_TAG = "2026-04-06-P31"
+BUILD_TAG = "2026-04-06-P32"
 
 # ── Processing ──
 MAX_CONCURRENT_OCR = 4
 MAX_CONCURRENT_VLM = 4
 OCR_TIMEOUT = 300       # seconds per page
 VLM_TIMEOUT = 600       # seconds per VLM call (96GB GPU handles large images)
-CONFIDENCE_THRESHOLD = 0.98  # Below this → REVIEW status
+CONFIDENCE_THRESHOLD = 0.70  # Below this → REVIEW status (0.70 for 7B, 0.85 for 72B)
 
 # ── Database ──
 DB_HOST = "localhost"

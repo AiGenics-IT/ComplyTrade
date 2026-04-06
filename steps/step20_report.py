@@ -544,29 +544,59 @@ def _build_executive_summary(
             ))
         elements.append(Spacer(1, 5 * mm))
 
-    # Review Required (orange) -- only show top items
+    # Review Required (orange) -- show items that have real data
     if review_items:
-        _review_display = [r for r in review_items
-                           if (r.get('condition', '').strip() and r.get('condition', '').strip() != 'N/A')
-                           or (r.get('findings', '').strip() and r.get('findings', '').strip() != 'N/A')
-                           or r.get('document_checked', '').strip()][:20]
+        # Filter out informational-only review items
+        _review_display = []
+        for r in review_items:
+            _c = (r.get('condition', '') or '').strip()
+            _f = (r.get('findings', '') or '').strip()
+            _r = (r.get('result', '') or '').strip()
+            _d = (r.get('document_checked', '') or '').strip()
+            # Skip if all fields are empty/N/A/INFORMATIONAL
+            if _c.upper() in ('', 'N/A', 'INFORMATIONAL') and _f.upper() in ('', 'N/A') and _r.upper() in ('', 'N/A', 'INFORMATIONAL'):
+                continue
+            _review_display.append(r)
+            if len(_review_display) >= 25:
+                break
+
         if _review_display:
+            # Build a table for review items (same format as critical findings)
             elements.append(Paragraph(
-                '<b><font color="#C55A11">Items Requiring Manual Review:</font></b>', styles['Normal']))
+                f'<b><font color="#C55A11">Items Requiring Manual Review ({len(_review_display)}):</font></b>', styles['Normal']))
             elements.append(Spacer(1, 2 * mm))
+
+            _rv_hdr = [
+                Paragraph('<b><font color="white">#</font></b>', styles['SmallTextHeader']),
+                Paragraph('<b><font color="white">Clause</font></b>', styles['SmallTextHeader']),
+                Paragraph('<b><font color="white">Document</font></b>', styles['SmallTextHeader']),
+                Paragraph('<b><font color="white">Finding</font></b>', styles['SmallTextHeader']),
+            ]
+            _rv_rows = [_rv_hdr]
             for i, ri in enumerate(_review_display, 1):
                 detail = _esc(_safe_str(
-                    ri.get('condition', '') or ri.get('findings', '') or ri.get('result', ''), 200))
-                ref = ri.get('clause_ref', '')
-                doc = ri.get('document_checked', '')
-                suffix = ''
-                if ref:
-                    suffix += f' <font color="#666666">[{_esc(ref)}]</font>'
-                if doc:
-                    suffix += f' <font color="#888888">({_esc(doc)})</font>'
-                elements.append(Paragraph(
-                    f'<font size="9">{i}. {detail}{suffix}</font>',
-                    styles['CellTextSmall']))
+                    ri.get('condition', '') or ri.get('result', '') or ri.get('findings', ''), 150))
+                _rv_rows.append([
+                    Paragraph(f'<font size="8">{i}</font>', styles['CellTextSmall']),
+                    Paragraph(f'<font size="8"><b>{_esc(ri.get("clause_ref", ""))}</b></font>', styles['CellTextSmall']),
+                    Paragraph(f'<font size="8">{_esc(ri.get("document_checked", ""))}</font>', styles['CellTextSmall']),
+                    Paragraph(f'<font size="8" color="#C55A11">{detail}</font>', styles['CellTextSmall']),
+                ])
+
+            _rv_tbl = Table(_rv_rows, colWidths=[page_width * 0.06, page_width * 0.14, page_width * 0.20, page_width * 0.60])
+            _rv_styles = [
+                ('BACKGROUND', (0, 0), (-1, 0), AMBER),
+                ('GRID', (0, 0), (-1, -1), 0.3, MID_GRAY),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ]
+            for ri in range(1, len(_rv_rows)):
+                _rv_styles.append(('BACKGROUND', (0, ri), (-1, ri),
+                                   LIGHT_ORANGE if ri % 2 == 1 else WHITE))
+            _rv_tbl.setStyle(TableStyle(_rv_styles))
+            elements.append(_rv_tbl)
             elements.append(Spacer(1, 5 * mm))
 
     elements.append(PageBreak())
@@ -581,19 +611,19 @@ def _is_informational_only(clause: Dict) -> bool:
     if not rows:
         return True
     for r in rows:
-        cond = str(r.get('condition', '')).strip()
+        cond = str(r.get('condition', '')).strip().upper()
         result = str(r.get('result', '')).strip().upper()
         findings = str(r.get('findings', r.get('found_text', ''))).strip()
-        compliance = str(r.get('compliance', '')).strip().upper()
-        # Has real verification if any of: condition text, findings, or a PASS/FAIL/REVIEW compliance
-        if cond and cond != 'N/A' and result != 'INFORMATIONAL':
-            return False
-        if findings and findings != 'N/A':
-            return False
-        if compliance in ('COMPLIED', 'NOT COMPLIED', 'REVIEW REQUIRED', 'PASS', 'FAIL'):
-            return False
-        if result and result not in ('', 'N/A', 'INFORMATIONAL'):
-            return False
+        doc = str(r.get('document_checked', '')).strip()
+
+        # If result is explicitly INFORMATIONAL → informational
+        if result == 'INFORMATIONAL' or cond == 'INFORMATIONAL':
+            continue
+        # If condition and findings are both empty/N/A → informational
+        if (not cond or cond == 'N/A') and (not findings or findings == 'N/A') and (not doc or doc == 'N/A'):
+            continue
+        # Has real verification data
+        return False
     return True
 
 
@@ -703,12 +733,18 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
 
             # LAYER 3: 5-column verification table
             rows_data = clause.get('rows', [])
-            # Filter out purely N/A informational rows — keep rows with any real data
-            real_rows = [r for r in rows_data
-                         if (str(r.get('condition', '')).strip() not in ('', 'N/A'))
-                         or (str(r.get('findings', r.get('found_text', ''))).strip() not in ('', 'N/A'))
-                         or (str(r.get('result', '')).strip().upper() not in ('', 'INFORMATIONAL', 'N/A'))
-                         or (str(r.get('compliance', '')).strip().upper() in ('COMPLIED', 'NOT COMPLIED', 'REVIEW REQUIRED', 'PASS', 'FAIL'))]
+            # Filter out purely N/A informational rows — keep rows with real verification data
+            real_rows = []
+            for _r in rows_data:
+                _rc = str(_r.get('condition', '')).strip().upper()
+                _rr = str(_r.get('result', '')).strip().upper()
+                _rf = str(_r.get('findings', _r.get('found_text', ''))).strip()
+                _rd = str(_r.get('document_checked', '')).strip()
+                if _rr == 'INFORMATIONAL' or _rc == 'INFORMATIONAL':
+                    continue
+                if (not _rc or _rc == 'N/A') and (not _rf or _rf == 'N/A') and (not _rd or _rd == 'N/A'):
+                    continue
+                real_rows.append(_r)
 
             if not real_rows:
                 elements.append(Spacer(1, 4 * mm))
