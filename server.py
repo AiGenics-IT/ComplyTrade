@@ -640,7 +640,7 @@ def get_result(job_id: str):
     cf = flc.get('consolidated_fields', {})
     import re as _re
     _FIELD_LABELS = {
-        '20': r'^Documentary\s+Credit\s+Number\s*',
+        '20': r'^(?:Documentary\s+Credit\s+Number|Sender\'?s?\s+Reference)\s*',
         '31C': r'^Date\s+of\s+Issue\s*',
         '31D': r'^Date\s+and\s+Place\s+of\s+Expiry\s*',
         '32B': r'^Currency\s+Code,?\s+Amount\s*',
@@ -1044,11 +1044,17 @@ async def save_final_lc(job_id: str, request: Request):
             # Standalone field edit
             old_val = cf.get(tag, '')
             cf[tag] = new_value
+            # Also update original_fields if present
+            if 'original_fields' in s06_data:
+                s06_data['original_fields'][tag] = new_value
             applied.append({'tag': tag, 'old': str(old_val)[:80], 'new': new_value[:80]})
 
             # Update dc_number if tag 20 changed
             if tag == '20':
                 s06_data['dc_number'] = new_value
+                # Also update in _vlm_summary if present
+                if '_vlm_summary' in s06_data:
+                    s06_data['_vlm_summary']['dc_number'] = new_value
 
     # Save back to disk
     with open(s06_path, 'w', encoding='utf-8') as f:
