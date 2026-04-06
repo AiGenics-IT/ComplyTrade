@@ -193,7 +193,7 @@ function renderJobs(jobs) {
 
         html += `<tr>
             <td>${i + 1}</td>
-            <td style="font-family:monospace;font-size:.78em;color:var(--muted)" title="${esc(j.job_id)}">${shortId}... <span style="cursor:pointer;opacity:.5;font-size:.9em" onclick="navigator.clipboard.writeText('${j.job_id}');this.textContent='Copied!';setTimeout(()=>this.textContent='📋',1000)" title="Copy full ID">📋</span></td>
+            <td style="font-family:monospace;font-size:.78em;color:var(--muted)" title="${esc(j.job_id)}">${shortId}... <span style="cursor:pointer;opacity:.5;font-size:.9em" onclick="copyId('${j.job_id}',this)" title="Copy full ID">📋</span></td>
             <td class="lc-num">${lcDisplay}</td>
             <td><div class="file-name" title="${esc(j.filename || '')}">${esc(j.filename || 'N/A')}</div></td>
             <td class="pages-info">${j.total_pages || '—'}</td>
@@ -265,6 +265,20 @@ function showToast(msg, success) {
     t.innerHTML = '<span class="toast-icon">' + icon + '</span> ' + esc(msg);
     t.className = 'toast show ' + (success ? 'success' : 'error');
     setTimeout(() => t.className = 'toast', 3500);
+}
+
+function copyId(id, el) {
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(id).then(() => { el.textContent='Copied!'; setTimeout(()=>el.textContent='📋',1500); });
+        } else {
+            const ta = document.createElement('textarea');
+            ta.value = id; ta.style.position='fixed'; ta.style.opacity='0';
+            document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+            document.body.removeChild(ta);
+            el.textContent='Copied!'; setTimeout(()=>el.textContent='📋',1500);
+        }
+    } catch(e) { prompt('Copy job ID:', id); }
 }
 
 function esc(t) { return t ? t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
