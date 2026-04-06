@@ -424,7 +424,9 @@ def _call_vlm_decompose(clause_ref: str, field_tag: str, clause_number: int,
 # These SWIFT field tags contain clause lists that need decomposition.
 # Other fields (like F20 = LC Number) are standalone values, not clauses.
 
-CLAUSE_FIELDS = {'46A', '46B', '47A', '47B', '45A', '45B', '46C', '77A', '78', '79', '72'}
+CLAUSE_FIELDS = {'46A', '46B', '47A', '47B', '45A', '45B', '46C'}
+# Note: 78 (Instructions to Bank), 79 (Narrative), 72 (Sender to Receiver), 77A (Regulatory)
+# are bank-to-bank instructions — NOT checkable against shipping documents, shown as informational only.
 
 
 def _extract_lc_context(structured_lc: dict) -> dict:
@@ -543,7 +545,7 @@ def run(structured_lc: dict, output_dir: str = None, progress_callback=None) -> 
         clauses = []
         for _pc in _prebuilt_clauses:
             _ft = _pc.get('field_tag', '')
-            if _ft in CLAUSE_FIELDS or _ft in ('46A', '47A', '45A', '78', '79', '72'):
+            if _ft in CLAUSE_FIELDS:
                 clauses.append({
                     'clause_ref': f"{_ft}-{_pc.get('clause_number', 1)}",
                     'field_tag': _ft,

@@ -121,26 +121,33 @@ class ConsolidatedOutput:
 # Maps clause F-tag prefixes to report sections.
 
 # Key Terms tags -- LC metadata and standalone conditions (amounts, dates, parties, ports)
+# Include both F-prefixed and non-F-prefixed variants since clause refs may come either way
 _KEY_TERMS_TAGS = {
     'F20', 'F31C', 'F31D', 'F32B', 'F39A', 'F42C', 'F43P', 'F43T',
     'F44E', 'F44F', 'F44C', 'F44A', 'F44B', 'F44D',
     'F40A', 'F40E', 'F41A', 'F41D', 'F42A', 'F42M', 'F42P',
     'F48', 'F49', 'F50', 'F51A', 'F52A', 'F53A', 'F57A', 'F59',
     'F71B', 'F71D', 'F77B',
+    # Non-F variants
+    '20', '31C', '31D', '32B', '39A', '42C', '43P', '43T',
+    '44E', '44F', '44C', '44A', '44B', '44D',
+    '40A', '40E', '41A', '41D', '42A', '42M', '42P',
+    '48', '49', '50', '51A', '52A', '53A', '57A', '59',
+    '71B', '71D', '77B',
 }
 
 # Ordered section classification -- checked in order, first match wins
 _SECTION_MAP = OrderedDict([
     ('Key Terms',             lambda ref: _get_tag(ref) in _KEY_TERMS_TAGS),
-    ('Document Requirements', lambda ref: _get_tag(ref) in ('F46A', 'F46B')),
-    ('Additional Conditions', lambda ref: _get_tag(ref) == 'F47A'),
-    ('Description of Goods',  lambda ref: _get_tag(ref) in ('F45A', 'F45B')),
-    ('Instructions',          lambda ref: _get_tag(ref) in ('F78', 'F72', 'F79', 'F77A')),
+    ('Document Requirements', lambda ref: _get_tag(ref) in ('F46A', 'F46B', '46A', '46B')),
+    ('Additional Conditions', lambda ref: _get_tag(ref) in ('F47A', '47A')),
+    ('Description of Goods',  lambda ref: _get_tag(ref) in ('F45A', 'F45B', '45A', '45B')),
+    ('Instructions',          lambda ref: _get_tag(ref) in ('F78', 'F72', 'F79', 'F77A', '78', '72', '79', '77A')),
 ])
 
 
 def _get_tag(clause_ref: str) -> str:
-    """Extract F-tag prefix from clause_ref. Example: 'F46A-2' -> 'F46A'."""
+    """Extract tag prefix from clause_ref. Example: 'F46A-2' -> 'F46A', '46A-2' -> '46A'."""
     return clause_ref.split('-')[0].upper()
 
 

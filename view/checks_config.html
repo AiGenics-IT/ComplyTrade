@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ComplyTrade — Verification Checks Configuration</title>
+<style>
+    :root{--primary:#1554ca;--secondary:#0d3b8a;--success:#16a34a;--danger:#dc2626;--warning:#d97706;--bg:#f8fafc;--card:#fff;--border:#e2e8f0;--text:#1e293b;--muted:#64748b;--radius:10px}
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+
+    /* Header */
+    .header{background:linear-gradient(135deg,var(--primary),var(--secondary));color:#fff;padding:16px 28px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+    .header h1{font-size:1.2em;font-weight:700}
+    .header .sub{font-size:.8em;opacity:.8}
+    .header a{color:#fff;text-decoration:none;font-size:.85em;padding:6px 16px;border:1px solid rgba(255,255,255,.4);border-radius:6px;transition:.2s}
+    .header a:hover{background:rgba(255,255,255,.15)}
+
+    /* Main */
+    .main{max-width:900px;margin:24px auto;padding:0 20px}
+    .desc{color:var(--muted);font-size:.9em;margin-bottom:20px;line-height:1.6}
+
+    /* Category */
+    .cat-header{font-size:1.05em;font-weight:700;color:var(--secondary);margin:28px 0 12px;padding-bottom:6px;border-bottom:2px solid var(--primary);display:flex;align-items:center;gap:8px}
+    .cat-icon{font-size:1.2em}
+
+    /* Check Card */
+    .check{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px;margin-bottom:10px;display:flex;align-items:flex-start;gap:16px;transition:all .2s}
+    .check:hover{box-shadow:0 2px 8px rgba(0,0,0,.06);border-color:#cbd5e1}
+    .check.disabled{opacity:.55}
+    .check .info{flex:1}
+    .check .name{font-weight:600;font-size:.95em;margin-bottom:2px}
+    .check .tag{display:inline-block;font-size:.7em;padding:1px 7px;border-radius:4px;font-weight:600;margin-left:6px;vertical-align:middle}
+    .tag.hard{background:#fee2e2;color:#b91c1c}
+    .tag.soft{background:#fef3c7;color:#92400e}
+    .tag.info{background:#e0f2fe;color:#0369a1}
+    .check .desc-text{color:var(--muted);font-size:.82em;line-height:1.5;margin-top:4px}
+    .check .clause{color:var(--primary);font-size:.75em;font-weight:600;margin-top:4px}
+
+    /* Toggle Switch */
+    .toggle{position:relative;width:48px;height:26px;flex-shrink:0;margin-top:2px}
+    .toggle input{opacity:0;width:0;height:0}
+    .toggle .slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#cbd5e1;border-radius:26px;transition:.3s}
+    .toggle .slider:before{content:"";position:absolute;height:20px;width:20px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+    .toggle input:checked+.slider{background:var(--success)}
+    .toggle input:checked+.slider:before{transform:translateX(22px)}
+
+    /* Buttons */
+    .btn-bar{display:flex;gap:10px;margin:24px 0;justify-content:flex-end}
+    .btn{padding:10px 24px;border:none;border-radius:8px;font-weight:600;font-size:.9em;cursor:pointer;transition:.2s;font-family:inherit}
+    .btn-primary{background:var(--primary);color:#fff}.btn-primary:hover{background:var(--secondary)}
+    .btn-outline{background:#fff;color:var(--primary);border:1.5px solid var(--primary)}.btn-outline:hover{background:#f0f4ff}
+    .btn-danger{background:var(--danger);color:#fff}.btn-danger:hover{background:#b91c1c}
+
+    /* Toast */
+    .toast{position:fixed;bottom:24px;right:24px;padding:12px 24px;background:#1e293b;color:#fff;border-radius:8px;font-size:.9em;font-weight:500;z-index:1000;opacity:0;transform:translateY(10px);transition:.3s;pointer-events:none}
+    .toast.show{opacity:1;transform:translateY(0)}
+    .toast.success{background:var(--success)}
+    .toast.error{background:var(--danger)}
+
+    /* Stats */
+    .stats{display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+    .stat{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:12px 20px;text-align:center;flex:1;min-width:120px}
+    .stat .num{font-size:1.6em;font-weight:700;color:var(--primary)}
+    .stat .label{font-size:.75em;color:var(--muted);margin-top:2px}
+    .stat.on .num{color:var(--success)}
+    .stat.off .num{color:var(--muted)}
+</style>
+</head>
+<body>
+
+<div class="header">
+    <div>
+        <h1>Verification Checks Configuration</h1>
+        <div class="sub">Toggle individual compliance checks on/off</div>
+    </div>
+    <div style="display:flex;gap:10px">
+        <a href="/interface">Interface</a>
+        <a href="/checklist">Checklist</a>
+        <a href="/compliance">Compliance</a>
+    </div>
+</div>
+
+<div class="main">
+    <p class="desc">
+        Configure which LC key term checks are active during verification. Enabled checks are executed via VLM against the shipping documents.
+        Disabled checks are skipped entirely. Changes take effect on the next verification run.
+    </p>
+
+    <div class="stats" id="stats"></div>
+
+    <div class="btn-bar">
+        <button class="btn btn-outline" onclick="enableAll()">Enable All</button>
+        <button class="btn btn-outline" onclick="disableAll()">Disable All</button>
+        <button class="btn btn-primary" onclick="saveConfig()">Save Configuration</button>
+    </div>
+
+    <div id="checks-container"></div>
+
+    <div class="btn-bar">
+        <button class="btn btn-primary" onclick="saveConfig()">Save Configuration</button>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = window.location.origin;
+let config = {};
+
+const CAT_META = {
+    dates: { icon: '📅', label: 'Date & Time Checks' },
+    financial: { icon: '💰', label: 'Financial & Amount Checks' },
+    shipping: { icon: '🚢', label: 'Shipping & Transport Checks' },
+    documents: { icon: '📄', label: 'Document-Level Verification (F46A)' },
+    cross_check: { icon: '🔗', label: 'Cross-Document & General Checks' },
+    parties: { icon: '👤', label: 'Party Checks (Reserved)' },
+    informational: { icon: 'ℹ️', label: 'Informational Fields' },
+};
+
+async function loadConfig() {
+    try {
+        const r = await fetch(`${API}/api/checks/config`);
+        if (!r.ok) throw new Error('Failed to load');
+        config = await r.json();
+        render();
+    } catch (e) {
+        showToast('Failed to load configuration: ' + e.message, false);
+    }
+}
+
+function render() {
+    const container = document.getElementById('checks-container');
+    container.innerHTML = '';
+
+    // Group by category
+    const groups = {};
+    for (const [id, check] of Object.entries(config)) {
+        const cat = check.category || 'other';
+        if (!groups[cat]) groups[cat] = [];
+        groups[cat].push({ id, ...check });
+    }
+
+    // Render in order
+    const catOrder = ['dates', 'financial', 'shipping', 'documents', 'cross_check', 'parties', 'informational'];
+    for (const cat of catOrder) {
+        if (!groups[cat]) continue;
+        const meta = CAT_META[cat] || { icon: '📋', label: cat };
+        container.innerHTML += `<div class="cat-header"><span class="cat-icon">${meta.icon}</span> ${meta.label}</div>`;
+        for (const check of groups[cat]) {
+            const enabled = check.enabled;
+            const sevClass = check.severity || 'info';
+            container.innerHTML += `
+                <div class="check ${enabled ? '' : 'disabled'}" id="card-${check.id}">
+                    <label class="toggle">
+                        <input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleCheck('${check.id}', this.checked)">
+                        <span class="slider"></span>
+                    </label>
+                    <div class="info">
+                        <div class="name">${esc(check.name)} <span class="tag ${sevClass}">${sevClass.toUpperCase()}</span></div>
+                        <div class="desc-text">${esc(check.description)}</div>
+                    </div>
+                </div>`;
+        }
+    }
+
+    updateStats();
+}
+
+function toggleCheck(id, enabled) {
+    config[id].enabled = enabled;
+    const card = document.getElementById('card-' + id);
+    if (card) card.classList.toggle('disabled', !enabled);
+    updateStats();
+}
+
+function enableAll() {
+    for (const id in config) { config[id].enabled = true; }
+    render();
+}
+
+function disableAll() {
+    for (const id in config) { config[id].enabled = false; }
+    render();
+}
+
+function updateStats() {
+    const total = Object.keys(config).length;
+    const on = Object.values(config).filter(c => c.enabled).length;
+    const off = total - on;
+    document.getElementById('stats').innerHTML = `
+        <div class="stat"><div class="num">${total}</div><div class="label">Total Checks</div></div>
+        <div class="stat on"><div class="num">${on}</div><div class="label">Enabled</div></div>
+        <div class="stat off"><div class="num">${off}</div><div class="label">Disabled</div></div>`;
+}
+
+async function saveConfig() {
+    try {
+        const r = await fetch(`${API}/api/checks/config`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config),
+        });
+        if (!r.ok) throw new Error('Save failed');
+        showToast('Configuration saved!', true);
+    } catch (e) {
+        showToast('Failed to save: ' + e.message, false);
+    }
+}
+
+function showToast(msg, success) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast show ' + (success ? 'success' : 'error');
+    setTimeout(() => t.className = 'toast', 3000);
+}
+
+function esc(t) { return t ? t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
+
+loadConfig();
+</script>
+</body>
+</html>

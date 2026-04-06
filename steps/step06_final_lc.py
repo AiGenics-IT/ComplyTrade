@@ -589,7 +589,7 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
         # Regex captures: "Documentary Credit Number\n05251LC082463"
         # We need just: "05251LC082463"
         _LABEL_STRIP = {
-            '20': r'^Documentary\s+Credit\s+Number\s*\n?',
+            '20': r'^(?:Documentary\s+Credit\s+Number|Sender\'?s?\s+Reference)\s*\n?',
             '27': r'^Sequence\s+of\s+Total\s*\n?',
             '31C': r'^Date\s+of\s+Issue\s*\n?',
             '31D': r'^Date\s+and\s+Place\s+of\s+Expiry\s*\n?',
@@ -644,6 +644,22 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             sf.value = re.sub(r'\(CONT\s+FROM\s+FIELD\s+\w+\)', '', sf.value, flags=re.IGNORECASE).strip()
             sf.value = re.sub(r'/\(CONT\s+FROM\s+FIELD\s+\w+\)', '', sf.value, flags=re.IGNORECASE).strip()
 
+            # Truncate if another F-tag got merged in (e.g. "...F41D: Available With...")
+            _ftag_merge = re.search(r'F\d{2}[A-Z]?\s*:', sf.value)
+            if _ftag_merge:
+                sf.value = sf.value[:_ftag_merge.start()].strip()
+
+            # Strip "Page X of Y" page numbering from PDF
+            sf.value = re.sub(r'\bPage\s+\d+\s+of\s+\d+\b', '', sf.value, flags=re.IGNORECASE).strip()
+
+            # Strip OCR garbage from blank/unreadable pages
+            sf.value = re.sub(
+                r'There is no visible text.*?(?:clearly visible|another version)[.\s]*',
+                '', sf.value, flags=re.IGNORECASE | re.DOTALL).strip()
+            sf.value = re.sub(
+                r'The image appears to be blank[.\s]*',
+                '', sf.value, flags=re.IGNORECASE).strip()
+
             # Skip Sequence of Total (tag 27) — not useful in Final LC
             if sf.tag == '27':
                 continue
@@ -682,8 +698,11 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             final_lc.original_fields[sf.tag] = sf.value
             _progress(f"    F{sf.tag}: {sf.value[:80]}{'...' if len(sf.value) > 80 else ''}")
 
-        # Set DC number
-        final_lc.dc_number = final_lc.consolidated_fields.get('20', '')
+        # Set DC number — strip any remaining label text
+        _raw_dc = final_lc.consolidated_fields.get('20', '')
+        _raw_dc = re.sub(r"(?i)^(?:Sender'?s?\s+Reference|Documentary\s+Credit\s+Number)\s*", '', _raw_dc).strip()
+        final_lc.dc_number = _raw_dc
+        final_lc.consolidated_fields['20'] = _raw_dc
         final_lc.source_packets.append(_get_packet_field(base_pkt, 'packet_id', 0))
 
         # If multiple MT700 packets, extract from subsequent ones too

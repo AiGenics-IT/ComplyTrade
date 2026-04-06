@@ -969,7 +969,8 @@ function renderSB(){
             <button class="rbtn sec" id="rbtn" onclick="runV()">↻ Re-run</button>`;
     }else{
         vh=`<span class="verd PENDING">NOT VERIFIED</span>
-            <button class="rbtn" id="rbtn" onclick="runV()">▶ Run Verification</button>`;
+            <button class="rbtn" id="rbtn" onclick="runV()">▶ Run Verification</button>
+            <button class="rbtn sec" id="cbtn" onclick="cancelV()" style="display:none;background:#dc2626;color:#fff">✕ Cancel</button>`;
     }
     el.innerHTML=pills+`<span id="v-timer" class="sp" style="background:#e0f2fe;color:#0369a1;display:none;font-family:monospace">⏱ 0s</span>`
         +`<div id="varea" style="margin-left:auto;display:flex;align-items:center;gap:8px">${vh}</div>`;
@@ -1459,8 +1460,19 @@ function _stopVTimer(){
 }
 
 // ─── Verification ───
+let _pollCancelled=false;
+function cancelV(){
+    _pollCancelled=true;
+    if(vid)fetch(`${API}/api/verify/cancel/${vid}`,{method:'POST'}).catch(()=>{});
+    _stopVTimer();
+    const b=document.getElementById('rbtn');if(b){b.disabled=false;b.classList.remove('run');b.textContent='▶ Run Verification'}
+    const cb=document.getElementById('cbtn');if(cb)cb.style.display='none';
+    const lg=document.getElementById('ptl');if(lg){lg.querySelector('#ptlb').innerHTML+='<div style="color:var(--warning);font-weight:700">Verification cancelled.</div>';setTimeout(()=>lg.classList.remove('active'),2000)}
+}
 async function runV(){
+    _pollCancelled=false;
     const b=document.getElementById('rbtn');if(b){b.disabled=true;b.classList.add('run');b.textContent='⟳ Running...'}
+    const cb=document.getElementById('cbtn');if(cb)cb.style.display='inline-block';
     _startVTimer();
     const lg=document.getElementById('ptl'),lb=document.getElementById('ptlb');
     lg.classList.add('active');lb.innerHTML='<div>Starting verification...</div>';
@@ -1488,6 +1500,7 @@ async function runV(){
 async function poll(id,el){
     let a=0,lastLogCount=0,stalledTicks=0;
     while(a<900){
+        if(_pollCancelled)return;
         await slp(1000);a++;
         try{
             const r=await fetch(`${API}/api/verify/status/${id}`);if(!r.ok)continue;
@@ -1500,14 +1513,14 @@ async function poll(id,el){
                 el.scrollTop=el.scrollHeight;
             }
             if(d.status==='completed'){
-                _stopVTimer();
+                _stopVTimer();const _cb=document.getElementById('cbtn');if(_cb)_cb.style.display='none';
                 el.innerHTML+=`<div style="color:var(--success);font-weight:700">✓ ✓ Verification complete! Fetching results...</div>`;el.scrollTop=el.scrollHeight;
                 const rr=await fetch(`${API}/api/verify/result/${id}`);
                 if(rr.ok){const vd=await rr.json();vres=vd.results||[];vsum=vd.summary||null;vElapsed=vd.elapsed_seconds||a;mt700comp=vd.mt700_compliance||null;urr725comp=vd.urr725_compliance||null;isbp821comp=vd.isbp821_compliance||null;isp98comp=vd.isp98_compliance||null;fecomp=vd.fe_manual_compliance||null;vesselcomp=vd.vessel_compliance||null;amtdatecomp=vd.amount_date_compliance||null;crossDocConsistency=vd.cross_document_consistency||null;installmentCompliance=vd.installment_compliance||null;mapV();injectVesselChecks();autoPopulateVessel();renderAll()}
                 setTimeout(()=>document.getElementById('ptl').classList.remove('active'),3000);return;
             }
             if(d.status==='failed'){
-                _stopVTimer();
+                _stopVTimer();const _cb2=document.getElementById('cbtn');if(_cb2)_cb2.style.display='none';
                 el.innerHTML+=`<div style="color:var(--danger);font-weight:700">✗ ${d.message}</div>`;
                 const b=document.getElementById('rbtn');if(b){b.disabled=false;b.classList.remove('run');b.textContent='▶ Retry'}return;
             }

@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ComplyTrade — Jobs Dashboard</title>
+<style>
+    :root{--primary:#1554ca;--secondary:#0d3b8a;--success:#16a34a;--danger:#dc2626;--warning:#d97706;--bg:#f8fafc;--card:#fff;--border:#e2e8f0;--text:#1e293b;--muted:#64748b;--radius:10px}
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+
+    .header{background:linear-gradient(135deg,var(--primary),var(--secondary));color:#fff;padding:16px 28px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+    .header h1{font-size:1.2em;font-weight:700}
+    .header .sub{font-size:.8em;opacity:.8}
+    .header-links{display:flex;gap:10px}
+    .header-links a{color:#fff;text-decoration:none;font-size:.85em;padding:6px 16px;border:1px solid rgba(255,255,255,.4);border-radius:6px;transition:.2s}
+    .header-links a:hover{background:rgba(255,255,255,.15)}
+
+    .main{max-width:1100px;margin:24px auto;padding:0 20px}
+
+    .stats-bar{display:flex;gap:16px;margin-bottom:24px;flex-wrap:wrap}
+    .stat-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 24px;text-align:center;flex:1;min-width:140px}
+    .stat-card .num{font-size:2em;font-weight:700;color:var(--primary)}
+    .stat-card .label{font-size:.8em;color:var(--muted);margin-top:2px}
+
+    .job-table{width:100%;border-collapse:collapse;background:var(--card);border-radius:var(--radius);overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+    .job-table th{background:var(--secondary);color:#fff;padding:12px 14px;text-align:left;font-size:.82em;font-weight:600}
+    .job-table td{padding:10px 14px;border-bottom:1px solid var(--border);font-size:.85em;vertical-align:middle}
+    .job-table tr:hover td{background:#f0f4ff}
+    .job-table tr:last-child td{border-bottom:none}
+
+    .status-badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:.75em;font-weight:600}
+    .status-badge.completed{background:#dcfce7;color:#166534}
+    .status-badge.processing{background:#fef3c7;color:#92400e}
+    .status-badge.failed{background:#fee2e2;color:#b91c1c}
+    .status-badge.uploaded{background:#e0f2fe;color:#0369a1}
+
+    .lc-num{font-weight:700;color:var(--primary);font-size:.95em}
+    .file-name{color:var(--muted);font-size:.8em;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+    .actions{display:flex;gap:6px;flex-wrap:wrap}
+    .abtn{padding:4px 10px;border:none;border-radius:5px;font-size:.72em;font-weight:600;cursor:pointer;text-decoration:none;color:#fff;transition:.2s;display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
+    .abtn:hover{opacity:.85;transform:translateY(-1px)}
+    .abtn.checklist{background:var(--primary)}
+    .abtn.json{background:#7c3aed}
+    .abtn.edit{background:#0891b2}
+    .abtn.text{background:#6b7280}
+    .abtn.report{background:var(--success)}
+    .abtn.pdf{background:#dc2626}
+
+    .empty{text-align:center;padding:60px 20px;color:var(--muted)}
+    .empty h3{margin-bottom:8px;color:var(--text)}
+
+    .search-bar{margin-bottom:16px;display:flex;gap:10px}
+    .search-bar input{flex:1;padding:10px 16px;border:1.5px solid var(--border);border-radius:8px;font-size:.9em;outline:none;transition:.2s}
+    .search-bar input:focus{border-color:var(--primary)}
+
+    .step-info{font-size:.75em;color:var(--muted)}
+    .pages-info{font-size:.8em;color:var(--muted)}
+</style>
+</head>
+<body>
+
+<div class="header">
+    <div>
+        <h1>Jobs Dashboard</h1>
+        <div class="sub">All processed LCs and documents</div>
+    </div>
+    <div class="header-links">
+        <a href="/interface">Upload</a>
+        <a href="/checks">Checks Config</a>
+        <a href="/compliance">Compliance</a>
+    </div>
+</div>
+
+<div class="main">
+    <div class="stats-bar" id="stats"></div>
+
+    <div class="search-bar">
+        <input type="text" id="search" placeholder="Search by LC number, job ID, or filename..." oninput="filterJobs()">
+    </div>
+
+    <div id="jobs-container">
+        <div class="empty"><h3>Loading...</h3></div>
+    </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div id="del-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:200;align-items:center;justify-content:center">
+    <div style="background:#fff;border-radius:12px;padding:28px;max-width:440px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,.2)">
+        <h3 style="margin-bottom:12px;color:#b91c1c">Delete Job</h3>
+        <p style="font-size:.9em;color:#64748b;margin-bottom:8px">Job ID: <b id="del-job-id"></b></p>
+        <p style="font-size:.85em;color:#64748b;margin-bottom:12px">This will permanently delete the job and all its results. This action cannot be undone.</p>
+        <label style="font-size:.85em;font-weight:600;display:block;margin-bottom:4px">Reason for deletion <span style="color:#dc2626">*</span></label>
+        <textarea id="del-reason" rows="3" placeholder="e.g., Duplicate upload, test run, wrong file..." style="width:100%;padding:8px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.9em;font-family:inherit;resize:vertical;outline:none"></textarea>
+        <div style="display:flex;gap:10px;margin-top:16px;justify-content:flex-end">
+            <button class="btn btn-outline" onclick="closeDeleteModal()">Cancel</button>
+            <button class="btn btn-danger" onclick="confirmDelete()">Delete Job</button>
+        </div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = window.location.origin;
+let allJobs = [];
+
+async function loadJobs() {
+    try {
+        const r = await fetch(`${API}/api/jobs`);
+        if (!r.ok) throw new Error('Failed');
+        const data = await r.json();
+        allJobs = data.jobs || [];
+        renderStats();
+        renderJobs(allJobs);
+    } catch (e) {
+        document.getElementById('jobs-container').innerHTML =
+            `<div class="empty"><h3>Failed to load jobs</h3><p>${e.message}</p></div>`;
+    }
+}
+
+function renderStats() {
+    const total = allJobs.length;
+    const completed = allJobs.filter(j => j.status === 'completed').length;
+    const processing = allJobs.filter(j => j.status === 'processing').length;
+    const lcs = allJobs.reduce((n, j) => n + (j.lc_numbers ? j.lc_numbers.length : 0), 0);
+    document.getElementById('stats').innerHTML = `
+        <div class="stat-card"><div class="num">${total}</div><div class="label">Total Jobs</div></div>
+        <div class="stat-card"><div class="num">${completed}</div><div class="label">Completed</div></div>
+        <div class="stat-card"><div class="num">${processing}</div><div class="label">Processing</div></div>
+        <div class="stat-card"><div class="num">${lcs}</div><div class="label">LCs Found</div></div>`;
+}
+
+function renderJobs(jobs) {
+    const c = document.getElementById('jobs-container');
+    if (!jobs.length) {
+        c.innerHTML = '<div class="empty"><h3>No jobs found</h3><p>Upload a PDF to get started.</p></div>';
+        return;
+    }
+
+    let html = `<table class="job-table">
+        <thead><tr>
+            <th>#</th><th>Job ID</th><th>LC Number</th><th>Filename</th><th>Pages</th><th>Step</th><th>Status</th><th>Actions</th>
+        </tr></thead><tbody>`;
+
+    jobs.forEach((j, i) => {
+        const lcs = j.lc_numbers || [];
+        const lcDisplay = lcs.length > 0 ? lcs.join(', ') : '<span style="color:#999">N/A</span>';
+        const statusCls = j.status || 'uploaded';
+        const shortId = (j.job_id || '').substring(0, 8);
+
+        // Build action buttons for each LC
+        let actions = '';
+        if (lcs.length > 0) {
+            const lc = lcs[0];
+            actions += `<a class="abtn checklist" href="/checklist?job_id=${j.job_id}&lc=${encodeURIComponent(lc)}">Checklist</a>`;
+            actions += `<a class="abtn json" href="/api/final-lc/${j.job_id}" target="_blank">JSON</a>`;
+            actions += `<a class="abtn edit" href="/final-lc-viewer?job_id=${j.job_id}">Edit LC</a>`;
+            actions += `<a class="abtn report" href="/api/report/${j.job_id}/${encodeURIComponent(lc)}" target="_blank">Report</a>`;
+        }
+        actions += `<a class="abtn text" href="/extracted-text?job_id=${j.job_id}">Text</a>`;
+        actions += `<button class="abtn pdf" onclick="deleteJob('${j.job_id}')">Delete</button>`;
+
+        html += `<tr>
+            <td>${i + 1}</td>
+            <td style="font-family:monospace;font-size:.78em;color:var(--muted)" title="${esc(j.job_id)}">${shortId}... <span style="cursor:pointer;opacity:.5;font-size:.9em" onclick="navigator.clipboard.writeText('${j.job_id}');this.textContent='Copied!';setTimeout(()=>this.textContent='📋',1000)" title="Copy full ID">📋</span></td>
+            <td class="lc-num">${lcDisplay}</td>
+            <td><div class="file-name" title="${esc(j.filename || '')}">${esc(j.filename || 'N/A')}</div></td>
+            <td class="pages-info">${j.total_pages || '—'}</td>
+            <td class="step-info">Step ${j.current_step || '—'} / 20</td>
+            <td><span class="status-badge ${statusCls}">${statusCls}</span></td>
+            <td><div class="actions">${actions}</div></td>
+        </tr>`;
+    });
+
+    html += '</tbody></table>';
+    c.innerHTML = html;
+}
+
+function filterJobs() {
+    const q = document.getElementById('search').value.toLowerCase().trim();
+    if (!q) { renderJobs(allJobs); return; }
+    const filtered = allJobs.filter(j =>
+        (j.job_id || '').toLowerCase().includes(q) ||
+        (j.filename || '').toLowerCase().includes(q) ||
+        (j.lc_numbers || []).some(lc => lc.toLowerCase().includes(q))
+    );
+    renderJobs(filtered);
+}
+
+let _deleteJobId = null;
+function deleteJob(jobId) {
+    _deleteJobId = jobId;
+    document.getElementById('del-job-id').textContent = jobId.substring(0, 8) + '...';
+    document.getElementById('del-reason').value = '';
+    document.getElementById('del-modal').style.display = 'flex';
+}
+function closeDeleteModal() {
+    document.getElementById('del-modal').style.display = 'none';
+    _deleteJobId = null;
+}
+async function confirmDelete() {
+    if (!_deleteJobId) return;
+    const reason = document.getElementById('del-reason').value.trim();
+    if (!reason) { document.getElementById('del-reason').style.borderColor = '#dc2626'; return; }
+    try {
+        const r = await fetch(`${API}/api/jobs/${_deleteJobId}`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason }),
+        });
+        if (!r.ok) throw new Error('Delete failed');
+        showToast('Job deleted', true);
+        closeDeleteModal();
+        loadJobs();
+    } catch (e) {
+        showToast('Failed to delete: ' + e.message, false);
+    }
+}
+
+function showToast(msg, success) {
+    let t = document.getElementById('toast');
+    if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); }
+    t.textContent = msg;
+    t.className = 'toast show ' + (success ? 'success' : 'error');
+    setTimeout(() => t.className = 'toast', 3000);
+}
+
+function esc(t) { return t ? t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
+
+loadJobs();
+</script>
+</body>
+</html>

@@ -105,6 +105,7 @@ from steps import step17_cross_clause
 from steps import step18_threading
 from steps import step19_consolidation
 from steps import step20_report
+from steps import step14_implicit
 
 app = FastAPI(title="ComplyTrade Pilot V2", version="2.0.0")
 
@@ -312,6 +313,163 @@ def compliance():
     if os.path.exists(html_path):
         return HTMLResponse(open(html_path, 'r', encoding='utf-8').read())
     raise HTTPException(404, "Compliance rules view not found")
+
+
+@app.get("/jobs")
+def jobs_page():
+    """Serve the jobs dashboard page."""
+    html_path = os.path.join(VIEW_DIR, "jobs.html")
+    if os.path.exists(html_path):
+        return HTMLResponse(open(html_path, 'r', encoding='utf-8').read())
+    raise HTTPException(404, "Jobs dashboard not found")
+
+
+@app.get("/api/jobs")
+def list_jobs():
+    """List all jobs with LC numbers and status."""
+    jobs_list = []
+    # From in-memory jobs
+    for jid, job in _jobs.items():
+        lc_numbers = []
+        s06 = job.get('step_results', {}).get('step06', {})
+        if isinstance(s06, dict):
+            fl = s06.get('final_lc', s06)
+            if isinstance(fl, dict):
+                dc = fl.get('dc_number', '') or fl.get('consolidated_fields', {}).get('20', '')
+                if dc:
+                    lc_numbers.append(dc)
+        jobs_list.append({
+            'job_id': jid,
+            'filename': job.get('filename', ''),
+            'status': job.get('status', 'unknown'),
+            'current_step': job.get('current_step', 0),
+            'total_pages': job.get('total_pages', 0),
+            'lc_numbers': lc_numbers,
+            'created_at': job.get('created_at', ''),
+        })
+
+    # Also scan results directory for jobs not in memory
+    if os.path.isdir(RESULTS_DIR):
+        for d in os.listdir(RESULTS_DIR):
+            if d in _jobs:
+                continue
+            dpath = os.path.join(RESULTS_DIR, d)
+            if not os.path.isdir(dpath):
+                continue
+            lc_numbers = []
+            filename = ''
+            total_pages = 0
+            current_step = 0
+            # Try to read step06 for LC number
+            s06_path = os.path.join(dpath, 'step06', 'step06_result.json')
+            if os.path.exists(s06_path):
+                try:
+                    with open(s06_path, 'r', encoding='utf-8') as f:
+                        s06_data = json.load(f)
+                    dc = s06_data.get('dc_number', '')
+                    if dc:
+                        lc_numbers.append(dc)
+                except Exception:
+                    pass
+                current_step = max(current_step, 6)
+            # Check what steps exist
+            for sn in range(20, 0, -1):
+                sp = os.path.join(dpath, f'step{sn:02d}')
+                if not os.path.isdir(sp):
+                    sp = os.path.join(dpath, f'step{sn}')
+                if os.path.isdir(sp):
+                    current_step = max(current_step, sn)
+                    break
+            # Try to get filename from uploads
+            upload_dir = os.path.join(UPLOAD_DIR, d)
+            if os.path.isdir(upload_dir):
+                files = os.listdir(upload_dir)
+                if files:
+                    filename = files[0]
+            # Get page count from step01
+            s01_path = os.path.join(dpath, 'step01', 'step01_result.json')
+            if os.path.exists(s01_path):
+                try:
+                    with open(s01_path, 'r', encoding='utf-8') as f:
+                        total_pages = json.load(f).get('total_pages', 0)
+                except Exception:
+                    pass
+            status = 'completed' if current_step >= 11 else 'processing' if current_step > 0 else 'uploaded'
+            jobs_list.append({
+                'job_id': d,
+                'filename': filename,
+                'status': status,
+                'current_step': current_step,
+                'total_pages': total_pages,
+                'lc_numbers': lc_numbers,
+                'created_at': '',
+            })
+
+    # Sort by most recent first (jobs with higher step counts first)
+    jobs_list.sort(key=lambda j: j.get('current_step', 0), reverse=True)
+    return {"jobs": jobs_list, "total": len(jobs_list)}
+
+
+@app.delete("/api/jobs/{job_id}")
+async def delete_job(job_id: str, request: Request):
+    """Delete a job and all its results. Requires a reason."""
+    reason = ''
+    try:
+        body = await request.json()
+        reason = body.get('reason', '')
+    except Exception:
+        pass
+
+    # Log deletion with reason
+    deletion_log = os.path.join(RESULTS_DIR, 'deletion_log.jsonl')
+    log_entry = json.dumps({
+        'job_id': job_id,
+        'reason': reason,
+        'deleted_at': datetime.now().isoformat(),
+        'had_results': os.path.isdir(os.path.join(RESULTS_DIR, job_id)),
+    })
+    with open(deletion_log, 'a', encoding='utf-8') as f:
+        f.write(log_entry + '\n')
+
+    # Remove from memory
+    if job_id in _jobs:
+        del _jobs[job_id]
+
+    # Remove results directory
+    import shutil
+    results_path = os.path.join(RESULTS_DIR, job_id)
+    if os.path.isdir(results_path):
+        shutil.rmtree(results_path, ignore_errors=True)
+
+    # Remove uploads directory
+    upload_path = os.path.join(UPLOAD_DIR, job_id)
+    if os.path.isdir(upload_path):
+        shutil.rmtree(upload_path, ignore_errors=True)
+
+    return {"status": "deleted", "job_id": job_id, "reason": reason}
+
+
+@app.get("/checks")
+def checks_config_page():
+    """Serve the checks configuration page."""
+    html_path = os.path.join(VIEW_DIR, "checks_config.html")
+    if os.path.exists(html_path):
+        return HTMLResponse(open(html_path, 'r', encoding='utf-8').read())
+    raise HTTPException(404, "Checks config view not found")
+
+
+@app.get("/api/checks/config")
+def get_checks_config():
+    """Get current checks configuration."""
+    return step14_implicit.load_checks_config()
+
+
+@app.put("/api/checks/config")
+async def update_checks_config(request: Request):
+    """Update checks configuration."""
+    body = await request.json()
+    step14_implicit.save_checks_config(body)
+    return {"status": "saved", "checks": sum(1 for v in body.values() if v.get('enabled'))}
 
 
 # ── File Upload and Job Management ──
@@ -1225,7 +1383,7 @@ def verify_status(verification_id: str):
                 _step = int(_sm.group(1)) if _sm else job['current_step']
                 progress_log.append({'message': p, 'stage': _step_stages.get(_step, 'validation')})
             return {
-                'status': 'completed' if job['status'] == 'completed' else 'processing',
+                'status': job['status'] if job['status'] in ('completed', 'failed') else 'processing',
                 'current_step': job['current_step'],
                 'progress': job['progress'][-100:],
                 'progress_log': progress_log,
@@ -1236,34 +1394,102 @@ def verify_status(verification_id: str):
 
 @app.get("/api/verify/result/{verification_id}")
 def verify_result(verification_id: str):
-    """Get verification result by verification_id."""
+    """Get verification result by verification_id.
+
+    Returns data in the format expected by checklist.html's mapV() function.
+    Key: results[] array with clauseNumber, type, status, requirement, checks[], etc.
+    """
     for jid, job in _jobs.items():
         if job.get('verification_id') == verification_id:
             sr = job.get('step_results', {})
-            s19 = sr.get('step19', {})
-            # Build checklist-compatible response
-            verifications = []
+
+            # Load full step19 result from disk (sr['step19'] only has summary)
+            results_dir = os.path.join(RESULTS_DIR, jid)
+            s19_full = {}
+            s19_file = os.path.join(results_dir, 'step19', 'step19_result.json')
+            if os.path.exists(s19_file):
+                with open(s19_file, 'r', encoding='utf-8') as f:
+                    s19_full = json.load(f)
+
+            s19 = s19_full or sr.get('step19', {})
+
+            # Build checklist-compatible results array
+            # mapV() matches by clauseNumber (e.g. "1", "2") or type (e.g. "43P")
+            results = []
             for section in s19.get('sections', []):
-                for row in section.get('rows', []):
-                    verifications.append({
-                        'check': row.get('condition_text', row.get('clause_ref', '')),
-                        'status': row.get('compliance', 'review'),
-                        'severity': 'critical' if row.get('compliance') == 'fail' else 'minor',
-                        'detail': row.get('result', ''),
-                        'swiftTag': row.get('clause_ref', '').split('-')[0] if row.get('clause_ref') else '',
-                        'rule_reference': row.get('clause_ref', ''),
-                        'document_checked': row.get('document_checked', ''),
-                        'findings': row.get('findings', row.get('found_text', '')),
+                for clause in section.get('clauses', []):
+                    clause_ref = clause.get('clause_ref', '')
+                    clause_text = clause.get('clause_text', '')
+                    overall = clause.get('overall_result', 'REVIEW REQUIRED').upper()
+
+                    # Map overall_result to status for checklist
+                    if overall in ('COMPLIED', 'PASS', 'COMPLIANT'):
+                        status = 'compliant'
+                    elif overall in ('NOT COMPLIED', 'FAIL', 'DISCREPANT'):
+                        status = 'non_compliant'
+                    else:
+                        status = 'review_required'
+
+                    # Extract clause number from ref (e.g. "46A-1" -> "1", "47A-3" -> "3")
+                    clause_number = None
+                    tag = clause_ref.split('-')[0].upper() if clause_ref else ''
+                    if '-' in clause_ref:
+                        clause_number = clause_ref.split('-', 1)[1]
+
+                    # Determine type for LC field matching
+                    field_type = tag.lstrip('F') if tag.startswith('F') else tag
+
+                    # Build checks array from rows
+                    checks = []
+                    for row in clause.get('rows', []):
+                        row_compliance = str(row.get('compliance', '')).upper()
+                        if row_compliance in ('COMPLIED', 'PASS'):
+                            row_status = 'pass'
+                        elif row_compliance in ('NOT COMPLIED', 'FAIL'):
+                            row_status = 'fail'
+                        else:
+                            row_status = 'review'
+                        checks.append({
+                            'check': row.get('condition', ''),
+                            'status': row_status,
+                            'detail': row.get('result', ''),
+                            'document_checked': row.get('document_checked', ''),
+                            'findings': row.get('findings', row.get('found_text', '')),
+                        })
+
+                    # Determine if this is an LC field (standalone, not 46A/47A/45A clause)
+                    is_lc_field = field_type not in ('46A', '46B', '47A', '47B', '45A', '45B', '78', '72', '79')
+
+                    results.append({
+                        'clauseNumber': clause_number,
+                        'clause_ref': clause_ref,
+                        'type': field_type,
+                        'is_lc_field': is_lc_field,
+                        'lc_field_label': clause_text[:80] if is_lc_field else '',
+                        'status': status,
+                        'requirement': clause_text,
+                        'summary': f"{clause.get('pass_count', 0)}P / {clause.get('fail_count', 0)}F / {clause.get('review_count', 0)}R",
+                        'checks': checks,
+                        'rule_checks': checks,
+                        'matched_documents': [],
                     })
+
             return {
-                "status": job['status'],
+                "status": job.get('status', 'completed'),
                 "verification_id": verification_id,
-                "result": job.get('result', {}),
-                "verifications": verifications,
+                "results": results,
+                "summary": {
+                    "overall_decision": s19.get('overall_decision', 'REVIEW REQUIRED'),
+                    "total_clauses": s19.get('total_clauses', 0),
+                    "total_pass": s19.get('total_pass', 0),
+                    "total_fail": s19.get('total_fail', 0),
+                    "total_review": s19.get('total_review', 0),
+                },
                 "overall_decision": s19.get('overall_decision', 'REVIEW REQUIRED'),
-                "total_pass": s19.get('total_pass', s19.get('pass_count', 0)),
-                "total_fail": s19.get('total_fail', s19.get('fail_count', 0)),
-                "total_review": s19.get('total_review', s19.get('review_count', 0)),
+                "total_pass": s19.get('total_pass', 0),
+                "total_fail": s19.get('total_fail', 0),
+                "total_review": s19.get('total_review', 0),
+                "elapsed_seconds": s19.get('elapsed_seconds', 0),
             }
     raise HTTPException(404, "Verification not found")
 
@@ -1272,6 +1498,18 @@ def verify_result(verification_id: str):
 def verify_history(job_id: str, lc_number: str):
     """Get verification history (placeholder for future audit trail feature)."""
     return {"history": []}
+
+
+@app.post("/api/verify/cancel/{verification_id}")
+def verify_cancel(verification_id: str):
+    """Cancel a running verification."""
+    for jid, job in _jobs.items():
+        if job.get('verification_id') == verification_id:
+            if job['status'] == 'processing':
+                job['status'] = 'failed'
+                job['progress'].append(f"[{datetime.now().strftime('%H:%M:%S')}] Verification cancelled by user")
+            return {"status": "cancelled", "verification_id": verification_id}
+    raise HTTPException(404, "Verification not found")
 
 
 @app.post("/api/verify/update/{verification_id}")
@@ -1640,7 +1878,9 @@ def _continue_verification(job_id: str):
 
     def _p(msg):
         """Append timestamped progress message to job progress log."""
-        job['progress'].append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+        ts_msg = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
+        job['progress'].append(ts_msg)
+        print(ts_msg, flush=True)
 
     try:
         # ── Step 12: Clause Decomposition ──
@@ -1689,6 +1929,51 @@ def _continue_verification(job_id: str):
         ))
         sr['step14'] = s14
 
+        # ── Step 14b: Implicit LC Key Term Checks (VLM-based) ──
+        # Verify LC key term fields (dates, amounts, ports, shipment) using
+        # specialized VLM prompts with exact trade finance rules.
+        _p("Step 14b: Implicit LC Key Term Verification...")
+        try:
+            # Get LC consolidated fields
+            _s06 = sr.get('step06', {})
+            _lc_cf = {}
+            if 'final_lc' in _s06 and isinstance(_s06['final_lc'], dict):
+                _lc_cf = _s06['final_lc'].get('consolidated_fields', {})
+            elif 'consolidated_fields' in _s06:
+                _lc_cf = _s06['consolidated_fields']
+
+            # Get shipping document packets
+            _s09 = sr.get('step09', {})
+            _packets = _s09.get('reconciled_packets', [])
+
+            s14b = _to_dict(step14_implicit.run(
+                _lc_cf, _packets,
+                config_dir='config',
+                output_dir=os.path.join(results_dir, 'step14b'),
+                progress_fn=_p,
+            ))
+            sr['step14b'] = s14b
+
+            # Merge 14b check results into s14 rows for consolidation
+            for chk in s14b.get('checks', []):
+                s14['rows'] = s14.get('rows', [])
+                s14['rows'].append({
+                    'clause_ref': chk.get('clause_ref', ''),
+                    'clause_text': chk.get('condition', ''),
+                    'condition_text': chk.get('condition', ''),
+                    'document_checked': chk.get('document_checked', ''),
+                    'findings': chk.get('findings', ''),
+                    'result': chk.get('result', ''),
+                    'compliance': chk.get('compliance', 'REVIEW'),
+                    'confidence': chk.get('confidence', 1.0),
+                    'is_implicit': True,
+                    'source_step': '14b',
+                })
+            _p(f"Step 14b: {s14b.get('summary', {}).get('total', 0)} checks merged into pipeline")
+        except Exception as _e14b:
+            _p(f"Step 14b WARNING: {_e14b}")
+            print(f"[WARN] Step 14b: {_e14b}\n{traceback.format_exc()}", flush=True)
+
         # ── Step 15: Non-Compliance Handling ──
         # Classify all LC clauses as checkable/informational/non-checkable.
         # Ensures bank obligations and sanctions clauses are not falsely failed.
@@ -1707,61 +1992,72 @@ def _continue_verification(job_id: str):
             os.path.join(results_dir, 'step16'), _p
         ))
         sr['step16'] = {'escalated': s16.get('escalated_count', 0)}
-
+        import sys as _sys2
         # ── Step 17: Cross-Clause Dependencies ──
-        # Resolve F47A overrides that modify F46A requirements.
-        # Example: F47A says "Charter Party BL acceptable" -> remove F46A BL type fail.
         job['current_step'] = 17
         _p("Step 17: Cross-Clause Dependency Handling...")
-        s17 = _to_dict(step17_cross_clause.run(
-            s16.get('rows', []),
-            os.path.join(results_dir, 'step17'), _p
-        ))
-        sr['step17'] = {'overrides': s17.get('overrides_applied', 0)}
+        try:
+            s17 = _to_dict(step17_cross_clause.run(
+                s16.get('rows', []),
+                os.path.join(results_dir, 'step17'), _p
+            ))
+            sr['step17'] = {'overrides': s17.get('overrides_applied', 0)}
+        except Exception as _e17:
+            _p(f"Step 17 FAILED: {_e17}")
+            print(f"[ERROR] Step 17: {_e17}\n{traceback.format_exc()}", flush=True)
+            raise
 
         # ── Step 18: Threading (already handled inline) ──
-        # Parallel processing was handled within Steps 12 and 14 via ThreadPoolExecutor.
-        # This step is a placeholder for future dedicated parallel processing.
         job['current_step'] = 18
         _p("Step 18: Multi-threaded processing complete (inline)")
         sr['step18'] = {'status': 'complete'}
 
         # ── Step 19: Consolidation ──
-        # Merge all verified rows into sections (Key Terms, Document Requirements,
-        # Additional Conditions, etc.) for the final report structure.
         job['current_step'] = 19
         _p("Step 19: Consolidating Verification Output...")
-        s19 = _to_dict(step19_consolidation.run(
-            s17.get('reconciled_rows', s17.get('rows', [])),
-            os.path.join(results_dir, 'step19'), _p
-        ))
-        sr['step19'] = {
-            'decision': s19.get('overall_decision', ''),
-            'pass': s19.get('pass_count', 0),
-            'fail': s19.get('fail_count', 0),
-            'review': s19.get('review_count', 0),
-        }
+        try:
+            s19 = _to_dict(step19_consolidation.run(
+                s17.get('reconciled_rows', s17.get('rows', [])),
+                os.path.join(results_dir, 'step19'), _p
+            ))
+            sr['step19'] = {
+                'decision': s19.get('overall_decision', ''),
+                'pass': s19.get('total_pass', 0),
+                'fail': s19.get('total_fail', 0),
+                'review': s19.get('total_review', 0),
+            }
+        except Exception as _e19:
+            _p(f"Step 19 FAILED: {_e19}")
+            print(f"[ERROR] Step 19: {_e19}\n{traceback.format_exc()}", flush=True)
+            raise
 
         # ── Step 20: Report Generation ──
-        # Generate the final PDF compliance report with cover page,
-        # executive summary, and clause-by-clause verification tables.
         job['current_step'] = 20
         _p("Step 20: Generating Final Compliance Report...")
-        s20 = step20_report.run(
-            s19, sr.get('step06', {}),
-            os.path.join(results_dir, 'step20'), _p
-        )
-        sr['step20'] = {'report_path': s20.get('report_path', '')}
+        try:
+            s20 = step20_report.run(
+                s19, sr.get('step06', {}),
+                os.path.join(results_dir, 'step20'), _p
+            )
+            sr['step20'] = {'report_path': s20.get('report_path', s20.get('pdf_path', ''))}
+        except Exception as _e20:
+            _p(f"Step 20 FAILED: {_e20}")
+            print(f"[ERROR] Step 20: {_e20}\n{traceback.format_exc()}", flush=True)
+            raise
 
-        # Pipeline complete — set final status and overall result
+        # Pipeline complete
         job['status'] = 'completed'
         job['result'] = sr.get('step19', {})
         _p(f"Pipeline complete! Decision: {sr.get('step19', {}).get('decision', 'N/A')}")
 
     except Exception as e:
         job['status'] = 'failed'
-        _p(f"Verification FAILED at Step {job['current_step']}: {str(e)}")
-        _p(traceback.format_exc()[:500])
+        _err_msg = f"Verification FAILED at Step {job['current_step']}: {str(e)}"
+        _err_tb = traceback.format_exc()
+        _p(_err_msg)
+        _p(_err_tb[:500])
+        print(f"\n[ERROR] {_err_msg}", flush=True)
+        print(_err_tb, flush=True)
 
 
 # ══════════════════════════════════════════════════════════════
