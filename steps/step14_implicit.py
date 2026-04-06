@@ -169,90 +169,27 @@ DEFAULT_CHECKS_CONFIG = {
         "severity": "hard",
     },
 
-    # ── Document-Level Checks (F46A) ──
-    "doc_bill_of_lading": {
+    # ── Document & Clause Checks (VLM-based, from Step 12→14) ──
+    "f46a_verification": {
         "enabled": True,
-        "name": "Bill of Lading Verification",
-        "description": "Full set, clean on board, consignee, notify party, freight status, shipped on board notation, carrier/agent signing, port marks. UCP 600 Art 20.",
-        "category": "documents",
+        "name": "F46A — Documents Required Verification",
+        "description": "Verify all documents listed in F46A against the actual shipping documents. Each clause is decomposed into individual conditions and checked by VLM. Conditions are dynamic per LC.",
+        "category": "clauses",
         "severity": "hard",
     },
-    "doc_commercial_invoice": {
+    "f47a_verification": {
         "enabled": True,
-        "name": "Commercial Invoice Verification",
-        "description": "Goods description match, quantity, unit price, total amount, HS code, NTN, beneficiary name, applicant name, LC number. UCP 600 Art 18.",
-        "category": "documents",
+        "name": "F47A — Additional Conditions Verification",
+        "description": "Verify all additional conditions in F47A. These can override, supplement, or add requirements to F46A. Checked by VLM against all relevant documents.",
+        "category": "clauses",
         "severity": "hard",
     },
-    "doc_insurance": {
+    "f45a_verification": {
         "enabled": True,
-        "name": "Insurance Document Verification",
-        "description": "Coverage amount (min 110% CIF/CIP), currency match, risks covered, effective date on/before shipment, Institute Cargo Clauses. UCP 600 Art 28.",
-        "category": "documents",
+        "name": "F45A — Description of Goods Verification",
+        "description": "Verify goods description matches across Invoice, BL, and other documents. Checked by VLM.",
+        "category": "clauses",
         "severity": "hard",
-    },
-    "doc_draft": {
-        "enabled": True,
-        "name": "Draft / Bill of Exchange Verification",
-        "description": "Amount, drawee, tenor (at sight / usance), drawn on correct bank, signed by beneficiary. UCP 600 Art 14.",
-        "category": "documents",
-        "severity": "hard",
-    },
-    "doc_certificate_of_origin": {
-        "enabled": True,
-        "name": "Certificate of Origin Verification",
-        "description": "Country of origin match, goods description, beneficiary/exporter name, certification authority.",
-        "category": "documents",
-        "severity": "hard",
-    },
-    "doc_packing_list": {
-        "enabled": True,
-        "name": "Packing / Weight List Verification",
-        "description": "Gross/net weight, number of packages, marks and numbers consistency with BL and invoice.",
-        "category": "documents",
-        "severity": "hard",
-    },
-    "doc_inspection_cert": {
-        "enabled": True,
-        "name": "Inspection / Quality Certificate Verification",
-        "description": "Issuing authority matches LC requirement (e.g., SGS, Intertek), goods match, date, signed.",
-        "category": "documents",
-        "severity": "hard",
-    },
-    "doc_shipping_advice": {
-        "enabled": True,
-        "name": "Shipping Advice Verification",
-        "description": "Vessel name, shipment date, port of loading/discharge, addressed to correct party (insurer/applicant).",
-        "category": "documents",
-        "severity": "soft",
-    },
-    "doc_fumigation_cert": {
-        "enabled": True,
-        "name": "Fumigation Certificate Verification",
-        "description": "Fumigation performed, chemicals used, date, certification by approved authority.",
-        "category": "documents",
-        "severity": "hard",
-    },
-    "doc_phytosanitary": {
-        "enabled": True,
-        "name": "Phytosanitary Certificate Verification",
-        "description": "Issued by government authority, plant health certification, importer name, country of origin.",
-        "category": "documents",
-        "severity": "hard",
-    },
-    "doc_health_cert": {
-        "enabled": True,
-        "name": "Health / Veterinary Certificate Verification",
-        "description": "Issued by government authority, health compliance, product safety certification.",
-        "category": "documents",
-        "severity": "hard",
-    },
-    "doc_beneficiary_cert": {
-        "enabled": True,
-        "name": "Beneficiary Certificate Verification",
-        "description": "Signed by beneficiary, certifying specific conditions as required by LC (e.g., fax/email notification, document dispatch).",
-        "category": "documents",
-        "severity": "soft",
     },
 
     # ── Cross-Document & General Checks ──

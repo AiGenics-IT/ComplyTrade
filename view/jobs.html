@@ -57,6 +57,35 @@
 
     .step-info{font-size:.75em;color:var(--muted)}
     .pages-info{font-size:.8em;color:var(--muted)}
+
+    /* Modal */
+    .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;align-items:center;justify-content:center;backdrop-filter:blur(2px)}
+    .modal-overlay.active{display:flex}
+    .modal-box{background:#fff;border-radius:14px;padding:28px 32px;max-width:460px;width:90%;box-shadow:0 12px 40px rgba(0,0,0,.25);animation:modalIn .2s ease}
+    @keyframes modalIn{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}
+    .modal-box h3{font-size:1.1em;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+    .modal-box .warn-icon{width:32px;height:32px;background:#fee2e2;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:1.1em;flex-shrink:0}
+    .modal-box p{font-size:.88em;color:var(--muted);line-height:1.5;margin-bottom:10px}
+    .modal-box label{font-size:.85em;font-weight:600;display:block;margin-bottom:5px;color:var(--text)}
+    .modal-box textarea{width:100%;padding:10px 14px;border:1.5px solid var(--border);border-radius:8px;font-size:.88em;font-family:inherit;resize:vertical;outline:none;transition:.2s}
+    .modal-box textarea:focus{border-color:var(--primary)}
+    .modal-box textarea.error{border-color:var(--danger)}
+    .modal-actions{display:flex;gap:10px;margin-top:18px;justify-content:flex-end}
+
+    /* Buttons */
+    .mbtn{padding:9px 22px;border:none;border-radius:8px;font-weight:600;font-size:.88em;cursor:pointer;transition:all .2s;font-family:inherit}
+    .mbtn:hover{transform:translateY(-1px)}
+    .mbtn-cancel{background:#f1f5f9;color:var(--text);border:1px solid var(--border)}
+    .mbtn-cancel:hover{background:#e2e8f0}
+    .mbtn-danger{background:var(--danger);color:#fff;box-shadow:0 2px 6px rgba(220,38,38,.3)}
+    .mbtn-danger:hover{background:#b91c1c}
+
+    /* Toast */
+    .toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(20px);padding:14px 28px;border-radius:10px;font-size:.9em;font-weight:500;z-index:300;opacity:0;transition:all .35s ease;pointer-events:none;display:flex;align-items:center;gap:10px;box-shadow:0 6px 20px rgba(0,0,0,.15);max-width:400px}
+    .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+    .toast.success{background:#166534;color:#fff}
+    .toast.error{background:#b91c1c;color:#fff}
+    .toast-icon{font-size:1.1em}
 </style>
 </head>
 <body>
@@ -86,16 +115,16 @@
 </div>
 
 <!-- Delete Confirmation Modal -->
-<div id="del-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:200;align-items:center;justify-content:center">
-    <div style="background:#fff;border-radius:12px;padding:28px;max-width:440px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,.2)">
-        <h3 style="margin-bottom:12px;color:#b91c1c">Delete Job</h3>
-        <p style="font-size:.9em;color:#64748b;margin-bottom:8px">Job ID: <b id="del-job-id"></b></p>
-        <p style="font-size:.85em;color:#64748b;margin-bottom:12px">This will permanently delete the job and all its results. This action cannot be undone.</p>
-        <label style="font-size:.85em;font-weight:600;display:block;margin-bottom:4px">Reason for deletion <span style="color:#dc2626">*</span></label>
-        <textarea id="del-reason" rows="3" placeholder="e.g., Duplicate upload, test run, wrong file..." style="width:100%;padding:8px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.9em;font-family:inherit;resize:vertical;outline:none"></textarea>
-        <div style="display:flex;gap:10px;margin-top:16px;justify-content:flex-end">
-            <button class="btn btn-outline" onclick="closeDeleteModal()">Cancel</button>
-            <button class="btn btn-danger" onclick="confirmDelete()">Delete Job</button>
+<div class="modal-overlay" id="del-modal" onclick="if(event.target===this)closeDeleteModal()">
+    <div class="modal-box">
+        <h3><span class="warn-icon">&#9888;</span> <span style="color:#b91c1c">Delete Job</span></h3>
+        <p>Job ID: <b id="del-job-id" style="color:var(--text);font-family:monospace"></b></p>
+        <p>This will <b style="color:#b91c1c">permanently delete</b> the job, all extracted data, and verification results. This action cannot be undone.</p>
+        <label>Reason for deletion <span style="color:var(--danger)">*</span></label>
+        <textarea id="del-reason" rows="3" placeholder="e.g., Duplicate upload, test run, wrong file..."></textarea>
+        <div class="modal-actions">
+            <button class="mbtn mbtn-cancel" onclick="closeDeleteModal()">Cancel</button>
+            <button class="mbtn mbtn-danger" id="del-confirm-btn" onclick="confirmDelete()">Delete Job</button>
         </div>
     </div>
 </div>
@@ -192,39 +221,50 @@ function filterJobs() {
 let _deleteJobId = null;
 function deleteJob(jobId) {
     _deleteJobId = jobId;
-    document.getElementById('del-job-id').textContent = jobId.substring(0, 8) + '...';
-    document.getElementById('del-reason').value = '';
-    document.getElementById('del-modal').style.display = 'flex';
+    document.getElementById('del-job-id').textContent = jobId;
+    const ta = document.getElementById('del-reason');
+    ta.value = '';
+    ta.classList.remove('error');
+    document.getElementById('del-modal').classList.add('active');
+    setTimeout(() => ta.focus(), 200);
 }
 function closeDeleteModal() {
-    document.getElementById('del-modal').style.display = 'none';
+    document.getElementById('del-modal').classList.remove('active');
     _deleteJobId = null;
 }
 async function confirmDelete() {
     if (!_deleteJobId) return;
-    const reason = document.getElementById('del-reason').value.trim();
-    if (!reason) { document.getElementById('del-reason').style.borderColor = '#dc2626'; return; }
+    const ta = document.getElementById('del-reason');
+    const reason = ta.value.trim();
+    if (!reason) { ta.classList.add('error'); ta.focus(); return; }
+    ta.classList.remove('error');
+    const btn = document.getElementById('del-confirm-btn');
+    btn.textContent = 'Deleting...';
+    btn.disabled = true;
     try {
         const r = await fetch(`${API}/api/jobs/${_deleteJobId}`, {
             method: 'DELETE',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ reason }),
         });
-        if (!r.ok) throw new Error('Delete failed');
-        showToast('Job deleted', true);
+        if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || e.error || 'Server error'); }
+        showToast('Job deleted successfully', true);
         closeDeleteModal();
         loadJobs();
     } catch (e) {
-        showToast('Failed to delete: ' + e.message, false);
+        showToast('Delete failed: ' + e.message, false);
+    } finally {
+        btn.textContent = 'Delete Job';
+        btn.disabled = false;
     }
 }
 
 function showToast(msg, success) {
-    let t = document.getElementById('toast');
-    if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); }
-    t.textContent = msg;
+    const t = document.getElementById('toast');
+    const icon = success ? '&#10003;' : '&#10007;';
+    t.innerHTML = '<span class="toast-icon">' + icon + '</span> ' + esc(msg);
     t.className = 'toast show ' + (success ? 'success' : 'error');
-    setTimeout(() => t.className = 'toast', 3000);
+    setTimeout(() => t.className = 'toast', 3500);
 }
 
 function esc(t) { return t ? t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }

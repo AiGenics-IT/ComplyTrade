@@ -205,12 +205,24 @@ function resetAll() {
     document.getElementById('changeCount').textContent = 'No changes';
 }
 
-function saveChanges() {
+async function saveChanges() {
     if (changeCount === 0) { alert('No changes to save.'); return; }
-    // TODO: POST changes to server
-    alert('Changes saved locally. Server-side save coming soon.');
-    document.querySelectorAll('.modified').forEach(el => el.classList.remove('modified'));
-    document.getElementById('changeCount').textContent = 'Changes saved';
+    try {
+        const r = await fetch(`${API}/api/final-lc/${jobId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ changes: modifiedFields }),
+        });
+        if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || 'Save failed'); }
+        const d = await r.json();
+        document.querySelectorAll('.modified').forEach(el => el.classList.remove('modified'));
+        modifiedFields = {};
+        changeCount = 0;
+        document.getElementById('changeCount').textContent = `${d.changes_applied} change(s) saved`;
+        alert(`Changes saved successfully (${d.changes_applied} field(s) updated).`);
+    } catch (e) {
+        alert('Failed to save: ' + e.message);
+    }
 }
 
 function downloadPDF() {

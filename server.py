@@ -992,10 +992,73 @@ def get_report(job_id: str):
 @app.get("/api/final-lc/{job_id}")
 def get_final_lc(job_id: str):
     """Get the Final LC data (consolidated from all amendments) for a job."""
-    if job_id not in _jobs:
-        raise HTTPException(404, "Job not found")
-    step_results = _jobs[job_id].get('step_results', {})
-    return step_results.get('step06', {"error": "Final LC not yet generated"})
+    # Try in-memory first
+    if job_id in _jobs:
+        step_results = _jobs[job_id].get('step_results', {})
+        s06 = step_results.get('step06')
+        if s06:
+            return s06
+    # Fall back to disk
+    s06_path = os.path.join(RESULTS_DIR, job_id, 'step06', 'step06_result.json')
+    if os.path.exists(s06_path):
+        with open(s06_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    raise HTTPException(404, "Final LC not yet generated")
+
+
+@app.put("/api/final-lc/{job_id}")
+async def save_final_lc(job_id: str, request: Request):
+    """Save edited Final LC fields back to disk and memory."""
+    body = await request.json()
+    changes = body.get('changes', {})
+    if not changes:
+        return {"status": "no_changes"}
+
+    # Load current step06 data
+    s06_path = os.path.join(RESULTS_DIR, job_id, 'step06', 'step06_result.json')
+    if not os.path.exists(s06_path):
+        raise HTTPException(404, "Final LC not found for this job")
+
+    with open(s06_path, 'r', encoding='utf-8') as f:
+        s06_data = json.load(f)
+
+    cf = s06_data.get('consolidated_fields', {})
+
+    # Apply changes
+    applied = []
+    for field_id, change in changes.items():
+        tag = change.get('tag', '')
+        clause_idx = change.get('clauseIdx')
+        new_value = change.get('value', '')
+
+        if clause_idx is not None and clause_idx != '' and clause_idx != 'null':
+            # Clause field edit — update in clauses dict
+            clauses = s06_data.get('clauses', {})
+            if tag in clauses and isinstance(clauses[tag], list):
+                idx = int(clause_idx)
+                if 0 <= idx < len(clauses[tag]):
+                    old_val = clauses[tag][idx].get('text', '')
+                    clauses[tag][idx]['text'] = new_value
+                    applied.append({'tag': tag, 'clause': idx, 'old': old_val[:80], 'new': new_value[:80]})
+        else:
+            # Standalone field edit
+            old_val = cf.get(tag, '')
+            cf[tag] = new_value
+            applied.append({'tag': tag, 'old': str(old_val)[:80], 'new': new_value[:80]})
+
+            # Update dc_number if tag 20 changed
+            if tag == '20':
+                s06_data['dc_number'] = new_value
+
+    # Save back to disk
+    with open(s06_path, 'w', encoding='utf-8') as f:
+        json.dump(s06_data, f, indent=2, ensure_ascii=False)
+
+    # Update in-memory if loaded
+    if job_id in _jobs:
+        _jobs[job_id]['step_results']['step06'] = s06_data
+
+    return {"status": "saved", "changes_applied": len(applied), "details": applied}
 
 
 # ── Compatibility endpoints (for old views) ──

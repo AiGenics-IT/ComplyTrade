@@ -112,7 +112,7 @@ const CAT_META = {
     dates: { icon: '📅', label: 'Date & Time Checks' },
     financial: { icon: '💰', label: 'Financial & Amount Checks' },
     shipping: { icon: '🚢', label: 'Shipping & Transport Checks' },
-    documents: { icon: '📄', label: 'Document-Level Verification (F46A)' },
+    clauses: { icon: '📄', label: 'LC Clause Verification (VLM-based)' },
     cross_check: { icon: '🔗', label: 'Cross-Document & General Checks' },
     parties: { icon: '👤', label: 'Party Checks (Reserved)' },
     informational: { icon: 'ℹ️', label: 'Informational Fields' },
@@ -142,7 +142,7 @@ function render() {
     }
 
     // Render in order
-    const catOrder = ['dates', 'financial', 'shipping', 'documents', 'cross_check', 'parties', 'informational'];
+    const catOrder = ['dates', 'financial', 'shipping', 'clauses', 'cross_check', 'parties', 'informational'];
     for (const cat of catOrder) {
         if (!groups[cat]) continue;
         const meta = CAT_META[cat] || { icon: '📋', label: cat };

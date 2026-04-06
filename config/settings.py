@@ -19,7 +19,7 @@ QWEN_VLM_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-72B-Instruct-AWQ"
 # ── Server ──
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8082
-BUILD_TAG = "2026-04-06-P28"
+BUILD_TAG = "2026-04-06-P29"
 
 # ── Processing ──
 MAX_CONCURRENT_OCR = 4
