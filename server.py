@@ -338,6 +338,11 @@ def list_jobs():
                 dc = fl.get('dc_number', '') or fl.get('consolidated_fields', {}).get('20', '')
                 if dc:
                     lc_numbers.append(dc)
+        # Sum elapsed from step results
+        _elapsed = 0
+        for _sk, _sv in job.get('step_results', {}).items():
+            if isinstance(_sv, dict):
+                _elapsed += _sv.get('elapsed_seconds', 0)
         jobs_list.append({
             'job_id': jid,
             'filename': job.get('filename', ''),
@@ -346,6 +351,7 @@ def list_jobs():
             'total_pages': job.get('total_pages', 0),
             'lc_numbers': lc_numbers,
             'created_at': job.get('created_at', ''),
+            'elapsed_seconds': round(_elapsed, 1),
         })
 
     # Also scan results directory for jobs not in memory
@@ -386,14 +392,34 @@ def list_jobs():
                 files = os.listdir(upload_dir)
                 if files:
                     filename = files[0]
-            # Get page count from step01
+            # Get page count and timing from step01
+            created_at = ''
+            elapsed_seconds = 0
             s01_path = os.path.join(dpath, 'step01', 'step01_result.json')
             if os.path.exists(s01_path):
                 try:
                     with open(s01_path, 'r', encoding='utf-8') as f:
-                        total_pages = json.load(f).get('total_pages', 0)
+                        s01_data = json.load(f)
+                    total_pages = s01_data.get('total_pages', 0)
+                    elapsed_seconds += s01_data.get('elapsed_seconds', 0)
                 except Exception:
                     pass
+            # Get created_at from directory modification time
+            try:
+                created_at = datetime.fromtimestamp(os.path.getctime(dpath)).isoformat()
+            except Exception:
+                pass
+            # Sum elapsed from all steps
+            for sn in range(2, 21):
+                for sp_name in (f'step{sn:02d}', f'step{sn}'):
+                    sp_file = os.path.join(dpath, sp_name, f'{sp_name}_result.json')
+                    if os.path.exists(sp_file):
+                        try:
+                            with open(sp_file, 'r', encoding='utf-8') as f:
+                                elapsed_seconds += json.load(f).get('elapsed_seconds', 0)
+                        except Exception:
+                            pass
+                        break
             status = 'completed' if current_step >= 11 else 'processing' if current_step > 0 else 'uploaded'
             jobs_list.append({
                 'job_id': d,
@@ -402,7 +428,8 @@ def list_jobs():
                 'current_step': current_step,
                 'total_pages': total_pages,
                 'lc_numbers': lc_numbers,
-                'created_at': '',
+                'created_at': created_at,
+                'elapsed_seconds': round(elapsed_seconds, 1),
             })
 
     # Sort by most recent first (jobs with higher step counts first)

@@ -170,7 +170,7 @@ function renderJobs(jobs) {
 
     let html = `<table class="job-table">
         <thead><tr>
-            <th>#</th><th>Job ID</th><th>LC Number</th><th>Filename</th><th>Pages</th><th>Step</th><th>Status</th><th>Actions</th>
+            <th>#</th><th>Job ID</th><th>LC Number</th><th>Filename</th><th>Pages</th><th>Date</th><th>Time</th><th>Step</th><th>Status</th><th>Actions</th>
         </tr></thead><tbody>`;
 
     jobs.forEach((j, i) => {
@@ -178,6 +178,8 @@ function renderJobs(jobs) {
         const lcDisplay = lcs.length > 0 ? lcs.join(', ') : '<span style="color:#999">N/A</span>';
         const statusCls = j.status || 'uploaded';
         const shortId = (j.job_id || '').substring(0, 8);
+        const dateStr = j.created_at ? new Date(j.created_at).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '';
+        const elapsed = j.elapsed_seconds ? (j.elapsed_seconds >= 60 ? Math.floor(j.elapsed_seconds/60)+'m '+Math.round(j.elapsed_seconds%60)+'s' : Math.round(j.elapsed_seconds)+'s') : '';
 
         // Build action buttons for each LC
         let actions = '';
@@ -197,6 +199,8 @@ function renderJobs(jobs) {
             <td class="lc-num">${lcDisplay}</td>
             <td><div class="file-name" title="${esc(j.filename || '')}">${esc(j.filename || 'N/A')}</div></td>
             <td class="pages-info">${j.total_pages || '—'}</td>
+            <td style="font-size:.78em;color:var(--muted);white-space:nowrap">${dateStr || '—'}</td>
+            <td style="font-size:.78em;color:var(--muted);white-space:nowrap">${elapsed || '—'}</td>
             <td class="step-info">Step ${j.current_step || '—'} / 20</td>
             <td><span class="status-badge ${statusCls}">${statusCls}</span></td>
             <td><div class="actions">${actions}</div></td>
