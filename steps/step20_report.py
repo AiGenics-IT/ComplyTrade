@@ -547,14 +547,16 @@ def _build_executive_summary(
     # Review Required (orange) -- only show top items
     if review_items:
         _review_display = [r for r in review_items
-                           if r.get('condition', '').strip()
-                           and r.get('condition', '').strip() != 'N/A'][:15]
+                           if (r.get('condition', '').strip() and r.get('condition', '').strip() != 'N/A')
+                           or (r.get('findings', '').strip() and r.get('findings', '').strip() != 'N/A')
+                           or r.get('document_checked', '').strip()][:20]
         if _review_display:
             elements.append(Paragraph(
                 '<b><font color="#C55A11">Items Requiring Manual Review:</font></b>', styles['Normal']))
             elements.append(Spacer(1, 2 * mm))
             for i, ri in enumerate(_review_display, 1):
-                detail = _esc(_safe_str(ri.get('condition', ''), 200))
+                detail = _esc(_safe_str(
+                    ri.get('condition', '') or ri.get('findings', '') or ri.get('result', ''), 200))
                 ref = ri.get('clause_ref', '')
                 doc = ri.get('document_checked', '')
                 suffix = ''
@@ -581,7 +583,16 @@ def _is_informational_only(clause: Dict) -> bool:
     for r in rows:
         cond = str(r.get('condition', '')).strip()
         result = str(r.get('result', '')).strip().upper()
+        findings = str(r.get('findings', r.get('found_text', ''))).strip()
+        compliance = str(r.get('compliance', '')).strip().upper()
+        # Has real verification if any of: condition text, findings, or a PASS/FAIL/REVIEW compliance
         if cond and cond != 'N/A' and result != 'INFORMATIONAL':
+            return False
+        if findings and findings != 'N/A':
+            return False
+        if compliance in ('COMPLIED', 'NOT COMPLIED', 'REVIEW REQUIRED', 'PASS', 'FAIL'):
+            return False
+        if result and result not in ('', 'N/A', 'INFORMATIONAL'):
             return False
     return True
 
@@ -692,10 +703,12 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
 
             # LAYER 3: 5-column verification table
             rows_data = clause.get('rows', [])
-            # Filter out purely N/A informational rows
+            # Filter out purely N/A informational rows — keep rows with any real data
             real_rows = [r for r in rows_data
-                         if str(r.get('condition', '')).strip() not in ('', 'N/A')
-                         or str(r.get('result', '')).strip().upper() not in ('', 'INFORMATIONAL', 'N/A')]
+                         if (str(r.get('condition', '')).strip() not in ('', 'N/A'))
+                         or (str(r.get('findings', r.get('found_text', ''))).strip() not in ('', 'N/A'))
+                         or (str(r.get('result', '')).strip().upper() not in ('', 'INFORMATIONAL', 'N/A'))
+                         or (str(r.get('compliance', '')).strip().upper() in ('COMPLIED', 'NOT COMPLIED', 'REVIEW REQUIRED', 'PASS', 'FAIL'))]
 
             if not real_rows:
                 elements.append(Spacer(1, 4 * mm))
@@ -727,10 +740,12 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
                            (WHITE if ri % 2 == 0 else colors.HexColor('#F8F9FA')))
                 _s, _sc = _sym_text(row.get('compliance', 'na'))
 
+                _cond_text = row.get('condition', '') or row.get('condition_text', '') or row.get('result', '')
+                _find_text = row.get('findings', '') or row.get('found_text', '')
                 _tbl_data.append([
-                    Paragraph(f'<font size="7.5">{_esc(_safe_str(row.get("condition", ""), 250))}</font>',
+                    Paragraph(f'<font size="7.5">{_esc(_safe_str(_cond_text, 250))}</font>',
                               styles['CellTextSmall']),
-                    Paragraph(f'<font size="7"><i>{_esc(_safe_str(row.get("findings", row.get("found_text", "")), 120))}</i></font>',
+                    Paragraph(f'<font size="7"><i>{_esc(_safe_str(_find_text, 120))}</i></font>',
                               styles['CellTextSmall']),
                     Paragraph(f'<font size="7">{_esc(_safe_str(row.get("document_checked", ""), 80))}</font>',
                               styles['CellTextSmall']),

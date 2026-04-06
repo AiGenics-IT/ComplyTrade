@@ -810,51 +810,89 @@ function toggleRsp(){
 
 async function loadV(){
     try{
-        const r=await fetch(`${API}/api/verify/history/${D.jid}`);if(!r.ok)return;
-        const d=await r.json();
-        const l=(d.verifications||[]).find(v=>v.lc_number===D.lc&&v.status==='completed');
-        if(!l)return;vid=l.verification_id;
-        const rr=await fetch(`${API}/api/verify/result/${l.verification_id}`);if(!rr.ok)return;
-        const vd=await rr.json();vres=vd.results||[];vsum=vd.summary||null;vElapsed=vd.elapsed_seconds||null;mt700comp=vd.mt700_compliance||null;urr725comp=vd.urr725_compliance||null;isbp821comp=vd.isbp821_compliance||null;isp98comp=vd.isp98_compliance||null;fecomp=vd.fe_manual_compliance||null;vesselcomp=vd.vessel_compliance||null;amtdatecomp=vd.amount_date_compliance||null;crossDocConsistency=vd.cross_document_consistency||null;installmentCompliance=vd.installment_compliance||null;mapV();injectVesselChecks();autoPopulateVessel();
-    }catch(_){}
+        // Try history endpoint first
+        const r=await fetch(`${API}/api/verify/history/${D.jid}/${D.lc}`);
+        if(r.ok){
+            const d=await r.json();
+            const l=(d.verifications||d.history||[]).find(v=>v.status==='completed');
+            if(l){vid=l.verification_id;await _fetchAndApplyResult(l.verification_id);return}
+        }
+        // Fallback: check if job has a verification_id in status
+        const r2=await fetch(`${API}/api/result/${D.jid}`);
+        if(r2.ok){
+            const d2=await r2.json();
+            const _vid=d2.verification_id;
+            if(_vid){vid=_vid;await _fetchAndApplyResult(_vid)}
+        }
+    }catch(_){console.log('[loadV] error:',_)}
+}
+function _normalizeVSum(vd){
+    // Normalize summary to the format renderSB expects
+    const s=vd.summary||{};
+    return {
+        compliant: s.compliant||s.total_pass||vd.total_pass||0,
+        non_compliant: s.non_compliant||s.total_fail||vd.total_fail||0,
+        review_required: s.review_required||s.total_review||vd.total_review||0,
+        not_verified: s.not_verified||0,
+        total_clauses: s.total_clauses||vd.total_clauses||0,
+        overall_verdict: (s.overall_verdict||s.overall_decision||vd.overall_decision||'REVIEW_REQUIRED').toUpperCase().replace(/\s+/g,'_'),
+        compliance_rate: s.compliance_rate||'',
+    };
+}
+async function _fetchAndApplyResult(id){
+    const rr=await fetch(`${API}/api/verify/result/${id}`);if(!rr.ok)return;
+    const vd=await rr.json();
+    if(vd.status!=='completed')return;
+    vres=vd.results||[];vsum=_normalizeVSum(vd);vElapsed=vd.elapsed_seconds||null;
+    mt700comp=vd.mt700_compliance||null;urr725comp=vd.urr725_compliance||null;
+    isbp821comp=vd.isbp821_compliance||null;isp98comp=vd.isp98_compliance||null;
+    fecomp=vd.fe_manual_compliance||null;vesselcomp=vd.vessel_compliance||null;
+    amtdatecomp=vd.amount_date_compliance||null;
+    crossDocConsistency=vd.cross_document_consistency||null;
+    installmentCompliance=vd.installment_compliance||null;
+    mapV();injectVesselChecks();autoPopulateVessel();renderAll();
+    console.log('[loadV] Loaded verification:',vres.length,'results, summary:',vsum);
 }
 
 function mapV(){
     if(!vres)return;
     const used=new Set();
+    let matched=0,unmatched=0;
     vres.forEach(vr=>{
-        // Try exact clause number match first
-        let pt=D.pts.find(p=>!used.has(p)&&p.cn&&p.cn===vr.clauseNumber);
-        // Fallback: match LC field items by swiftTag/type (43P, 43T, 44E, etc.)
-        if(!pt&&vr.is_lc_field&&vr.type){
-            pt=D.pts.find(p=>!used.has(p)&&p.isLcField&&(p.sf===vr.type||p.sfr===vr.type||p.swiftTag===vr.type));
+        let pt=null;
+        const vrType=vr.type||'';
+        const vrCn=vr.clauseNumber!=null?String(vr.clauseNumber):'';
+
+        // 1. Match by field type + clause number (most precise: 46A item 1 matches 46A-1)
+        if(vrType&&vrCn){
+            pt=D.pts.find(p=>!used.has(p)&&p.sf===vrType&&String(p.cn)===vrCn);
         }
-        // Fallback: match by lc_field_label in text
-        if(!pt&&vr.lc_field_label){
-            const lbl=vr.lc_field_label.trim();
-            if(lbl.length>=6)pt=D.pts.find(p=>!used.has(p)&&p.text&&p.text.startsWith(lbl));
+        // 2. Match LC field items by swiftTag/type (31C, 32B, 43P, etc.)
+        if(!pt&&vr.is_lc_field&&vrType){
+            pt=D.pts.find(p=>!used.has(p)&&p.isLcField&&(p.sf===vrType||p.sfr===vrType||p.swiftTag===vrType));
         }
-        // Fallback: first 80 chars of text (trimmed)
-        if(!pt){
-            const vrTxt=(vr.requirement||'').trim().substring(0,80);
-            pt=D.pts.find(p=>!used.has(p)&&p.text&&p.text.trim().substring(0,80)===vrTxt);
+        // 3. Match by clause_ref directly (e.g. "46A-1" matches sfr "46A-1")
+        if(!pt&&vr.clause_ref){
+            const ref=vr.clause_ref.replace(/^F/,'');
+            pt=D.pts.find(p=>!used.has(p)&&(p.sfr===ref||p.sfr===vr.clause_ref));
         }
-        // Fallback: first 50 chars (more lenient)
-        if(!pt){
-            const vrTxt50=(vr.requirement||'').trim().substring(0,50);
-            if(vrTxt50.length>=20)pt=D.pts.find(p=>!used.has(p)&&p.text&&p.text.trim().substring(0,50)===vrTxt50);
+        // 4. Match by requirement text (first 60 chars)
+        if(!pt&&vr.requirement){
+            const vrTxt=(vr.requirement||'').trim().substring(0,60);
+            if(vrTxt.length>=15)pt=D.pts.find(p=>!used.has(p)&&p.text&&p.text.trim().substring(0,60)===vrTxt);
         }
-        // Fallback: clause number match for document requirement clauses (F46A-1, F46A-2, etc.)
-        if(!pt&&vr.clauseNumber){
-            const vrCn=String(vr.clauseNumber);
-            pt=D.pts.find(p=>!used.has(p)&&p.cn&&String(p.cn)===vrCn);
+        // 5. Loose match: same field type, any unmatched clause number
+        if(!pt&&vrType&&vrCn){
+            pt=D.pts.find(p=>!used.has(p)&&p.sf===vrType&&p.cn&&!used.has(p));
         }
+
         if(pt){
             used.add(pt);pt.v=vr;
-            // Mark as checked for compliant OR pass status
             if(vr.status==='compliant'||vr.status==='pass')pt.checked=true;
-        }
+            matched++;
+        }else{unmatched++}
     });
+    console.log(`[mapV] ${matched} matched, ${unmatched} unmatched out of ${vres.length} results`);
 }
 
 function injectVesselChecks(){
@@ -1516,7 +1554,7 @@ async function poll(id,el){
                 _stopVTimer();const _cb=document.getElementById('cbtn');if(_cb)_cb.style.display='none';
                 el.innerHTML+=`<div style="color:var(--success);font-weight:700">✓ ✓ Verification complete! Fetching results...</div>`;el.scrollTop=el.scrollHeight;
                 const rr=await fetch(`${API}/api/verify/result/${id}`);
-                if(rr.ok){const vd=await rr.json();vres=vd.results||[];vsum=vd.summary||null;vElapsed=vd.elapsed_seconds||a;mt700comp=vd.mt700_compliance||null;urr725comp=vd.urr725_compliance||null;isbp821comp=vd.isbp821_compliance||null;isp98comp=vd.isp98_compliance||null;fecomp=vd.fe_manual_compliance||null;vesselcomp=vd.vessel_compliance||null;amtdatecomp=vd.amount_date_compliance||null;crossDocConsistency=vd.cross_document_consistency||null;installmentCompliance=vd.installment_compliance||null;mapV();injectVesselChecks();autoPopulateVessel();renderAll()}
+                if(rr.ok){const vd=await rr.json();vres=vd.results||[];vsum=_normalizeVSum(vd);vElapsed=vd.elapsed_seconds||a;mt700comp=vd.mt700_compliance||null;urr725comp=vd.urr725_compliance||null;isbp821comp=vd.isbp821_compliance||null;isp98comp=vd.isp98_compliance||null;fecomp=vd.fe_manual_compliance||null;vesselcomp=vd.vessel_compliance||null;amtdatecomp=vd.amount_date_compliance||null;crossDocConsistency=vd.cross_document_consistency||null;installmentCompliance=vd.installment_compliance||null;mapV();injectVesselChecks();autoPopulateVessel();renderAll()}
                 setTimeout(()=>document.getElementById('ptl').classList.remove('active'),3000);return;
             }
             if(d.status==='failed'){

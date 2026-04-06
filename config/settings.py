@@ -11,15 +11,15 @@ QWEN_7B_URL = "http://10.20.10.3:8000/v1/chat/completions"
 QWEN_7B_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-7B-Instruct"
 
 # Qwen VLM for classification, decomposition, verification
-QWEN_VLM_URL = "http://10.20.10.2:8085/v1/chat/completions"
-QWEN_VLM_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-72B-Instruct-AWQ"
-# QWEN_VLM_URL = "http://10.20.10.3:8000/v1/chat/completions"
-# QWEN_VLM_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-7B-Instruct"
+# QWEN_VLM_URL = "http://10.20.10.2:8085/v1/chat/completions"
+# QWEN_VLM_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-72B-Instruct-AWQ"
+QWEN_VLM_URL = "http://10.20.10.3:8000/v1/chat/completions"
+QWEN_VLM_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-7B-Instruct"
 
 # ── Server ──
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8082
-BUILD_TAG = "2026-04-06-P30"
+BUILD_TAG = "2026-04-06-P31"
 
 # ── Processing ──
 MAX_CONCURRENT_OCR = 4

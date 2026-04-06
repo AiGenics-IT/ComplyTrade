@@ -238,8 +238,8 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
                 compliance = 'REVIEW REQUIRED'
 
             vrows.append(VerificationRow(
-                condition=r.get('condition', ''),
-                findings=r.get('findings', r.get('found_text', '')),
+                condition=r.get('condition', '') or r.get('condition_text', '') or r.get('result', ''),
+                findings=r.get('findings', '') or r.get('found_text', ''),
                 document_checked=r.get('document_checked', ''),
                 result=result,
                 compliance=compliance,

@@ -693,6 +693,17 @@ def get_result(job_id: str):
         if lp: val = _re.sub(r'^' + lp, '', val, flags=_re.IGNORECASE).strip()
         val = _re.sub(r'^Identifier\s+Code:?\s*', '', val, flags=_re.IGNORECASE).strip()
         val = _re.sub(r'^Name\s+and\s+Address:?\s*', '', val, flags=_re.IGNORECASE).strip()
+        # Truncate if another F-tag got merged in (e.g. "...F39A: Percentage...")
+        _ftm = _re.search(r'F\d{2}[A-Z]?\s*:', val)
+        if _ftm:
+            val = val[:_ftm.start()].strip()
+        # Strip "Page X of Y"
+        val = _re.sub(r'\bPage\s+\d+\s+of\s+\d+\b\s*', '', val, flags=_re.IGNORECASE).strip()
+        # Strip OCR garbage from blank pages
+        val = _re.sub(r'There is no visible text.*?(?:clearly visible|another version)[.\s]*', '', val, flags=_re.IGNORECASE|_re.DOTALL).strip()
+        val = _re.sub(r'The image appears to be blank[.\s]*', '', val, flags=_re.IGNORECASE).strip()
+        # Strip CRITICAL RULES prompt leakage
+        val = _re.sub(r'CRITICAL RULES:.*$', '', val, flags=_re.DOTALL).strip()
         return val
     _clean_cf = {t: _clean_field_value(t, v) if isinstance(v, str) else v for t, v in cf.items()}
     dc_number = _clean_field_value('20', flc.get('dc_number', cf.get('20', '')))
@@ -1008,11 +1019,13 @@ def get_report(job_id: str):
     if job_id not in _jobs:
         raise HTTPException(404, "Job not found")
     results_dir = os.path.join(RESULTS_DIR, job_id)
-    # Search for the generated PDF report file (matches both naming conventions)
+    # Search for the generated PDF report file — return newest
+    all_reports = []
     for pattern in ("*_compliance_report.pdf", "ComplyTrade_Report*.pdf"):
-        for f in Path(results_dir).rglob(pattern):
-            return FileResponse(str(f), media_type="application/pdf",
-                                filename=f.name)
+        all_reports.extend(Path(results_dir).rglob(pattern))
+    if all_reports:
+        newest = max(all_reports, key=lambda f: f.stat().st_mtime)
+        return FileResponse(str(newest), media_type="application/pdf", filename=newest.name)
     raise HTTPException(404, "Report not generated yet")
 
 
@@ -1587,12 +1600,46 @@ def verify_result(verification_id: str):
                 "total_review": s19.get('total_review', 0),
                 "elapsed_seconds": s19.get('elapsed_seconds', 0),
             }
+
+    # Fallback: try verification_id as job_id (for disk-based results)
+    s19_path = os.path.join(RESULTS_DIR, verification_id, 'step19', 'step19_result.json')
+    if os.path.exists(s19_path):
+        with open(s19_path, 'r', encoding='utf-8') as f:
+            s19 = json.load(f)
+        results = []
+        for section in s19.get('sections', []):
+            for clause in section.get('clauses', []):
+                clause_ref = clause.get('clause_ref', '')
+                tag = clause_ref.split('-')[0].upper() if clause_ref else ''
+                clause_number = clause_ref.split('-', 1)[1] if '-' in clause_ref else None
+                field_type = tag.lstrip('F') if tag.startswith('F') else tag
+                overall = clause.get('overall_result', 'REVIEW REQUIRED').upper()
+                status = 'compliant' if overall in ('COMPLIED','PASS') else 'non_compliant' if overall in ('NOT COMPLIED','FAIL') else 'review_required'
+                is_lc_field = field_type not in ('46A','46B','47A','47B','45A','45B','78','72','79')
+                checks = [{'check': r.get('condition',''), 'status': 'pass' if r.get('compliance','').upper() in ('COMPLIED','PASS') else 'fail' if r.get('compliance','').upper() in ('NOT COMPLIED','FAIL') else 'review', 'detail': r.get('result',''), 'document_checked': r.get('document_checked',''), 'findings': r.get('findings','')} for r in clause.get('rows',[])]
+                results.append({'clauseNumber': clause_number, 'clause_ref': clause_ref, 'type': field_type, 'is_lc_field': is_lc_field, 'lc_field_label': clause.get('clause_text','')[:80] if is_lc_field else '', 'status': status, 'requirement': clause.get('clause_text',''), 'summary': f"{clause.get('pass_count',0)}P / {clause.get('fail_count',0)}F / {clause.get('review_count',0)}R", 'checks': checks, 'rule_checks': checks, 'matched_documents': []})
+        return {
+            "status": "completed", "verification_id": verification_id, "results": results,
+            "summary": {"overall_decision": s19.get('overall_decision',''), "total_pass": s19.get('total_pass',0), "total_fail": s19.get('total_fail',0), "total_review": s19.get('total_review',0)},
+            "overall_decision": s19.get('overall_decision',''), "total_pass": s19.get('total_pass',0), "total_fail": s19.get('total_fail',0), "total_review": s19.get('total_review',0),
+            "elapsed_seconds": s19.get('elapsed_seconds', 0),
+        }
+
     raise HTTPException(404, "Verification not found")
 
 
 @app.get("/api/verify/history/{job_id}/{lc_number}")
 def verify_history(job_id: str, lc_number: str):
-    """Get verification history (placeholder for future audit trail feature)."""
+    """Get verification history for a job/LC."""
+    if job_id in _jobs:
+        job = _jobs[job_id]
+        vid = job.get('verification_id', '')
+        if vid and job.get('status') == 'completed':
+            return {"history": [{"verification_id": vid, "status": "completed", "lc_number": lc_number}]}
+    # Check disk for step19 result
+    s19_path = os.path.join(RESULTS_DIR, job_id, 'step19', 'step19_result.json')
+    if os.path.exists(s19_path):
+        return {"history": [{"verification_id": job_id, "status": "completed", "lc_number": lc_number}]}
     return {"history": []}
 
 
@@ -1616,11 +1663,15 @@ def verify_update(verification_id: str):
 
 @app.get("/api/report/{job_id}/{lc_number}")
 def get_report_by_lc(job_id: str, lc_number: str):
-    """Get compliance report for a specific LC number."""
+    """Get compliance report for a specific LC number. Returns the most recent report."""
     results_dir = os.path.join(RESULTS_DIR, job_id)
+    all_reports = []
     for pattern in ("*compliance_report*.pdf", "ComplyTrade_Report*.pdf"):
-        for f in Path(results_dir).rglob(pattern):
-            return FileResponse(str(f), media_type="application/pdf", filename=f.name)
+        all_reports.extend(Path(results_dir).rglob(pattern))
+    if all_reports:
+        # Return the newest file
+        newest = max(all_reports, key=lambda f: f.stat().st_mtime)
+        return FileResponse(str(newest), media_type="application/pdf", filename=newest.name)
     raise HTTPException(404, "Report not generated yet")
 
 
