@@ -38,12 +38,16 @@ import sys as _sys; _sys.stdout.reconfigure(encoding="utf-8", errors="replace") 
 import re
 import json
 import time
+import base64
+import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from config.settings import QWEN_VLM_URL, QWEN_VLM_MODEL, MAX_CONCURRENT_VLM, VLM_TIMEOUT
 
 
 # == Dataclasses ==============================================================
@@ -166,17 +170,17 @@ EXTRACTION_TAGS = [
 
 def _build_tag_patterns(tags: list) -> list:
     """
-    Build regex patterns for SWIFT field extraction in both formats.
+    Build regex patterns for SWIFT field extraction in three formats.
 
-    Alliance:  :20:0491ILC081972     (colon-wrapped tag)
-    Fusion:    F20: 0491ILC081972    (F-prefix tag)
+    Alliance:       :20:0491ILC081972          (colon-wrapped tag)
+    Fusion (F-tag): F20: 0491ILC081972         (F-prefix tag)
+    Fusion (bare):  20: Documentary Credit Number\n0491ILC081972  (bare tag with label)
 
     Each pattern captures the value until the next tag or end of text.
     """
     patterns = []
     for tag in tags:
         # Alliance format: :TAG:VALUE
-        # Lookahead stops at next :TAG: pattern or end of text
         patterns.append({
             'tag': tag,
             'format': 'alliance',
@@ -186,12 +190,21 @@ def _build_tag_patterns(tags: list) -> list:
             ),
         })
         # Fusion format: FTAG: VALUE
-        # Lookahead stops at next FTAG: pattern or end of text
         patterns.append({
             'tag': tag,
             'format': 'fusion',
             'regex': re.compile(
                 r'(?:^|\n)\s*F' + re.escape(tag) + r'\s*:\s*(.*?)(?=\n\s*F[A-Z0-9]{2,4}\s*:|\Z)',
+                re.DOTALL,
+            ),
+        })
+        # Bare Fusion format: TAG: Label\nVALUE  (OCR'd Fusion pages without F prefix)
+        # Lookahead stops at next bare TAG: pattern or end of text
+        patterns.append({
+            'tag': tag,
+            'format': 'bare_fusion',
+            'regex': re.compile(
+                r'(?:^|\n)\s*' + re.escape(tag) + r':\s*(.*?)(?=\n\s*\d{2}[A-Z]?:\s|\Z)',
                 re.DOTALL,
             ),
         })
@@ -235,10 +248,14 @@ def _detect_format_from_text(text: str) -> str:
     """Detect SWIFT format from GLM text content."""
     fusion_count = len(re.findall(r'\bF\d{2}[A-Z]?\s*:', text))
     alliance_count = len(re.findall(r':\d{2}[A-Z]?:', text))
-    if fusion_count > alliance_count:
+    # Bare fusion: "20: Documentary Credit Number" pattern (number colon space label)
+    bare_fusion_count = len(re.findall(r'(?:^|\n)\s*\d{2}[A-Z]?:\s+[A-Z]', text))
+    if fusion_count > alliance_count and fusion_count > bare_fusion_count:
         return 'fusion'
-    elif alliance_count > 0:
+    elif alliance_count > 0 and alliance_count >= bare_fusion_count:
         return 'alliance'
+    elif bare_fusion_count > 0:
+        return 'bare_fusion'
     return 'unknown'
 
 
@@ -355,6 +372,59 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
     return clauses
 
 
+# == Amendment text operations ================================================
+
+def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
+    """
+    Apply /ADD/ and /DEL/ amendment operations to base field text.
+
+    HBL Fusion amendments use these patterns:
+      /ADD/+ ) CLAUSE NO. 10 TO READ AS "new text" INSTEAD OF "old text"
+      /DEL/  ) CLAUSE NO. 3 (delete entire clause)
+      +) DELETE ''old text'' REPLACE BY ''new text''
+      +) ADD new clause text
+
+    If the amendment instructions can't be parsed, return the base text unchanged
+    (don't corrupt it with raw instruction text).
+    """
+    if not base_text:
+        return base_text  # Nothing to modify
+
+    result = base_text
+
+    # Pattern 1: DELETE ''old'' REPLACE BY ''new''
+    for m in re.finditer(r"DELETE\s+[''\"]+(.+?)[''\"]+\s+REPLACE\s+BY\s+[''\"]+(.+?)[''\"]+",
+                         amendment_text, re.IGNORECASE | re.DOTALL):
+        old_text = m.group(1).strip()
+        new_text = m.group(2).strip()
+        if old_text in result:
+            result = result.replace(old_text, new_text)
+
+    # Pattern 2: CLAUSE NO. X TO READ AS "new" INSTEAD OF "old"
+    for m in re.finditer(r"CLAUSE\s+NO\.?\s*(\d+)\s+TO\s+READ\s+AS\s+[''\"]+(.+?)[''\"]+\s+INSTEAD\s+OF\s+[''\"]+(.+?)[''\"]+",
+                         amendment_text, re.IGNORECASE | re.DOTALL):
+        old_text = m.group(3).strip()
+        new_text = m.group(2).strip()
+        if old_text in result:
+            result = result.replace(old_text, new_text)
+
+    # Pattern 3: /ADD/+ ) new clause or text to append
+    for m in re.finditer(r'/ADD/\s*\+?\s*\)\s*(.+?)(?=\n/(?:ADD|DEL)/|\Z)',
+                         amendment_text, re.IGNORECASE | re.DOTALL):
+        add_text = m.group(1).strip()
+        # If it's a "CLAUSE NO. X TO READ AS" instruction, skip (handled above)
+        if re.search(r'CLAUSE\s+NO', add_text, re.IGNORECASE):
+            continue
+        # If it's a "DELETE...REPLACE" instruction, skip (handled above)
+        if re.search(r'DELETE.*REPLACE', add_text, re.IGNORECASE):
+            continue
+        # Otherwise append as new clause
+        if add_text and add_text not in result:
+            result = result.rstrip() + '\n' + add_text
+
+    return result
+
+
 # == Amendment application ====================================================
 
 def _apply_amendment(
@@ -393,12 +463,28 @@ def _apply_amendment(
             record.amendment_date = sf.value
             continue
 
-        # New amount replaces old
+        # New amount — may be replacement or increment
         if tag == '34B':
             old_val = base_fields.get('32B', '')
-            base_fields['32B'] = sf.value
+            new_val = sf.value
+            # Strip "Increase of Documentary Credit Amount" label
+            _is_increase = bool(re.search(r'increase', new_val, re.IGNORECASE))
+            new_val = re.sub(r'(?i)^(?:Increase\s+of\s+Documentary\s+Credit\s+Amount|'
+                             r'Currency\s+Code,?\s*Amount)\s*[\n\r]*', '', new_val).strip()
+            if _is_increase and old_val:
+                # Parse and add amounts
+                _old_amt = re.search(r'([\d,]+[.,]\d+)', old_val.replace(' ', ''))
+                _new_amt = re.search(r'([\d,]+[.,]\d+)', new_val.replace(' ', ''))
+                _ccy = re.search(r'\b([A-Z]{3})\b', old_val) or re.search(r'\b([A-Z]{3})\b', new_val)
+                if _old_amt and _new_amt and _ccy:
+                    _o = float(_old_amt.group(1).replace(',', ''))
+                    _n = float(_new_amt.group(1).replace(',', '').replace('.', '.'))
+                    _total = _o + _n
+                    new_val = f"{_ccy.group(1)} {_total:,.2f}"
+            base_fields['32B'] = new_val
             record.fields_changed.append('32B')
-            record.change_details['32B'] = {'old': old_val, 'new': sf.value, 'via': '34B'}
+            record.change_details['32B'] = {'old': old_val, 'new': new_val, 'via': '34B',
+                                            'operation': 'increase' if _is_increase else 'replace'}
             continue
 
         # B-suffix -> A-suffix replacement
@@ -409,10 +495,38 @@ def _apply_amendment(
                 actual_tag = base_tag
 
         old_val = base_fields.get(actual_tag, '')
-        base_fields[actual_tag] = sf.value
-        if old_val != sf.value:
-            record.fields_changed.append(actual_tag)
-            record.change_details[actual_tag] = {'old': old_val, 'new': sf.value}
+
+        # Check if amendment value contains /ADD/ or /DEL/ instructions
+        # These are amendment OPERATIONS, not replacement values
+        amd_val = sf.value.strip()
+        if re.search(r'/ADD/|/DEL/', amd_val) or re.search(r'(?:^|\n)\+?\s*\)', amd_val):
+            # This is an amendment instruction — apply operations to base value
+            new_val = _apply_text_amendment(old_val, amd_val)
+            base_fields[actual_tag] = new_val
+            if old_val != new_val:
+                record.fields_changed.append(actual_tag)
+                record.change_details[actual_tag] = {'old': old_val, 'new': new_val, 'operation': 'text_amendment'}
+        else:
+            # Strip common field labels that bleed into values
+            clean_val = re.sub(
+                r'^(?:Sender\'?s?\s+Reference|Documentary\s+Credit\s+Number|'
+                r'Date\s+of\s+Issue|Date\s+of\s+Amendment|Date\s+and\s+Place\s+of\s+Expiry|'
+                r'Documents?\s+Required|Additional\s+Conditions|'
+                r'Description\s+of\s+Goods.*?Services?|Period\s+for\s+Presentation.*?Days|'
+                r'Increase\s+of\s+Documentary\s+Credit\s+Amount|Currency\s+Code,?\s*Amount|'
+                r'Issuing\s+Bank|Reimbursing\s+Bank|[\'"]?Advise\s+Through[\'"]?\s+Bank|'
+                r'Applicant\s+Bank|Available\s+With.*?By\.{0,3}|'
+                r'Negotiation/?Deferred\s+Payment\s+Details|'
+                r'Partial\s+Shipments?|Trans[sh]?ipment|'
+                r'Latest\s+Date\s+of\s+Shipment|Confirmation\s+Instructions|'
+                r'Port\s+of\s+Loading.*?Departure|Port\s+of\s+Discharge.*?Destination|'
+                r'Beneficiary|Applicant|Charges)\s*[\n\r]*',
+                '', amd_val, flags=re.IGNORECASE).strip()
+
+            base_fields[actual_tag] = clean_val if clean_val else amd_val
+            if old_val != base_fields[actual_tag]:
+                record.fields_changed.append(actual_tag)
+                record.change_details[actual_tag] = {'old': old_val, 'new': base_fields[actual_tag]}
 
     return record
 
@@ -492,6 +606,133 @@ def _get_packet_field(pkt, field_name: str, default=''):
     return pkt.get(field_name, default)
 
 
+# == VLM-based field extraction ===============================================
+
+_VLM_EXTRACT_PROMPT = """You are a SWIFT message parser. Extract ALL SWIFT fields from this Letter of Credit page.
+
+OCR TEXT:
+{text}
+
+Return ONLY valid JSON with SWIFT field tags as keys and their values. Example:
+{{
+    "20": "ILC07860560723PK",
+    "31C": "230509",
+    "31D": "230810UNITED KINGDOM",
+    "40A": "IRREVOCABLE",
+    "40E": "UCP LATEST VERSION",
+    "50": "PAKISTAN STATE OIL COMPANY LTD.\\nP.S.O. HOUSE, KHAYABAN-E-IQBAL\\nCLIFTON, P.O.BOX 3983\\nKARACHI - PAKISTAN",
+    "59": "SAHARA ENERGY RESOURCE LTD\\n21-23 VICTORIA STREET, 2ND FLOOR,\\nDOUGLAS, IM1 2LW, ISLE OF MAN",
+    "32B": "USD4583829,00",
+    "39A": "05/05",
+    "46A": "1.COPY OF VESSEL'S NOTICE OF READINESS...",
+    "47A": "(1) PHOTOCOPIES OF SIGNED DOCUMENTS ACCEPTABLE...",
+    "78": "Instructions to the bank..."
+}}
+
+RULES:
+- Use standard SWIFT field tags (20, 27, 31C, 31D, 32B, 39A, 40A, 40E, 41A, 42A, 42C, 42P, 43P, 43T, 44A, 44C, 44E, 44F, 45A, 45B, 46A, 46B, 47A, 47B, 48, 49, 50, 51A, 52A, 53A, 57A, 59, 71D, 78)
+- Extract ONLY the field VALUE, not the label (e.g., for "20: Documentary Credit Number\\nILC07860560723PK", extract only "ILC07860560723PK")
+- For multi-line values (like 46A, 47A, 45A), include the COMPLETE text with newlines
+- Preserve clause numbering (1., 2., 3...) in 46A/47A
+- If a field spans multiple pages, extract what's on THIS page
+- Return empty object {{}} if no SWIFT fields found
+"""
+
+
+def _extract_fields_vlm_page(page_num: int, image_path: str, text: str) -> dict:
+    """Send one LC page to VLM for field extraction."""
+    try:
+        payload = {
+            "model": QWEN_VLM_MODEL,
+            "messages": [{"role": "user", "content": []}],
+            "max_tokens": 4000, "temperature": 0.1
+        }
+        content_parts = []
+        if image_path and os.path.exists(image_path):
+            img_b64 = base64.b64encode(open(image_path, 'rb').read()).decode()
+            content_parts.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}})
+        content_parts.append({"type": "text", "text": _VLM_EXTRACT_PROMPT.format(text=text[:6000])})
+        payload["messages"][0]["content"] = content_parts
+
+        resp = requests.post(QWEN_VLM_URL, json=payload, timeout=VLM_TIMEOUT)
+        if resp.status_code != 200:
+            return {}
+        content = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+        content = content.strip()
+        if content.startswith('```'):
+            content = content.split('\n', 1)[1] if '\n' in content else content[3:]
+        if content.endswith('```'):
+            content = content[:-3]
+        content = content.strip()
+        json_start = content.find('{')
+        json_end = content.rfind('}') + 1
+        if json_start >= 0 and json_end > json_start:
+            return json.loads(content[json_start:json_end])
+    except Exception:
+        pass
+    return {}
+
+
+def _extract_fields_vlm(base_pkt, base_text: str, base_page: int, _progress) -> list:
+    """Use VLM to extract SWIFT fields from LC pages."""
+    page_nums = base_pkt.get('page_numbers', []) if isinstance(base_pkt, dict) else getattr(base_pkt, 'page_numbers', [])
+
+    # Get image paths for each page
+    results_dir = None
+    for pn in page_nums:
+        # Try to find image path from packet pages data
+        pages_data = base_pkt.get('pages', []) if isinstance(base_pkt, dict) else getattr(base_pkt, 'pages', [])
+        for pd in pages_data:
+            img = pd.get('page_image_path', '') if isinstance(pd, dict) else getattr(pd, 'page_image_path', '')
+            if img and os.path.exists(img):
+                results_dir = os.path.dirname(os.path.dirname(img))
+                break
+        if results_dir:
+            break
+
+    # Send each LC page to VLM concurrently
+    page_items = []
+    for pn in page_nums:
+        txt = _PAGE_TEXT_LOOKUP.get(pn, '')
+        img_path = ''
+        if results_dir:
+            candidate = os.path.join(results_dir, 'images', f'page_{pn:03d}.png')
+            if os.path.exists(candidate):
+                img_path = candidate
+        page_items.append((pn, img_path, txt))
+
+    _progress(f"  VLM extracting from {len(page_items)} LC pages concurrently...")
+    merged_fields = {}
+    with ThreadPoolExecutor(max_workers=min(MAX_CONCURRENT_VLM, len(page_items))) as executor:
+        futures = {executor.submit(_extract_fields_vlm_page, pn, img, txt): pn
+                   for pn, img, txt in page_items}
+        for fut in as_completed(futures):
+            pn = futures[fut]
+            try:
+                page_fields = fut.result()
+                for tag, val in page_fields.items():
+                    if val and tag not in merged_fields:
+                        merged_fields[tag] = val
+                    elif val and tag in merged_fields and tag in ('46A', '47A', '45A', '78'):
+                        # Append continuation text for clause fields
+                        merged_fields[tag] = merged_fields[tag] + '\n' + val
+                _progress(f"    Page {pn}: {len(page_fields)} fields")
+            except Exception as e:
+                _progress(f"    Page {pn}: VLM error: {e}")
+
+    # Convert to SwiftField list
+    fields = []
+    for tag, val in merged_fields.items():
+        fields.append(SwiftField(
+            tag=tag,
+            label=SWIFT_FIELD_LABELS.get(tag, f'Field {tag}'),
+            value=str(val).strip(),
+            source_page=base_page,
+            source_mt='MT700',
+        ))
+    return fields
+
+
 # == Main run function ========================================================
 
 def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> dict:
@@ -536,13 +777,19 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
 
     for pkt in packets_in:
         mt = _get_packet_field(pkt, 'mt_type', '')
-        if mt == 'MT700':
+        if mt in ('MT700', 'MT710', 'MT720'):
+            # MT710 (Advice of Third Bank's LC) and MT720 (Transfer) are treated as LC
             mt700_packets.append(pkt)
-        elif mt == 'MT707':
+        elif mt in ('MT707', 'MT747'):
+            # MT747 (Amendment to Authorization to Reimburse) treated as amendment
             mt707_packets.append(pkt)
-        elif mt == 'MT799':
+        elif mt in ('MT799', 'MT999'):
             mt799_packets.append(pkt)
+        elif mt in ('MT701', 'MT711'):
+            # MT701/711 are continuation pages of MT700/710
+            mt700_packets.append(pkt)
         elif mt.startswith('MT'):
+            # MT730, MT732, MT734, MT740, MT742, MT750, MT752, MT754, MT756 — bank-to-bank
             other_mt_packets.append(pkt)
         elif mt == 'shipping':
             shipping_packets.append(pkt)
@@ -584,38 +831,56 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
         base_fields = _extract_swift_fields(base_text, source_page=base_page, source_mt='MT700')
         _progress(f"  Extracted {len(base_fields)} fields from MT700")
 
+        # VLM fallback: if regex extracted fewer than 5 fields, use VLM to extract
+        if len(base_fields) < 5:
+            _progress(f"  Regex extracted only {len(base_fields)} fields — trying VLM extraction...")
+            try:
+                vlm_fields = _extract_fields_vlm(base_pkt, base_text, base_page, _progress)
+                if len(vlm_fields) > len(base_fields):
+                    _progress(f"  VLM extracted {len(vlm_fields)} fields (better than regex {len(base_fields)})")
+                    base_fields = vlm_fields
+                else:
+                    _progress(f"  VLM extracted {len(vlm_fields)} fields (not better, keeping regex)")
+            except Exception as e:
+                _progress(f"  VLM extraction failed: {e}")
+
         # Clean field values: strip SWIFT label text from values
         # GLM text has: "F20: Documentary Credit Number\n05251LC082463"
         # Regex captures: "Documentary Credit Number\n05251LC082463"
         # We need just: "05251LC082463"
         _LABEL_STRIP = {
-            '20': r'^(?:Documentary\s+Credit\s+Number|Sender\'?s?\s+Reference)\s*\n?',
-            '27': r'^Sequence\s+of\s+Total\s*\n?',
-            '31C': r'^Date\s+of\s+Issue\s*\n?',
-            '31D': r'^Date\s+and\s+Place\s+of\s+Expiry\s*\n?',
-            '32B': r'^Currency\s+Code,?\s*Amount\s*\n?',
-            '39A': r'^Percentage\s+Credit\s+Amount\s+Tolerance\s*\n?',
-            '40A': r'^Form\s+of\s+Documentary\s+Credit\s*\n?',
-            '40E': r'^Applicable\s+Rules\s*\n?',
-            '41D': r'^Available\s+With.*?Code\s*\n?',
-            '42A': r'^Drawee.*?(?:Identifier\s+Code)?\s*\n?',
-            '42C': r'^Drafts\s+at\s*\.{0,3}\s*\n?',
-            '43P': r'^Partial\s+Shipments?\s*\n?',
-            '43T': r'^Trans[sh]?ipment\s*\n?',
-            '44A': r'^Place\s+of\s+Taking.*?\s*\n?',
-            '44C': r'^Latest\s+Date\s+of\s+Shipment\s*\n?',
-            '44E': r'^Port\s+of\s+Loading.*?Departure\s*\n?',
-            '44F': r'^Port\s+of\s+Discharge.*?Destination\s*\n?',
-            '45A': r'^Description\s+of\s+Goods.*?Services\s*\n?',
-            '46A': r'^Documents\s+Required\s*\n?',
-            '47A': r'^Additional\s+Conditions\s*\n?',
-            '48': r'^Period\s+for\s+Presentation.*?Days\s*\n?',
-            '49': r'^Confirmation\s+Instructions\s*\n?',
-            '50': r'^Applicant\s*\n?',
-            '51A': r'^Applicant\s+Bank.*?(?:Identifier\s+Code)?\s*\n?',
-            '59': r'^Beneficiary\s*\n?(?:Name\s+and\s+Address:?\s*\n?)?',
-            '71D': r'^Charges\s*\n?',
-            '78': r'^Instructions\s+to\s+the\s+Paying.*?Bank\s*\n?',
+            '20': r'^(?:Documentary\s+Credit\s+Number|Sender\'?s?\s+Reference)\s*[\n\r]*',
+            '27': r'^Sequence\s+of\s+Total\s*[\n\r]*',
+            '31C': r'^Date\s+of\s+Issue\s*[\n\r]*',
+            '31D': r'^Date\s+and\s+Place\s+of\s+Expiry\s*[\n\r]*',
+            '32B': r'^(?:Currency\s+Code,?\s*Amount|Increase\s+of\s+Documentary\s+Credit\s+Amount)\s*[\n\r]*',
+            '39A': r'^Percentage\s+Credit\s+Amount\s+Tolerance\s*[\n\r]*',
+            '40A': r'^Form\s+of\s+Documentary\s+Credit\s*[\n\r]*',
+            '40E': r'^Applicable\s+Rules\s*[\n\r]*',
+            '41A': r'^(?:Available\s+With.*?(?:By\.{0,3})?|\.{2,}\s*By\s*\.{2,}.*?(?:Name\s+and\s+Address)?:?)\s*[\n\r]*',
+            '41D': r'^(?:Available\s+With.*?(?:Code|By\.{0,3})?|\.{2,}\s*By\s*\.{2,}.*?(?:Name\s+and\s+Address)?:?)\s*[\n\r]*',
+            '42A': r'^(?:Drawee|Issuing\s+Bank).*?(?:Identifier\s+Code)?\s*[\n\r]*',
+            '42C': r'^Drafts\s+at\s*\.{0,3}\s*[\n\r]*',
+            '42P': r'^(?:Negotiation/)?Deferred\s+Payment\s+Details\s*[\n\r]*',
+            '43P': r'^Partial\s+Shipments?\s*[\n\r]*',
+            '43T': r'^Trans[sh]?ipment\s*[\n\r]*',
+            '44A': r'^Place\s+of\s+Taking.*?\s*[\n\r]*',
+            '44C': r'^Latest\s+Date\s+of\s+Shipment\s*[\n\r]*',
+            '44E': r'^Port\s+of\s+Loading.*?Departure\s*[\n\r]*',
+            '44F': r'^Port\s+of\s+Discharge.*?Destination\s*[\n\r]*',
+            '45A': r'^Description\s+of\s+Goods.*?Services?\s*[\n\r]*',
+            '46A': r'^Documents?\s+Required\s*[\n\r]*',
+            '47A': r'^Additional\s+Conditions\s*[\n\r]*',
+            '48': r'^Period\s+for\s+Presentation.*?Days\s*[\n\r]*',
+            '49': r'^Confirmation\s+Instructions\s*[\n\r]*',
+            '50': r'^Applicant\s*[\n\r]*',
+            '51A': r'^Applicant\s+Bank.*?(?:Identifier\s+Code)?\s*[\n\r]*',
+            '52A': r'^(?:Issuing\s+Bank|Applicant\s+Bank).*?(?:Identifier\s+Code)?\s*[\n\r]*',
+            '53A': r'^Reimbursing\s+Bank.*?(?:Identifier\s+Code)?\s*[\n\r]*',
+            '57A': r'^[\'"]?Advise\s+Through[\'"]?\s+Bank.*?(?:Identifier\s+Code)?\s*[\n\r]*',
+            '59': r'^Beneficiary\s*[\n\r]*(?:Name\s+and\s+Address:?\s*[\n\r]*)?',
+            '71D': r'^Charges\s*[\n\r]*',
+            '78': r'^Instructions\s+to\s+the\s+Paying.*?Bank\s*[\n\r]*',
         }
         for sf in base_fields:
             # Strip label prefix from value
@@ -629,6 +894,12 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             sf.value = re.sub(r'Identifier\s+Code:?\s*\n?', '', sf.value, flags=re.IGNORECASE).strip()
             sf.value = re.sub(r'Identifier:?\s*\n?', '', sf.value, flags=re.IGNORECASE).strip()
             sf.value = re.sub(r'^Name\s+and\s+Address:?\s*\n?', '', sf.value, flags=re.IGNORECASE).strip()
+            # Fusion format cleanup: "... By ... - Name and Address - Name and Address:"
+            sf.value = re.sub(r'\.{2,}\s*By\s*\.{2,}\s*-?\s*(?:Name\s+and\s+Address\s*-?\s*)*:?\s*[\n\r]*', '', sf.value, flags=re.IGNORECASE).strip()
+            sf.value = re.sub(r'-\s*Name\s+and\s+Address\s*-?\s*(?:Name\s+and\s+Address)?:?\s*[\n\r]*', '', sf.value, flags=re.IGNORECASE).strip()
+            # Remove "US DOLLAR" currency name (keep just currency code)
+            if sf.tag == '32B':
+                sf.value = re.sub(r'\b(?:US\s+DOLLAR|EURO|POUND\s+STERLING|JAPANESE\s+YEN)\s*[\n\r]*', '', sf.value, flags=re.IGNORECASE).strip()
             sf.value = re.sub(r'^Applicable\s+Rules:?\s*\n?', '', sf.value, flags=re.IGNORECASE).strip()
             # Clean "Available With ... By ... - Name and Address - Code" prefix
             sf.value = re.sub(r'^Available\s+With.*?Code\s*\n?', '', sf.value, flags=re.IGNORECASE).strip()
@@ -683,13 +954,21 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 _date_str = f"{_dm.group(2)}-{_months.get(_dm.group(3),'01')}-{int(_dm.group(4)):02d}"
                 sf.value = sf.value[:_dm.start()] + _date_str + sf.value[_dm.end():]
                 sf.value = sf.value.strip()
-            # Clean amount format: "516000,00 #516,000.00#" -> "USD 516,000.00"
-            _am = re.search(r'#([\d,]+\.\d+)#', sf.value)
-            if _am and sf.tag == '32B':
-                # Extract currency code (3 uppercase letters)
+            # Clean amount format for F32B:
+            # Fusion: "USD\nUS DOLLAR\n516000,00\n#516,000.00" or "USD 516000,00 #516,000.00#"
+            if sf.tag == '32B':
                 _ccy = re.search(r'\b([A-Z]{3})\b', sf.value)
-                _ccy_str = _ccy.group(1) if _ccy else ''
-                sf.value = f"{_ccy_str} {_am.group(1)}".strip()
+                _ccy_str = _ccy.group(1) if _ccy else 'USD'
+                # Try formatted amount: #516,000.00# or #516,000.00
+                _am = re.search(r'#([\d,]+\.\d+)#?', sf.value)
+                if _am:
+                    sf.value = f"{_ccy_str} {_am.group(1)}"
+                else:
+                    # Try European format: 516000,00
+                    _am2 = re.search(r'(\d[\d.]*,\d{2})\b', sf.value)
+                    if _am2:
+                        _amt = _am2.group(1).replace('.', '').replace(',', '.')
+                        sf.value = f"{_ccy_str} {float(_amt):,.2f}"
             # Remove raw SWIFT date codes like "260131" if already converted
             if sf.tag in ('31C', '31D', '44C'):
                 sf.value = re.sub(r'\b\d{6}\b\s*', '', sf.value).strip()
@@ -700,7 +979,7 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
 
         # Set DC number — strip any remaining label text
         _raw_dc = final_lc.consolidated_fields.get('20', '')
-        _raw_dc = re.sub(r"(?i)^(?:Sender'?s?\s+Reference|Documentary\s+Credit\s+Number)\s*", '', _raw_dc).strip()
+        _raw_dc = re.sub(r"(?i)^(?:Sender'?s?\s+Reference|Documentary\s+Credit\s+Number)\s*[\n\r]*", '', _raw_dc).strip()
         final_lc.dc_number = _raw_dc
         final_lc.consolidated_fields['20'] = _raw_dc
         final_lc.source_packets.append(_get_packet_field(base_pkt, 'packet_id', 0))
@@ -729,6 +1008,14 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             pkt_id = _get_packet_field(amd_pkt, 'packet_id', 0)
 
             amd_fields = _extract_swift_fields(amd_text, source_page=amd_page, source_mt='MT707')
+            # VLM fallback for amendments
+            if len(amd_fields) < 2:
+                try:
+                    vlm_amd = _extract_fields_vlm(amd_pkt, amd_text, amd_page, _progress)
+                    if len(vlm_amd) > len(amd_fields):
+                        amd_fields = vlm_amd
+                except Exception:
+                    pass
             _progress(f"    Amendment {i + 1}: {len(amd_fields)} fields from packet {pkt_id}")
 
             record = _apply_amendment(
@@ -749,6 +1036,136 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
         # Update DC number if changed by amendment
         if '20' in final_lc.consolidated_fields:
             final_lc.dc_number = final_lc.consolidated_fields['20']
+
+    # -- Post-processing: clean and resolve cross-references --
+    _cf = final_lc.consolidated_fields
+
+    # Track which fields were amended (for UI annotation)
+    _amended_fields = set()
+    for rec in final_lc.amendment_log:
+        _amended_fields.update(rec.fields_changed)
+    if _amended_fields:
+        _cf['_amended_fields'] = list(_amended_fields)
+
+    # 1. Format SWIFT dates: "230509" → "2023-05-09", "260131" → "2026-01-31"
+    for _dt_tag in ('31C', '31D', '44C'):
+        _dv = _cf.get(_dt_tag, '')
+        if _dv:
+            _dm = re.match(r'^(\d{6})\s*$', _dv.strip().split('\n')[0])
+            if _dm:
+                _raw = _dm.group(1)
+                _yr = int(_raw[:2])
+                _mo = _raw[2:4]
+                _dy = _raw[4:6]
+                _full_yr = 2000 + _yr if _yr < 80 else 1900 + _yr
+                _formatted = f"{_full_yr}-{_mo}-{_dy}"
+                _rest = _dv[_dm.end():].strip()
+                _cf[_dt_tag] = f"{_formatted}\n{_rest}".strip() if _rest else _formatted
+                _progress(f"  F{_dt_tag}: formatted date {_raw} → {_formatted}")
+
+    # 2. Resolve cross-references
+    # Pattern A: "++++SEE FIELD 47A++++" → look up value from 47A (marker-based)
+    # Pattern B: "REFER CLAUSE NO.10 OF FIELD 47A" → look up clause 10 from 47A
+    # Pattern C: "PLS REFER CLAUSE NO.5 OF FIELD 47A" → look up clause 5 from 47A
+    for _tag, _val in list(_cf.items()):
+        if not isinstance(_val, str):
+            continue
+
+        # Pattern A: ++++SEE FIELD XX++++
+        _ref_m = re.search(r'\+{3,}SEE\s+FIELD\s+(\d{2}[A-Z]?)\+{3,}', _val, re.IGNORECASE)
+        if _ref_m:
+            _ref_tag = _ref_m.group(1)
+            _ref_val = _cf.get(_ref_tag, '')
+            if _ref_val:
+                # Look for +++FIELD XX+++ marker in the referenced field
+                _marker_pat = r'\+{3,}FIELD\s+' + re.escape(_tag) + r'\+{3,}\s*\n?(.*?)(?=\n\+{3,}FIELD|\Z)'
+                _marker_m = re.search(_marker_pat, _ref_val, re.IGNORECASE | re.DOTALL)
+                if _marker_m:
+                    _resolved = _marker_m.group(1).strip()
+                    _cf[_tag] = _resolved
+                    _progress(f"  F{_tag}: resolved cross-ref (marker) from F{_ref_tag} → {_resolved[:60]}")
+                    continue
+
+        # Pattern B: "REFER CLAUSE NO.X OF FIELD YY" / "PLS REFER CLAUSE NO.X OF FIELD YY"
+        _clause_ref_m = re.search(
+            r'(?:PLS\s+)?REFER\s+(?:TO\s+)?CLAUSE\s+NO\.?\s*(\d+)\s+OF\s+FIELD\s+(\d{2}[A-Z]?)',
+            _val, re.IGNORECASE)
+        if _clause_ref_m:
+            _clause_num = int(_clause_ref_m.group(1))
+            _ref_tag = _clause_ref_m.group(2)
+            _ref_val = _cf.get(_ref_tag, '')
+            if _ref_val:
+                _ref_clauses = _split_into_clauses(_ref_tag, _ref_val)
+                for _rc in _ref_clauses:
+                    if _rc.clause_number == _clause_num:
+                        _resolved = _rc.text.strip()
+                        _cf[_tag] = f"{_val.strip()}\n[Resolved: {_resolved}]"
+                        _progress(f"  F{_tag}: resolved clause #{_clause_num} from F{_ref_tag} → {_resolved[:60]}")
+                        break
+            continue
+
+        # Pattern C: "SEE FIELD YY" / "AS PER FIELD YY" / "REFER TO FIELD YY" (no clause number)
+        _simple_ref_m = re.search(
+            r'(?:SEE|REFER\s+(?:TO)?|AS\s+PER)\s+FIELD\s+(\d{2}[A-Z]?)',
+            _val, re.IGNORECASE)
+        if _simple_ref_m:
+            _ref_tag = _simple_ref_m.group(1)
+            _ref_val = _cf.get(_ref_tag, '')
+            if _ref_val:
+                # Replace the reference with the actual value
+                _cf[_tag] = _ref_val
+                _progress(f"  F{_tag}: resolved simple ref from F{_ref_tag} → {_ref_val[:60]}")
+            continue
+
+        # Pattern D: "REFER FIELD YY CLAUSE NO.X" (reversed order)
+        _rev_ref_m = re.search(
+            r'REFER\s+FIELD\s+(\d{2}[A-Z]?)\s+CLAUSE\s+NO\.?\s*(\d+)',
+            _val, re.IGNORECASE)
+        if _rev_ref_m:
+            _ref_tag = _rev_ref_m.group(1)
+            _clause_num = int(_rev_ref_m.group(2))
+            _ref_val = _cf.get(_ref_tag, '')
+            if _ref_val:
+                _ref_clauses = _split_into_clauses(_ref_tag, _ref_val)
+                for _rc in _ref_clauses:
+                    if _rc.clause_number == _clause_num:
+                        _resolved = _rc.text.strip()
+                        _cf[_tag] = f"{_val.strip()}\n[Resolved: {_resolved}]"
+                        _progress(f"  F{_tag}: resolved ref from F{_ref_tag} clause #{_clause_num} → {_resolved[:60]}")
+                        break
+
+    # 2b. Special handling for F48 (Presentation Period) — extract days + resolve reference
+    _f48 = _cf.get('48', '')
+    if _f48:
+        _days_m = re.match(r'(\d+)\s*/?\s*(?:PLS\s+)?REFER', _f48, re.IGNORECASE)
+        if _days_m:
+            _cf['48'] = _days_m.group(1)
+            _progress(f"  F48: extracted {_days_m.group(1)} days from presentation period")
+
+    # 3. Clean junk: URLs, pagination, "Select 'Print' to output..."
+    for _tag in list(_cf.keys()):
+        if _tag.startswith('_'):
+            continue
+        _val = _cf[_tag]
+        if isinstance(_val, str):
+            # Remove URLs
+            _val = re.sub(r'https?://\S+', '', _val)
+            # Remove "Select 'Print' to output..."
+            _val = re.sub(r"Select\s+'Print'\s+to\s+output.*", '', _val, flags=re.IGNORECASE)
+            # Remove pagination: "1/1", "2/2", "Page X of Y", "SWIFT_MT7012/2"
+            _val = re.sub(r'\bSWIFT_MT\d+/?\d*', '', _val)
+            _val = re.sub(r'\n\s*\d+/\d+\s*$', '', _val)
+            # Remove IP addresses
+            _val = re.sub(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+\S*', '', _val)
+            # Collapse multiple blank lines
+            _val = re.sub(r'\n{3,}', '\n\n', _val)
+            _cf[_tag] = _val.strip()
+
+    # 4. Reformat amount if "Increase" label is present
+    _amt = _cf.get('32B', '')
+    if 'increase' in _amt.lower():
+        _amt = re.sub(r'(?i)^Increase\s+of\s+Documentary\s+Credit\s+Amount\s*[\n\r]*', '', _amt).strip()
+        _cf['32B'] = _amt
 
     # -- Split clause fields --
     for tag in CLAUSE_TAGS:

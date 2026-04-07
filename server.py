@@ -80,6 +80,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config.settings import (
     SERVER_HOST, SERVER_PORT, BUILD_TAG,
     UPLOAD_DIR, RESULTS_DIR, VIEW_DIR,
+    GLM_OCR_URL, QWEN_VLM_URL, STEP_ENABLED,
 )
 from config.database import init_database
 
@@ -304,6 +305,15 @@ def checklist():
     if os.path.exists(html_path):
         return HTMLResponse(open(html_path, 'r', encoding='utf-8').read())
     raise HTTPException(404, "Checklist view not found")
+
+
+@app.get("/report-viewer")
+def report_viewer_page():
+    """Serve the interactive compliance report viewer."""
+    html_path = os.path.join(VIEW_DIR, "report_viewer.html")
+    if os.path.exists(html_path):
+        return HTMLResponse(open(html_path, 'r', encoding='utf-8').read())
+    raise HTTPException(404, "Report viewer not found")
 
 
 @app.get("/compliance")
@@ -626,9 +636,12 @@ def get_result(job_id: str):
     if job_id not in _jobs and not os.path.isdir(_results_dir):
         raise HTTPException(404, "Job not found")
     job = _jobs.get(job_id, {'status': 'completed', 'step_results': {}})
-    # Allow results even if verification (Phase 2) failed — Phase 1 data is still valid
-    if job['status'] not in ('completed', 'review_pending', 'failed'):
-        return {"status": job['status'], "message": "Processing not yet complete"}
+    # Always return Phase 1 data if available (steps 1-11).
+    # Verification (Phase 2) runs in background — don't block the UI from showing LC data.
+    # Only block if Phase 1 itself hasn't completed (step < 6 means no LC data yet).
+    if job['status'] == 'processing' and job.get('current_step', 0) < 6:
+        return {"status": job['status'], "current_step": job.get('current_step', 0),
+                "message": "Phase 1 processing — LC data not yet available"}
 
     sr = job.get('step_results', {})
 
@@ -1463,8 +1476,8 @@ def start_verification(job_id: str, lc_number: str, background_tasks: Background
         else:
             raise HTTPException(404, "Job not found")
     job = _jobs[job_id]
-    # Check if verification is currently running (not failed/completed)
-    if job.get('review_approved') and job.get('status') == 'processing':
+    # Check if verification is currently running — block double runs
+    if job.get('status') == 'processing':
         return {"verification_id": job.get('verification_id', ''), "status": "already_running", "message": "Verification is currently in progress"}
     job['review_approved'] = True
     job['status'] = 'processing'
@@ -1655,10 +1668,63 @@ def verify_cancel(verification_id: str):
     raise HTTPException(404, "Verification not found")
 
 
+@app.get("/api/step19/{job_id}")
+def get_step19_result(job_id: str):
+    """Return the raw step19 consolidation result (sections, critical_findings, review_items).
+
+    Used by the interactive report viewer to render clause-by-clause tables.
+    """
+    s19_path = os.path.join(RESULTS_DIR, job_id, 'step19', 'step19_result.json')
+    if os.path.exists(s19_path):
+        with open(s19_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    # Also check in-memory
+    if job_id in _jobs:
+        sr = _jobs[job_id].get('step_results', {})
+        if 'step19' in sr:
+            return sr['step19']
+    raise HTTPException(404, "Step 19 result not found for this job")
+
+
 @app.post("/api/verify/update/{verification_id}")
-def verify_update(verification_id: str):
-    """Update verification (placeholder for future re-verification feature)."""
-    return {"status": "ok"}
+async def verify_update(verification_id: str, request: Request):
+    """Save compliance overrides from the interactive report viewer.
+
+    Accepts JSON body with:
+        overrides: list of {section_ref, clause_ref, row_index, original_compliance, new_compliance, reason}
+        job_id: the job ID
+        lc_number: the LC number
+    """
+    body = await request.json()
+    overrides = body.get('overrides', [])
+    job_id = body.get('job_id', verification_id)
+
+    # Save overrides to disk alongside step19
+    overrides_dir = os.path.join(RESULTS_DIR, job_id, 'step19')
+    os.makedirs(overrides_dir, exist_ok=True)
+    overrides_path = os.path.join(overrides_dir, 'compliance_overrides.json')
+
+    # Merge with existing overrides if any
+    existing = []
+    if os.path.exists(overrides_path):
+        with open(overrides_path, 'r', encoding='utf-8') as f:
+            existing = json.load(f).get('overrides', [])
+
+    # Replace existing overrides for same clause_ref+row_index, add new ones
+    merged = {f"{o['clause_ref']}|{o['row_index']}": o for o in existing}
+    for o in overrides:
+        merged[f"{o['clause_ref']}|{o['row_index']}"] = o
+
+    save_data = {
+        'job_id': job_id,
+        'lc_number': body.get('lc_number', ''),
+        'overrides': list(merged.values()),
+        'saved_at': datetime.now().isoformat(),
+    }
+    with open(overrides_path, 'w', encoding='utf-8') as f:
+        json.dump(save_data, f, indent=2, ensure_ascii=False)
+
+    return {"status": "ok", "saved": len(merged), "path": overrides_path}
 
 
 @app.get("/api/report/{job_id}/{lc_number}")
@@ -1838,55 +1904,65 @@ def _process_pipeline(job_id: str):
         # ── Step 4: MT Identification (uses Step 3 classification as base) ──
         # Step 3 already classified every page. Step 4 separates MT from shipping
         # and verifies the MT type using text patterns (F-tags, MT headers)
-        job['current_step'] = 4
-        _p("Step 4: MT Document Identification (from Step 3 classification)...")
+        s4 = {}
+        if _is_step_enabled(4):
+            job['current_step'] = 4
+            _p("Step 4: MT Document Identification (from Step 3 classification)...")
 
-        _lc_types = {'lc', 'amendment', 'mt700', 'mt707'}
-        # Endorsement pages and blank pages are BACK SIDES of the previous document
-        # They carry stamps, endorsements, signatures — merge into previous packet
-        _back_page_types = {'blank page', 'blank_page', 'endorsement page'}
-        _s3_packets = s3.get('packets', [])
+            _lc_types = {'lc', 'amendment', 'mt700', 'mt707'}
+            # Endorsement pages and blank pages are BACK SIDES of the previous document
+            # They carry stamps, endorsements, signatures — merge into previous packet
+            _back_page_types = {'blank page', 'blank_page', 'endorsement page'}
+            _s3_packets = s3.get('packets', [])
 
-        _mt_packets = []
-        _shipping_packets = []
-        _prev_packet = None
-        for _pkt in _s3_packets:
-            _dt = (_pkt.get('document_type', '') or '').lower()
-            if _dt in _back_page_types:
-                # This is the back side of the previous document — merge
-                if _prev_packet:
-                    _prev_packet['page_numbers'] = _prev_packet.get('page_numbers', []) + _pkt.get('page_numbers', [])
-                    # Merge stamps/signatures from back page into previous doc
-                    for _field in ('stamps', 'signatures', 'seals', 'logos'):
-                        _prev_list = _prev_packet.get(_field, [])
-                        _back_list = _pkt.get(_field, [])
-                        if isinstance(_back_list, list):
-                            _prev_list.extend(_back_list)
-                            _prev_packet[_field] = _prev_list
-                    _p(f"  Merged {_dt} (pg {_pkt.get('page_numbers', [])}) into previous {_prev_packet.get('document_type', '?')}")
-                continue
-            _pkt_copy = dict(_pkt)
-            if _dt in _lc_types:
-                _pkt_copy['mt_type'] = 'MT707' if 'amend' in _dt else 'MT700'
-                _mt_packets.append(_pkt_copy)
-                _prev_packet = _pkt_copy
-            else:
-                _pkt_copy['mt_type'] = 'shipping'
-                _shipping_packets.append(_pkt_copy)
-                _prev_packet = _pkt_copy
+            _mt_packets = []
+            _shipping_packets = []
+            _prev_packet = None
+            for _pkt in _s3_packets:
+                _dt = (_pkt.get('document_type', '') or '').lower()
+                if _dt in _back_page_types:
+                    # This is the back side of the previous document — merge
+                    if _prev_packet:
+                        _prev_packet['page_numbers'] = _prev_packet.get('page_numbers', []) + _pkt.get('page_numbers', [])
+                        # Merge stamps/signatures from back page into previous doc
+                        for _field in ('stamps', 'signatures', 'seals', 'logos'):
+                            _prev_list = _prev_packet.get(_field, [])
+                            _back_list = _pkt.get(_field, [])
+                            if isinstance(_back_list, list):
+                                _prev_list.extend(_back_list)
+                                _prev_packet[_field] = _prev_list
+                        _p(f"  Merged {_dt} (pg {_pkt.get('page_numbers', [])}) into previous {_prev_packet.get('document_type', '?')}")
+                    continue
+                _pkt_copy = dict(_pkt)
+                if _dt in _lc_types:
+                    _pkt_copy['mt_type'] = 'MT707' if 'amend' in _dt else 'MT700'
+                    _mt_packets.append(_pkt_copy)
+                    _prev_packet = _pkt_copy
+                else:
+                    _pkt_copy['mt_type'] = 'shipping'
+                    _shipping_packets.append(_pkt_copy)
+                    _prev_packet = _pkt_copy
 
-        s4 = {'packets': _mt_packets + _shipping_packets}
-        job['step_results']['step04'] = s4
-        _p(f"  MT/LC: {len(_mt_packets)}, Shipping: {len(_shipping_packets)}")
+            s4 = {'packets': _mt_packets + _shipping_packets}
+            job['step_results']['step04'] = s4
+            _p(f"  MT/LC: {len(_mt_packets)}, Shipping: {len(_shipping_packets)}")
+        else:
+            _p("Step 4: SKIPPED (disabled in settings)")
+            s4 = s3
 
         # ── Step 5: Passthrough ──
         # VLM text completion for ALL pages (including MT/LC) is now handled in
         # Step 2 (OCR Cleaning). Step 2's cleaned_text is the single source of
         # truth for all downstream steps. Step 5 just passes through.
-        job['current_step'] = 5
-        _p("Step 5: Passthrough (VLM text review handled in Step 2 for all pages)")
-        s5 = s4
-        job['step_results']['step05'] = s5
+        s5 = {}
+        if _is_step_enabled(5):
+            job['current_step'] = 5
+            _p("Step 5: Passthrough (VLM text review handled in Step 2 for all pages)")
+            s5 = s4
+            job['step_results']['step05'] = s5
+        else:
+            _p("Step 5: SKIPPED (disabled in settings)")
+            s5 = s4
 
         # ── Step 6: Final LC Consolidation ──
         # Build Final LC from MT packets using GLM text extracted by Step 1
@@ -1973,28 +2049,32 @@ def _process_pipeline(job_id: str):
         job['step_results']['step09'] = s9  # Full data needed by Step 14
 
         # ── Step 10: Traceability ──
-        # Build confidence metrics and data lineage across all previous steps.
-        # Identifies potential issues (low OCR confidence, ambiguous classifications).
-        job['current_step'] = 10
-        _p("Step 10: Traceability & Confidence Preservation...")
-        s10 = _to_dict(step10_traceability.run(
-            {'step01': s1, 'step02': s2, 'step03': s3, 'step04': s4,
-             'step05': s5, 'step06': s6, 'step07': s7, 'step08': s8, 'step09': s9},
-            os.path.join(results_dir, 'step10'), _p
-        ))
-        job['step_results']['step10'] = {'flags': s10.get('total_flags', 0)}
+        s10 = {}
+        if _is_step_enabled(10):
+            job['current_step'] = 10
+            _p("Step 10: Traceability & Confidence Preservation...")
+            s10 = _to_dict(step10_traceability.run(
+                {'step01': s1, 'step02': s2, 'step03': s3, 'step04': s4,
+                 'step05': s5, 'step06': s6, 'step07': s7, 'step08': s8, 'step09': s9},
+                os.path.join(results_dir, 'step10'), _p
+            ))
+            job['step_results']['step10'] = {'flags': s10.get('total_flags', 0)}
+        else:
+            _p("Step 10: SKIPPED (disabled in settings)")
 
         # ── Step 11: Human Review Gate ──
-        # Create a review session with all document packets for human inspection.
-        # The pipeline pauses here until the user approves.
-        job['current_step'] = 11
-        _p("Step 11: Ready for Human Review...")
-        s11 = _to_dict(step11_human_review.run(
-            step7_result=s7, step9_result=s9, step10_result=s10,
-            job_id=job_id, output_dir=os.path.join(results_dir, 'step11'),
-            progress_callback=_p
-        ))
-        job['step_results']['step11'] = s11
+        s11 = {}
+        if _is_step_enabled(11):
+            job['current_step'] = 11
+            _p("Step 11: Ready for Human Review...")
+            s11 = _to_dict(step11_human_review.run(
+                step7_result=s7, step9_result=s9, step10_result=s10,
+                job_id=job_id, output_dir=os.path.join(results_dir, 'step11'),
+                progress_callback=_p
+            ))
+            job['step_results']['step11'] = s11
+        else:
+            _p("Step 11: SKIPPED (disabled in settings)")
 
         # Phase 1 complete — wait for user to review and start verification
         job['status'] = 'completed'
@@ -2122,49 +2202,65 @@ def _continue_verification(job_id: str):
             print(f"[WARN] Step 14b: {_e14b}\n{traceback.format_exc()}", flush=True)
 
         # ── Step 15: Non-Compliance Handling ──
-        # Classify all LC clauses as checkable/informational/non-checkable.
-        # Ensures bank obligations and sanctions clauses are not falsely failed.
-        job['current_step'] = 15
-        _p("Step 15: Non-Compliance & Non-Checkable Clauses...")
-        s15 = _to_dict(step15_non_compliance.run(sr.get('step07', {}), os.path.join(results_dir, 'step15'), _p))
-        sr['step15'] = s15
+        s15 = {}
+        if _is_step_enabled(15):
+            job['current_step'] = 15
+            _p("Step 15: Non-Compliance & Non-Checkable Clauses...")
+            s15 = _to_dict(step15_non_compliance.run(sr.get('step07', {}), os.path.join(results_dir, 'step15'), _p))
+            sr['step15'] = s15
+        else:
+            _p("Step 15: SKIPPED (disabled in settings)")
 
         # ── Step 16: Confidence Review ──
-        # Escalate any low-confidence results to REVIEW status.
-        # Prevents false passes/fails when the AI model is uncertain.
-        job['current_step'] = 16
-        _p("Step 16: Confidence-Based Review Escalation...")
-        s16 = _to_dict(step16_confidence_review.run(
-            s14.get('rows', []), s15.get('clause_status_map', {}),
-            os.path.join(results_dir, 'step16'), _p
-        ))
-        sr['step16'] = {'escalated': s16.get('escalated_count', 0)}
-        import sys as _sys2
-        # ── Step 17: Cross-Clause Dependencies ──
-        job['current_step'] = 17
-        _p("Step 17: Cross-Clause Dependency Handling...")
-        try:
-            s17 = _to_dict(step17_cross_clause.run(
-                s16.get('rows', []),
-                os.path.join(results_dir, 'step17'), _p
+        s16 = {}
+        if _is_step_enabled(16):
+            job['current_step'] = 16
+            _p("Step 16: Confidence-Based Review Escalation...")
+            s16 = _to_dict(step16_confidence_review.run(
+                s14.get('rows', []), s15.get('clause_status_map', {}),
+                os.path.join(results_dir, 'step16'), _p
             ))
-            sr['step17'] = {'overrides': s17.get('overrides_applied', 0)}
-        except Exception as _e17:
-            _p(f"Step 17 FAILED: {_e17}")
-            print(f"[ERROR] Step 17: {_e17}\n{traceback.format_exc()}", flush=True)
-            raise
+            sr['step16'] = {'escalated': s16.get('escalated_count', 0)}
+        else:
+            _p("Step 16: SKIPPED (disabled in settings)")
 
-        # ── Step 18: Threading (already handled inline) ──
-        job['current_step'] = 18
-        _p("Step 18: Multi-threaded processing complete (inline)")
-        sr['step18'] = {'status': 'complete'}
+        # ── Step 17: Cross-Clause Dependencies ──
+        s17 = {}
+        if _is_step_enabled(17):
+            job['current_step'] = 17
+            _p("Step 17: Cross-Clause Dependency Handling...")
+            try:
+                _s17_input = s16.get('rows', []) if s16 else s14.get('rows', [])
+                s17 = _to_dict(step17_cross_clause.run(
+                    _s17_input,
+                    os.path.join(results_dir, 'step17'), _p
+                ))
+                sr['step17'] = {'overrides': s17.get('overrides_applied', 0)}
+            except Exception as _e17:
+                _p(f"Step 17 FAILED: {_e17}")
+                print(f"[ERROR] Step 17: {_e17}\n{traceback.format_exc()}", flush=True)
+                raise
+        else:
+            _p("Step 17: SKIPPED (disabled in settings)")
+
+        # ── Step 18: Threading ──
+        if _is_step_enabled(18):
+            job['current_step'] = 18
+            _p("Step 18: Multi-threaded processing complete (inline)")
+            sr['step18'] = {'status': 'complete'}
+        else:
+            _p("Step 18: SKIPPED (disabled in settings)")
 
         # ── Step 19: Consolidation ──
         job['current_step'] = 19
         _p("Step 19: Consolidating Verification Output...")
         try:
+            # Use the latest available rows — from step17, step16, or step14
+            _s19_rows = (s17.get('reconciled_rows', s17.get('rows', []))
+                         if s17 else s16.get('rows', [])
+                         if s16 else s14.get('rows', []))
             s19 = _to_dict(step19_consolidation.run(
-                s17.get('reconciled_rows', s17.get('rows', [])),
+                _s19_rows,
                 os.path.join(results_dir, 'step19'), _p
             ))
             sr['step19'] = {
@@ -2211,13 +2307,189 @@ def _continue_verification(job_id: str):
 # MAIN — Server Entry Point
 # ══════════════════════════════════════════════════════════════
 
+# ── Settings API ──────────────────────────────────────────────────────────────
+
+_STEP_NAMES = {
+    1: "Page-Level Raw OCR", 2: "OCR Text Cleaning", 3: "Page Sequencing & Classification",
+    4: "MT Identification", 5: "MT Reconciliation", 6: "Final LC Extraction",
+    7: "Clause & Requirement Extraction", 8: "Shipping Doc Classification",
+    9: "Shipping OCR Reconciliation", 10: "Traceability Flags",
+    11: "Human Review Gate", 12: "Clause Decomposition",
+    13: "Row Construction", 14: "VLM Verification",
+    15: "Non-Compliance Summary", 16: "Confidence Review",
+    17: "Cross-Clause Checks", 18: "Threading",
+    19: "Consolidation", 20: "Report Generation",
+}
+_CORE_STEPS = {1, 2, 3, 6, 7, 8, 9, 12, 13, 14, 19, 20}
+
+# Runtime copy of step toggles (so we don't modify the imported config)
+_step_enabled = dict(STEP_ENABLED)
+
+
+@app.get("/settings")
+def settings_page():
+    """Serve the settings management page."""
+    settings_path = os.path.join(VIEW_DIR, 'settings.html')
+    if os.path.exists(settings_path):
+        return HTMLResponse(open(settings_path, encoding='utf-8').read())
+    # Inline fallback if file doesn't exist
+    return HTMLResponse("<html><body><h1>Settings page not found</h1></body></html>")
+
+
+@app.get("/api/settings")
+def get_settings():
+    """Get current pipeline settings."""
+    from config import settings as _cfg
+    steps = []
+    for i in range(1, 21):
+        steps.append({
+            "step": i,
+            "name": _STEP_NAMES.get(i, f"Step {i}"),
+            "enabled": _step_enabled.get(i, True),
+            "core": i in _CORE_STEPS,
+        })
+    return {
+        "steps": steps,
+        "concurrency": {
+            "max_concurrent_ocr": _cfg.MAX_CONCURRENT_OCR,
+            "max_concurrent_vlm": _cfg.MAX_CONCURRENT_VLM,
+        },
+        "models": {
+            "glm_ocr_url": _cfg.GLM_OCR_URL,
+            "qwen_vlm_url": _cfg.QWEN_VLM_URL,
+            "qwen_vlm_model": _cfg.QWEN_VLM_MODEL,
+        },
+        "timeouts": {
+            "ocr_timeout": _cfg.OCR_TIMEOUT,
+            "vlm_timeout": _cfg.VLM_TIMEOUT,
+        },
+        "confidence_threshold": _cfg.CONFIDENCE_THRESHOLD,
+    }
+
+
+@app.post("/api/settings")
+async def update_settings(request: Request):
+    """Update pipeline settings (step toggles, concurrency, etc.)."""
+    from config import settings as _cfg
+    body = await request.json()
+
+    # Update step toggles
+    if 'steps' in body:
+        for step_update in body['steps']:
+            step_num = step_update.get('step')
+            enabled = step_update.get('enabled')
+            if step_num is not None and enabled is not None:
+                _step_enabled[step_num] = bool(enabled)
+
+    # Update concurrency
+    if 'concurrency' in body:
+        c = body['concurrency']
+        if 'max_concurrent_ocr' in c:
+            _cfg.MAX_CONCURRENT_OCR = int(c['max_concurrent_ocr'])
+        if 'max_concurrent_vlm' in c:
+            _cfg.MAX_CONCURRENT_VLM = int(c['max_concurrent_vlm'])
+
+    # Update confidence threshold
+    if 'confidence_threshold' in body:
+        _cfg.CONFIDENCE_THRESHOLD = float(body['confidence_threshold'])
+
+    return {"status": "ok", "message": "Settings updated"}
+
+
+@app.post("/api/override/{job_id}/classification")
+async def override_classification(job_id: str, request: Request):
+    """
+    Override the classification of a document packet.
+    Changes propagate to subsequent steps on re-verification.
+    """
+    if job_id not in _jobs:
+        raise HTTPException(404, "Job not found")
+    body = await request.json()
+    packet_id = body.get('packet_id')
+    new_type = body.get('document_type')
+    new_copy_status = body.get('copy_status')
+    notes = body.get('notes', '')
+
+    if not packet_id:
+        raise HTTPException(400, "packet_id required")
+
+    # Store override in job metadata
+    if 'overrides' not in _jobs[job_id]:
+        _jobs[job_id]['overrides'] = {}
+    _jobs[job_id]['overrides'][packet_id] = {
+        'document_type': new_type,
+        'copy_status': new_copy_status,
+        'notes': notes,
+        'timestamp': datetime.now().isoformat(),
+    }
+
+    # Apply to step results if available
+    results_dir = os.path.join(RESULTS_DIR, job_id)
+    # Update step03 (classification)
+    step03_path = os.path.join(results_dir, 'step03', 'step03_result.json')
+    if os.path.exists(step03_path):
+        with open(step03_path, 'r', encoding='utf-8') as f:
+            s3 = json.load(f)
+        for pkt in s3.get('packets', []):
+            pid = pkt.get('packet_id', '')
+            if str(pid) == str(packet_id):
+                if new_type:
+                    pkt['document_type'] = new_type
+                    pkt['override'] = True
+                if new_copy_status:
+                    pkt['copy_status'] = new_copy_status
+                if notes:
+                    pkt['notes'] = notes
+        with open(step03_path, 'w', encoding='utf-8') as f:
+            json.dump(s3, f, indent=2, ensure_ascii=False)
+
+    return {"status": "ok", "message": f"Override applied for packet {packet_id}"}
+
+
+@app.post("/api/override/{job_id}/final-lc")
+async def override_final_lc(job_id: str, request: Request):
+    """
+    Override Final LC field values.
+    Changes propagate to verification on re-run.
+    """
+    if job_id not in _jobs:
+        raise HTTPException(404, "Job not found")
+    body = await request.json()
+    field_tag = body.get('field_tag')
+    new_value = body.get('value')
+
+    if not field_tag or new_value is None:
+        raise HTTPException(400, "field_tag and value required")
+
+    # Update step06 result
+    results_dir = os.path.join(RESULTS_DIR, job_id)
+    step06_path = os.path.join(results_dir, 'step06', 'step06_result.json')
+    if os.path.exists(step06_path):
+        with open(step06_path, 'r', encoding='utf-8') as f:
+            s6 = json.load(f)
+        s6.get('consolidated_fields', {})[field_tag] = new_value
+        # If updating field 20 (DC Number), also update dc_number
+        if field_tag == '20':
+            s6['dc_number'] = new_value
+        with open(step06_path, 'w', encoding='utf-8') as f:
+            json.dump(s6, f, indent=2, ensure_ascii=False)
+        return {"status": "ok", "message": f"LC field {field_tag} updated"}
+    else:
+        raise HTTPException(404, "Step 6 results not found")
+
+
+def _is_step_enabled(step_num: int) -> bool:
+    """Check if a pipeline step is enabled."""
+    return _step_enabled.get(step_num, True)
+
+
 if __name__ == '__main__':
     print(f"""
 ================================================================================
   ComplyTrade Pilot V2
   Build: {BUILD_TAG}
-  GLM-OCR: http://10.20.10.3:8001
-  Qwen VLM: http://10.20.10.3:8000
+  GLM-OCR: {GLM_OCR_URL}
+  Qwen VLM: {QWEN_VLM_URL}
   Database: trade_finance_pilot @ localhost:5432
   Web UI: http://{SERVER_HOST}:{SERVER_PORT}/interface
   Checklist: http://{SERVER_HOST}:{SERVER_PORT}/checklist

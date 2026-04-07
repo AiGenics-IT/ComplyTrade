@@ -98,46 +98,93 @@ class DecomposedClause:
 # This system prompt instructs the Qwen VLM on how to decompose LC clauses.
 # It includes trade finance domain knowledge to improve accuracy.
 
-DECOMPOSITION_SYSTEM_PROMPT = """You are a trade finance expert specializing in Letter of Credit (LC) compliance under UCP 600 and ISBP 821.
+DECOMPOSITION_SYSTEM_PROMPT = """You are a senior trade finance examiner specializing in Letter of Credit (LC) compliance under UCP 600 and ISBP 821.
 
-Your task: decompose an LC clause into individual, checkable conditions.
+Your task: decompose an LC clause into individual, checkable conditions that a document checker can verify against the presented shipping documents.
 
-TRADE FINANCE KNOWLEDGE:
-- "FULL SET" means 3/3 originals (e.g., "FULL SET OF BILLS OF LADING" = 3 original BLs required)
-- "ISSUING BANK" refers to the actual bank that issued the LC — use the bank name if provided
-- "ACCEPTABLE" or "MAY" = optional/permissive — do NOT create mandatory conditions for these
-- "IN DUPLICATE" = 2 copies, "IN TRIPLICATE" = 3 copies
+═══════════════════════════════════════════════════════════════
+CRITICAL: UNDERSTAND THE CLAUSE BEFORE DECOMPOSING
+═══════════════════════════════════════════════════════════════
 
-RETURN EMPTY ARRAY [] ONLY for these specific clause types:
-  * Bank-to-bank obligations: clauses that start with "NEGOTIATING BANK MUST...", "ADVISING BANK MUST..." (these are bank duties, not document requirements)
-  * Fee/charge clauses: "DISCREPANCY HANDLING CHARGES", "BANK CHARGES WILL BE DEDUCTED"
-  * Document forwarding: "ALL DOCUMENTS TO BE FORWARDED TO US BY COURIER"
-  * Permissive overrides: "THIRD PARTY DOCUMENTS ARE ACCEPTABLE", "LARGER QUANTITIES ACCEPTABLE", "CHARTER PARTY BL ACCEPTABLE" (these ALLOW something, they don't require anything)
-  * Date validity: "DOCUMENTS DATED PRIOR TO... NOT ACCEPTABLE" (handled separately)
+READ the clause carefully and understand its MEANING in trade finance context BEFORE creating conditions. Many clauses use specific trade finance language that must be interpreted correctly:
 
-IMPORTANT: If the clause is about a DOCUMENT REQUIREMENT (F46A), ALWAYS decompose it — never return empty array for F46A clauses.
+PERMISSIVE vs PROHIBITIVE CLAUSES:
+  • "THIRD PARTY DOCUMENTS ARE ACCEPTABLE EXCEPT INVOICE AND DRAFT"
+    → This ALLOWS third-party docs for everything EXCEPT invoice/draft.
+    → Invoice and Draft MUST be issued by the beneficiary (not third party).
+    → Do NOT create "Invoice is not acceptable" or "Draft is not acceptable" — that is WRONG.
+    → Correct: One condition noting invoice/draft must be beneficiary-issued (not third party).
+
+  • "LARGER QUANTITIES ACCEPTABLE" / "CHARTER PARTY BL ACCEPTABLE"
+    → These ALLOW something — they are permissive relaxations, not requirements.
+    → Return EMPTY ARRAY [] — nothing to check.
+
+  • "SHORT FORM / BLANK BACK / HOUSE / STALE / FORWARDER AGENT BL NOT ACCEPTABLE"
+    → This PROHIBITS certain BL types. Create conditions that BL must NOT be these types.
+
+  • "GOODS DESCRIPTION SHOWING [X] TO BE ACCEPTABLE"
+    → This means showing [X] (e.g., "CANOLA" instead of full "CANADIAN CANOLA SEED NO.1") is acceptable on documents.
+    → This is permissive — it relaxes goods description matching. Return EMPTY ARRAY [].
+
+  • "ALL DOCUMENTS EXCEPT BL SHOWING APPLICANT AS NOTIFY TO BE ACCEPTABLE OR AS CONSIGNEE ACCEPTABLE"
+    → This says non-BL documents MAY show applicant as notify OR consignee — both are acceptable.
+    → This is permissive — it does NOT require anything. Return EMPTY ARRAY [].
+    → ANY clause that says "[something] TO BE ACCEPTABLE" or "[something] ACCEPTABLE" at the end is permissive.
+
+TOLERANCE CLAUSES:
+  • "PLUS ZERO/MINUS TEN PERCENT TOLERANCE IN QUANTITY AND AMOUNT TO BE ACCEPTABLE"
+    → This sets tolerance parameters (+0%/-10%) — it does NOT require checking on documents.
+    → Return EMPTY ARRAY [] — tolerance is applied by code in amount/quantity checks.
+  • "1000 MT LESS 10 PCT" or "1000 MT PLUS/MINUS 5 PCT"
+    → Tolerance in goods description — handled by code, not document checking.
+
+═══════════════════════════════════════════════════════════════
+RETURN EMPTY ARRAY [] FOR THESE CLAUSE TYPES:
+═══════════════════════════════════════════════════════════════
+  • Bank-to-bank obligations: "NEGOTIATING BANK MUST...", "ADVISING BANK MUST..."
+  • Fee/charge clauses: "DISCREPANCY HANDLING CHARGES", "BANK CHARGES WILL BE DEDUCTED"
+  • Document forwarding: "ALL DOCUMENTS TO BE FORWARDED TO US BY COURIER"
+  • Pure permissive clauses: "LARGER QUANTITIES ACCEPTABLE", "CHARTER PARTY BL ACCEPTABLE", "GOODS DESCRIPTION SHOWING [X] TO BE ACCEPTABLE"
+  • Tolerance specifications: "PLUS/MINUS X PERCENT TOLERANCE" (handled by code)
+  • Date validity: "DOCUMENTS DATED PRIOR TO... NOT ACCEPTABLE" (handled separately)
+
+═══════════════════════════════════════════════════════════════
+TRADE FINANCE KNOWLEDGE
+═══════════════════════════════════════════════════════════════
+  • "FULL SET" = 3/3 originals (e.g., "FULL SET OF BILLS OF LADING" = 3 original BLs)
+  • "ISSUING BANK" = the actual bank that issued the LC — use the bank name if provided
+  • "IN DUPLICATE" = 2 copies, "IN TRIPLICATE" = 3 copies
+  • Bill of Lading does NOT show dollar amounts — never create "BL must show amount" conditions
+  • Bill of Lading does NOT typically show LC/credit number unless F47A specifically requires it
+  • "INSURANCE COVERED BY APPLICANT" = applicant handles insurance, beneficiary must send SHIPMENT ADVICE (not insurance doc)
+  • "ENDORSED TO THE ORDER OF [BANK]" on BL = consignee field shows "TO THE ORDER OF [BANK]"
 
 DOCUMENT IDENTIFICATION:
-  * "SHIPMENT ADVICE" or "BENEFICIARY SHIPMENT ADVICE" = check on document type "Shipment Advice"
-  * "CERTIFICATE FROM SHIPPING COMPANY OR THEIR AUTHORIZED AGENTS" = check on "Shipping Company Certificate" or "Agent Certificate"
-  * "INSURANCE" only when it says "INSURANCE POLICY" or "INSURANCE CERTIFICATE" — NOT when it says "INSURANCE COVERED BY APPLICANT" (that means applicant handles insurance, beneficiary sends advice)
-  * When clause says "INSURANCE COVERED BY APPLICANT", the checkable part is the SHIPMENT ADVICE, not insurance
+  • "SHIPMENT ADVICE" or "BENEFICIARY SHIPMENT ADVICE" = document type "Shipment Advice"
+  • "CERTIFICATE FROM SHIPPING COMPANY OR THEIR AUTHORIZED AGENTS" = "Shipping Company Certificate"
+  • "INSURANCE POLICY" or "INSURANCE CERTIFICATE" = "Insurance Policy/Certificate"
 
-RULES:
+CLAUSE STRUCTURE — READ CAREFULLY:
+  • "INSURANCE COVERED BY APPLICANT, BENEFICIARY SHIPMENT ADVICE QUOTING [items] SHOULD BE SENT TO [address]"
+    → This clause is about the SHIPMENT ADVICE, not insurance or BL.
+    → "QUOTING NAME OF VESSEL, B/L NO., DATE OF SHIPMENT, AMOUNT, QUANTITY AND CREDIT NUMBER" — ALL these items must appear on the SHIPMENT ADVICE (not the BL, not the invoice).
+    → Create conditions checking the SHIPMENT ADVICE for: vessel name, BL number, shipment date, amount, quantity, credit number.
+    → Also create conditions for: sent to correct addressee, within time limit, copy accompanies original docs.
+    → Do NOT create conditions checking the Bill of Lading for amount or credit number from this clause.
+
+═══════════════════════════════════════════════════════════════
+RULES FOR CREATING CONDITIONS
+═══════════════════════════════════════════════════════════════
 1. Each condition must be independently verifiable against a SINGLE document
-2. If a condition applies to MULTIPLE documents, create SEPARATE conditions for each document
-   Example: "HS CODE MUST APPEAR ON BL AND INVOICES" -> 2 conditions (one for BL, one for Invoice)
-3. condition_text: human-readable description of what to verify
-4. document_to_check: the document type to check (e.g., "Bill of Lading", "Commercial Invoice", "Insurance Policy")
-5. look_for_value: the specific value, text, or pattern to search for in the document
+2. If a condition applies to MULTIPLE documents, create SEPARATE conditions for each
+3. condition_text: clear, human-readable description of what to verify
+4. document_to_check: the exact document type (e.g., "Bill of Lading", "Commercial Invoice")
+5. look_for_value: the specific value, text, or pattern to search for
 
 FIELD-SPECIFIC GUIDANCE:
-- F45A (Description of Goods): Extract conditions for quantity, goods name, unit price, trade terms (CFR/CIF/FOB), port of destination, proforma invoice reference. Check these on BOTH Commercial Invoice AND Bill of Lading.
-- F46A (Documents Required): Extract every requirement — signature, copies, addressee, content requirements, certifications, specific clauses to include.
-- F47A (Additional Conditions): Extract each condition. If it says something is "ACCEPTABLE" or "ALLOWED", note it as a permissive condition.
-- For certificates: extract issuer requirement, language, content, and addressee conditions.
-
-IMPORTANT: ALWAYS return at least one condition for every clause. Never return an empty array unless the clause is truly a bank-internal instruction (like reimbursement terms). Every document requirement and goods description has checkable conditions.
+  • F45A (Description of Goods): Check goods description, quantity, unit price, trade terms (CFR/CIF/FOB), port ONLY on Commercial Invoice. Do NOT create conditions for Bill of Lading from F45A — BL has its own requirements in F46A. BL shows weight/packages in its own format, not the LC goods description verbatim.
+  • F46A (Documents Required): Extract every document requirement — type, copies, signature, addressee, content. ALWAYS decompose F46A — never return empty array.
+  • F47A (Additional Conditions): Understand meaning first. Only create conditions for things that need CHECKING. Do not create conditions for permissions or relaxations.
 
 Respond ONLY with a JSON array. Each element:
 {
@@ -644,6 +691,60 @@ def run(structured_lc: dict, output_dir: str = None, progress_callback=None) -> 
                 )
                 decomposed.append(dc)
                 _progress(f"  {clause['clause_ref']}: {len(conditions)} conditions ({result.get('elapsed', 0):.1f}s)")
+
+    # ── Post-processing: fix common VLM misinterpretations ──
+    for dc in decomposed:
+        original_upper = dc.original_text.upper()
+
+        # Filter out false conditions from permissive clauses
+        filtered = []
+        for cond in dc.conditions:
+            ct_upper = cond.condition_text.upper()
+            doc_upper = cond.document_to_check.upper()
+
+            # "THIRD PARTY DOCUMENTS ACCEPTABLE EXCEPT X AND Y"
+            # VLM sometimes creates "X is not acceptable" — wrong interpretation
+            if re.search(r'THIRD\s+PARTY\s+DOCUMENTS?\s+(ARE\s+)?ACCEPTABLE', original_upper):
+                if re.search(r'(IS\s+)?NOT\s+ACCEPTABLE', ct_upper):
+                    _progress(f"  {dc.clause_ref}: FILTERED false condition: {cond.condition_text[:80]}")
+                    continue
+
+            # BL should never check for dollar amount
+            if 'BILL OF LADING' in doc_upper and re.search(
+                    r'\b(AMOUNT|DOLLAR|PRICE|USD|EUR|GBP)\b', ct_upper):
+                # Unless the original clause explicitly says BL must show amount
+                if 'BILL OF LADING' not in original_upper or 'AMOUNT' not in original_upper:
+                    _progress(f"  {dc.clause_ref}: FILTERED BL amount check: {cond.condition_text[:80]}")
+                    continue
+
+            # Tolerance clauses should not create verification conditions
+            if re.search(r'(PLUS|MINUS|TOLERANCE).*(ACCEPTABLE|ALLOWED)', original_upper):
+                if re.search(r'TOLERANCE|PERCENT', ct_upper):
+                    _progress(f"  {dc.clause_ref}: FILTERED tolerance (handled by code): {cond.condition_text[:80]}")
+                    continue
+
+            # "LARGER QUANTITIES ACCEPTABLE" is permissive — no check needed
+            if re.search(r'LARGER\s+QUANTIT.*(ACCEPTABLE|ALLOWED)', original_upper):
+                _progress(f"  {dc.clause_ref}: FILTERED permissive larger-qty clause: {cond.condition_text[:80]}")
+                continue
+
+            # "GOODS DESCRIPTION SHOWING X TO BE ACCEPTABLE" is permissive
+            if re.search(r'GOODS\s+DESCRIPTION\s+SHOWING.*ACCEPTABLE', original_upper):
+                _progress(f"  {dc.clause_ref}: FILTERED permissive goods-desc clause: {cond.condition_text[:80]}")
+                continue
+
+            # General permissive pattern: clause ends with "TO BE ACCEPTABLE" or "ACCEPTABLE"
+            # and the entire clause is about acceptability, not about requirements
+            if (dc.field_tag == '47A'
+                    and re.search(r'(TO\s+BE\s+)?ACCEPTABLE\.?\s*$', original_upper)
+                    and 'NOT ACCEPTABLE' not in original_upper
+                    and not re.search(r'MUST|SHALL|REQUIRED|SHOULD APPEAR', original_upper)):
+                _progress(f"  {dc.clause_ref}: FILTERED permissive F47A clause: {cond.condition_text[:80]}")
+                continue
+
+            filtered.append(cond)
+
+        dc.conditions = filtered
 
     # Sort by clause_ref for consistent ordering (e.g., 45A-1, 46A-1, 46A-2, 47A-1)
     decomposed.sort(key=lambda d: d.clause_ref)

@@ -329,17 +329,35 @@ def _parse_date(date_str: str) -> Optional[datetime]:
 
 
 def _parse_amount(amount_str: str) -> Optional[float]:
-    """Parse amount string to float."""
+    """Parse amount string to float. Handles multiple formats:
+    - USD 516,000.00
+    - #516,000.00#  or  #516,000.00
+    - 516000,00 (European)
+    - USD\nUS DOLLAR\n516000,00\n#516,000.00
+    """
     if not amount_str:
         return None
-    cleaned = re.sub(r'[A-Z]{3}\s*', '', str(amount_str)).strip()
-    cleaned = cleaned.replace(',', '')
-    try: return float(cleaned)
-    except:
-        m = re.search(r'[\d]+\.?\d*', cleaned)
-        if m:
-            try: return float(m.group(0))
-            except: pass
+    s = str(amount_str)
+    # Priority 1: formatted amount in #...# markers
+    m = re.search(r'#([\d,]+\.\d+)#?', s)
+    if m:
+        return float(m.group(1).replace(',', ''))
+    # Priority 2: comma-formatted "516,000.00" or "1,234,567.89" (MUST have comma)
+    m = re.search(r'(\d{1,3}(?:,\d{3})+\.\d{2})\b', s)  # + not * — requires at least one comma
+    if m:
+        return float(m.group(1).replace(',', ''))
+    # Priority 3: plain number with decimals "516000.00" or "23552.20"
+    m = re.search(r'(\d{2,}\.\d{2})\b', s)
+    if m:
+        return float(m.group(1))
+    # Priority 4: European format "516000,00" (comma as decimal)
+    m = re.search(r'(\d+),(\d{2})\b', s)
+    if m:
+        return float(f"{m.group(1)}.{m.group(2)}")
+    # Priority 5: plain integer
+    m = re.search(r'(\d{4,})', s)
+    if m:
+        return float(m.group(1))
     return None
 
 
@@ -999,6 +1017,11 @@ def run(
         elif check_id == 'latest_shipment':
             latest = lc_fields.get('44C', lc_fields.get('F44C', ''))
             if latest:
+                # Check if F47A allows late shipment (e.g., with penalty)
+                f47a = str(lc_fields.get('47A', lc_fields.get('F47A', '')))
+                late_shipment_allowed = bool(re.search(
+                    r'LATE\s+SHIPMENT\s+(IS\s+)?(ALLOWED|ACCEPTABLE|PERMITTED)',
+                    f47a, re.IGNORECASE))
                 for bl in _get_docs_by_type(packets, 'bill of lading', 'b/l'):
                     # Use shipped_on_board_date if available
                     sob = (bl.get('extracted_fields', {}) or {}).get('shipped_on_board_date', '')
@@ -1008,6 +1031,8 @@ def run(
                         f"Shipment must be on/before {latest}", 'before')
                     if r.compliance == 'FAIL':
                         r.result = f"LATE SHIPMENT - {r.result}"
+                        if late_shipment_allowed:
+                            r.result += " (Note: F47A allows late shipment with penalty conditions)"
                     all_results.append(r)
                     progress_fn(f"  [latest_shipment] [{bl.get('document_type','')}]: {r.compliance} - {r.result[:50]}")
 
@@ -1137,6 +1162,26 @@ def run(
                 severity='hard',
             ))
             progress_fn(f"  [lc_expiry] Auto-flagged: LC EXPIRED (linked from late presentation)")
+
+    # Reverse: LC Expired → Late Presentation
+    # If LC expired, presentation is ALWAYS late (regardless of what the period check says)
+    has_late_presentation_fail = any(r.check_id == 'presentation_period' and r.compliance == 'FAIL' for r in all_results)
+    if has_lc_expiry_fail and not has_late_presentation_fail:
+        expiry_r = next((r for r in all_results if r.check_id == 'lc_expiry' and r.compliance == 'FAIL'), None)
+        if expiry_r:
+            # Remove any PASS presentation_period result (it's wrong if LC expired)
+            all_results[:] = [r for r in all_results if not (r.check_id == 'presentation_period' and r.compliance == 'PASS')]
+            all_results.append(CheckResult(
+                check_id='presentation_period', clause_ref='F48',
+                condition='Documents presented after LC expiry — late presentation',
+                document_checked=expiry_r.document_checked,
+                findings=expiry_r.findings,
+                result='LATE PRESENTATION — documents presented after LC expiry date',
+                compliance='FAIL',
+                confidence=1.0,
+                severity='hard',
+            ))
+            progress_fn(f"  [presentation_period] Auto-flagged: LATE PRESENTATION (linked from LC expiry)")
 
     # Summary
     total_pass = sum(1 for r in all_results if r.compliance == 'PASS')

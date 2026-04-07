@@ -245,6 +245,9 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
             elif result_text in ('FAIL', 'NOT COMPLIED'):
                 fc += 1
                 compliance = 'NOT COMPLIED'
+            elif raw_compliance in ('N/A', 'NA', 'INFORMATIONAL', 'INFO', 'SKIPPED'):
+                compliance = 'N/A'
+                # Don't count N/A rows in pass/fail/review
             else:
                 rc += 1
                 compliance = 'REVIEW REQUIRED'
@@ -330,7 +333,9 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
     for sec in sections:
         for cg in sec.clauses:
             for vr in cg.rows:
-                # Skip purely informational rows
+                # Skip purely informational / N/A rows
+                if vr.compliance in ('N/A', 'INFORMATIONAL'):
+                    continue
                 if vr.result == 'INFORMATIONAL' or (vr.condition or '').strip().upper() == 'INFORMATIONAL':
                     continue
                 if not vr.condition and not vr.findings and not vr.document_checked:

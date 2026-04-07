@@ -1,0 +1,1216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compliance Report - ComplyTrade</title>
+    <style>
+        :root {
+            --primary: #1554ca;
+            --secondary: #0d3b8a;
+            --bg: #e8edf5;
+            --white: #fff;
+            --text: #333;
+            --border: #e0e6ed;
+            --success: #16a34a;
+            --success-bg: #dcfce7;
+            --success-bdr: #bbf7d0;
+            --danger: #dc2626;
+            --danger-bg: #fee2e2;
+            --danger-bdr: #fecaca;
+            --warning: #d97706;
+            --warning-bg: #fef3c7;
+            --warning-bdr: #fde68a;
+            --info: #2563eb;
+            --info-bg: #dbeafe;
+            --navy: #0f2b5e;
+            --light-blue: #e8f0fe;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1554ca 0%, #0d3b8a 100%);
+            min-height: 100vh;
+            padding: 24px;
+            color: var(--text);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        /* ── Navigation ── */
+        .nav-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            padding: 0 4px;
+        }
+        .nav-links {
+            display: flex;
+            gap: 8px;
+        }
+        .nav-link {
+            color: rgba(255,255,255,.85);
+            text-decoration: none;
+            font-size: .85em;
+            font-weight: 600;
+            padding: 6px 16px;
+            border-radius: 8px;
+            transition: all .2s;
+            background: rgba(255,255,255,.1);
+        }
+        .nav-link:hover { background: rgba(255,255,255,.25); color: #fff; }
+        .nav-link.active { background: rgba(255,255,255,.25); color: #fff; }
+        .nav-title {
+            color: #fff;
+            font-size: 1.1em;
+            font-weight: 700;
+            letter-spacing: .02em;
+        }
+
+        /* ── Card ── */
+        .card {
+            background: var(--white);
+            border-radius: 16px;
+            box-shadow: 0 12px 40px rgba(0,0,0,.25);
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+
+        /* ── Report Header ── */
+        .report-header {
+            padding: 28px 32px;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            color: #fff;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .report-header-left h1 {
+            font-size: 1.5em;
+            margin-bottom: 6px;
+            font-weight: 800;
+        }
+        .report-header-left .meta {
+            font-size: .88em;
+            opacity: .85;
+        }
+        .report-header-left .meta span {
+            margin-right: 16px;
+        }
+
+        .decision-badge {
+            display: inline-block;
+            padding: 8px 24px;
+            border-radius: 10px;
+            font-weight: 800;
+            font-size: 1.1em;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+        }
+        .decision-badge.COMPLIANT,
+        .decision-badge.compliant {
+            background: var(--success);
+            color: #fff;
+        }
+        .decision-badge.DISCREPANT,
+        .decision-badge.discrepant,
+        .decision-badge.non_compliant {
+            background: var(--danger);
+            color: #fff;
+        }
+        .decision-badge.REVIEW,
+        .decision-badge.review_required {
+            background: var(--warning);
+            color: #fff;
+        }
+
+        /* ── Summary Stats ── */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 14px;
+            padding: 20px 24px;
+        }
+        .stat-box {
+            text-align: center;
+            padding: 20px 16px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: #fafbff;
+        }
+        .stat-box .stat-num {
+            font-size: 2em;
+            font-weight: 800;
+            line-height: 1;
+        }
+        .stat-box .stat-label {
+            font-size: .82em;
+            font-weight: 600;
+            color: #666;
+            margin-top: 6px;
+            text-transform: uppercase;
+            letter-spacing: .04em;
+        }
+        .stat-box.total .stat-num { color: var(--primary); }
+        .stat-box.pass .stat-num { color: var(--success); }
+        .stat-box.pass { border-color: var(--success-bdr); background: var(--success-bg); }
+        .stat-box.fail .stat-num { color: var(--danger); }
+        .stat-box.fail { border-color: var(--danger-bdr); background: var(--danger-bg); }
+        .stat-box.review .stat-num { color: var(--warning); }
+        .stat-box.review { border-color: var(--warning-bdr); background: var(--warning-bg); }
+
+        /* ── Critical Findings & Review Items ── */
+        .findings-section {
+            padding: 20px 24px;
+        }
+        .findings-title {
+            font-size: 1.05em;
+            font-weight: 700;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .findings-title .count-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 24px;
+            height: 24px;
+            border-radius: 12px;
+            font-size: .8em;
+            font-weight: 800;
+            color: #fff;
+            padding: 0 8px;
+        }
+        .findings-title.critical .count-badge { background: var(--danger); }
+        .findings-title.review-t .count-badge { background: var(--warning); }
+
+        .findings-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: .88em;
+        }
+        .findings-table th {
+            padding: 10px 14px;
+            text-align: left;
+            font-weight: 700;
+            font-size: .82em;
+            text-transform: uppercase;
+            letter-spacing: .04em;
+            color: #fff;
+        }
+        .findings-table.critical-tbl th { background: var(--danger); }
+        .findings-table.review-tbl th { background: var(--warning); }
+
+        .findings-table td {
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: top;
+        }
+        .findings-table.critical-tbl { border: 2px solid var(--danger-bdr); border-radius: 10px; overflow: hidden; }
+        .findings-table.review-tbl { border: 2px solid var(--warning-bdr); border-radius: 10px; overflow: hidden; }
+
+        .findings-table .clause-ref-cell {
+            font-weight: 700;
+            font-family: monospace;
+            white-space: nowrap;
+            color: var(--secondary);
+        }
+
+        .override-cell {
+            min-width: 160px;
+        }
+        .override-select {
+            width: 100%;
+            padding: 5px 8px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: .92em;
+            font-weight: 600;
+            cursor: pointer;
+            margin-bottom: 4px;
+        }
+        .override-reason {
+            width: 100%;
+            padding: 5px 8px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: .85em;
+            resize: vertical;
+            min-height: 36px;
+            display: none;
+        }
+        .override-reason.visible { display: block; }
+
+        /* ── Section / Clause Tables ── */
+        .section-card {
+            margin: 0 0 20px;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0,0,0,.08);
+        }
+        .section-header {
+            background: #1A2744;
+            color: #fff;
+            padding: 14px 20px;
+            border-radius: 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+        }
+        .section-header:hover { opacity: .95; }
+        .section-header .section-title {
+            font-weight: 700;
+            font-size: 1em;
+        }
+        .section-header .section-counts {
+            display: flex;
+            gap: 8px;
+            font-size: .8em;
+            font-weight: 700;
+        }
+        .section-header .sc-pill {
+            padding: 2px 10px;
+            border-radius: 10px;
+        }
+        .sc-pill.p { background: rgba(22,163,74,.25); color: #86efac; }
+        .sc-pill.f { background: rgba(220,38,38,.25); color: #fca5a5; }
+        .sc-pill.r { background: rgba(217,119,6,.25); color: #fde68a; }
+
+        .section-body {
+            border: 1px solid #d0d7e2;
+            border-top: none;
+            overflow: hidden;
+        }
+
+        .clause-block {
+            border-bottom: 8px solid #f0f2f5;
+        }
+        .clause-block:last-child { border-bottom: none; }
+
+        .clause-text-bar {
+            background: #E8F0FE;
+            padding: 10px 20px;
+            font-size: .85em;
+            line-height: 1.5;
+            color: #1A2744;
+            border-bottom: 1px solid #C8D8F0;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .clause-ref-label {
+            font-weight: 800;
+            color: var(--primary);
+            font-family: monospace;
+            margin-right: 8px;
+        }
+
+        .clause-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: .85em;
+        }
+        .clause-table th {
+            padding: 10px 14px;
+            text-align: left;
+            font-weight: 700;
+            font-size: .78em;
+            text-transform: uppercase;
+            letter-spacing: .04em;
+            background: #2E7D8C;
+            color: #fff;
+            border-bottom: none;
+        }
+        .clause-table th:first-child { width: 30%; }
+        .clause-table th:nth-child(2) { width: 22%; }
+        .clause-table th:nth-child(3) { width: 16%; }
+        .clause-table th:nth-child(4) { width: 20%; }
+        .clause-table th:nth-child(5) { width: 12%; text-align: center; }
+        .clause-table td {
+            padding: 10px 14px;
+            border-bottom: 1px solid #eef1f5;
+            vertical-align: top;
+        }
+        .clause-table tr.row-pass { background: #E8F5E9; }
+        .clause-table tr.row-fail { background: #FFEBEE; }
+        .clause-table tr.row-review { background: #FFF9E6; }
+        .clause-table tr:hover { filter: brightness(.98); }
+
+        .compliance-cell {
+            min-width: 100px;
+        }
+        .comp-select {
+            padding: 5px 8px;
+            border-radius: 6px;
+            font-weight: 700;
+            font-size: .82em;
+            cursor: pointer;
+            font-family: inherit;
+            border: 2px solid transparent;
+            outline: none;
+            transition: all .15s;
+            width: 90px;
+            text-align: center;
+            appearance: auto;
+        }
+        .comp-select.PASS, .comp-select.COMPLIED {
+            background: var(--success-bg);
+            color: var(--success);
+            border-color: var(--success-bdr);
+        }
+        .comp-select.FAIL, .comp-select.NOT_COMPLIED {
+            background: var(--danger-bg);
+            color: var(--danger);
+            border-color: var(--danger-bdr);
+        }
+        .comp-select.REVIEW, .comp-select.REVIEW_REQUIRED {
+            background: var(--warning-bg);
+            color: var(--warning);
+            border-color: var(--warning-bdr);
+        }
+        .comp-select:focus {
+            box-shadow: 0 0 0 3px rgba(21,84,202,.2);
+        }
+
+        /* Result bar */
+        .clause-result-bar {
+            padding: 12px 20px;
+            font-weight: 700;
+            font-size: .92em;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .clause-result-bar.complied {
+            background: #E2EFDA;
+            color: #375623;
+            border-top: 2px solid #C5E1A5;
+        }
+        .clause-result-bar.not-complied {
+            background: #FCE4D6;
+            color: #C00000;
+            border-top: 2px solid #FFCCBC;
+        }
+        .clause-result-bar.review-bar {
+            background: #FFF9E6;
+            color: #C55A11;
+            border-top: 2px solid #FFE082;
+        }
+
+        /* ── Export Buttons ── */
+        .export-bar {
+            padding: 20px 24px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .btn {
+            padding: 10px 24px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 700;
+            font-size: .92em;
+            cursor: pointer;
+            font-family: inherit;
+            transition: all .2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,.15); }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-primary:hover { background: var(--secondary); }
+        .btn-success { background: var(--success); color: #fff; }
+        .btn-success:hover { background: #15803d; }
+        .btn-outline {
+            background: #fff;
+            color: var(--primary);
+            border: 2px solid var(--primary);
+        }
+        .btn-outline:hover { background: var(--primary); color: #fff; }
+
+        /* ── Toast ── */
+        .toast {
+            position: fixed;
+            top: 24px;
+            right: 24px;
+            padding: 14px 24px;
+            border-radius: 10px;
+            font-weight: 700;
+            font-size: .92em;
+            z-index: 9000;
+            box-shadow: 0 8px 24px rgba(0,0,0,.2);
+            transform: translateX(120%);
+            transition: transform .3s ease;
+        }
+        .toast.show { transform: translateX(0); }
+        .toast.success { background: var(--success-bg); color: var(--success); border: 1px solid var(--success-bdr); }
+        .toast.error { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-bdr); }
+        .toast.info { background: var(--info-bg); color: var(--info); border: 1px solid #93c5fd; }
+
+        /* ── Loading ── */
+        .loading-screen {
+            text-align: center;
+            padding: 80px 32px;
+            color: #666;
+        }
+        .loading-screen .spinner {
+            width: 48px;
+            height: 48px;
+            border: 4px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin .8s linear infinite;
+            margin: 0 auto 16px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Collapsible ── */
+        .collapsible-body { display: block; }
+        .collapsible-body.collapsed { display: none; }
+        .collapse-icon { transition: transform .2s; }
+        .collapse-icon.collapsed { transform: rotate(-90deg); }
+
+        /* ── Changed indicator ── */
+        .changed-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--warning);
+            margin-left: 6px;
+            animation: pulse-dot 1.5s ease infinite;
+        }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .4; }
+        }
+
+        /* ── Responsive ── */
+        @media (max-width: 900px) {
+            body { padding: 12px; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+            .report-header { flex-direction: column; align-items: flex-start; }
+            .section-card { margin: 0 0 16px; }
+            .findings-section, .export-bar, .stats-grid { padding-left: 16px; padding-right: 16px; }
+            .clause-table th, .clause-table td { padding: 8px 10px; font-size: .8em; }
+        }
+        @media (max-width: 600px) {
+            .stats-grid { grid-template-columns: 1fr 1fr; }
+            .nav-links { gap: 4px; }
+            .nav-link { font-size: .75em; padding: 4px 10px; }
+        }
+
+        /* ── Print Friendly ── */
+        @media print {
+            body { background: #fff; padding: 0; }
+            .nav-bar, .export-bar { display: none; }
+            .card { box-shadow: none; border: 1px solid #ccc; }
+            .section-card { margin: 0 0 12px; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- Navigation -->
+    <div class="nav-bar">
+        <div class="nav-title">ComplyTrade</div>
+        <div class="nav-links">
+            <a href="/" class="nav-link">Upload</a>
+            <a href="/jobs" class="nav-link">Jobs</a>
+            <a href="/checklist" class="nav-link">Checklist</a>
+            <a href="/report-viewer" class="nav-link active">Report</a>
+            <a href="/settings" class="nav-link">Settings</a>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div id="app">
+        <div class="card">
+            <div class="loading-screen" id="loading">
+                <div class="spinner"></div>
+                <div style="font-size:1.1em;font-weight:600;margin-bottom:6px">Loading Compliance Report</div>
+                <div style="font-size:.88em;color:#999" id="loading-msg">Fetching verification data...</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+    'use strict';
+
+    // ── State ──
+    const params = new URLSearchParams(location.search);
+    const JOB_ID = params.get('job_id') || '';
+    const LC_NUM = params.get('lc') || '';
+    const API = location.origin;
+
+    let DATA = null;       // raw step19 data
+    let OVERRIDES = {};    // { "sectionIdx-clauseIdx-rowIdx": { compliance: "PASS", reason: "" } }
+    let HAS_CHANGES = false;
+
+    // ── Init ──
+    if (!JOB_ID) {
+        document.getElementById('app').innerHTML = `<div class="card"><div class="loading-screen"><div style="font-size:1.2em;font-weight:700;color:var(--danger)">Missing job_id parameter</div><div style="margin-top:8px"><a href="/jobs" style="color:var(--primary)">Go to Jobs page</a></div></div></div>`;
+        return;
+    }
+
+    loadData();
+
+    async function loadData() {
+        try {
+            // Try loading step19 result directly from disk via job_id
+            // First try verify/result with job_id as verification_id (fallback path)
+            // Then try the step19 endpoint
+            let s19 = null;
+
+            // Approach 1: Load step19 raw data via dedicated endpoint
+            const r1 = await fetch(`${API}/api/step19/${JOB_ID}`);
+            if (r1.ok) {
+                s19 = await r1.json();
+            } else {
+                // Approach 2: Get verification history then load result
+                const histR = await fetch(`${API}/api/verify/history/${JOB_ID}/${encodeURIComponent(LC_NUM || 'unknown')}`);
+                if (histR.ok) {
+                    const hist = await histR.json();
+                    const entries = hist.history || [];
+                    if (entries.length > 0) {
+                        const vid = entries[entries.length - 1].verification_id;
+                        const vr = await fetch(`${API}/api/verify/result/${vid}`);
+                        if (vr.ok) {
+                            const vdata = await vr.json();
+                            // Reconstruct sections from results array
+                            s19 = reconstructFromVerifyResult(vdata);
+                        }
+                    }
+                }
+            }
+
+            if (!s19 || (!s19.sections && !s19.overall_decision)) {
+                document.getElementById('loading').innerHTML = `
+                    <div style="font-size:1.2em;font-weight:700;color:var(--danger)">No verification data found</div>
+                    <div style="margin-top:8px;font-size:.9em;color:#888">Job ID: ${JOB_ID}</div>
+                    <div style="margin-top:12px">
+                        <a href="/checklist?job_id=${JOB_ID}${LC_NUM ? '&lc=' + encodeURIComponent(LC_NUM) : ''}" class="btn btn-primary" style="text-decoration:none">Go to Checklist</a>
+                    </div>`;
+                return;
+            }
+
+            DATA = s19;
+            render();
+        } catch (e) {
+            document.getElementById('loading').innerHTML = `
+                <div style="font-size:1.1em;font-weight:700;color:var(--danger)">Error loading report</div>
+                <div style="margin-top:6px;font-size:.88em;color:#888">${e.message}</div>`;
+        }
+    }
+
+    function reconstructFromVerifyResult(vdata) {
+        // Build a pseudo-step19 structure from the verify/result response
+        const sections = [];
+        const sectionMap = {};
+        const results = vdata.results || [];
+
+        for (const r of results) {
+            const ref = r.clause_ref || '';
+            const tag = ref.split('-')[0] || r.type || 'MISC';
+            const sKey = 'F' + tag.replace(/^F/, '');
+
+            if (!sectionMap[sKey]) {
+                sectionMap[sKey] = {
+                    section_ref: sKey,
+                    section_title: sKey,
+                    pass_count: 0, fail_count: 0, review_count: 0,
+                    clauses: []
+                };
+                sections.push(sectionMap[sKey]);
+            }
+
+            const rows = (r.checks || []).map(c => ({
+                condition: c.check || '',
+                findings: c.findings || '',
+                document_checked: c.document_checked || '',
+                result: c.detail || '',
+                compliance: c.status === 'pass' ? 'COMPLIED' : c.status === 'fail' ? 'NOT COMPLIED' : 'REVIEW REQUIRED'
+            }));
+
+            const pCount = rows.filter(x => x.compliance === 'COMPLIED').length;
+            const fCount = rows.filter(x => x.compliance === 'NOT COMPLIED').length;
+            const rCount = rows.filter(x => x.compliance === 'REVIEW REQUIRED').length;
+
+            sectionMap[sKey].pass_count += pCount;
+            sectionMap[sKey].fail_count += fCount;
+            sectionMap[sKey].review_count += rCount;
+
+            const overall = r.status === 'compliant' ? 'COMPLIED' : r.status === 'non_compliant' ? 'NOT COMPLIED' : 'REVIEW REQUIRED';
+            sectionMap[sKey].clauses.push({
+                clause_ref: ref,
+                clause_text: r.requirement || '',
+                overall_result: overall,
+                pass_count: pCount,
+                fail_count: fCount,
+                review_count: rCount,
+                rows: rows
+            });
+        }
+
+        // Build critical findings and review items
+        const critical_findings = [];
+        const review_items = [];
+        for (const sec of sections) {
+            for (const cl of sec.clauses) {
+                for (const row of cl.rows) {
+                    const entry = {
+                        clause_ref: cl.clause_ref,
+                        clause_text: cl.clause_text,
+                        condition: row.condition,
+                        findings: row.findings,
+                        result: row.result,
+                        document_checked: row.document_checked
+                    };
+                    if (row.compliance === 'NOT COMPLIED') critical_findings.push(entry);
+                    else if (row.compliance === 'REVIEW REQUIRED') review_items.push(entry);
+                }
+            }
+        }
+
+        return {
+            overall_decision: vdata.overall_decision || vdata.summary?.overall_decision || 'REVIEW REQUIRED',
+            total_pass: vdata.total_pass || vdata.summary?.total_pass || 0,
+            total_fail: vdata.total_fail || vdata.summary?.total_fail || 0,
+            total_review: vdata.total_review || vdata.summary?.total_review || 0,
+            total_clauses: results.length,
+            critical_findings: critical_findings,
+            review_items: review_items,
+            sections: sections,
+            elapsed_seconds: vdata.elapsed_seconds || 0
+        };
+    }
+
+    // ── Compute live stats (respecting overrides) ──
+    function computeStats() {
+        let tp = 0, tf = 0, tr = 0, totalClauses = 0;
+        const criticals = [];
+        const reviews = [];
+
+        for (let si = 0; si < (DATA.sections || []).length; si++) {
+            const sec = DATA.sections[si];
+            for (let ci = 0; ci < (sec.clauses || []).length; ci++) {
+                const cl = sec.clauses[ci];
+                totalClauses++;
+                let clauseFail = false, clauseReview = false;
+
+                for (let ri = 0; ri < (cl.rows || []).length; ri++) {
+                    const key = `${si}-${ci}-${ri}`;
+                    const row = cl.rows[ri];
+                    const compliance = OVERRIDES[key] ? OVERRIDES[key].compliance : normalizeCompliance(row.compliance);
+
+                    if (compliance === 'PASS') tp++;
+                    else if (compliance === 'FAIL') {
+                        tf++;
+                        clauseFail = true;
+                        criticals.push({
+                            clause_ref: cl.clause_ref,
+                            condition: row.condition,
+                            result: row.result,
+                            findings: row.findings,
+                            document_checked: row.document_checked,
+                            overridden: !!OVERRIDES[key]
+                        });
+                    } else {
+                        tr++;
+                        clauseReview = true;
+                        reviews.push({
+                            clause_ref: cl.clause_ref,
+                            condition: row.condition,
+                            result: row.result,
+                            findings: row.findings,
+                            document_checked: row.document_checked,
+                            overridden: !!OVERRIDES[key]
+                        });
+                    }
+                }
+            }
+        }
+
+        let decision = DATA.overall_decision || 'REVIEW REQUIRED';
+        if (tf === 0 && tr === 0) decision = 'COMPLIANT';
+        else if (tf > 0) decision = 'DISCREPANT';
+        else decision = 'REVIEW REQUIRED';
+
+        return { totalClauses, tp, tf, tr, decision, criticals, reviews };
+    }
+
+    function normalizeCompliance(c) {
+        if (!c) return 'REVIEW';
+        const u = String(c).toUpperCase().trim();
+        if (u === 'COMPLIED' || u === 'PASS') return 'PASS';
+        if (u === 'NOT COMPLIED' || u === 'FAIL' || u === 'NOT_COMPLIED') return 'FAIL';
+        return 'REVIEW';
+    }
+
+    // ── Main render ──
+    function render() {
+        const stats = computeStats();
+        const app = document.getElementById('app');
+
+        let html = '';
+
+        // 1. Header card
+        html += `<div class="card">`;
+        html += renderHeader(stats);
+        html += renderStats(stats);
+        html += `</div>`;
+
+        // 2. Critical Findings
+        if (stats.criticals.length > 0) {
+            html += `<div class="card">`;
+            html += renderCriticalFindings(stats.criticals);
+            html += `</div>`;
+        }
+
+        // 3. Review Items
+        if (stats.reviews.length > 0) {
+            html += `<div class="card">`;
+            html += renderReviewItems(stats.reviews);
+            html += `</div>`;
+        }
+
+        // 4. Clause-by-Clause Sections
+        html += `<div class="card" style="background:transparent;box-shadow:none">`;
+        for (let si = 0; si < (DATA.sections || []).length; si++) {
+            html += renderSection(si, DATA.sections[si]);
+        }
+        html += `</div>`;
+
+        // 5. Export Buttons
+        html += `<div class="card"><div class="export-bar">`;
+        html += `<button class="btn btn-outline" onclick="window.print()">Print Report</button>`;
+        html += `<button class="btn btn-primary" onclick="RV.downloadPDF()">Download PDF</button>`;
+        html += `<button class="btn btn-success" id="save-btn" onclick="RV.saveChanges()" ${HAS_CHANGES ? '' : 'style="opacity:.5;cursor:not-allowed" disabled'}>Save Changes${HAS_CHANGES ? ' <span class="changed-indicator"></span>' : ''}</button>`;
+        html += `</div></div>`;
+
+        app.innerHTML = html;
+    }
+
+    function renderHeader(stats) {
+        const decClass = stats.decision.replace(/\s+/g, '_');
+        const dateStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+        return `
+            <div class="report-header">
+                <div class="report-header-left">
+                    <h1>Compliance Report</h1>
+                    <div class="meta">
+                        <span>LC: <strong>${escHtml(LC_NUM || 'N/A')}</strong></span>
+                        <span>Job: <strong>${escHtml(JOB_ID.substring(0, 8))}...</strong></span>
+                        <span>Date: <strong>${dateStr}</strong></span>
+                        ${DATA.elapsed_seconds ? `<span>Time: <strong>${DATA.elapsed_seconds}s</strong></span>` : ''}
+                    </div>
+                </div>
+                <div class="decision-badge ${decClass}">${stats.decision}</div>
+            </div>`;
+    }
+
+    function renderStats(stats) {
+        return `
+            <div class="stats-grid">
+                <div class="stat-box total">
+                    <div class="stat-num" id="stat-total">${stats.tp + stats.tf + stats.tr}</div>
+                    <div class="stat-label">Total Conditions</div>
+                </div>
+                <div class="stat-box pass">
+                    <div class="stat-num" id="stat-pass">${stats.tp}</div>
+                    <div class="stat-label">Pass</div>
+                </div>
+                <div class="stat-box fail">
+                    <div class="stat-num" id="stat-fail">${stats.tf}</div>
+                    <div class="stat-label">Fail</div>
+                </div>
+                <div class="stat-box review">
+                    <div class="stat-num" id="stat-review">${stats.tr}</div>
+                    <div class="stat-label">Review</div>
+                </div>
+            </div>`;
+    }
+
+    function renderCriticalFindings(criticals) {
+        let h = `<div class="findings-section">
+            <div class="findings-title critical">
+                <span>Critical Findings (Non-Compliant)</span>
+                <span class="count-badge">${criticals.length}</span>
+            </div>
+            <table class="findings-table critical-tbl">
+                <thead><tr>
+                    <th style="width:90px">Clause</th>
+                    <th>Result / Findings</th>
+                    <th style="width:140px">Document</th>
+                    <th style="width:160px">Override</th>
+                </tr></thead><tbody>`;
+
+        for (const cf of criticals) {
+            h += `<tr>
+                <td class="clause-ref-cell">${escHtml(cf.clause_ref)}</td>
+                <td>
+                    <div style="font-weight:600;margin-bottom:3px">${escHtml(cf.result || '')}</div>
+                    <div style="font-size:.9em;color:#666">${escHtml(cf.findings || '')}</div>
+                </td>
+                <td style="font-size:.88em">${escHtml(cf.document_checked || '')}</td>
+                <td class="override-cell">
+                    <select class="override-select" onchange="RV.overrideFinding(this, '${escAttr(cf.clause_ref)}', 'critical')">
+                        <option value="">-- Keep FAIL --</option>
+                        <option value="PASS">Override to PASS</option>
+                        <option value="REVIEW">Override to REVIEW</option>
+                    </select>
+                    <textarea class="override-reason" placeholder="Reason for override..." oninput="RV.updateOverrideReason(this, '${escAttr(cf.clause_ref)}')"></textarea>
+                </td>
+            </tr>`;
+        }
+
+        h += `</tbody></table></div>`;
+        return h;
+    }
+
+    function renderReviewItems(reviews) {
+        let h = `<div class="findings-section">
+            <div class="findings-title review-t">
+                <span>Review Required Items</span>
+                <span class="count-badge">${reviews.length}</span>
+            </div>
+            <table class="findings-table review-tbl">
+                <thead><tr>
+                    <th style="width:90px">Clause</th>
+                    <th>Result / Findings</th>
+                    <th style="width:140px">Document</th>
+                    <th style="width:160px">Override</th>
+                </tr></thead><tbody>`;
+
+        for (const ri of reviews) {
+            h += `<tr>
+                <td class="clause-ref-cell">${escHtml(ri.clause_ref)}</td>
+                <td>
+                    <div style="font-weight:600;margin-bottom:3px">${escHtml(ri.result || '')}</div>
+                    <div style="font-size:.9em;color:#666">${escHtml(ri.findings || '')}</div>
+                </td>
+                <td style="font-size:.88em">${escHtml(ri.document_checked || '')}</td>
+                <td class="override-cell">
+                    <select class="override-select" onchange="RV.overrideFinding(this, '${escAttr(ri.clause_ref)}', 'review')">
+                        <option value="">-- Keep REVIEW --</option>
+                        <option value="PASS">Override to PASS</option>
+                        <option value="FAIL">Override to FAIL</option>
+                    </select>
+                    <textarea class="override-reason" placeholder="Reason for override..." oninput="RV.updateOverrideReason(this, '${escAttr(ri.clause_ref)}')"></textarea>
+                </td>
+            </tr>`;
+        }
+
+        h += `</tbody></table></div>`;
+        return h;
+    }
+
+    function renderSection(si, section) {
+        // Compute section-level counts respecting overrides
+        let sp = 0, sf = 0, sr = 0;
+        for (let ci = 0; ci < (section.clauses || []).length; ci++) {
+            const cl = section.clauses[ci];
+            for (let ri = 0; ri < (cl.rows || []).length; ri++) {
+                const key = `${si}-${ci}-${ri}`;
+                const comp = OVERRIDES[key] ? OVERRIDES[key].compliance : normalizeCompliance(cl.rows[ri].compliance);
+                if (comp === 'PASS') sp++;
+                else if (comp === 'FAIL') sf++;
+                else sr++;
+            }
+        }
+
+        let h = `<div class="section-card" id="sec-${si}">
+            <div class="section-header" onclick="RV.toggleSection(${si})">
+                <div class="section-title">
+                    <span class="collapse-icon" id="sec-icon-${si}">\u25BC</span>
+                    ${escHtml(section.section_ref || '')} - ${escHtml(section.section_title || '')}
+                </div>
+                <div class="section-counts">
+                    <span class="sc-pill p" id="sec-p-${si}">${sp} PASS</span>
+                    ${sf > 0 ? `<span class="sc-pill f" id="sec-f-${si}">${sf} FAIL</span>` : ''}
+                    ${sr > 0 ? `<span class="sc-pill r" id="sec-r-${si}">${sr} REVIEW</span>` : ''}
+                </div>
+            </div>
+            <div class="section-body collapsible-body" id="sec-body-${si}">`;
+
+        for (let ci = 0; ci < (section.clauses || []).length; ci++) {
+            h += renderClause(si, ci, section.clauses[ci]);
+        }
+
+        h += `</div></div>`;
+        return h;
+    }
+
+    function renderClause(si, ci, clause) {
+        const ref = clause.clause_ref || '';
+        const text = clause.clause_text || '';
+
+        // Determine clause overall result respecting overrides
+        let hasFail = false, hasReview = false;
+        for (let ri = 0; ri < (clause.rows || []).length; ri++) {
+            const key = `${si}-${ci}-${ri}`;
+            const comp = OVERRIDES[key] ? OVERRIDES[key].compliance : normalizeCompliance(clause.rows[ri].compliance);
+            if (comp === 'FAIL') hasFail = true;
+            if (comp === 'REVIEW') hasReview = true;
+        }
+
+        const clauseResult = hasFail ? 'not-complied' : hasReview ? 'review-bar' : 'complied';
+        const clauseResultText = hasFail ? 'Result: Not Complied' : hasReview ? 'Result: Review Required' : 'Result: Complied';
+
+        // Field description lookup
+        const _TAG_DESCS = {
+            '45A':'Description of Goods','46A':'Documents Required','47A':'Additional Conditions',
+            '45B':'Description of Goods (Amendment)','46B':'Documents Required (Amendment)',
+            '47B':'Additional Conditions (Amendment)','78':'Instructions to Bank',
+            '31D':'Date and Place of Expiry','31C':'Date of Issue','32B':'Currency and Amount',
+            '44C':'Latest Date of Shipment','44E':'Port of Loading','44F':'Port of Discharge',
+            '48':'Period for Presentation','42C':'Drafts At','50':'Applicant','59':'Beneficiary',
+        };
+        const _tag = ref.split('-')[0].replace(/^F/,'');
+        const _fieldDesc = _TAG_DESCS[_tag] || '';
+
+        let h = `<div class="clause-block" id="clause-${si}-${ci}">`;
+
+        // Navy header bar — LC Field ref on left, section heading on right
+        h += `<div style="background:#1A2744;color:#fff;padding:8px 16px;display:flex;justify-content:space-between;align-items:center;font-size:.85em">
+            <b>LC Field: ${escHtml(ref)}</b>
+            <b>${escHtml(_fieldDesc)}</b>
+        </div>`;
+
+        // Clause text bar (light blue)
+        if (text) {
+            h += `<div class="clause-text-bar">${escHtml(text)}</div>`;
+        }
+
+        // Conditions table
+        if (clause.rows && clause.rows.length > 0) {
+            h += `<table class="clause-table">
+                <thead><tr>
+                    <th style="width:25%">Condition(s)</th>
+                    <th style="width:25%">Findings</th>
+                    <th style="width:15%">Document Checked</th>
+                    <th style="width:20%">Result</th>
+                    <th style="width:15%">Compliance</th>
+                </tr></thead><tbody>`;
+
+            for (let ri = 0; ri < clause.rows.length; ri++) {
+                const row = clause.rows[ri];
+                const key = `${si}-${ci}-${ri}`;
+                const comp = OVERRIDES[key] ? OVERRIDES[key].compliance : normalizeCompliance(row.compliance);
+                const rowClass = comp === 'PASS' ? 'row-pass' : comp === 'FAIL' ? 'row-fail' : 'row-review';
+                const badgeClass = comp === 'PASS' ? 'PASS' : comp === 'FAIL' ? 'FAIL' : 'REVIEW';
+                const badgeLabel = comp === 'PASS' ? 'PASS' : comp === 'FAIL' ? 'FAIL' : 'REVIEW';
+
+                h += `<tr class="${rowClass}" id="row-${key}">
+                    <td>${escHtml(row.condition || '')}</td>
+                    <td>${escHtml(row.findings || row.found_text || '')}</td>
+                    <td>${escHtml(row.document_checked || '')}</td>
+                    <td>${escHtml(row.result || '')}</td>
+                    <td class="compliance-cell" style="text-align:center">
+                        <select class="comp-select ${badgeClass}" id="sel-${key}" onchange="RV.changeCompliance('${key}', this.value)">
+                            <option value="PASS" ${comp==='PASS'?'selected':''}>PASS</option>
+                            <option value="FAIL" ${comp==='FAIL'?'selected':''}>FAIL</option>
+                            <option value="REVIEW" ${comp==='REVIEW'?'selected':''}>REVIEW</option>
+                        </select>
+                    </td>
+                </tr>`;
+            }
+
+            h += `</tbody></table>`;
+        }
+
+        // Result bar
+        h += `<div class="clause-result-bar ${clauseResult}" id="result-bar-${si}-${ci}">${clauseResultText}</div>`;
+
+        h += `</div>`;
+        return h;
+    }
+
+    // ── Public API (exposed to window) ──
+    window.RV = {};
+
+    RV.toggleSection = function(si) {
+        const body = document.getElementById(`sec-body-${si}`);
+        const icon = document.getElementById(`sec-icon-${si}`);
+        if (body) body.classList.toggle('collapsed');
+        if (icon) icon.classList.toggle('collapsed');
+    };
+
+    // toggleDropdown removed — using native <select> instead
+
+    RV.changeCompliance = function(key, newValue) {
+        const parts = key.split('-');
+        const si = parseInt(parts[0]), ci = parseInt(parts[1]), ri = parseInt(parts[2]);
+        const row = DATA.sections[si].clauses[ci].rows[ri];
+        const original = normalizeCompliance(row.compliance);
+
+        // Update select styling
+        const sel = document.getElementById(`sel-${key}`);
+        if (sel) {
+            sel.className = `comp-select ${newValue}`;
+        }
+
+        if (newValue === original) {
+            // Revert to original — remove override
+            delete OVERRIDES[key];
+        } else {
+            OVERRIDES[key] = { compliance: newValue, reason: (OVERRIDES[key] || {}).reason || '' };
+        }
+
+        HAS_CHANGES = Object.keys(OVERRIDES).length > 0;
+
+        // Full re-render to update everything consistently
+        render();
+        showToast(`Compliance updated to ${newValue}`, 'info');
+    };
+
+    RV.overrideFinding = function(select, clauseRef, type) {
+        const val = select.value;
+        const reasonEl = select.parentElement.querySelector('.override-reason');
+        if (val) {
+            if (reasonEl) reasonEl.classList.add('visible');
+            // Find and update the corresponding row
+            const newComp = val;
+            for (let si = 0; si < DATA.sections.length; si++) {
+                for (let ci = 0; ci < DATA.sections[si].clauses.length; ci++) {
+                    const cl = DATA.sections[si].clauses[ci];
+                    if (cl.clause_ref !== clauseRef) continue;
+                    for (let ri = 0; ri < cl.rows.length; ri++) {
+                        const comp = normalizeCompliance(cl.rows[ri].compliance);
+                        if ((type === 'critical' && comp === 'FAIL') || (type === 'review' && comp === 'REVIEW')) {
+                            const key = `${si}-${ci}-${ri}`;
+                            if (!OVERRIDES[key]) {
+                                OVERRIDES[key] = { compliance: newComp, reason: '' };
+                                HAS_CHANGES = true;
+                            }
+                        }
+                    }
+                }
+            }
+            render();
+            showToast(`${clauseRef} overridden to ${newComp}`, 'info');
+        } else {
+            if (reasonEl) reasonEl.classList.remove('visible');
+        }
+    };
+
+    RV.updateOverrideReason = function(textarea, clauseRef) {
+        // Store reason in overrides for matching clause
+        for (const key in OVERRIDES) {
+            const parts = key.split('-');
+            const cl = DATA.sections[parseInt(parts[0])].clauses[parseInt(parts[1])];
+            if (cl.clause_ref === clauseRef) {
+                OVERRIDES[key].reason = textarea.value;
+            }
+        }
+    };
+
+    RV.downloadPDF = async function() {
+        try {
+            showToast('Generating PDF...', 'info');
+            const url = `${API}/api/report/${JOB_ID}/${encodeURIComponent(LC_NUM || 'unknown')}`;
+            const r = await fetch(url);
+            if (!r.ok) {
+                const e = await r.json().catch(() => ({}));
+                showToast(e.error || e.detail || 'Failed to generate report', 'error');
+                return;
+            }
+            const blob = await r.blob();
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${LC_NUM || JOB_ID}_compliance_report.pdf`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(a.href);
+            showToast('Report downloaded', 'success');
+        } catch (e) {
+            showToast('Download failed: ' + e.message, 'error');
+        }
+    };
+
+    RV.saveChanges = async function() {
+        if (!HAS_CHANGES) return;
+
+        const overridesList = [];
+        for (const key in OVERRIDES) {
+            const parts = key.split('-');
+            const si = parseInt(parts[0]), ci = parseInt(parts[1]), ri = parseInt(parts[2]);
+            const sec = DATA.sections[si];
+            const cl = sec.clauses[ci];
+            overridesList.push({
+                section_ref: sec.section_ref,
+                clause_ref: cl.clause_ref,
+                row_index: ri,
+                original_compliance: cl.rows[ri].compliance,
+                new_compliance: OVERRIDES[key].compliance,
+                reason: OVERRIDES[key].reason || ''
+            });
+        }
+
+        try {
+            showToast('Saving changes...', 'info');
+            const r = await fetch(`${API}/api/verify/update/${JOB_ID}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ overrides: overridesList, job_id: JOB_ID, lc_number: LC_NUM })
+            });
+            if (r.ok) {
+                showToast('Changes saved successfully', 'success');
+                HAS_CHANGES = false;
+                const saveBtn = document.getElementById('save-btn');
+                if (saveBtn) { saveBtn.disabled = true; saveBtn.style.opacity = '.5'; saveBtn.style.cursor = 'not-allowed'; }
+            } else {
+                const e = await r.json().catch(() => ({}));
+                showToast(e.error || e.detail || 'Save failed', 'error');
+            }
+        } catch (e) {
+            showToast('Save failed: ' + e.message, 'error');
+        }
+    };
+
+    // Native <select> used for compliance — no custom dropdown needed
+
+    // ── Helpers ──
+    function escHtml(s) {
+        if (!s) return '';
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    function escAttr(s) {
+        return escHtml(s).replace(/'/g,'&#39;');
+    }
+
+    function showToast(msg, type) {
+        const t = document.getElementById('toast');
+        t.textContent = msg;
+        t.className = 'toast ' + (type || 'info');
+        t.classList.add('show');
+        clearTimeout(t._timer);
+        t._timer = setTimeout(() => t.classList.remove('show'), 3000);
+    }
+
+})();
+</script>
+</body>
+</html>

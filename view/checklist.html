@@ -270,6 +270,26 @@
         .inst-h:hover{opacity:.95}
         .inst-b{display:none;padding:8px 10px;max-height:400px;overflow-y:auto}
         .inst-b.open{display:block}
+
+        /* ── Document Packet Override ── */
+        .pkt-edit-form{background:#f8f9ff;border:1px solid var(--primary);border-radius:6px;padding:10px 12px;margin-top:6px;animation:toastIn .2s ease}
+        .pkt-edit-form .pkt-fg{margin-bottom:8px}
+        .pkt-edit-form .pkt-fg label{display:block;font-size:.72em;font-weight:700;color:#666;margin-bottom:3px;text-transform:uppercase;letter-spacing:.03em}
+        .pkt-edit-form .pkt-fg select,.pkt-edit-form .pkt-fg textarea{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:.82em;box-sizing:border-box}
+        .pkt-edit-form .pkt-fg textarea{resize:vertical;min-height:36px}
+        .pkt-edit-btn{background:none;border:1px solid #c7d2fe;border-radius:4px;cursor:pointer;font-size:.68em;padding:2px 8px;color:#6366f1;font-weight:600;transition:all .15s;flex-shrink:0}
+        .pkt-edit-btn:hover{background:#eef2ff;border-color:#818cf8;color:#4f46e5}
+
+        /* ── Amended Field Badge ── */
+        .amended-pill{display:inline-block;font-size:.62em;font-weight:800;padding:1px 7px;border-radius:10px;background:#fef3c7;color:#92400e;border:1px solid #fde68a;letter-spacing:.04em;vertical-align:middle;margin-left:4px;text-transform:uppercase}
+        .fr.amended-highlight{background:linear-gradient(90deg,#fffbeb,#fef9c3);border-left:3px solid #f59e0b}
+
+        /* ── Final LC Field Edit ── */
+        .flc-edit-btn{background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:.68em;padding:2px 7px;color:#888;transition:all .15s;flex-shrink:0;margin-left:6px}
+        .flc-edit-btn:hover{background:#f0f4ff;color:var(--primary);border-color:var(--primary)}
+        .flc-edit-area{width:100%;padding:6px 8px;border:1px solid var(--primary);border-radius:5px;font-family:inherit;font-size:.82em;resize:vertical;min-height:36px;box-sizing:border-box;margin-top:4px}
+        .flc-edit-row{display:flex;gap:5px;margin-top:4px}
+        .flc-edit-row .btn{padding:3px 10px;font-size:.72em}
     </style>
 </head>
 <body>
@@ -493,9 +513,22 @@ async function init(){
         setS(`Fetching results for job: ${jid}`);
         const r=await fetch(`${API}/api/result/${jid}`);
         if(!r.ok)throw new Error(`Server ${r.status}`);
-        const data=await r.json();
-        const flc=(data.consolidated_lcs||[]).find(i=>i.lc_number===lc);
-        if(!flc)throw new Error(`LC #${lc} not found.`);
+        let data=await r.json();
+        // If job is still processing, wait and retry up to 5 times
+        if(data.status==='processing'||!data.consolidated_lcs){
+            for(let _retry=0;_retry<5;_retry++){
+                setS(`Job is processing (Step ${data.current_step||'?'})... retrying in 3s`);
+                await new Promise(r=>setTimeout(r,3000));
+                const _rr=await fetch(`${API}/api/result/${jid}`);
+                if(_rr.ok){data=await _rr.json();if(data.consolidated_lcs&&data.consolidated_lcs.length>0)break;}
+            }
+        }
+        let flc=(data.consolidated_lcs||[]).find(i=>i.lc_number===lc);
+        if(!flc&&data.consolidated_lcs&&data.consolidated_lcs.length>0){
+            // Try partial match (LC number might have different formatting)
+            flc=data.consolidated_lcs.find(i=>(i.lc_number||'').includes(lc)||lc.includes(i.lc_number||''));
+        }
+        if(!flc)throw new Error(`LC #${lc} not found. The job may still be processing — please wait and refresh.`);
         const cf=flc.consolidated_fields||flc.data?.consolidated_fields||{};
         // Get pre-split clauses from Final LC (Step 6 splits 46A/47A/45A etc.)
         const _flcData = flc.data || flc;
@@ -627,7 +660,8 @@ async function init(){
             // Standalone LC field — strip the label prefix from display text
             const vt=_cleanSwiftVal(fk, _valText(val));
             if(!vt.trim())continue;
-            const amended=typeof val==='object'&&!Array.isArray(val)?!!val.amended:false;
+            const _af=cf._amended_fields||[];
+            const amended=(typeof val==='object'&&!Array.isArray(val)?!!val.amended:false)||_af.includes(fk)||_af.includes(_FIELD_TO_TAG[fk]||'');
             const aby=typeof val==='object'&&!Array.isArray(val)?(val.amended_by||[]):[];
             const swiftTag=_FIELD_TO_TAG[fk]||fk;
             const tagLabel=_TAG_LABELS[swiftTag]||_TAG_LABELS[fk]||_label(fk);
@@ -709,9 +743,13 @@ async function init(){
                         const t=c.text||c.clause_text||c.value||'';
                         if(!t.trim())return;
                         const cn=c.clause_number||c.clause_id||(idx+1);
-                        _pushClause(c.swift_field||c.parent_tag||fn, c.swift_field_ref||c.parent_tag||fn, cn, t, c.amended||false, c.amended_by||[], fn);
+                        const _caf=cf._amended_fields||[];
+                        const _camended=(c.amended||false)||_caf.includes(fn)||_caf.includes(c.parent_tag||'')||_caf.includes(_FIELD_TO_TAG[fn]||'');
+                        _pushClause(c.swift_field||c.parent_tag||fn, c.swift_field_ref||c.parent_tag||fn, cn, t, _camended, c.amended_by||[], fn);
                     }else if(String(c).trim()){
-                        _pushClause(fn,fn,idx+1,String(c),false,[],fn);
+                        const _caf2=cf._amended_fields||[];
+                        const _camended2=_caf2.includes(fn)||_caf2.includes(_FIELD_TO_TAG[fn]||'');
+                        _pushClause(fn,fn,idx+1,String(c),_camended2,[],fn);
                     }
                 });
             }else if(typeof fd==='string'&&fd.trim()){
@@ -738,7 +776,7 @@ async function init(){
         }
         const sfl={};
         for(const[k,v]of Object.entries(cf)){if(!Array.isArray(v)&&typeof v==='object'&&v.value!==undefined)sfl[k]=v}
-        D={pts,lc:flc.lc_number,jid,cf,sf:sfl,docs:data.documents||[],warnings:data.warnings||[],idate:flc.original_issue_date||'',acnt:flc.amendments_applied||0,arcnt:flc.amendments_rejected||0,asum:flc.amendments_summary||[]};
+        D={pts,lc:flc.lc_number,jid,cf,sf:sfl,docs:data.documents||[],warnings:data.warnings||[],idate:flc.original_issue_date||'',acnt:flc.amendments_applied||0,arcnt:flc.amendments_rejected||0,asum:flc.amendments_summary||[],amendedFields:cf._amended_fields||[]};
         document.getElementById('lc-title').innerText=`LC Verification: ${D.lc}`;
         const amMeta=D.arcnt>0?`${D.acnt} amendments (${D.arcnt} rejected)`:`${D.acnt} amendments`;
         document.getElementById('lc-meta').innerHTML=`Issue: ${D.idate} &middot; ${amMeta} &middot; ${pts.length} clauses &middot; ${D.docs.length} docs`;
@@ -1004,6 +1042,7 @@ function renderSB(){
         vh=`<span class="verd ${s.overall_verdict}">${s.overall_verdict.replace(/_/g,' ')}</span>
             ${s.non_compliant>0?`<button class="rbtn" style="background:linear-gradient(135deg,#dc2626,#b91c1c)" onclick="showDiscrepancySummary()">&#9888; ${s.non_compliant} Discrepancies</button>`:''}
             <button class="rbtn dl" onclick="downloadReport()">📄 Download Report</button>
+            <button class="rbtn dl" style="background:#0d6efd" onclick="window.open('/report-viewer?job_id='+encodeURIComponent(D.jid)+'&lc='+encodeURIComponent(D.lc||''),'_blank')">📊 View Report</button>
             <button class="rbtn sec" id="rbtn" onclick="runV()">↻ Re-run</button>`;
     }else{
         vh=`<span class="verd PENDING">NOT VERIFIED</span>
@@ -1197,8 +1236,8 @@ function selPt(i){
         }
 
         if(v.matched_documents?.length){
-            h+='<div class="stit">Matched Documents</div><div style="margin-bottom:14px;display:flex;flex-wrap:wrap;gap:3px">';
-            v.matched_documents.forEach(d=>{
+            h+='<div class="stit">Matched Documents</div><div style="margin-bottom:14px">';
+            v.matched_documents.forEach((d,di)=>{
                 const cpCls=d.copy_status==='original'?'color:#15803d;background:#dcfce7;border:1px solid #bbf7d0':d.copy_status==='copy'||d.copy_status==='non_negotiable_copy'?'color:#3730a3;background:#e0e7ff;border:1px solid #c7d2fe':d.copy_status==='notification'?'color:#6b7280;background:#f3f4f6;border:1px solid #d1d5db':'color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0';
                 const cpLbl=d.copy_label||d.copy_status||'';
                 const markStatus=d.marking_status||'';
@@ -1206,7 +1245,13 @@ function selPt(i){
                 // Check if this doc has LC mismatch
                 const mmDoc=(D.docs||[]).find(md=>md.page_reference===d.page&&md.lc_mismatch);
                 const mmBadge=mmDoc?`<span class="lc-mismatch-badge" title="References ${esc(mmDoc.referenced_lc||'?')} instead of ${esc(mmDoc.expected_lc||'?')}">WRONG LC</span>`:'';
-                h+=`<span class="md"><span class="dt">${esc(d.type)}</span><span class="dp">pg ${d.page}</span>${d.title?`<span style="color:#888">— ${esc(d.title.substring(0,35))}</span>`:''}${cpLbl?`<span style="padding:1px 6px;border-radius:3px;font-size:.7em;font-weight:700;${cpCls}">${esc(cpLbl)}</span>`:''}${markIcon}${mmBadge}</span>`});
+                const pktId=`pkt-${i}-${di}`;
+                h+=`<div style="display:flex;flex-wrap:wrap;gap:3px;align-items:center;margin-bottom:3px">
+                    <span class="md"><span class="dt">${esc(d.type)}</span><span class="dp">pg ${d.page}</span>${d.title?`<span style="color:#888">— ${esc(d.title.substring(0,35))}</span>`:''}${cpLbl?`<span style="padding:1px 6px;border-radius:3px;font-size:.7em;font-weight:700;${cpCls}">${esc(cpLbl)}</span>`:''}${markIcon}${mmBadge}</span>
+                    <button class="pkt-edit-btn" onclick="togglePktEdit('${pktId}',${i},${di})" title="Override classification">&#9998;</button>
+                </div>
+                <div id="${pktId}" style="display:none"></div>`;
+            });
             h+='</div>';
         }
 
@@ -1380,12 +1425,13 @@ function selPt(i){
     }
 
     // LC Fields
-    h+='<div class="stit">LC Key Fields</div><div style="margin-bottom:16px">';
+    h+='<div class="stit">LC Key Fields <button class="flc-edit-btn" onclick="toggleAllLcEdit()" title="Edit LC fields">&#9998; Edit</button></div><div id="lc-key-fields" style="margin-bottom:16px">';
     ['Amount','Applicant','Beneficiary','Port_of_Loading','Port_of_Discharge','Latest_Shipment_Date','Tolerance','Presentation_Period','Form_of_Credit'].forEach(k=>{
         const f=D.sf[k];
         const swTag=_FIELD_TO_TAG[k]||'';
         const fmtVal=_fmtAllDates(String(f?.value||''));
-        if(f)h+=`<div class="fr${f.amended?' amended':''}"><span class="fl">${k.replace(/_/g,' ')}${swTag?` <span style="color:var(--primary);font-family:monospace;font-size:.85em">:${swTag}</span>`:''}</span><span class="fv">${esc(fmtVal.substring(0,80))}${fmtVal.length>80?'...':''} ${f.amended?'⚡':''}</span></div>`;
+        const isAmendedField=(D.amendedFields||[]).includes(swTag)||(D.amendedFields||[]).includes(k);
+        if(f)h+=`<div class="fr${f.amended?' amended':''}${isAmendedField?' amended-highlight':''}" data-flc-key="${esc(k)}" data-flc-tag="${esc(swTag)}"><span class="fl">${k.replace(/_/g,' ')}${swTag?` <span style="color:var(--primary);font-family:monospace;font-size:.85em">:${swTag}</span>`:''} ${isAmendedField?'<span class="amended-pill">AMENDED</span>':''}</span><span class="fv" id="flc-val-${esc(k)}">${esc(fmtVal.substring(0,80))}${fmtVal.length>80?'...':''} ${f.amended?'&#9889;':''}</span><button class="flc-edit-btn flc-edit-single" style="display:none" onclick="editLcField('${esc(k)}','${esc(swTag)}')" title="Edit">&#9998;</button></div>`;
     });
     h+='</div>';
 
@@ -2500,6 +2546,123 @@ function autoPopulateVessel(){
     // Update search button to show status
     const btn=document.getElementById('vtTrackBtn');
     if(btn){btn.textContent='Auto-tracked';btn.disabled=true}
+}
+
+// ══════════════════════════════════════════
+// TASK 1: Document Packet Classification Override
+// ══════════════════════════════════════════
+const _DOC_TYPES=['Commercial Invoice','Bill of Lading','Packing List','Certificate of Origin',
+    'Insurance Policy','Insurance Certificate','Draft','Weight List','Inspection Certificate',
+    'Fumigation Certificate','Beneficiary Certificate','Shipping Advice','Health Certificate',
+    'Phytosanitary Certificate','Survey Report','LC Copy','Amendment','Documentary Remittance',
+    'Covering Letter','Other'];
+const _COPY_STATUSES=['original','copy','non_negotiable_copy','unknown'];
+
+function togglePktEdit(pktId,clauseIdx,docIdx){
+    const el=document.getElementById(pktId);
+    if(!el)return;
+    if(el.style.display!=='none'){el.style.display='none';el.innerHTML='';return}
+    const v=D.pts[clauseIdx]?.v;
+    const d=v?.matched_documents?.[docIdx];
+    if(!d){showToast('Document data not found',false);return}
+    const curType=d.type||'';
+    const curCopy=d.copy_status||'unknown';
+    let typeOpts=_DOC_TYPES.map(t=>`<option value="${esc(t)}"${t===curType?' selected':''}>${esc(t)}</option>`).join('');
+    if(!_DOC_TYPES.includes(curType))typeOpts=`<option value="${esc(curType)}" selected>${esc(curType)}</option>`+typeOpts;
+    let copyOpts=_COPY_STATUSES.map(s=>`<option value="${s}"${s===curCopy?' selected':''}>${s.replace(/_/g,' ')}</option>`).join('');
+    el.innerHTML=`<div class="pkt-edit-form">
+        <div class="pkt-fg"><label>Document Type</label><select id="${pktId}-type">${typeOpts}</select></div>
+        <div class="pkt-fg"><label>Copy Status</label><select id="${pktId}-copy">${copyOpts}</select></div>
+        <div class="pkt-fg"><label>Notes</label><textarea id="${pktId}-notes" placeholder="Reason for override..."></textarea></div>
+        <div class="edt-row">
+            <button class="btn btn-g" onclick="savePktOverride('${pktId}',${clauseIdx},${docIdx})">Save</button>
+            <button class="btn" style="background:#999" onclick="document.getElementById('${pktId}').style.display='none'">Cancel</button>
+        </div>
+    </div>`;
+    el.style.display='block';
+}
+
+async function savePktOverride(pktId,clauseIdx,docIdx){
+    const docType=document.getElementById(pktId+'-type')?.value;
+    const copyStatus=document.getElementById(pktId+'-copy')?.value;
+    const notes=document.getElementById(pktId+'-notes')?.value||'';
+    const v=D.pts[clauseIdx]?.v;
+    const d=v?.matched_documents?.[docIdx];
+    if(!d)return;
+    const packetId=d.packet_id||d.page||docIdx;
+    try{
+        const r=await fetch(`${API}/api/override/${D.jid}/classification`,{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({packet_id:packetId,document_type:docType,copy_status:copyStatus,notes})
+        });
+        if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||e.detail||'Server error')}
+        // Update local data
+        d.type=docType;
+        d.copy_status=copyStatus;
+        d.copy_label=copyStatus.replace(/_/g,' ');
+        document.getElementById(pktId).style.display='none';
+        showToast('Classification override saved',true);
+        if(selIdx!==null)selPt(selIdx);
+    }catch(e){showToast('Failed: '+e.message,false)}
+}
+
+// ══════════════════════════════════════════
+// TASK 3: Final LC Field Inline Editing
+// ══════════════════════════════════════════
+function toggleAllLcEdit(){
+    const btns=document.querySelectorAll('.flc-edit-single');
+    const showing=btns[0]&&btns[0].style.display!=='none';
+    btns.forEach(b=>{b.style.display=showing?'none':'inline-block'});
+}
+
+function editLcField(key,tag){
+    const valEl=document.getElementById('flc-val-'+key);
+    if(!valEl)return;
+    const row=valEl.closest('.fr');
+    if(!row)return;
+    // Check if already editing
+    if(row.querySelector('.flc-edit-area'))return;
+    const curVal=D.sf[key]?String(D.sf[key].value||''):'';
+    const editId='flc-ed-'+key;
+    const editHtml=`<div style="width:100%;margin-top:4px" id="${editId}">
+        <textarea class="flc-edit-area" id="${editId}-ta">${esc(curVal)}</textarea>
+        <div class="flc-edit-row">
+            <button class="btn btn-g" onclick="saveLcField('${esc(key)}','${esc(tag)}')">Save</button>
+            <button class="btn" style="background:#999" onclick="cancelLcEdit('${editId}')">Cancel</button>
+        </div>
+    </div>`;
+    row.insertAdjacentHTML('beforeend',editHtml);
+}
+
+function cancelLcEdit(editId){
+    const el=document.getElementById(editId);
+    if(el)el.remove();
+}
+
+async function saveLcField(key,tag){
+    const editId='flc-ed-'+key;
+    const ta=document.getElementById(editId+'-ta');
+    if(!ta)return;
+    const newVal=ta.value;
+    const fieldTag=tag||key;
+    try{
+        const r=await fetch(`${API}/api/override/${D.jid}/final-lc`,{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({field_tag:fieldTag,value:newVal})
+        });
+        if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||e.detail||'Server error')}
+        // Update local data
+        if(D.sf[key])D.sf[key].value=newVal;
+        if(D.cf[key]){
+            if(typeof D.cf[key]==='object')D.cf[key].value=newVal;
+            else D.cf[key]=newVal;
+        }
+        cancelLcEdit(editId);
+        showToast('LC field updated',true);
+        if(selIdx!==null)selPt(selIdx);
+    }catch(e){showToast('Failed: '+e.message,false)}
 }
 
 window.addEventListener('DOMContentLoaded',init);

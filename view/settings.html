@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ComplyTrade - Settings</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#1554ca 0%,#0d3b8a 100%);min-height:100vh;padding:16px}
+  .container{max-width:1200px;margin:0 auto}
+  .header{display:flex;align-items:center;justify-content:space-between;color:#fff;margin-bottom:16px}
+  .header h1{font-size:1.6em;text-shadow:1px 1px 3px rgba(0,0,0,.2)}
+  .nav{display:flex;gap:8px;flex-wrap:wrap}
+  .nav a{color:#fff;text-decoration:none;padding:6px 14px;border-radius:6px;font-size:.82em;background:rgba(255,255,255,.15);transition:all .2s}
+  .nav a:hover{background:rgba(255,255,255,.3)}
+
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:800px){.grid{grid-template-columns:1fr}}
+
+  .card{background:#fff;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.2);overflow:hidden;display:flex;flex-direction:column}
+  .card-header{padding:12px 16px;border-bottom:1px solid #e5e7eb;font-size:.95em;font-weight:600;color:#1a1a2e;display:flex;align-items:center;gap:8px;background:#fafbfc}
+  .card-body{padding:12px 16px;flex:1;overflow-y:auto}
+  .card-full{grid-column:1/-1}
+
+  .phase-label{font-size:.68em;font-weight:700;color:#1554ca;text-transform:uppercase;letter-spacing:.05em;padding:8px 0 4px}
+
+  .step-row{display:flex;align-items:center;padding:6px 0;border-bottom:1px solid #f3f4f6;gap:8px}
+  .step-row:last-child{border-bottom:none}
+  .step-num{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px;flex-shrink:0}
+  .step-num.core{background:#e0e5ff;color:#1554ca}
+  .step-num.optional{background:#f3f4f6;color:#6b7280}
+  .step-name{flex:1;font-size:.82em;color:#333}
+  .step-tag{font-size:.62em;padding:2px 7px;border-radius:10px;font-weight:700;text-transform:uppercase}
+  .step-tag.required{background:#e0e5ff;color:#1554ca}
+  .step-tag.optional{background:#f0fdf4;color:#166534}
+
+  .toggle{position:relative;width:36px;height:20px;cursor:pointer;flex-shrink:0}
+  .toggle input{opacity:0;width:0;height:0}
+  .toggle .slider{position:absolute;top:0;left:0;right:0;bottom:0;background:#d1d5db;border-radius:20px;transition:.2s}
+  .toggle .slider:before{content:'';position:absolute;width:16px;height:16px;border-radius:50%;background:white;left:2px;top:2px;transition:.2s;box-shadow:0 1px 2px rgba(0,0,0,.2)}
+  .toggle input:checked+.slider{background:#1554ca}
+  .toggle input:checked+.slider:before{transform:translateX(16px)}
+  .toggle input:disabled+.slider{opacity:.4;cursor:not-allowed}
+
+  .config-row{display:flex;align-items:center;padding:8px 0;border-bottom:1px solid #f3f4f6}
+  .config-row:last-child{border-bottom:none}
+  .config-label{flex:1;font-size:.85em;color:#333}
+  .config-input{width:100px;padding:6px 8px;border:2px solid #e0e5ff;border-radius:6px;font-size:.85em;text-align:center;color:#1a1a2e;transition:border-color .2s}
+  .config-input:focus{outline:none;border-color:#1554ca;box-shadow:0 0 0 2px rgba(21,84,202,.15)}
+
+  .model-row{display:flex;align-items:center;padding:7px 0;border-bottom:1px solid #f3f4f6;gap:8px}
+  .model-row:last-child{border-bottom:none}
+  .model-label{width:70px;font-size:.75em;font-weight:600;color:#666;text-transform:uppercase}
+  .model-value{flex:1;font-family:'Cascadia Code','Fira Code',monospace;font-size:.78em;color:#1554ca;background:#f8f9ff;padding:4px 8px;border-radius:4px;word-break:break-all}
+
+  .actions{display:flex;gap:8px;justify-content:flex-end;padding:10px 16px;border-top:1px solid #e5e7eb}
+  .btn{padding:8px 18px;border-radius:6px;border:none;font-size:.85em;font-weight:600;cursor:pointer;transition:all .2s}
+  .btn-primary{background:linear-gradient(135deg,#1554ca,#0d3b8a);color:#fff;box-shadow:0 3px 8px rgba(21,84,202,.3)}
+  .btn-primary:hover{transform:translateY(-1px);box-shadow:0 5px 12px rgba(21,84,202,.4)}
+  .btn-secondary{background:#f3f4f6;color:#374151}
+  .btn-secondary:hover{background:#e5e7eb}
+
+  .toast{position:fixed;bottom:20px;right:20px;background:linear-gradient(135deg,#1554ca,#0d3b8a);color:white;padding:12px 20px;border-radius:10px;font-size:.9em;display:none;z-index:999;box-shadow:0 6px 20px rgba(0,0,0,.25);font-weight:500}
+  .version{text-align:center;color:rgba(255,255,255,.4);font-size:.75em;margin-top:10px}
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div class="header">
+    <h1>Pipeline Settings</h1>
+    <div class="nav">
+      <a href="/interface">Upload</a>
+      <a href="/jobs">Jobs</a>
+      <a href="/checklist">Checklist</a>
+      <a href="/compliance">Compliance</a>
+      <a href="/docs">API</a>
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- Left: Pipeline Steps -->
+    <div class="card">
+      <div class="card-header">&#9881; Pipeline Steps</div>
+      <div class="card-body" id="steps-container"></div>
+      <div class="actions">
+        <button class="btn btn-secondary" onclick="resetDefaults()">Reset</button>
+        <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+      </div>
+    </div>
+
+    <!-- Right: Performance + Models stacked -->
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div class="card">
+        <div class="card-header">&#9889; Performance</div>
+        <div class="card-body">
+          <div class="config-row">
+            <span class="config-label">Concurrent OCR Workers</span>
+            <input type="number" class="config-input" id="max_concurrent_ocr" min="1" max="32" value="8">
+          </div>
+          <div class="config-row">
+            <span class="config-label">Concurrent VLM Workers</span>
+            <input type="number" class="config-input" id="max_concurrent_vlm" min="1" max="32" value="8">
+          </div>
+          <div class="config-row">
+            <span class="config-label">Confidence Threshold</span>
+            <input type="number" class="config-input" id="confidence_threshold" min="0" max="1" step="0.05" value="0.70">
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#129302; Model Endpoints</div>
+        <div class="card-body" id="models-container"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#128203; Quick Info</div>
+        <div class="card-body">
+          <div class="config-row">
+            <span class="config-label">Core steps (cannot disable)</span>
+            <span style="font-size:.82em;color:#1554ca;font-weight:600">1-3, 6-9, 12-14, 19-20</span>
+          </div>
+          <div class="config-row">
+            <span class="config-label">Optional steps</span>
+            <span style="font-size:.82em;color:#166534;font-weight:600">4, 5, 10, 11, 15-18</span>
+          </div>
+          <div class="config-row">
+            <span class="config-label">Skipped steps save time</span>
+            <span style="font-size:.82em;color:#666">No impact on accuracy</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="version" id="version-tag"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let currentSettings = {};
+
+async function loadSettings() {
+  const res = await fetch('/api/settings');
+  currentSettings = await res.json();
+  renderSteps(currentSettings.steps);
+  renderModels(currentSettings.models);
+  document.getElementById('max_concurrent_ocr').value = currentSettings.concurrency?.max_concurrent_ocr || 8;
+  document.getElementById('max_concurrent_vlm').value = currentSettings.concurrency?.max_concurrent_vlm || 8;
+  document.getElementById('confidence_threshold').value = currentSettings.confidence_threshold || 0.70;
+  try {
+    const v = await (await fetch('/version')).json();
+    document.getElementById('version-tag').textContent = 'Build: ' + (v.build || v.version || '');
+  } catch(e) {}
+}
+
+function renderSteps(steps) {
+  const c = document.getElementById('steps-container');
+  let html = '<div class="phase-label">Phase 1 — Extraction (Steps 1-11)</div>';
+  let p2 = false;
+  steps.forEach(s => {
+    if (s.step === 12 && !p2) {
+      html += '<div class="phase-label" style="margin-top:6px">Phase 2 — Verification (Steps 12-20)</div>';
+      p2 = true;
+    }
+    html += `<div class="step-row">
+      <div class="step-num ${s.core?'core':'optional'}">${s.step}</div>
+      <div class="step-name">${s.name}</div>
+      <span class="step-tag ${s.core?'required':'optional'}">${s.core?'Req':'Opt'}</span>
+      <label class="toggle">
+        <input type="checkbox" data-step="${s.step}" ${s.enabled?'checked':''} ${s.core?'disabled':''} onchange="toggleStep(${s.step},this.checked)">
+        <span class="slider"></span>
+      </label>
+    </div>`;
+  });
+  c.innerHTML = html;
+}
+
+function renderModels(m) {
+  if (!m) return;
+  document.getElementById('models-container').innerHTML = `
+    <div class="model-row"><span class="model-label">OCR</span><span class="model-value">${m.glm_ocr_url||'-'}</span></div>
+    <div class="model-row"><span class="model-label">VLM</span><span class="model-value">${m.qwen_vlm_url||'-'}</span></div>
+    <div class="model-row"><span class="model-label">Model</span><span class="model-value">${(m.qwen_vlm_model||'-').split('/').pop()}</span></div>`;
+}
+
+function toggleStep(n, v) { const s = currentSettings.steps.find(x => x.step===n); if(s) s.enabled=v; }
+
+async function saveSettings() {
+  await fetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      steps: currentSettings.steps.map(s => ({step:s.step, enabled:s.enabled})),
+      concurrency: {
+        max_concurrent_ocr: parseInt(document.getElementById('max_concurrent_ocr').value),
+        max_concurrent_vlm: parseInt(document.getElementById('max_concurrent_vlm').value),
+      },
+      confidence_threshold: parseFloat(document.getElementById('confidence_threshold').value),
+    })
+  });
+  showToast('Settings saved');
+}
+
+function resetDefaults() {
+  currentSettings.steps.forEach(s => {
+    s.enabled = s.core;
+    const cb = document.querySelector(`input[data-step="${s.step}"]`);
+    if (cb && !s.core) cb.checked = false;
+    if (cb && s.core) cb.checked = true;
+  });
+  document.getElementById('max_concurrent_ocr').value = 8;
+  document.getElementById('max_concurrent_vlm').value = 8;
+  document.getElementById('confidence_threshold').value = 0.70;
+  showToast('Reset to defaults — click Save to apply');
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', 2500);
+}
+
+loadSettings();
+</script>
+</body>
+</html>

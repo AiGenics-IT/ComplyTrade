@@ -31,6 +31,10 @@
         .field-value textarea { width: 100%; border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px 10px; font-family: inherit; font-size: 0.9em; resize: vertical; min-height: 32px; color: #1e293b; }
         .field-value textarea:focus { outline: none; border-color: #1554ca; box-shadow: 0 0 0 2px rgba(21,84,202,0.15); }
         .field-value textarea.modified { border-color: #f59e0b; background: #fffbeb; }
+        .field-row.amended-row { background: linear-gradient(90deg, #fffbeb, #fef9c3) !important; }
+        .field-row.amended-row:hover { background: linear-gradient(90deg, #fef9c3, #fef3c7) !important; }
+        .amended-pill { display: inline-block; font-size: 0.62em; font-weight: 800; padding: 1px 7px; border-radius: 10px; background: #fef3c7; color: #92400e; border: 1px solid #fde68a; letter-spacing: 0.04em; vertical-align: middle; margin-left: 6px; text-transform: uppercase; }
+        .clause-row.amended-clause { background: linear-gradient(90deg, #fffbeb, #fef9c3) !important; border-left: 3px solid #f59e0b; }
         .clause-row { padding: 12px 20px; border-bottom: 1px solid #e2e8f0; display: flex; gap: 12px; }
         .clause-row:nth-child(even) { background: #f8fafc; }
         .clause-num { width: 40px; font-weight: 700; color: #1554ca; flex-shrink: 0; padding-top: 6px; }
@@ -72,6 +76,7 @@ const API = window.location.origin;
 let originalData = {};
 let modifiedFields = {};
 let changeCount = 0;
+let amendedFields = [];
 
 const TAG_NAMES = {
     '20':'Documentary Credit Number','31C':'Date of Issue','31D':'Date and Place of Expiry',
@@ -95,8 +100,9 @@ async function loadData() {
             document.getElementById('content').innerHTML = '<div class="loading">No Final LC data found.</div>';
             return;
         }
-        const lc = data.consolidated_lcs[0];
-        const cf = lc.data.consolidated_fields || {};
+        const lc = data.consolidated_lcs.find(l => l.lc_number === lcNumber) || data.consolidated_lcs[0];
+        const cf = (lc.data || lc).consolidated_fields || lc.consolidated_fields || {};
+        amendedFields = cf._amended_fields || [];
         const clauses = {};
 
         // Separate standalone fields from clause fields
@@ -140,11 +146,13 @@ function renderLC(fields, clauses) {
         return na - nb;
     });
     for (const tag of sortedTags) {
+        if (tag === '_amended_fields') continue;
         const name = TAG_NAMES[tag] || tag;
         const val = fields[tag] || '';
         const rows = Math.max(1, Math.ceil(val.length / 80));
-        html += `<div class="field-row">
-            <div class="field-tag">${tag}</div>
+        const isAmended = amendedFields.includes(tag);
+        html += `<div class="field-row${isAmended ? ' amended-row' : ''}">
+            <div class="field-tag">${tag}${isAmended ? ' <span class="amended-pill">AMENDED</span>' : ''}</div>
             <div class="field-name">${esc(name)}</div>
             <div class="field-value">
                 <textarea id="field_${tag}" rows="${rows}" onchange="markModified('field_${tag}','${tag}')">${esc(val)}</textarea>
@@ -157,14 +165,16 @@ function renderLC(fields, clauses) {
     for (const [tag, clauseList] of Object.entries(clauses)) {
         if (!clauseList || !clauseList.length) continue;
         const name = TAG_NAMES[tag] || tag;
+        const isAmended = amendedFields.includes(tag);
         html += '<div class="section">';
-        html += `<div class="section-header" onclick="toggleSection(this)"><span>Field ${tag}: ${esc(name)}</span><span class="toggle">-</span></div>`;
+        html += `<div class="section-header" onclick="toggleSection(this)"><span>Field ${tag}: ${esc(name)}${isAmended ? ' <span class="amended-pill" style="font-size:.7em">AMENDED</span>' : ''}</span><span class="toggle">-</span></div>`;
         html += '<div class="section-body">';
         for (let i = 0; i < clauseList.length; i++) {
             const clause = clauseList[i];
             const text = typeof clause === 'string' ? clause : (clause.text || JSON.stringify(clause));
+            const clauseAmended = isAmended || (typeof clause === 'object' && clause.amended);
             const rows = Math.max(2, Math.ceil(text.length / 80));
-            html += `<div class="clause-row">
+            html += `<div class="clause-row${clauseAmended ? ' amended-clause' : ''}">
                 <div class="clause-num">${i+1}.</div>
                 <div class="clause-text">
                     <textarea id="clause_${tag}_${i}" rows="${rows}" onchange="markModified('clause_${tag}_${i}','${tag}',${i})">${esc(text)}</textarea>

@@ -125,7 +125,7 @@ The LC requires these documents:
 {required_docs_list}
 
 Based on the image and text, classify this document:
-1. document_type: exact name from the required list, or a standard trade finance document name
+1. document_type: exact name from the required list if it matches, OR the ACTUAL document title/heading visible on the page. NEVER force-fit a document into an incorrect category — use the real name (e.g., "Port Clearance Certificate", "Time Sheet", "Tanker Cleanliness Certificate", "Shore Tank Measurements", "Vessel Experience Factor", "Master Receipt for Sealed Samples", "Letter of Authority", etc.)
 2. confidence: 0.0 to 1.0
 3. summary: Detailed description including ALL key details: drawer/drawee, at sight/usance, to the order of, amount in figures AND words, tenor, maturity, endorsements, and any other relevant terms visible in the document
 4. document_number: if visible
@@ -217,6 +217,65 @@ _DOC_INDICATORS = {
     "Documentary Remittance": [
         r'DOCUMENTARY\s+REMITTANCE', r'COVERING\s+LETTER', r'ENCLOSED\s+HEREWITH',
         r'WE\s+(?:ARE\s+)?ENCLOS', r'DOCUMENTS?\s+ATTACHED',
+    ],
+    "Notice of Readiness": [
+        r'NOTICE\s+OF\s+READINESS', r'NOR\s+(?:RE-?)?TENDER', r'VESSEL\s+HAS\s+OFFICIALLY\s+ARRIVED',
+    ],
+    "Port Clearance Certificate": [
+        r'PORT\s+CLEARANCE', r'国际航行船舶出口岸许可证', r'PORT\s+CLEARANCE\s+CERTIFICATE',
+    ],
+    "Tanker Cleanliness Certificate": [
+        r'TANKER\s+CLEANLINESS\s+CERTIFICATE', r'TANK\s+INSPECTION\s+COMPLETED',
+        r'NOMINATED\s+TANKS', r'TANK\s+COATINGS',
+    ],
+    "Shore Tank Measurements": [
+        r'SHORE\s+TANK\s+MEASUREMENTS', r'SHORE\s+TANK.*BEFORE\s+AND\s+AFTER',
+        r'TANK\s+GAUGED\s+VOLUME', r'TOTAL\s+QUANTITY\s+RECEIVED',
+    ],
+    "Time Sheet": [
+        r'TIME\s+SHEET', r'VESSEL\s+ARRIVED', r'COMMENCED\s+LOADING',
+        r'COMPLETED\s+LOADING', r'PILOT\s+SCHEDULED',
+    ],
+    "Vessel Experience Factor": [
+        r'VESSEL\'?S?\s+EXPERIENCE\s+FACTOR', r'MEASUREMENTS?\s+OF\s+QUANTITY\s+RECEIVED\s+ON\s+VESSEL',
+        r'AVERAGE\s+TCV\s+RATIO',
+    ],
+    "Master Receipt for Sealed Samples": [
+        r'MASTER\'?S?\s+RECEIPT\s+FOR\s+SEALED\s+SAMPLES',
+        r'SEALED\s+SAMPLES', r'SEAL\s+NUMBER',
+    ],
+    "Letter of Authority": [
+        r'LETTER\s+OF\s+AUTHORITY', r'AUTHORISE\s+.*AGENT',
+        r'AUTHORITY\s+FOR\s+SIGNING\s+BILL\s+OF\s+LADING',
+    ],
+    "Certificate of Receipted Quantity": [
+        r'CERTIFICATE\s+OF\s+RECEIPTED\s+QUANTITY', r'RECEIPTED\s+QUANTITY',
+        r'SHORE\s+RECEIPTED\s+QUANTITIES',
+    ],
+    "Products Quality Certificate": [
+        r'PRODUCTS?\s+QUALITY\s+CERTIFICATE', r'TEST\s+ITEM.*METHOD.*RESULT',
+    ],
+    "Products Quantity Certificate": [
+        r'PRODUCTS?\s+QUANTITY\s+CERTIFICATE',
+    ],
+    "Loading Inspection Report": [
+        r'LOADING\s+INSPECTION', r'LOAD(?:ING)?\s+PORT\s+INDEPENDENT',
+    ],
+    "Survey Report": [
+        r'SURVEY\s+REPORT', r'SURVEYOR.*REPORT',
+    ],
+    "Mate Receipt": [
+        r'MATE\'?S?\s+RECEIPT', r'MATE\s+RECEIPT',
+    ],
+    "Statement of Facts": [
+        r'STATEMENT\s+OF\s+FACTS',
+    ],
+    "Stowage Plan": [
+        r'STOWAGE\s+PLAN', r'LOADING\s+PLAN',
+    ],
+    "Insurance Pre-Advise Notice": [
+        r'INSURANCE\s+PRE[- ]?ADVI[SC]E', r'PRE[- ]?ADVISE\s+NOTICE',
+        r'ESTIMATED\s+SHIPMENT\s+DETAILS', r'NOMINEE\s+OPEN\s+POLICY',
     ],
 }
 

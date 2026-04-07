@@ -645,7 +645,8 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
     _RESULT_RV_FG = colors.HexColor('#C55A11')
     _AMBER_BG   = colors.HexColor('#FFF9E6')
 
-    _cw = [page_width * 0.28, page_width * 0.14, page_width * 0.14, page_width * 0.30, page_width * 0.14]
+    # Column widths: Condition(s) | Findings | Document Checked | Result | Compliance
+    _cw = [page_width * 0.30, page_width * 0.22, page_width * 0.16, page_width * 0.20, page_width * 0.12]
 
     def _sym_text(comp):
         c = str(comp).lower().strip()
@@ -679,20 +680,18 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
         for clause in section.get('clauses', []):
 
             clause_ref = clause.get('clause_ref', '')
-            clause_text = _safe_str(clause.get('clause_text', ''), 500)
+            clause_text = _safe_str(clause.get('clause_text', ''), 2000)
             overall = clause.get('overall_result', 'REVIEW REQUIRED')
             overall_lower = overall.lower().strip()
 
-            # Get field description — show clause text if available, else generic label
+            # Get field description (section heading like "Documents Required", "Additional Conditions")
             field_desc = _get_field_description(clause_ref) or ''
-            # Use actual clause text for the header description
-            header_desc = clause_text[:200] if clause_text else field_desc
 
-            # LAYER 1: Field label bar (navy)
+            # LAYER 1: Field label bar (navy) — left: LC Field ref, right: section heading
             _l1 = [[
                 Paragraph(f'<b><font color="white">LC Field: {_esc(clause_ref)}</font></b>',
                           styles['CellTextSmall']),
-                Paragraph(f'<font color="white">{_esc(header_desc)}</font>',
+                Paragraph(f'<b><font color="white">{_esc(field_desc)}</font></b>',
                           styles['CellTextSmall']),
             ]]
             _t1 = Table(_l1, colWidths=[page_width * 0.25, page_width * 0.75])
@@ -706,10 +705,10 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
             ]))
             elements.append(_t1)
 
-            # LAYER 2: Field value bar (light blue) -- show the actual LC clause text
+            # LAYER 2: Full clause text bar (light blue)
             if clause_text:
                 _l2 = [[Paragraph(
-                    f'<font size="8"><b>LC Clause:</b> {_esc(clause_text[:400])}</font>',
+                    f'<font size="8">{_esc(clause_text)}</font>',
                     styles['CellTextSmall'])]]
                 _t2 = Table(_l2, colWidths=[page_width])
                 _t2.setStyle(TableStyle([
@@ -759,13 +758,13 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
                 _cond_text = row.get('condition', '') or row.get('condition_text', '') or row.get('result', '')
                 _find_text = row.get('findings', '') or row.get('found_text', '')
                 _tbl_data.append([
-                    Paragraph(f'<font size="7.5">{_esc(_safe_str(_cond_text, 250))}</font>',
+                    Paragraph(f'<font size="7.5">{_esc(_safe_str(_cond_text, 500))}</font>',
                               styles['CellTextSmall']),
-                    Paragraph(f'<font size="7"><i>{_esc(_safe_str(_find_text, 120))}</i></font>',
+                    Paragraph(f'<font size="7"><i>{_esc(_safe_str(_find_text, 300))}</i></font>',
                               styles['CellTextSmall']),
-                    Paragraph(f'<font size="7">{_esc(_safe_str(row.get("document_checked", ""), 80))}</font>',
+                    Paragraph(f'<font size="7">{_esc(_safe_str(row.get("document_checked", ""), 120))}</font>',
                               styles['CellTextSmall']),
-                    Paragraph(f'<font size="7.5">{_esc(result_val)}</font>',
+                    Paragraph(f'<font size="7.5">{_esc(_safe_str(result_val, 200))}</font>',
                               styles['CellTextSmall']),
                     Paragraph(f'<b><font size="8" color="{_sc}">{_s}</font></b>',
                               styles['CellTextSmall']),
@@ -810,7 +809,7 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
                 ('GRID', (0, 0), (-1, 0), 0.4, colors.HexColor('#AAAAAA')),
             ]))
             elements.append(_rt)
-            elements.append(Spacer(1, 4 * mm))
+            elements.append(Spacer(1, 8 * mm))  # spacing between clause tables
 
     return elements
 

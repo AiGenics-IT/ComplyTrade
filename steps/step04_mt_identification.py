@@ -97,9 +97,23 @@ _MT_PATTERNS = [
     (re.compile(r'\bMT\s*740\b', re.IGNORECASE), 'MT740', 0.90),
     (re.compile(r'\bMT\s*747\b', re.IGNORECASE), 'MT747', 0.90),
     (re.compile(r'\bMT\s*750\b', re.IGNORECASE), 'MT750', 0.90),
+    (re.compile(r'\bMT\s*701\b', re.IGNORECASE), 'MT701', 0.90),
+    (re.compile(r'\bMT\s*711\b', re.IGNORECASE), 'MT711', 0.90),
+    (re.compile(r'\bMT\s*730\b', re.IGNORECASE), 'MT730', 0.90),
+    (re.compile(r'\bMT\s*732\b', re.IGNORECASE), 'MT732', 0.90),
+    (re.compile(r'\bMT\s*734\b', re.IGNORECASE), 'MT734', 0.90),
+    (re.compile(r'\bMT\s*742\b', re.IGNORECASE), 'MT742', 0.90),
+    (re.compile(r'\bMT\s*752\b', re.IGNORECASE), 'MT752', 0.90),
+    (re.compile(r'\bMT\s*754\b', re.IGNORECASE), 'MT754', 0.90),
+    (re.compile(r'\bMT\s*756\b', re.IGNORECASE), 'MT756', 0.90),
+    (re.compile(r'\bMT\s*999\b', re.IGNORECASE), 'MT999', 0.90),
+    # fin.XXX identifier format
+    (re.compile(r'\bfin\.(\d{3})\b', re.IGNORECASE), None, 0.90),  # handled below
     # SWIFT message type headers
     (re.compile(r'(?:Type|Message)\s*:?\s*700', re.IGNORECASE), 'MT700', 0.85),
     (re.compile(r'(?:Type|Message)\s*:?\s*707', re.IGNORECASE), 'MT707', 0.85),
+    (re.compile(r'(?:Type|Message)\s*:?\s*710', re.IGNORECASE), 'MT710', 0.85),
+    (re.compile(r'(?:Type|Message)\s*:?\s*999', re.IGNORECASE), 'MT999', 0.85),
 ]
 
 # F-tag patterns -- strong indicator of SWIFT (Fusion format)

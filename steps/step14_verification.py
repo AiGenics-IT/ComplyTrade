@@ -37,6 +37,7 @@ if hasattr(_sys.stdout, "reconfigure"):
     _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 import base64
 import os
+import re
 import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -76,7 +77,7 @@ DOC_TYPE_ALIASES = {
         "draft", "bill of exchange", "usance draft", "sight draft",
     ],
     "weight list": [
-        "weight list", "weight note", "weight certificate",
+        "weight list", "weight note",
     ],
     "beneficiary certificate": [
         "beneficiary certificate", "beneficiary statement",
@@ -89,10 +90,31 @@ DOC_TYPE_ALIASES = {
         "inspection certificate", "survey report", "inspection report",
     ],
     "fumigation certificate": [
-        "fumigation certificate", "phytosanitary certificate",
+        "fumigation certificate",
+    ],
+    "phytosanitary certificate": [
+        "phytosanitary certificate", "phytosanitary",
     ],
     "shipping advice": [
-        "shipping advice", "shipment advice",
+        "shipping advice", "shipment advice", "beneficiary shipment advice",
+    ],
+    "quality certificate": [
+        "quality certificate", "quality report", "products quality certificate",
+    ],
+    "weight certificate": [
+        "weight certificate", "weight list", "weight note",
+    ],
+    "shipping company certificate": [
+        "shipping company certificate", "shipping certificate",
+        "agent certificate", "agents certificate",
+    ],
+    "surveyor certificate": [
+        "surveyor certificate", "survey certificate", "surveyor report",
+    ],
+    "export letter": [
+        "export letter of credit bill remittance letter",
+        "remittance letter", "covering letter", "covering schedule",
+        "bill remittance letter", "schedule of documents",
     ],
 }
 
@@ -142,7 +164,12 @@ def _set(row, key: str, value):
 def _find_matching_docs(doc_to_check: str, packets: list) -> list:
     """
     Find ALL matching documents from reconciled_packets for a given
-    document type string.  Returns a list of packet dicts (may be empty).
+    document type string.  Uses three-tier matching:
+      1. Alias lookup (exact canonical match)
+      2. Substring match (target in pkt_type or vice versa)
+      3. Keyword overlap (fuzzy — matches any certificate/doc with shared keywords)
+
+    This avoids hardcoding every possible certificate/document type.
     """
     if not doc_to_check or not packets:
         return []
@@ -156,29 +183,55 @@ def _find_matching_docs(doc_to_check: str, packets: list) -> list:
             target_aliases = aliases
             break
 
+    # Extract significant keywords from target for fuzzy matching
+    # Remove common filler words to get meaningful terms
+    _STOP_WORDS = {'of', 'the', 'a', 'an', 'in', 'on', 'by', 'to', 'for', 'and', 'or',
+                   'from', 'with', 'must', 'be', 'is', 'are', 'should', 'shall', 'not',
+                   'document', 'documents', 'original', 'copy', 'copies'}
+    target_keywords = {w for w in re.split(r'\W+', target) if w and w not in _STOP_WORDS and len(w) > 2}
+
     matches = []
 
+    def _get_pkt_type(pkt):
+        if isinstance(pkt, dict):
+            return (pkt.get("document_type", "") or pkt.get("doc_type", "")
+                    or pkt.get("classification", "") or "").lower()
+        return (getattr(pkt, "document_type", "") or "").lower()
+
+    # Tier 1+2: Alias + substring match
     for pkt in packets:
         if not pkt:
             continue
-        if isinstance(pkt, dict):
-            pkt_type = (
-                pkt.get("document_type", "")
-                or pkt.get("doc_type", "")
-                or pkt.get("classification", "")
-            ).lower()
-        else:
-            pkt_type = (getattr(pkt, "document_type", "") or "").lower()
-
+        pkt_type = _get_pkt_type(pkt)
         if not pkt_type:
             continue
-
         for alias in target_aliases:
-            # Only match if the document type actually contains the target alias
-            # or the target alias contains the document type (exact/substring match)
             if alias in pkt_type or pkt_type in alias:
                 matches.append(pkt if isinstance(pkt, dict) else asdict(pkt))
                 break
+
+    if matches:
+        return matches
+
+    # Tier 3: Keyword overlap matching (fuzzy)
+    # Only match if the DISTINGUISHING keywords overlap (not just generic words
+    # like "certificate", "document", "list", "report").
+    _GENERIC_WORDS = {'certificate', 'document', 'list', 'report', 'note', 'letter',
+                      'advice', 'receipt', 'bill', 'policy', 'schedule', 'declaration'}
+    if target_keywords:
+        _specific_keywords = target_keywords - _GENERIC_WORDS
+        if _specific_keywords:
+            # Must match at least one SPECIFIC keyword (e.g., "phytosanitary", "fumigation")
+            for pkt in packets:
+                if not pkt:
+                    continue
+                pkt_type = _get_pkt_type(pkt)
+                if not pkt_type or "lc" == pkt_type or "letter of credit" in pkt_type:
+                    continue
+                pkt_words = set(re.split(r'\W+', pkt_type))
+                specific_overlap = _specific_keywords & pkt_words
+                if specific_overlap:
+                    matches.append(pkt if isinstance(pkt, dict) else asdict(pkt))
 
     return matches
 
@@ -392,6 +445,14 @@ CRITICAL RULES (follow strictly):
 9. CERTIFICATION: If the condition asks for origin certification and the document says "We certify the goods are of [COUNTRY] origin" or similar statement, that IS a valid certification = PASS. Do not fail just because the exact word "CERTIFICATE" is not used — any statement certifying origin, quality, weight, etc. is a certification.
 10. DOCUMENT VERIFICATION: If the document text does NOT look like the expected document type (e.g., the condition checks a "Phytosanitary Certificate" but the document text looks like a quality certificate or inspection report), mark as REVIEW with "Document type may be misclassified".
 11. When in doubt, mark REVIEW with clear reasoning rather than FAIL.
+12. QUANTITY TOLERANCE: If the LC says "1000 MT LESS 10 PCT" or "1000 MT +/-5%", apply the tolerance. "1000 MT LESS 10 PCT" means 900-1000 MT is acceptable. A quantity of 950 MT is WITHIN range = PASS. Do NOT fail if quantity is within tolerance. Also check F47A for additional tolerance clauses (e.g., "+0/-10%").
+13. BILL OF LADING LIMITATIONS: BLs do NOT show dollar amounts or unit prices — never fail a BL for "amount not mentioned". BLs do NOT typically show LC/credit numbers unless F47A specifically requires it on BL.
+14. PERMISSIVE CLAUSES: "ACCEPTABLE" means something is ALLOWED — it is NOT a prohibition. "THIRD PARTY DOCUMENTS ACCEPTABLE EXCEPT X" means X must be from beneficiary, everything else can be third party. Do NOT interpret "EXCEPT X" as "X is not acceptable".
+15. MATH: When comparing numbers, verify your arithmetic. 950 is LESS than 1000 (not more). 490,200 is LESS than 516,000 (not more). Get the direction right before marking FAIL.
+16. EMAIL EQUIVALENCE: In SWIFT messages, "@" is written as "(AT)" or "(at)". So "INFO(AT)CICL.COM.PK" in the LC is the SAME as "info@cicl.com.pk" in the document. Treat (AT) and @ as identical when comparing email addresses. Also ignore case differences in emails.
+17. AGENT vs FORWARDER: "AS AGENTS ONLY FOR AND BY AUTHORITY OF THE MASTER" on a BL means the carrier's agent signed — this is NORMAL and NOT a freight forwarder BL. A freight forwarder BL would say "FIATA", "HOUSE BILL", or show a forwarder company as the ISSUER (not as agent of master).
+18. COPIES: "IN DUPLICATE" means 2 copies required. If the system found 2 separate documents of the same type (e.g., 2 Commercial Invoice packets), that satisfies "IN DUPLICATE". Do NOT fail just because one individual document doesn't say "duplicate" — check if multiple copies exist.
+19. MISSING DOCUMENT: If a required document is completely MISSING from the submission, report ONE failure: "Required document missing". Do NOT add sub-failures for content checks (importer name, language, etc.) on a missing document — those are meaningless if the document doesn't exist.
 
 Return ONLY valid JSON:
 {{
@@ -638,6 +699,50 @@ def _build_tasks(
 
         # For each target document type, find matching packet(s)
         for doc_type_target in doc_types_to_check:
+            # Handle "All Documents" / "All Documents Except..." — treat like "all"
+            dt_lower = doc_type_target.lower().strip()
+            if dt_lower.startswith("all document"):
+                # Check all shipping docs for this condition
+                found_any = False
+                for pkt in packets:
+                    if not pkt:
+                        continue
+                    pt = _pkt_type(pkt)
+                    if not pt or "lc" in pt.lower() or "letter of credit" in pt.lower():
+                        continue
+                    # If "except X", skip X documents
+                    except_match = re.search(r'except\s+(.*)', dt_lower)
+                    if except_match:
+                        except_docs = except_match.group(1).lower()
+                        if any(ex.strip() in pt.lower() for ex in except_docs.split(' and ')):
+                            continue
+                        if any(ex.strip() in pt.lower() for ex in except_docs.split(',')):
+                            continue
+                    found_any = True
+                    images = _pkt_images(pkt)
+                    tasks.append({
+                        "row": row,
+                        "skip": False,
+                        "row_id": row_id,
+                        "condition_text": condition_text,
+                        "clause_ref": clause_ref,
+                        "lc_field_value": lc_field_value,
+                        "f47a_context": f47a_context,
+                        "document_type": pt,
+                        "document_text": _pkt_text(pkt),
+                        "visual_metadata": _pkt_visual_metadata(pkt),
+                        "image_path": images[0] if images else None,
+                        "multi_doc": True,
+                    })
+                if not found_any:
+                    tasks.append({
+                        "row": row,
+                        "skip": True,
+                        "reason": "no_shipping_docs",
+                        "prefilled": dict(_DOC_MISSING_RESULT),
+                    })
+                continue
+
             matched_pkts = _find_matching_docs(doc_type_target, packets)
 
             if not matched_pkts:
@@ -730,6 +835,9 @@ def run(
         f"(informational / doc missing)"
     )
 
+    # Track which clause+doc combos already reported as missing (dedup)
+    _seen_missing = set()
+
     # ------------------------------------------------------------------ #
     # 3. Handle skipped tasks (informational or missing docs)
     # ------------------------------------------------------------------ #
@@ -744,6 +852,16 @@ def run(
         if reason in ("doc_not_found", "no_shipping_docs"):
             prefilled = task.get("prefilled", _DOC_MISSING_RESULT)
             doc_target = task.get("doc_type_target", "unknown")
+            clause_ref = _get(row, "clause_ref", "")
+            # Deduplicate: only show "missing" once per clause+doc_type combo
+            _missing_key = f"{clause_ref}|{doc_target}"
+            if _missing_key in _seen_missing:
+                # Already reported missing for this clause — mark as N/A
+                _set(row, "compliance", "N/A")
+                _set(row, "result", "")
+                _set(row, "findings", "")
+                continue
+            _seen_missing.add(_missing_key)
             _set(row, "findings", prefilled["findings"])
             _set(row, "found_text", prefilled["findings"])
             _set(row, "result", prefilled["result"])
@@ -835,16 +953,18 @@ def run(
         row = entry["row"]
         results = entry["results"]
 
-        # Worst-case aggregation: any FAIL -> FAIL, else any REVIEW -> REVIEW
+        # Best-case aggregation: if ANY document PASSES, overall is PASS
+        # (because the condition only needs to be satisfied by ONE matching document)
+        has_pass = any(r["compliance"] == "PASS" for r in results)
         has_fail = any(r["compliance"] == "FAIL" for r in results)
         has_review = any(r["compliance"] == "REVIEW" for r in results)
 
-        if has_fail:
-            agg_compliance = "FAIL"
+        if has_pass:
+            agg_compliance = "PASS"
         elif has_review:
             agg_compliance = "REVIEW"
         else:
-            agg_compliance = "PASS"
+            agg_compliance = "FAIL"
 
         # Build combined findings
         findings_parts = []
