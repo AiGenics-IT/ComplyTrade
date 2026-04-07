@@ -917,32 +917,35 @@ RULES:
             pm = re.search(r'(\d+)', str(period_str))
             if pm:
                 period_days = pm.group(1)
-        covers = _get_docs_by_type(packets, 'remittance', 'covering', 'cover letter', 'schedule')
-        bls = _get_docs_by_type(packets, 'bill of lading', 'b/l')
-        bl_text_snippet = ''
+        covers = _get_docs_by_type(packets, 'remittance', 'covering', 'cover letter', 'schedule', 'presentation')
+        bls = _get_docs_by_type(packets, 'bill of lading', 'b/l', 'transport')
+        bl_full_text = ''
         for bl in bls[:1]:
             bl_t = _get_doc_text(bl)
-            bl_text_snippet = bl_t[:1000] if bl_t else ''
+            bl_full_text = bl_t[:3000] if bl_t else ''
 
         for cover in covers:
+            # Combine cover + BL text so VLM can find both dates
+            combined_text = f"=== COVERING SCHEDULE / PRESENTATION DOCUMENT ===\n{_get_doc_text(cover)}\n\n=== BILL OF LADING (for shipment date) ===\n{bl_full_text}"
             tasks.append({
                 "prompt": f"""You are a trade finance document examiner. Check if documents were presented within the required period after shipment.
 
 LC Period for Presentation (F48): {period_str if period_str else 'Not specified — default 21 days per UCP 600'}
 Presentation period: {period_days} days after shipment date
 
-BILL OF LADING TEXT (for shipment date reference):
-{bl_text_snippet}
+TWO DOCUMENTS ARE PROVIDED BELOW:
+1. COVERING SCHEDULE — find the PRESENTATION DATE (date documents were sent/presented to the bank)
+2. BILL OF LADING — find the SHIPMENT DATE (shipped on board date or BL issue date)
 
 RULES:
-1. Find the PRESENTATION DATE from the covering schedule (the date documents were sent to the bank)
-2. Find the SHIPMENT DATE from the Bill of Lading (shipped on board date or BL issue date)
+1. The PRESENTATION DATE is on the Covering Schedule (look for "Presented on:", "Date:", or the date on the letter)
+2. The SHIPMENT DATE is on the Bill of Lading (look for "SHIPPED ON BOARD" date, or "Date of Issue" at bottom of BL)
 3. Calculate: Presentation_Date must be <= (Shipment_Date + {period_days} days)
 4. If documents were presented MORE than {period_days} days after shipment → "LATE PRESENTATION" → FAIL
-5. If documents are stale at presentation → FAIL
-6. If F48 is blank, UCP 600 defaults to 21 days
+5. If F48 is blank, UCP 600 defaults to 21 days
+6. IMPORTANT: Do NOT say "shipment date missing" if the BL text below shows a date. Look carefully for dates like "30/01/2026", "JANUARY 30, 2026", "SHIPPED ON BOARD 30/01/2026" etc.
 7. Extract: presentation date from cover, shipment date from BL, and the day count""",
-                "doc_text": _get_doc_text(cover),
+                "doc_text": combined_text,
                 "image_path": (cover.get('page_image_paths', [None]) or [None])[0],
                 "clause_ref": "F48", "condition": f"Documents within {period_days} days of shipment",
                 "doc_type": cover.get('document_type', 'Covering Schedule'), "check_id": check_id, "severity": "hard",
