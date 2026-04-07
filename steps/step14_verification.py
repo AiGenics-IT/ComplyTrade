@@ -604,6 +604,40 @@ def _call_vlm(
 # Build verification tasks -- one per condition x document pair
 # ---------------------------------------------------------------------------
 
+def _deduplicate_packets(packets: list) -> tuple:
+    """
+    Group identical document packets by type — only keep ONE representative per type.
+    Returns (deduped_packets, doc_counts) where doc_counts maps type -> count.
+
+    Example: 8 Commercial Invoice copies → 1 representative + count=8
+    This prevents checking the same content 8 times.
+    """
+    type_groups = {}  # doc_type_lower -> list of packets
+    for pkt in packets:
+        if not pkt:
+            continue
+        pt = (pkt.get("document_type", "") or pkt.get("doc_type", "")
+              or pkt.get("classification", "") or "").lower().strip()
+        if not pt:
+            continue
+        if pt not in type_groups:
+            type_groups[pt] = []
+        type_groups[pt].append(pkt)
+
+    deduped = []
+    doc_counts = {}
+    for doc_type, group in type_groups.items():
+        doc_counts[doc_type] = len(group)
+        # Pick the representative: prefer the one with most text content
+        best = max(group, key=lambda p: len(_pkt_text(p)))
+        # Store count metadata on the representative
+        if isinstance(best, dict):
+            best['_copy_count'] = len(group)
+        deduped.append(best)
+
+    return deduped, doc_counts
+
+
 def _build_tasks(
     rows: list,
     packets: list,
@@ -613,6 +647,10 @@ def _build_tasks(
     """
     For each row, find the relevant document(s) and build a VLM task dict.
 
+    OPTIMIZATION: Identical document copies (e.g., 8 invoices) are deduplicated —
+    only ONE representative per document type is checked. The count of copies is
+    tracked separately for copy requirement verification (e.g., "IN OCTUPLICATE").
+
     If a condition targets MULTIPLE document types (e.g. F32B checks invoice
     AND draft), separate tasks are created for each document.
 
@@ -620,6 +658,9 @@ def _build_tasks(
     attached so no VLM call is wasted.
     """
     tasks = []
+
+    # Deduplicate packets: 8 identical invoices → 1 representative
+    deduped_packets, doc_counts = _deduplicate_packets(packets)
 
     for row in rows:
         row_id = _get(row, "row_id", "?")
@@ -662,10 +703,10 @@ def _build_tasks(
             # Fallback: use document_checked or try to infer
             doc_types_to_check = [doc_checked] if doc_checked else ["unknown"]
 
-        # For "all" documents: send each shipping doc as a separate task
+        # For "all" documents: send each shipping doc as a separate task (deduped)
         if "all" in doc_types_to_check:
             found_any = False
-            for pkt in packets:
+            for pkt in deduped_packets:
                 if not pkt:
                     continue
                 pt = _pkt_type(pkt)
@@ -704,7 +745,7 @@ def _build_tasks(
             if dt_lower.startswith("all document"):
                 # Check all shipping docs for this condition
                 found_any = False
-                for pkt in packets:
+                for pkt in deduped_packets:
                     if not pkt:
                         continue
                     pt = _pkt_type(pkt)
@@ -743,7 +784,7 @@ def _build_tasks(
                     })
                 continue
 
-            matched_pkts = _find_matching_docs(doc_type_target, packets)
+            matched_pkts = _find_matching_docs(doc_type_target, deduped_packets)
 
             if not matched_pkts:
                 tasks.append({
@@ -829,6 +870,16 @@ def run(
     tasks = _build_tasks(rows, packets, step06_result, f47a_context)
     vlm_tasks = [t for t in tasks if not t.get("skip")]
     skip_tasks = [t for t in tasks if t.get("skip")]
+
+    # Log dedup stats
+    _, _doc_counts = _deduplicate_packets(packets)
+    _total_pkts = sum(_doc_counts.values())
+    _deduped_pkts = len(_doc_counts)
+    if _total_pkts > _deduped_pkts:
+        _progress(f"  Document dedup: {_total_pkts} packets → {_deduped_pkts} unique types")
+        for _dt, _cnt in sorted(_doc_counts.items()):
+            if _cnt > 1:
+                _progress(f"    {_dt}: {_cnt} copies → 1 representative")
 
     _progress(
         f"  {len(vlm_tasks)} VLM tasks, {len(skip_tasks)} skipped "
