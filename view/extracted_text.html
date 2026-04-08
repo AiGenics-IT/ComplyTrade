@@ -186,7 +186,8 @@ function sel(i){
     const vb=hv?'<span class="badge-sm badge-vlm">VLM ENHANCED</span>':'';
     document.getElementById('tb').innerHTML=`
         <span class="pg-info">Page ${p.page_number}</span>
-        <span class="pg-type-lbl">${e(p.document_type||'')}</span>${cs}${vb}
+        <span class="pg-type-lbl" id="pg-type-display">${e(p.document_type||'')}</span>${cs}${vb}
+        <button class="btn" onclick="toggleEditClass()" style="padding:2px 8px;font-size:.72em;background:#fef3c7;color:#92400e;border:1px solid #fde68a" title="Change classification">Edit</button>
         <span class="spacer"></span>
         <div class="srch"><input id="sin" placeholder="Search in text..." oninput="doS()" onkeydown="if(event.key==='Enter'){event.shiftKey?pH():nH()}"><span class="si" id="sif"></span><button class="btn" onclick="pH()" title="Prev">&#9650;</button><button class="btn" onclick="nH()" title="Next">&#9660;</button></div>
         <button class="btn" onclick="cpT(this)">Copy</button>
@@ -276,6 +277,82 @@ function togImg(){
 document.addEventListener('keydown',ev=>{if(ev.target.tagName==='INPUT')return;if(ev.key==='ArrowDown'&&si<pages.length-1){sel(si+1);ev.preventDefault();}if(ev.key==='ArrowUp'&&si>0){sel(si-1);ev.preventDefault();}});
 
 init();
+
+// ── Classification Override ──
+function toggleEditClass() {
+    const p = pages[si];
+    const el = document.getElementById('pg-type-display');
+    if (document.getElementById('edit-class-form')) {
+        // Already open — close it
+        document.getElementById('edit-class-form').remove();
+        return;
+    }
+    const form = document.createElement('div');
+    form.id = 'edit-class-form';
+    form.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border-radius:12px;padding:20px;box-shadow:0 12px 40px rgba(0,0,0,.3);z-index:1000;min-width:350px';
+    form.innerHTML = `
+        <h3 style="margin-bottom:12px;font-size:1em;color:#1554ca">Edit Page ${p.page_number} Classification</h3>
+        <div style="margin-bottom:10px">
+            <label style="font-size:.82em;font-weight:600;display:block;margin-bottom:3px">Document Type</label>
+            <input type="text" id="ec-type" value="${(p.document_type||'').replace(/"/g,'&quot;')}" style="width:100%;padding:8px;border:2px solid #e0e5ff;border-radius:6px;font-size:.9em">
+        </div>
+        <div style="margin-bottom:10px">
+            <label style="font-size:.82em;font-weight:600;display:block;margin-bottom:3px">Copy Status</label>
+            <select id="ec-copy" style="width:100%;padding:8px;border:2px solid #e0e5ff;border-radius:6px;font-size:.9em">
+                <option value="original" ${p.copy_status==='original'?'selected':''}>Original</option>
+                <option value="copy" ${p.copy_status==='copy'?'selected':''}>Copy</option>
+                <option value="non_negotiable" ${p.copy_status==='non_negotiable'?'selected':''}>Non-Negotiable</option>
+            </select>
+        </div>
+        <div style="margin-bottom:10px">
+            <label style="font-size:.82em;font-weight:600;display:block;margin-bottom:3px">Notes</label>
+            <input type="text" id="ec-notes" placeholder="Optional notes..." style="width:100%;padding:8px;border:2px solid #e0e5ff;border-radius:6px;font-size:.9em">
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button onclick="document.getElementById('edit-class-form').remove()" style="padding:8px 16px;border:1px solid #ccc;border-radius:6px;background:#f5f5f5;cursor:pointer;font-weight:600">Cancel</button>
+            <button onclick="saveClassOverride()" style="padding:8px 16px;border:none;border-radius:6px;background:#1554ca;color:#fff;cursor:pointer;font-weight:600">Save</button>
+        </div>
+    `;
+    document.body.appendChild(form);
+    document.getElementById('ec-type').focus();
+    document.getElementById('ec-type').select();
+}
+
+async function saveClassOverride() {
+    const p = pages[si];
+    const newType = document.getElementById('ec-type').value.trim();
+    const newCopy = document.getElementById('ec-copy').value;
+    const notes = document.getElementById('ec-notes').value.trim();
+    if (!newType) return;
+    const jobId = new URLSearchParams(location.search).get('job_id');
+    try {
+        const r = await fetch('/api/override/' + jobId + '/classification', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                packet_id: p.packet_id || 'pg_' + p.page_number,
+                document_type: newType,
+                copy_status: newCopy,
+                notes: notes,
+                page_number: p.page_number,
+            })
+        });
+        if (r.ok) {
+            // Update local data
+            p.document_type = newType;
+            p.copy_status = newCopy;
+            // Refresh sidebar and toolbar
+            rSB();
+            sel(si);
+            document.getElementById('edit-class-form').remove();
+            alert('Classification updated. Re-run verification to apply changes.');
+        } else {
+            alert('Save failed: ' + r.status);
+        }
+    } catch(err) {
+        alert('Error: ' + err.message);
+    }
+}
 </script>
 </body>
 </html>

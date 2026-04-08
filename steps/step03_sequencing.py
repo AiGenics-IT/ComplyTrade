@@ -174,6 +174,18 @@ MULTI-PAGE DOCUMENTS:
 - Bill of Lading page 2: may show additional cargo details, terms & conditions → classify as "Bill of Lading" with is_continuation=true
 - Look at the OCR text: if it contains amounts, quantities, goods descriptions, or reference numbers matching the previous page's document type, it is a continuation.
 - Do NOT classify a continuation page as a completely different document type (e.g., don't call Invoice page 2 a "Certificate").
+
+PAGE NUMBERING:
+- If the page shows "Page X of Y" (e.g., "Page 5 of 29"), this is page X of a Y-page document. Set is_continuation=true if X > 1.
+- Use the ACTUAL document title/heading from the page for document_type, not a generic category.
+- Example: A page titled "PRE-SHIPMENT INSPECTION REPORT" with "Page 18 of 29" should be classified as "Pre-Shipment Inspection Report" with is_continuation=true — NOT as "Inspection Certificate".
+- Example: A page with "CERTIFICATE OF CONFORMANCE" heading should be "Certificate of Conformance" — NOT "Inspection Certificate".
+- Always use the SPECIFIC title visible on the document. "Inspection Certificate" is too generic — use the actual heading.
+
+IMPORTANT — DO NOT CONFUSE REFERENCES WITH DOCUMENT TYPE:
+- A Bill of Lading cargo description page may MENTION "Commercial Invoice No." or "L/C Number" — these are REFERENCES, not the document type.
+- If the page has "H.B/L No." or "B/L No." or "Marks & Nos." or "Description of Goods" column headers, it is a BILL OF LADING — even if it mentions invoice numbers in the cargo text.
+- Look at the PAGE HEADER and STRUCTURE (column headers, form fields) to determine document type — NOT keywords in the body text.
 """
 
 
@@ -185,10 +197,11 @@ def _classify_page_vlm(page_num: int, image_path: str, glm_text: str, _max_retri
 
     img_b64 = base64.b64encode(open(image_path, 'rb').read()).decode()
     prompt = CLASSIFY_PROMPT.format(glm_text=glm_text)
+    _current_img_b64 = img_b64  # May be replaced with resized version on retry
     payload = {
         "model": QWEN_VLM_MODEL,
         "messages": [{"role": "user", "content": [
-            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_current_img_b64}"}},
             {"type": "text", "text": prompt}
         ]}],
         "max_tokens": 1000, "temperature": 0.1
@@ -202,6 +215,25 @@ def _classify_page_vlm(page_num: int, image_path: str, glm_text: str, _max_retri
             if resp.status_code != 200:
                 last_err = f'VLM HTTP {resp.status_code}: {resp.text[:200]}'
                 print(f"[Step 3] Page {page_num} attempt {attempt+1}: HTTP {resp.status_code}: {resp.text[:200]}")
+
+                # If max_tokens error (image too large), resize and retry
+                if 'max_tokens' in resp.text and 'got -' in resp.text:
+                    try:
+                        from PIL import Image
+                        import io
+                        img = Image.open(image_path)
+                        # Reduce to 50% each retry
+                        scale = 0.5 if attempt == 0 else 0.3
+                        new_size = (int(img.width * scale), int(img.height * scale))
+                        img = img.resize(new_size, Image.LANCZOS)
+                        buf = io.BytesIO()
+                        img.save(buf, format='PNG')
+                        _current_img_b64 = base64.b64encode(buf.getvalue()).decode()
+                        payload['messages'][0]['content'][0]['image_url']['url'] = f"data:image/png;base64,{_current_img_b64}"
+                        print(f"[Step 3] Page {page_num}: Resized image to {new_size[0]}x{new_size[1]} for retry")
+                    except Exception as _resize_err:
+                        print(f"[Step 3] Page {page_num}: Resize failed: {_resize_err}")
+
                 time.sleep(2 * (attempt + 1))
                 continue
 

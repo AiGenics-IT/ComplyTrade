@@ -2590,6 +2590,34 @@ def settings_page():
     return HTMLResponse("<html><body><h1>Settings page not found</h1></body></html>")
 
 
+@app.get("/api/prompts")
+def get_prompts():
+    """Get all system prompts used in the pipeline."""
+    from config.settings import GLM_OCR_PROMPT
+    from steps.step03_sequencing import CLASSIFY_PROMPT
+    from steps.step12_decomposition import DECOMPOSITION_SYSTEM_PROMPT
+    from steps.step14_verification import _VLM_PROMPT_TEMPLATE
+    # Step 6 and 8 prompts
+    try:
+        from steps.step06_final_lc import _VLM_EXTRACT_PROMPT
+        s6 = _VLM_EXTRACT_PROMPT
+    except ImportError:
+        s6 = ''
+    try:
+        from steps.step08_shipping_classification import _CLASSIFICATION_PROMPT
+        s8 = _CLASSIFICATION_PROMPT
+    except ImportError:
+        s8 = ''
+    return {
+        "step1": GLM_OCR_PROMPT,
+        "step3": CLASSIFY_PROMPT,
+        "step6": s6,
+        "step8": s8,
+        "step12": DECOMPOSITION_SYSTEM_PROMPT,
+        "step14": _VLM_PROMPT_TEMPLATE,
+    }
+
+
 @app.get("/api/settings")
 def get_settings():
     """Get current pipeline settings."""
@@ -2685,50 +2713,94 @@ async def update_settings(request: Request):
 async def override_classification(job_id: str, request: Request):
     """
     Override the classification of a document packet.
-    Changes propagate to subsequent steps on re-verification.
+    Updates step03, step08, and step09 so verification picks up the change.
     """
-    if job_id not in _jobs:
+    # Allow job from disk even if not in memory
+    results_dir = os.path.join(RESULTS_DIR, job_id)
+    if job_id not in _jobs and not os.path.isdir(results_dir):
         raise HTTPException(404, "Job not found")
+
     body = await request.json()
-    packet_id = body.get('packet_id')
+    packet_id = body.get('packet_id', '')
+    page_number = body.get('page_number')
     new_type = body.get('document_type')
     new_copy_status = body.get('copy_status')
     notes = body.get('notes', '')
 
-    if not packet_id:
-        raise HTTPException(400, "packet_id required")
+    if not packet_id and not page_number:
+        raise HTTPException(400, "packet_id or page_number required")
 
-    # Store override in job metadata
-    if 'overrides' not in _jobs[job_id]:
-        _jobs[job_id]['overrides'] = {}
-    _jobs[job_id]['overrides'][packet_id] = {
-        'document_type': new_type,
-        'copy_status': new_copy_status,
-        'notes': notes,
-        'timestamp': datetime.now().isoformat(),
-    }
+    # Helper: match packet by packet_id or by page_number
+    def _matches(pkt):
+        if packet_id and str(pkt.get('packet_id', '')) == str(packet_id):
+            return True
+        if page_number:
+            pn = int(page_number)
+            pkt_pages = pkt.get('page_numbers', pkt.get('pages', []))
+            if pn in pkt_pages:
+                return True
+        return False
 
-    # Apply to step results if available
-    results_dir = os.path.join(RESULTS_DIR, job_id)
-    # Update step03 (classification)
+    def _update_packet(pkt):
+        if new_type:
+            pkt['document_type'] = new_type
+            pkt['override'] = True
+        if new_copy_status:
+            pkt['copy_status'] = new_copy_status
+        if notes:
+            pkt['notes'] = notes
+
+    # Update step03 (page classification)
     step03_path = os.path.join(results_dir, 'step03', 'step03_result.json')
     if os.path.exists(step03_path):
         with open(step03_path, 'r', encoding='utf-8') as f:
             s3 = json.load(f)
+        # Update classifications (per-page)
+        if page_number:
+            pn = int(page_number)
+            for cls in s3.get('classifications', []):
+                if cls.get('page_number') == pn:
+                    if new_type: cls['document_type'] = new_type
+                    if new_copy_status: cls['copy_status'] = new_copy_status
+        # Update packets
         for pkt in s3.get('packets', []):
-            pid = pkt.get('packet_id', '')
-            if str(pid) == str(packet_id):
-                if new_type:
-                    pkt['document_type'] = new_type
-                    pkt['override'] = True
-                if new_copy_status:
-                    pkt['copy_status'] = new_copy_status
-                if notes:
-                    pkt['notes'] = notes
+            if _matches(pkt):
+                _update_packet(pkt)
         with open(step03_path, 'w', encoding='utf-8') as f:
             json.dump(s3, f, indent=2, ensure_ascii=False)
 
-    return {"status": "ok", "message": f"Override applied for packet {packet_id}"}
+    # Update step08 (shipping classification)
+    step08_path = os.path.join(results_dir, 'step08', 'step08_result.json')
+    if os.path.exists(step08_path):
+        with open(step08_path, 'r', encoding='utf-8') as f:
+            s8 = json.load(f)
+        for pkt in s8.get('classified_packets', s8.get('packets', [])):
+            if _matches(pkt):
+                _update_packet(pkt)
+        with open(step08_path, 'w', encoding='utf-8') as f:
+            json.dump(s8, f, indent=2, ensure_ascii=False)
+
+    # Update step09 (reconciled packets — this is what verification reads)
+    step09_path = os.path.join(results_dir, 'step09', 'step09_result.json')
+    if os.path.exists(step09_path):
+        with open(step09_path, 'r', encoding='utf-8') as f:
+            s9 = json.load(f)
+        for pkt in s9.get('reconciled_packets', s9.get('packets', [])):
+            if _matches(pkt):
+                _update_packet(pkt)
+        with open(step09_path, 'w', encoding='utf-8') as f:
+            json.dump(s9, f, indent=2, ensure_ascii=False)
+
+    # Store in memory too
+    if job_id in _jobs:
+        if 'overrides' not in _jobs[job_id]:
+            _jobs[job_id]['overrides'] = {}
+        _jobs[job_id]['overrides'][packet_id or f'pg_{page_number}'] = {
+            'document_type': new_type, 'copy_status': new_copy_status,
+            'notes': notes, 'timestamp': datetime.now().isoformat(),
+        }
+
+    return {"status": "ok", "message": f"Override applied — verification will use updated classification"}
 
 
 @app.post("/api/override/{job_id}/final-lc")

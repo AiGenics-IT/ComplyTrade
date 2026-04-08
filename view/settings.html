@@ -210,6 +210,54 @@
     </div>
   </div>
 
+  <!-- Prompts Section - Full Width -->
+  <div class="card" style="margin-top:16px">
+    <div class="card-header" style="cursor:pointer" onclick="document.getElementById('prompts-body').style.display=document.getElementById('prompts-body').style.display==='none'?'block':'none'">
+      &#128221; System Prompts <span style="font-size:.75em;color:#888;margin-left:8px">(click to expand)</span>
+    </div>
+    <div class="card-body" id="prompts-body" style="display:none">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+
+        <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 1 — GLM OCR Prompt</div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Extracts raw text from each PDF page using GLM-OCR model</div>
+          <textarea id="prompt-step1" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 3 — Classification Prompt</div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Classifies each page as LC, BL, Invoice, Certificate, etc. with stamps/signatures detection</div>
+          <textarea id="prompt-step3" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 6 — LC Field Extraction Prompt</div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">VLM fallback to extract SWIFT fields when regex fails on scanned LCs</div>
+          <textarea id="prompt-step6" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 8 — Shipping Classification Prompt</div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Matches shipping documents against LC requirements with detailed field extraction</div>
+          <textarea id="prompt-step8" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 12 — Decomposition Prompt</div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Breaks LC clauses into individual checkable conditions for verification</div>
+          <textarea id="prompt-step12" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 14 — Verification Prompt</div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Checks each condition against actual documents with 21 critical rules</div>
+          <textarea id="prompt-step14" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical" readonly></textarea>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
   <div class="version" id="version-tag"></div>
 </div>
 
@@ -386,6 +434,29 @@ function showToast(msg) {
 }
 
 loadSettings();
+
+// ── Load Prompts ──
+async function loadPrompts() {
+  try {
+    const r = await fetch('/api/prompts');
+    if (r.ok) {
+      const d = await r.json();
+      if (d.step1) document.getElementById('prompt-step1').value = d.step1;
+      if (d.step3) document.getElementById('prompt-step3').value = d.step3;
+      if (d.step6) document.getElementById('prompt-step6').value = d.step6;
+      if (d.step8) document.getElementById('prompt-step8').value = d.step8;
+      if (d.step12) document.getElementById('prompt-step12').value = d.step12;
+      if (d.step14) document.getElementById('prompt-step14').value = d.step14;
+    } else {
+      const msg = 'Restart server to load prompts.';
+      ['step1','step3','step6','step8','step12','step14'].forEach(s => {
+        const el = document.getElementById('prompt-' + s);
+        if (el) el.value = msg;
+      });
+    }
+  } catch(e) {}
+}
+loadPrompts();
 </script>
 </body>
 </html>
