@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ComplyTrade - Document Comparison</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#1554ca 0%,#0d3b8a 100%);min-height:100vh;padding:16px}
+  .container{max-width:1400px;margin:0 auto}
+  .header{display:flex;align-items:center;justify-content:space-between;color:#fff;margin-bottom:16px}
+  .header h1{font-size:1.6em}
+  .nav{display:flex;gap:8px;flex-wrap:wrap}
+  .nav a{color:#fff;text-decoration:none;padding:6px 14px;border-radius:6px;font-size:.82em;background:rgba(255,255,255,.15);transition:.2s}
+  .nav a:hover{background:rgba(255,255,255,.3)}
+
+  .toolbar{background:#fff;border-radius:12px;padding:14px 18px;margin-bottom:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;box-shadow:0 4px 16px rgba(0,0,0,.15)}
+  .toolbar select{padding:8px 12px;border:2px solid #e0e5ff;border-radius:8px;font-size:.85em;font-family:inherit}
+  .toolbar select:focus{outline:none;border-color:#1554ca}
+  .toolbar label{font-size:.82em;font-weight:600;color:#555}
+
+  .compare{display:grid;grid-template-columns:1fr 1fr;gap:16px;min-height:70vh}
+  @media(max-width:900px){.compare{grid-template-columns:1fr}}
+
+  .panel{background:#fff;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.15);overflow:hidden;display:flex;flex-direction:column}
+  .panel-header{padding:12px 16px;font-weight:700;font-size:.9em;color:#fff;display:flex;justify-content:space-between;align-items:center}
+  .panel-header.lc{background:#1A2744}
+  .panel-header.doc{background:#2E7D8C}
+  .panel-body{flex:1;overflow-y:auto;padding:16px}
+
+  .clause-item{padding:10px 12px;border-radius:8px;margin-bottom:8px;cursor:pointer;border:2px solid transparent;transition:.2s;font-size:.85em;line-height:1.5}
+  .clause-item:hover{border-color:#1554ca;background:#f0f4ff}
+  .clause-item.active{border-color:#1554ca;background:#e0e8ff}
+  .clause-ref{font-weight:700;color:#1554ca;font-size:.82em;margin-bottom:2px}
+  .clause-text{color:#333}
+
+  .doc-content{font-size:.85em;line-height:1.6;color:#333;white-space:pre-wrap;word-break:break-word}
+  .highlight{background:#fff3cd;padding:1px 3px;border-radius:3px}
+  .highlight-match{background:#dcfce7;padding:1px 3px;border-radius:3px}
+  .highlight-miss{background:#fee2e2;padding:1px 3px;border-radius:3px}
+
+  .doc-selector{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+  .doc-tab{padding:5px 12px;border-radius:6px;font-size:.78em;font-weight:600;cursor:pointer;background:#f0f2f5;color:#555;transition:.2s}
+  .doc-tab:hover{background:#e0e5ff}
+  .doc-tab.active{background:#1554ca;color:#fff}
+
+  .page-img{max-width:100%;border:1px solid #eee;border-radius:8px;margin-top:10px}
+
+  .no-data{text-align:center;padding:40px;color:#999;font-size:.9em}
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div class="header">
+    <h1>Document Comparison</h1>
+    <div class="nav">
+      <a href="/dashboard">Dashboard</a>
+      <a href="/jobs">Jobs</a>
+      <a href="/settings">Settings</a>
+      <a href="/sanctions">Sanctions</a>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <label>Job:</label>
+    <select id="job-select" onchange="loadJob(this.value)">
+      <option value="">Select a job...</option>
+    </select>
+    <label>LC Clause:</label>
+    <select id="clause-select" onchange="selectClause(this.value)">
+      <option value="">Select clause...</option>
+    </select>
+  </div>
+
+  <div class="compare">
+    <!-- Left: LC Clauses -->
+    <div class="panel">
+      <div class="panel-header lc">LC Requirements</div>
+      <div class="panel-body" id="lc-panel">
+        <div class="no-data">Select a job to view LC clauses</div>
+      </div>
+    </div>
+
+    <!-- Right: Document Content -->
+    <div class="panel">
+      <div class="panel-header doc">
+        <span>Document Content</span>
+        <span id="doc-title" style="font-weight:400;font-size:.85em"></span>
+      </div>
+      <div class="panel-body">
+        <div class="doc-selector" id="doc-tabs"></div>
+        <div id="doc-panel">
+          <div class="no-data">Select a clause to see matching documents</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = location.origin;
+let jobData = null;
+let lcFields = {};
+let packets = [];
+let selectedClause = null;
+
+async function init() {
+  // Load jobs list
+  const r = await fetch(`${API}/api/jobs`);
+  const d = await r.json();
+  const jobs = d.jobs || d || [];
+  const sel = document.getElementById('job-select');
+  jobs.forEach(j => {
+    const o = document.createElement('option');
+    o.value = j.job_id;
+    o.textContent = `${j.lc_numbers?.[0] || j.job_id.slice(0,8)} — ${j.filename || ''}`;
+    sel.appendChild(o);
+  });
+
+  // Check URL params
+  const p = new URLSearchParams(location.search);
+  if (p.get('job_id')) {
+    sel.value = p.get('job_id');
+    loadJob(p.get('job_id'));
+  }
+}
+
+async function loadJob(jobId) {
+  if (!jobId) return;
+  const r = await fetch(`${API}/api/result/${jobId}`);
+  jobData = await r.json();
+
+  const flc = (jobData.consolidated_lcs || [])[0];
+  if (!flc) {
+    document.getElementById('lc-panel').innerHTML = '<div class="no-data">No LC data found</div>';
+    return;
+  }
+
+  lcFields = flc.consolidated_fields || flc.data?.consolidated_fields || {};
+  packets = jobData.identified_objects || [];
+
+  // Build clause list
+  const clauseSel = document.getElementById('clause-select');
+  clauseSel.innerHTML = '<option value="">Select clause...</option>';
+  let html = '';
+
+  for (const [tag, val] of Object.entries(lcFields)) {
+    if (['46A','47A','45A','46B','47B','45B'].includes(tag)) {
+      // Clause fields — split into numbered clauses
+      const clauses = Array.isArray(val) ? val : (typeof val === 'string' ? val.split(/\n(?=\d+\))/) : [val]);
+      clauses.forEach((c, i) => {
+        const text = typeof c === 'object' ? (c.text || c.clause_text || JSON.stringify(c)) : String(c);
+        const ref = `${tag}-${i+1}`;
+        html += `<div class="clause-item" id="cl-${ref}" onclick="selectClause('${ref}')">
+          <div class="clause-ref">${ref}</div>
+          <div class="clause-text">${esc(text.slice(0,200))}</div>
+        </div>`;
+        const o = document.createElement('option');
+        o.value = ref;
+        o.textContent = `${ref}: ${text.slice(0,60)}...`;
+        clauseSel.appendChild(o);
+      });
+    }
+  }
+
+  document.getElementById('lc-panel').innerHTML = html || '<div class="no-data">No clauses found</div>';
+}
+
+function selectClause(ref) {
+  if (!ref) return;
+  selectedClause = ref;
+
+  // Highlight active clause
+  document.querySelectorAll('.clause-item').forEach(el => el.classList.remove('active'));
+  const el = document.getElementById(`cl-${ref}`);
+  if (el) el.classList.add('active');
+
+  // Get clause text
+  const tag = ref.split('-')[0];
+  const idx = parseInt(ref.split('-')[1]) - 1;
+  const val = lcFields[tag];
+  let clauseText = '';
+  if (Array.isArray(val)) {
+    const item = val[idx];
+    clauseText = typeof item === 'object' ? (item.text || item.clause_text || '') : String(item || '');
+  } else if (typeof val === 'string') {
+    const parts = val.split(/\n(?=\d+\))/);
+    clauseText = parts[idx] || val;
+  }
+
+  // Find matching documents and show their text
+  showMatchingDocs(clauseText, tag);
+}
+
+function showMatchingDocs(clauseText, tag) {
+  const tabsEl = document.getElementById('doc-tabs');
+  const docEl = document.getElementById('doc-panel');
+
+  // Get keywords from clause for highlighting
+  const keywords = extractKeywords(clauseText);
+
+  // Show all document packets as tabs
+  const docPackets = packets.filter(p => {
+    const dt = p.document_type || p.data?.document_type || p.object_type || '';
+    return dt && !['lc','amendment','LC','Amendment'].includes(dt);
+  });
+  if (docPackets.length === 0) {
+    tabsEl.innerHTML = '';
+    docEl.innerHTML = '<div class="no-data">No documents found</div>';
+    return;
+  }
+
+  tabsEl.innerHTML = docPackets.map((p, i) =>
+    `<div class="doc-tab ${i===0?'active':''}" onclick="showDoc(${i})">${esc(p.document_type||'Doc '+(i+1))}</div>`
+  ).join('');
+
+  showDocContent(docPackets[0], keywords);
+}
+
+function showDoc(idx) {
+  document.querySelectorAll('.doc-tab').forEach((t,i) => t.classList.toggle('active', i===idx));
+  const docPackets = packets.filter(p => {
+    const dt = p.document_type || p.data?.document_type || p.object_type || '';
+    return dt && !['lc','amendment','LC','Amendment'].includes(dt);
+  });
+  const clauseText = document.querySelector('.clause-item.active .clause-text')?.textContent || '';
+  const keywords = extractKeywords(clauseText);
+  showDocContent(docPackets[idx], keywords);
+}
+
+function showDocContent(pkt, keywords) {
+  const docEl = document.getElementById('doc-panel');
+  document.getElementById('doc-title').textContent = pkt.document_type || '';
+
+  let text = pkt.refined_text || pkt.cleaned_text || pkt.text || pkt.raw_text || '';
+  // Check nested data object (API format)
+  if (!text && pkt.data) {
+    text = pkt.data.text_preview || pkt.data.refined_text || pkt.data.cleaned_text || pkt.data.text || '';
+  }
+  if (!text && pkt.pages) {
+    text = pkt.pages.map(p => p.cleaned_text || p.raw_text || '').join('\n\n');
+  }
+
+  if (!text) {
+    // Try to show page image
+    const pages = pkt.page_numbers || [];
+    if (pages.length > 0) {
+      const jobId = new URLSearchParams(location.search).get('job_id') || document.getElementById('job-select').value;
+      docEl.innerHTML = pages.map(p =>
+        `<img class="page-img" src="/api/page-image/${jobId}/${p}?w=800" alt="Page ${p}">`
+      ).join('');
+      return;
+    }
+    docEl.innerHTML = '<div class="no-data">No text available for this document</div>';
+    return;
+  }
+
+  // Highlight keywords in document text
+  let highlighted = esc(text);
+  for (const kw of keywords) {
+    if (kw.length < 3) continue;
+    const regex = new RegExp(`(${kw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')})`, 'gi');
+    highlighted = highlighted.replace(regex, '<span class="highlight-match">$1</span>');
+  }
+
+  docEl.innerHTML = `<div class="doc-content">${highlighted}</div>`;
+}
+
+function extractKeywords(text) {
+  const stop = new Set(['the','of','a','an','in','on','by','to','for','and','or','is','are','must','be','not','all','this','that','with','from','at','as','per','no','shall','should','will']);
+  return (text || '').split(/\W+/).filter(w => w.length > 2 && !stop.has(w.toLowerCase())).map(w => w);
+}
+
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+init();
+</script>
+</body>
+</html>

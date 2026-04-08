@@ -376,51 +376,218 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
 
 def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
     """
-    Apply /ADD/ and /DEL/ amendment operations to base field text.
+    Apply amendment operations to base field text.
 
-    HBL Fusion amendments use these patterns:
-      /ADD/+ ) CLAUSE NO. 10 TO READ AS "new text" INSTEAD OF "old text"
-      /DEL/  ) CLAUSE NO. 3 (delete entire clause)
-      +) DELETE ''old text'' REPLACE BY ''new text''
-      +) ADD new clause text
+    Handles ALL known amendment formats:
 
-    If the amendment instructions can't be parsed, return the base text unchanged
-    (don't corrupt it with raw instruction text).
+    FUSION FORMAT:
+      /ADD/+) CLAUSE NO. 10 TO READ AS "new" INSTEAD OF "old"
+      /ADD/+) CLAUSE NO. 27 TO READ AS "new text"
+      /ADD/+) DELETE ''old'' REPLACE BY ''new''
+      /ADD/+) COAUSE NO.5: DELETE ''30 DAYS'' REPLACE BY ''45 DAYS''
+      /DEL/) CLAUSE NO. 3
+
+    ALLIANCE FORMAT:
+      /DELETE/ PLEASE READ WORDS IN FIELD 46A-1 "text" AS DELETED
+      /REPALL/ PLEASE READ FIELD 47A-11 AS "new text"
+      /ADD/ PLEASE READ FIELD 47A-19 AS "new clause text"
+
+    If no patterns match, return base text unchanged (don't corrupt it).
     """
     if not base_text:
-        return base_text  # Nothing to modify
+        return base_text
 
     result = base_text
+    # Normalize all quote types to regular double quote for matching
+    amd = amendment_text
+    amd = amd.replace('\u2018', "'").replace('\u2019', "'")  # smart single quotes
+    amd = amd.replace('\u201C', '"').replace('\u201D', '"')  # smart double quotes
+    amd = amd.replace("''", '"')  # two single quotes = one double quote
 
-    # Pattern 1: DELETE ''old'' REPLACE BY ''new''
-    for m in re.finditer(r"DELETE\s+[''\"]+(.+?)[''\"]+\s+REPLACE\s+BY\s+[''\"]+(.+?)[''\"]+",
-                         amendment_text, re.IGNORECASE | re.DOTALL):
+    # Quote pattern: matches any combination of single/double quotes
+    Q = r"""['"]+"""
+
+    # ── FULL REPLACEMENT ──
+    # If amendment is just /REPALL/ followed by unquoted text, replace everything
+    _repall_m = re.match(r'\s*/REPALL/\s*(.+)', amd, re.IGNORECASE | re.DOTALL)
+    if _repall_m:
+        new_content = _repall_m.group(1).strip()
+        # Clean Narrative: prefixes from Alliance format
+        new_content = re.sub(r'(?:Narrative\d?:\s*)+', '', new_content).strip()
+        new_content = re.sub(r'\n\s*Narrative\d?:\s*', '\n', new_content).strip()
+        new_content = re.sub(r'^Lines?\d*(?:to\d+)?:\s*', '', new_content, flags=re.MULTILINE).strip()
+        new_content = re.sub(r'^\s*Code\s*-\s*Narrative\s*$', '', new_content, flags=re.MULTILINE).strip()
+        # If it contains PLEASE READ patterns, don't do full replace — let patterns handle it
+        if not re.search(r'PLEASE\s+READ', new_content, re.IGNORECASE):
+            if new_content:
+                result = new_content
+                # Still process remaining patterns (there might be /ADD/ blocks after)
+
+    # ── ALLIANCE FORMAT ──
+
+    # A1: /DELETE/ PLEASE READ WORDS IN FIELD XX-N "text" AS DELETED
+    for m in re.finditer(
+            r'PLEASE\s+READ\s+WORDS\s+IN\s+FIELD\s+\w+-?\d*\s+' + Q + r'(.+?)' + Q + r'\s+AS\s+DELETED',
+            amd, re.IGNORECASE | re.DOTALL):
+        del_text = m.group(1).strip()
+        if del_text in result:
+            result = result.replace(del_text, '')
+            # Clean up double spaces / empty lines left behind
+            result = re.sub(r'  +', ' ', result)
+            result = re.sub(r'\n\s*\n\s*\n', '\n\n', result)
+
+    # A2: /REPALL/ or /ADD/ PLEASE READ FIELD XX-N AS "new text"
+    for m in re.finditer(
+            r'PLEASE\s+READ\s+FIELD\s+\w+-(\d+)\s+AS\s+' + Q + r'(.+?)' + Q,
+            amd, re.IGNORECASE | re.DOTALL):
+        clause_num = int(m.group(1))
+        new_text = m.group(2).strip()
+        pre_text = amd[:m.start()].upper()
+        is_repall = '/REPALL/' in pre_text
+        is_add = '/ADD/' in pre_text and '/REPALL/' not in pre_text
+
+        if is_repall:
+            clause_pat = re.compile(
+                r'(\(' + str(clause_num) + r'\)|' + str(clause_num) + r'[\).:])\s*(.+?)(?=\n\s*(?:\(\d+\)|\d+[\).:])\s|\Z)',
+                re.DOTALL)
+            cm = clause_pat.search(result)
+            if cm:
+                result = result[:cm.start(2)] + new_text + result[cm.end(2):]
+        elif is_add:
+            clause_line = f"\n{clause_num}.{new_text}"
+            if new_text not in result:
+                result = result.rstrip() + clause_line
+
+    # ── FUSION FORMAT ──
+
+    # F1: DELETE ''old'' REPLACE BY ''new''
+    for m in re.finditer(r'DELETE\s+' + Q + r'(.+?)' + Q + r'\s+REPLACE\s+BY\s+' + Q + r'(.+?)' + Q,
+                         amd, re.IGNORECASE | re.DOTALL):
         old_text = m.group(1).strip()
         new_text = m.group(2).strip()
         if old_text in result:
             result = result.replace(old_text, new_text)
 
-    # Pattern 2: CLAUSE NO. X TO READ AS "new" INSTEAD OF "old"
-    for m in re.finditer(r"CLAUSE\s+NO\.?\s*(\d+)\s+TO\s+READ\s+AS\s+[''\"]+(.+?)[''\"]+\s+INSTEAD\s+OF\s+[''\"]+(.+?)[''\"]+",
-                         amendment_text, re.IGNORECASE | re.DOTALL):
+    # F2a: CLAUSE NO. X TO READ AS "new" INSTEAD OF "old"
+    for m in re.finditer(r'C\w{1,5}E\s+NO\.?\s*(\d+)\s+(?:NOW\s+)?TO\s+READ\s+AS\s+' + Q + r'(.+?)' + Q + r'\s+INSTEAD\s+OF\s+' + Q + r'(.+?)' + Q,
+                         amd, re.IGNORECASE | re.DOTALL):
         old_text = m.group(3).strip()
         new_text = m.group(2).strip()
         if old_text in result:
             result = result.replace(old_text, new_text)
 
-    # Pattern 3: /ADD/+ ) new clause or text to append
-    for m in re.finditer(r'/ADD/\s*\+?\s*\)\s*(.+?)(?=\n/(?:ADD|DEL)/|\Z)',
-                         amendment_text, re.IGNORECASE | re.DOTALL):
-        add_text = m.group(1).strip()
-        # If it's a "CLAUSE NO. X TO READ AS" instruction, skip (handled above)
-        if re.search(r'CLAUSE\s+NO', add_text, re.IGNORECASE):
+    # F2b: CLAUSE NO. X TO READ AS "new text" (no INSTEAD OF)
+    for m in re.finditer(r'C\w{1,5}E\s+NO\.?\s*(\d+)\s+(?:NOW\s+)?TO\s+READ\s+AS\s+' + Q + r'(.+?)' + Q,
+                         amd, re.IGNORECASE | re.DOTALL):
+        full = m.group(0)
+        if re.search(r'INSTEAD\s+OF', full, re.IGNORECASE):
             continue
-        # If it's a "DELETE...REPLACE" instruction, skip (handled above)
+        clause_num = int(m.group(1))
+        new_text = m.group(2).strip()
+        clause_pat = re.compile(
+            r'(\(' + str(clause_num) + r'\)|' + str(clause_num) + r'[\).:])\s*(.+?)(?=\n\s*(?:\(\d+\)|\d+[\).:])\s|\Z)',
+            re.DOTALL)
+        cm = clause_pat.search(result)
+        if cm:
+            result = result[:cm.start(2)] + new_text + result[cm.end(2):]
+
+    # F3: /ADD/ new clause text (generic — append if not an instruction)
+    for m in re.finditer(r'/ADD/\s*\+?\s*\)?\s*(.+?)(?=\n\s*/(?:ADD|DEL|REPALL)/|\Z)',
+                         amd, re.IGNORECASE | re.DOTALL):
+        add_text = m.group(1).strip()
+        # Skip if it's an instruction already handled above
+        if re.search(r'C\w{1,5}E\s+NO', add_text, re.IGNORECASE):
+            continue
         if re.search(r'DELETE.*REPLACE', add_text, re.IGNORECASE):
             continue
-        # Otherwise append as new clause
+        if re.search(r'PLEASE\s+READ\s+FIELD', add_text, re.IGNORECASE):
+            continue
+        if re.search(r'PLEASE\s+READ\s+WORDS', add_text, re.IGNORECASE):
+            continue
+        if re.search(r'PLEASE\s+READ\s+C\w{1,5}E', add_text, re.IGNORECASE):
+            continue
+        if re.search(r'TO\s+READ\s+AS', add_text, re.IGNORECASE):
+            continue
+        # Append as new content
         if add_text and add_text not in result:
             result = result.rstrip() + '\n' + add_text
+
+    # ── ADDITIONAL PATTERNS ──
+
+    # P1: /ADD/+)TO READ AS "new text" (no clause number — replaces entire field, e.g. 45A goods)
+    for m in re.finditer(r'/ADD/\s*\+?\s*\)?\s*TO\s+READ\s+AS\s+' + Q + r'(.+?)' + Q,
+                         amd, re.IGNORECASE | re.DOTALL):
+        new_text = m.group(1).strip()
+        # This replaces a portion of the field text — check if there's a DELETE..REPLACE nearby
+        if not re.search(r'DELETE.*REPLACE', amd[max(0,m.start()-50):m.start()], re.IGNORECASE):
+            # Full field replacement
+            if new_text and new_text not in result:
+                result = new_text
+
+    # P2: PLEASE READ CLAUSE XX-N AS "new text" (Alliance, uses CLAUSE instead of FIELD)
+    for m in re.finditer(r'PLEASE\s+READ\s+C\w{1,5}E\s+\w+-(\d+)\s+AS\s+' + Q + r'(.+?)' + Q,
+                         amd, re.IGNORECASE | re.DOTALL):
+        clause_num = int(m.group(1))
+        new_text = m.group(2).strip()
+        clause_pat = re.compile(
+            r'(\(' + str(clause_num) + r'\)|' + str(clause_num) + r'[\).:])\s*(.+?)(?=\n\s*(?:\(\d+\)|\d+[\).:])\s|\Z)',
+            re.DOTALL)
+        cm = clause_pat.search(result)
+        if cm:
+            result = result[:cm.start(2)] + new_text + result[cm.end(2):]
+
+    # P3: PLEASE READ FIELD XXX AS "new text" (no clause number — replaces entire field)
+    for m in re.finditer(r'PLEASE\s+READ\s+FIELD\s+\w+\s+AS\s+' + Q + r'(.+?)' + Q,
+                         amd, re.IGNORECASE | re.DOTALL):
+        # Only if no clause number (already handled by A2)
+        if not re.search(r'FIELD\s+\w+-\d+', m.group(0)):
+            new_text = m.group(1).strip()
+            if new_text:
+                result = new_text
+
+    # P4: IN FIELD XXX: ADD CLAUSE NO.N "text" (PPL6 style)
+    for m in re.finditer(r'IN\s+FIELD\s+\w+:\s*ADD\s+C\w{1,5}E\s+NO\.?\s*(\d+)',
+                         amd, re.IGNORECASE):
+        clause_num = int(m.group(1))
+        # Get remaining text after the match as the clause content
+        remaining = amd[m.end():].strip()
+        if remaining and remaining not in result:
+            result = result.rstrip() + f'\n{clause_num}.{remaining}'
+
+    # P5: /DELETE/ CLAUSE 2,3,5,7 — delete multiple clauses by number
+    for m in re.finditer(r'C\w{1,5}E\s+([\d,\s]+)', amd):
+        pre = amd[:m.start()].upper()
+        if '/DELETE/' not in pre[max(0,pre.rfind('/')-10):]:
+            continue
+        nums = [int(n.strip()) for n in m.group(1).split(',') if n.strip().isdigit()]
+        for clause_num in nums:
+            # Remove the clause from base text
+            clause_pat = re.compile(
+                r'(\(' + str(clause_num) + r'\)|' + str(clause_num) + r'[\).:])\s*(.+?)(?=\n\s*(?:\(\d+\)|\d+[\).:])\s|\Z)',
+                re.DOTALL)
+            result = clause_pat.sub('', result)
+        result = re.sub(r'\n\s*\n\s*\n', '\n\n', result)
+
+    # P6: /ADD/ CLAUSE N)text (direct clause add, no quotes)
+    for m in re.finditer(r'C\w{1,5}E\s+(\d+)\)\s*(.+?)(?=\n\s*C\w{1,5}E\s+\d+\)|\n\s*Code:|\Z)',
+                         amd, re.IGNORECASE | re.DOTALL):
+        pre = amd[:m.start()].upper()
+        if '/ADD/' not in pre[max(0,len(pre)-100):]:
+            continue
+        clause_num = int(m.group(1))
+        new_text = m.group(2).strip()
+        # Clean up Narrative: prefixes from Alliance format
+        new_text = re.sub(r'(?:Narrative\d?:\s*)+', '', new_text).strip()
+        new_text = re.sub(r'\n\s*Narrative\d?:\s*', '\n', new_text).strip()
+        if new_text and new_text not in result:
+            result = result.rstrip() + f'\n{clause_num}){new_text}'
+
+    # P7: IN FIELD XX: FOR EXISTING PLEASE READ "value" (replace field value)
+    for m in re.finditer(r'IN\s+FIELD\s+\w+:\s*FOR\s+EXISTING\s+PLEASE\s+READ\s+' + Q + r'(.+?)' + Q,
+                         amd, re.IGNORECASE | re.DOTALL):
+        new_val = m.group(1).strip()
+        if new_val:
+            result = new_val
 
     return result
 
@@ -499,7 +666,9 @@ def _apply_amendment(
         # Check if amendment value contains /ADD/ or /DEL/ instructions
         # These are amendment OPERATIONS, not replacement values
         amd_val = sf.value.strip()
-        if re.search(r'/ADD/|/DEL/', amd_val) or re.search(r'(?:^|\n)\+?\s*\)', amd_val):
+        # Normalize double slashes: //REPALL// -> /REPALL/
+        amd_val = re.sub(r'//', '/', amd_val)
+        if re.search(r'/ADD/|/DEL/|/DELETE/|/REPALL/|PLEASE\s+READ', amd_val, re.IGNORECASE) or re.search(r'(?:^|\n)\+?\s*\)', amd_val):
             # This is an amendment instruction — apply operations to base value
             new_val = _apply_text_amendment(old_val, amd_val)
             base_fields[actual_tag] = new_val

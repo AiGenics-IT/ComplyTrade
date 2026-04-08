@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ComplyTrade - Sanctions List</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#1554ca 0%,#0d3b8a 100%);min-height:100vh;padding:16px}
+  .container{max-width:900px;margin:0 auto}
+  .header{display:flex;align-items:center;justify-content:space-between;color:#fff;margin-bottom:16px}
+  .header h1{font-size:1.6em;text-shadow:1px 1px 3px rgba(0,0,0,.2)}
+  .nav{display:flex;gap:8px;flex-wrap:wrap}
+  .nav a{color:#fff;text-decoration:none;padding:6px 14px;border-radius:6px;font-size:.82em;background:rgba(255,255,255,.15);transition:.2s}
+  .nav a:hover{background:rgba(255,255,255,.3)}
+
+  .tabs{display:flex;gap:0;margin-bottom:0}
+  .tab{padding:12px 24px;background:rgba(255,255,255,.15);color:#fff;font-weight:600;font-size:.9em;cursor:pointer;border-radius:10px 10px 0 0;transition:.2s}
+  .tab:hover{background:rgba(255,255,255,.25)}
+  .tab.active{background:#fff;color:#1554ca}
+
+  .card{background:#fff;border-radius:0 12px 12px 12px;box-shadow:0 8px 32px rgba(0,0,0,.2);overflow:hidden}
+  .card-body{padding:20px 24px}
+
+  .toolbar{display:flex;gap:10px;margin-bottom:16px;align-items:center;flex-wrap:wrap}
+  .search-input{flex:1;min-width:200px;padding:8px 14px;border:2px solid #e0e5ff;border-radius:8px;font-size:.9em;transition:.2s}
+  .search-input:focus{outline:none;border-color:#1554ca;box-shadow:0 0 0 3px rgba(21,84,202,.15)}
+  .btn{padding:8px 18px;border-radius:8px;border:none;font-size:.85em;font-weight:600;cursor:pointer;transition:.2s}
+  .btn-primary{background:linear-gradient(135deg,#1554ca,#0d3b8a);color:#fff;box-shadow:0 3px 8px rgba(21,84,202,.3)}
+  .btn-primary:hover{transform:translateY(-1px)}
+  .btn-danger{background:#dc2626;color:#fff}
+  .btn-danger:hover{background:#b91c1c}
+  .btn-sm{padding:5px 12px;font-size:.78em;border-radius:6px}
+  .btn-outline{background:#fff;color:#1554ca;border:2px solid #1554ca}
+  .btn-outline:hover{background:#f0f4ff}
+
+  .list{list-style:none}
+  .list-item{display:flex;align-items:center;padding:10px 0;border-bottom:1px solid #f0f2f5;gap:10px}
+  .list-item:last-child{border-bottom:none}
+  .list-num{width:30px;color:#999;font-size:.82em;text-align:right;flex-shrink:0}
+  .list-text{flex:1;font-size:.92em}
+  .list-actions{flex-shrink:0;display:flex;gap:6px}
+
+  .add-row{display:flex;gap:8px;margin-top:12px}
+  .add-input{flex:1;padding:8px 14px;border:2px solid #e0e5ff;border-radius:8px;font-size:.9em;font-family:inherit}
+  .add-input:focus{outline:none;border-color:#1554ca;box-shadow:0 0 0 3px rgba(21,84,202,.15)}
+
+  .edit-input{padding:4px 8px;border:2px solid #1554ca;border-radius:6px;font-size:.88em;font-family:inherit;width:100%}
+
+  .empty-state{text-align:center;padding:30px;color:#999;font-size:.88em}
+  .count-badge{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;border-radius:11px;font-size:.72em;font-weight:800;color:#fff;background:#1554ca;padding:0 6px;margin-left:6px}
+
+  .toast{position:fixed;bottom:20px;right:20px;background:linear-gradient(135deg,#1554ca,#0d3b8a);color:white;padding:12px 20px;border-radius:10px;font-size:.9em;display:none;z-index:999;box-shadow:0 6px 20px rgba(0,0,0,.25);font-weight:500}
+  .version{text-align:center;color:rgba(255,255,255,.4);font-size:.75em;margin-top:10px}
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div class="header">
+    <h1>Sanctions List</h1>
+    <div class="nav">
+      <a href="/dashboard">Dashboard</a>
+      <a href="/interface">Upload</a>
+      <a href="/jobs">Jobs</a>
+      <a href="/checklist">Checklist</a>
+      <a href="/settings">Settings</a>
+      <a href="/vessel-tracking">Vessels</a>
+      <a href="/document-compare">Compare</a>
+      <a href="/docs">API</a>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('banks',this)">Banks <span class="count-badge" id="cnt-banks">0</span></div>
+    <div class="tab" onclick="switchTab('countries',this)">Countries <span class="count-badge" id="cnt-countries">0</span></div>
+    <div class="tab" onclick="switchTab('goods',this)">Goods <span class="count-badge" id="cnt-goods">0</span></div>
+  </div>
+
+  <div class="card">
+    <div class="card-body">
+      <div class="toolbar">
+        <input type="text" class="search-input" id="search" placeholder="Search..." oninput="render()">
+      </div>
+      <ul class="list" id="list"></ul>
+      <div class="empty-state" id="empty" style="display:none">No items in this list</div>
+      <div class="add-row">
+        <input type="text" class="add-input" id="add-input" placeholder="Type and press Enter or click Add..." onkeydown="if(event.key==='Enter')addItem()">
+        <button class="btn btn-primary" onclick="addItem()">+ Add</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="version" id="version-tag"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = location.origin;
+let tab = 'banks';
+let data = {banks:[], countries:[], goods:[]};
+let editIdx = -1;
+
+async function load() {
+  try {
+    const r = await fetch(`${API}/api/sanctions`);
+    if (r.ok) data = await r.json();
+  } catch(e) {}
+  // Ensure arrays
+  if (!Array.isArray(data.banks)) data.banks = [];
+  if (!Array.isArray(data.countries)) data.countries = [];
+  if (!Array.isArray(data.goods)) data.goods = [];
+  updateCounts();
+  render();
+  try {
+    const v = await (await fetch('/version')).json();
+    document.getElementById('version-tag').textContent = 'Build: ' + (v.build || '');
+  } catch(e) {}
+}
+
+function updateCounts() {
+  document.getElementById('cnt-banks').textContent = data.banks.length;
+  document.getElementById('cnt-countries').textContent = data.countries.length;
+  document.getElementById('cnt-goods').textContent = data.goods.length;
+}
+
+function switchTab(t, el) {
+  tab = t;
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('search').value = '';
+  editIdx = -1;
+  render();
+}
+
+function render() {
+  const items = data[tab] || [];
+  const q = (document.getElementById('search').value || '').toLowerCase();
+  const filtered = q ? items.filter(x => x.toLowerCase().includes(q)) : items;
+
+  if (filtered.length === 0) {
+    document.getElementById('list').innerHTML = '';
+    document.getElementById('empty').style.display = 'block';
+    return;
+  }
+  document.getElementById('empty').style.display = 'none';
+
+  document.getElementById('list').innerHTML = filtered.map((item, fi) => {
+    const origIdx = items.indexOf(item);
+    if (editIdx === origIdx) {
+      return `<li class="list-item">
+        <span class="list-num">${origIdx+1}.</span>
+        <input type="text" class="edit-input" id="edit-input" value="${esc(item)}" onkeydown="if(event.key==='Enter')saveEdit(${origIdx})">
+        <div class="list-actions">
+          <button class="btn btn-primary btn-sm" onclick="saveEdit(${origIdx})">Save</button>
+          <button class="btn btn-outline btn-sm" onclick="cancelEdit()">Cancel</button>
+        </div>
+      </li>`;
+    }
+    return `<li class="list-item">
+      <span class="list-num">${origIdx+1}.</span>
+      <span class="list-text">${esc(item)}</span>
+      <div class="list-actions">
+        <button class="btn btn-outline btn-sm" onclick="startEdit(${origIdx})">Edit</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteItem(${origIdx})">Del</button>
+      </div>
+    </li>`;
+  }).join('');
+}
+
+function addItem() {
+  const input = document.getElementById('add-input');
+  const val = input.value.trim();
+  if (!val) return;
+  data[tab].push(val);
+  input.value = '';
+  persist();
+  updateCounts();
+  render();
+  showToast('Added');
+}
+
+function startEdit(idx) {
+  editIdx = idx;
+  render();
+  setTimeout(() => {
+    const el = document.getElementById('edit-input');
+    if (el) { el.focus(); el.select(); }
+  }, 50);
+}
+
+function saveEdit(idx) {
+  const val = document.getElementById('edit-input').value.trim();
+  if (!val) return;
+  data[tab][idx] = val;
+  editIdx = -1;
+  persist();
+  render();
+  showToast('Updated');
+}
+
+function cancelEdit() {
+  editIdx = -1;
+  render();
+}
+
+function deleteItem(idx) {
+  if (!confirm('Delete this item?')) return;
+  data[tab].splice(idx, 1);
+  persist();
+  updateCounts();
+  render();
+  showToast('Deleted');
+}
+
+async function persist() {
+  await fetch(`${API}/api/sanctions`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(data),
+  });
+}
+
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', 2000);
+}
+
+load();
+</script>
+</body>
+</html>

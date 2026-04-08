@@ -14,8 +14,9 @@
   .nav a{color:#fff;text-decoration:none;padding:6px 14px;border-radius:6px;font-size:.82em;background:rgba(255,255,255,.15);transition:all .2s}
   .nav a:hover{background:rgba(255,255,255,.3)}
 
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-  @media(max-width:800px){.grid{grid-template-columns:1fr}}
+  .grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+  @media(max-width:1000px){.grid{grid-template-columns:1fr 1fr}}
+  @media(max-width:700px){.grid{grid-template-columns:1fr}}
 
   .card{background:#fff;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.2);overflow:hidden;display:flex;flex-direction:column}
   .card-header{padding:12px 16px;border-bottom:1px solid #e5e7eb;font-size:.95em;font-weight:600;color:#1a1a2e;display:flex;align-items:center;gap:8px;background:#fafbfc}
@@ -70,11 +71,14 @@
   <div class="header">
     <h1>Pipeline Settings</h1>
     <div class="nav">
+      <a href="#" onclick="document.getElementById('steps-modal').classList.add('active');return false">Pipeline Steps</a>
+      <a href="/dashboard">Dashboard</a>
       <a href="/interface">Upload</a>
       <a href="/jobs">Jobs</a>
       <a href="/checklist">Checklist</a>
-      <a href="/compliance">Compliance</a>
-      <a href="/docs">API</a>
+      <a href="/vessel-tracking">Vessels</a>
+      <a href="/document-compare">Compare</a>
+      <a href="/sanctions">Sanctions</a>
     </div>
   </div>
 
@@ -89,7 +93,7 @@
       </div>
     </div>
 
-    <!-- Right: Performance + Models stacked -->
+    <!-- Middle: Performance + Models -->
     <div style="display:flex;flex-direction:column;gap:16px">
       <div class="card">
         <div class="card-header">&#9889; Performance</div>
@@ -113,8 +117,77 @@
       </div>
 
       <div class="card">
-        <div class="card-header">&#129302; Model Endpoints</div>
-        <div class="card-body" id="models-container"></div>
+        <div class="card-header">&#129302; Model Selection</div>
+        <div class="card-body">
+          <div class="config-row">
+            <span class="config-label">VLM Model</span>
+            <select class="config-input" id="vlm_preset" style="width:180px;text-align:left" onchange="applyModelPreset(this.value)">
+              <option value="72b">Qwen 72B (Remote)</option>
+              <option value="7b">Qwen 7B (Local)</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="config-row">
+            <span class="config-label">VLM URL</span>
+            <input type="text" class="config-input" id="vlm_url" style="width:280px;text-align:left;font-size:.78em" value="">
+          </div>
+          <div class="config-row">
+            <span class="config-label">VLM Model Path</span>
+            <input type="text" class="config-input" id="vlm_model" style="width:280px;text-align:left;font-size:.78em" value="">
+          </div>
+          <div class="config-row">
+            <span class="config-label">GLM OCR URL</span>
+            <input type="text" class="config-input" id="ocr_url" style="width:280px;text-align:left;font-size:.78em" value="">
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Right: Timeouts + Auth + Quick Info -->
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div class="card">
+        <div class="card-header">&#9200; Timeouts</div>
+        <div class="card-body">
+          <div class="config-row">
+            <span class="config-label">OCR Timeout (seconds)</span>
+            <input type="number" class="config-input" id="ocr_timeout" min="60" max="3600" value="600">
+          </div>
+          <div class="config-row">
+            <span class="config-label">VLM Timeout (seconds)</span>
+            <input type="number" class="config-input" id="vlm_timeout" min="60" max="3600" value="1200">
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#128274; Authentication</div>
+        <div class="card-body">
+          <div class="config-row">
+            <span class="config-label">Password Protection</span>
+            <label class="toggle">
+              <input type="checkbox" id="auth_enabled" onchange="toggleAuth(this.checked)">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="config-row">
+            <span class="config-label">Username</span>
+            <input type="text" class="config-input" id="auth_user" style="width:150px" value="admin" disabled>
+          </div>
+          <div class="config-row">
+            <span class="config-label">Password</span>
+            <input type="password" class="config-input" id="auth_pass" style="width:150px" placeholder="Change password">
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+        </div>
       </div>
 
       <div class="card">
@@ -142,6 +215,59 @@
 
 <div class="toast" id="toast"></div>
 
+<!-- Pipeline Steps Modal (matches jobs page design) -->
+<style>
+  .ps-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center;backdrop-filter:blur(2px)}
+  .ps-overlay.active{display:flex}
+  .ps-box{background:#fff;border-radius:14px;padding:28px 32px;max-width:640px;width:90%;max-height:85vh;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,.25);animation:psIn .2s ease}
+  @keyframes psIn{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}
+  .ps-grid{display:grid;grid-template-columns:1fr 1fr;gap:0}
+  .ps-step{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid #f1f5f9;font-size:.85em}
+  .ps-step:hover{background:#f8fafc}
+  .ps-num{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.72em;font-weight:700;flex-shrink:0}
+  .ps-num.p1{background:#e0f2fe;color:#0369a1}
+  .ps-num.p2{background:#f3e8ff;color:#7c3aed}
+  .ps-label{flex:1;line-height:1.3}
+  .ps-label .n{font-weight:600;font-size:.88em}
+  .ps-label .d{font-size:.75em;color:#64748b}
+  .ps-phase{grid-column:1/-1;padding:10px 12px;font-weight:700;font-size:.82em;border-bottom:2px solid #e2e8f0;margin-top:4px}
+  .ps-phase.p1{color:#0369a1;background:#f0f9ff}
+  .ps-phase.p2{color:#7c3aed;background:#faf5ff}
+</style>
+<div class="ps-overlay" id="steps-modal" onclick="if(event.target===this)this.classList.remove('active')">
+  <div class="ps-box">
+    <h3 style="color:#1554ca;margin-bottom:4px">ComplyTrade Processing Pipeline</h3>
+    <p style="margin-bottom:14px;font-size:.88em;color:#666">20 steps in 2 phases. Phase 1 runs automatically on upload. Phase 2 starts when you click "Run Verification".</p>
+    <div class="ps-grid">
+      <div class="ps-phase p1">Phase 1 — Document Extraction (Automatic)</div>
+      <div class="ps-step"><span class="ps-num p1">1</span><div class="ps-label"><div class="n">Raw OCR</div><div class="d">Extract text from every page using GLM-OCR</div></div></div>
+      <div class="ps-step"><span class="ps-num p1">2</span><div class="ps-label"><div class="n">OCR Cleaning</div><div class="d">Clean and refine extracted text, fix OCR errors</div></div></div>
+      <div class="ps-step"><span class="ps-num p1">3</span><div class="ps-label"><div class="n">Page Sequencing</div><div class="d">Group pages into document packets</div></div></div>
+      <div class="ps-step"><span class="ps-num p1">4</span><div class="ps-label"><div class="n">MT Identification</div><div class="d">Identify SWIFT message types (MT700, MT707)</div></div></div>
+      <div class="ps-step"><span class="ps-num p1">5</span><div class="ps-label"><div class="n">MT Reconciliation</div><div class="d">Match multi-page SWIFT messages</div></div></div>
+      <div class="ps-step"><span class="ps-num p1">6</span><div class="ps-label"><div class="n">Final LC</div><div class="d">Apply amendments, build consolidated LC</div></div></div>
+      <div class="ps-step"><span class="ps-num p1">7</span><div class="ps-label"><div class="n">Clause Extraction</div><div class="d">Parse F46A, F47A, F45A requirements</div></div></div>
+      <div class="ps-step"><span class="ps-num p1">8</span><div class="ps-label"><div class="n">Shipping Classification</div><div class="d">Classify docs using VLM</div></div></div>
+      <div class="ps-step"><span class="ps-num p1">9</span><div class="ps-label"><div class="n">Shipping Reconciliation</div><div class="d">Field extraction per document</div></div></div>
+      <div class="ps-step"><span class="ps-num p1">10</span><div class="ps-label"><div class="n">Traceability</div><div class="d">Link docs to source pages</div></div></div>
+      <div class="ps-step"><span class="ps-num p1">11</span><div class="ps-label"><div class="n">Human Review</div><div class="d">Flag ambiguous items for review</div></div></div>
+      <div class="ps-phase p2">Phase 2 — Compliance Verification (On Demand)</div>
+      <div class="ps-step"><span class="ps-num p2">12</span><div class="ps-label"><div class="n">Clause Decomposition</div><div class="d">Break clauses into checkable conditions</div></div></div>
+      <div class="ps-step"><span class="ps-num p2">13</span><div class="ps-label"><div class="n">Row Construction</div><div class="d">Build 5-column verification worksheet</div></div></div>
+      <div class="ps-step"><span class="ps-num p2">14</span><div class="ps-label"><div class="n">VLM Verification</div><div class="d">Check conditions against documents</div></div></div>
+      <div class="ps-step"><span class="ps-num p2">14b</span><div class="ps-label"><div class="n">Key Term Checks</div><div class="d">Dates, amounts, ports, deadlines</div></div></div>
+      <div class="ps-step"><span class="ps-num p2">15</span><div class="ps-label"><div class="n">Non-Compliance</div><div class="d">Classify checkable vs informational</div></div></div>
+      <div class="ps-step"><span class="ps-num p2">16</span><div class="ps-label"><div class="n">Confidence Review</div><div class="d">Escalate low-confidence results</div></div></div>
+      <div class="ps-step"><span class="ps-num p2">17</span><div class="ps-label"><div class="n">Cross-Clause</div><div class="d">Resolve F47A overrides</div></div></div>
+      <div class="ps-step"><span class="ps-num p2">19</span><div class="ps-label"><div class="n">Consolidation</div><div class="d">Group results for report</div></div></div>
+      <div class="ps-step"><span class="ps-num p2">20</span><div class="ps-label"><div class="n">PDF Report</div><div class="d">Generate compliance report</div></div></div>
+    </div>
+    <div style="text-align:right;margin-top:16px">
+      <button class="btn btn-primary" onclick="document.getElementById('steps-modal').classList.remove('active')">Close</button>
+    </div>
+  </div>
+</div>
+
 <script>
 let currentSettings = {};
 
@@ -149,10 +275,25 @@ async function loadSettings() {
   const res = await fetch('/api/settings');
   currentSettings = await res.json();
   renderSteps(currentSettings.steps);
-  renderModels(currentSettings.models);
   document.getElementById('max_concurrent_ocr').value = currentSettings.concurrency?.max_concurrent_ocr || 8;
   document.getElementById('max_concurrent_vlm').value = currentSettings.concurrency?.max_concurrent_vlm || 8;
   document.getElementById('confidence_threshold').value = currentSettings.confidence_threshold || 0.70;
+  // Model settings
+  const m = currentSettings.models || {};
+  document.getElementById('vlm_url').value = m.qwen_vlm_url || '';
+  document.getElementById('vlm_model').value = m.qwen_vlm_model || '';
+  document.getElementById('ocr_url').value = m.glm_ocr_url || '';
+  // Detect preset
+  if ((m.qwen_vlm_model||'').includes('72B')) document.getElementById('vlm_preset').value = '72b';
+  else if ((m.qwen_vlm_model||'').includes('7B')) document.getElementById('vlm_preset').value = '7b';
+  else document.getElementById('vlm_preset').value = 'custom';
+  // Timeouts
+  document.getElementById('ocr_timeout').value = currentSettings.timeouts?.ocr_timeout || 600;
+  document.getElementById('vlm_timeout').value = currentSettings.timeouts?.vlm_timeout || 1200;
+  // Auth
+  const auth = currentSettings.auth || {};
+  document.getElementById('auth_enabled').checked = auth.enabled || false;
+  document.getElementById('auth_user').value = auth.username || 'admin';
   try {
     const v = await (await fetch('/version')).json();
     document.getElementById('version-tag').textContent = 'Build: ' + (v.build || v.version || '');
@@ -181,15 +322,19 @@ function renderSteps(steps) {
   c.innerHTML = html;
 }
 
-function renderModels(m) {
-  if (!m) return;
-  document.getElementById('models-container').innerHTML = `
-    <div class="model-row"><span class="model-label">OCR</span><span class="model-value">${m.glm_ocr_url||'-'}</span></div>
-    <div class="model-row"><span class="model-label">VLM</span><span class="model-value">${m.qwen_vlm_url||'-'}</span></div>
-    <div class="model-row"><span class="model-label">Model</span><span class="model-value">${(m.qwen_vlm_model||'-').split('/').pop()}</span></div>`;
+function applyModelPreset(preset) {
+  const presets = {
+    '72b': { url: 'http://10.20.10.2:8085/v1/chat/completions', model: '/home/aigenics/AI_MODELS/Qwen2.5-VL-72B-Instruct-AWQ' },
+    '7b': { url: 'http://10.20.10.3:8000/v1/chat/completions', model: '/home/aigenics/AI_MODELS/Qwen2.5-VL-7B-Instruct' },
+  };
+  if (presets[preset]) {
+    document.getElementById('vlm_url').value = presets[preset].url;
+    document.getElementById('vlm_model').value = presets[preset].model;
+  }
 }
 
 function toggleStep(n, v) { const s = currentSettings.steps.find(x => x.step===n); if(s) s.enabled=v; }
+function toggleAuth(v) { /* just saves on next saveSettings call */ }
 
 async function saveSettings() {
   await fetch('/api/settings', {
@@ -202,6 +347,19 @@ async function saveSettings() {
         max_concurrent_vlm: parseInt(document.getElementById('max_concurrent_vlm').value),
       },
       confidence_threshold: parseFloat(document.getElementById('confidence_threshold').value),
+      models: {
+        qwen_vlm_url: document.getElementById('vlm_url').value,
+        qwen_vlm_model: document.getElementById('vlm_model').value,
+        glm_ocr_url: document.getElementById('ocr_url').value,
+      },
+      timeouts: {
+        ocr_timeout: parseInt(document.getElementById('ocr_timeout').value),
+        vlm_timeout: parseInt(document.getElementById('vlm_timeout').value),
+      },
+      auth: {
+        enabled: document.getElementById('auth_enabled').checked,
+        password: document.getElementById('auth_pass').value || undefined,
+      },
     })
   });
   showToast('Settings saved');

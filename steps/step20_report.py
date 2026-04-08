@@ -434,14 +434,13 @@ def _build_cover(lc: Dict, decision: str, stats: Dict, styles) -> List:
         ParagraphStyle('StatsText', alignment=TA_CENTER, parent=styles['Normal']),
     ))
 
-    elements.append(Spacer(1, 12 * mm))
-    elements.append(HRFlowable(width='80%', thickness=1, color=MID_GRAY, spaceAfter=8))
+    elements.append(Spacer(1, 8 * mm))
+    elements.append(HRFlowable(width='80%', thickness=1, color=MID_GRAY, spaceAfter=6))
     elements.append(Paragraph(
         '<font size="8" color="#9ca3af">Confidential \u2014 For authorized recipients only</font>',
         ParagraphStyle('ConfText', alignment=TA_CENTER, parent=styles['Normal']),
     ))
 
-    elements.append(PageBreak())
     return elements
 
 

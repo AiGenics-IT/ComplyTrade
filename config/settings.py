@@ -17,7 +17,7 @@ QWEN_VLM_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-72B-Instruct-AWQ"
 # ── Server ──
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8082
-BUILD_TAG = "2026-04-07-P43"
+BUILD_TAG = "2026-04-08-P44"
 
 # ── Processing ──
 MAX_CONCURRENT_OCR = 8
@@ -32,6 +32,11 @@ DB_PORT = 5432
 DB_NAME = "trade_finance_pilot"
 DB_USER = "postgres"
 DB_PASS = "123"
+
+# ── Authentication ──
+AUTH_ENABLED = True
+AUTH_USERNAME = "admin"
+AUTH_PASSWORD = "complytrade2026"
 
 # ── Branding ──
 LOGO_PATH = "view/logo.png"

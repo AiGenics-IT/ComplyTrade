@@ -81,8 +81,10 @@ from config.settings import (
     SERVER_HOST, SERVER_PORT, BUILD_TAG,
     UPLOAD_DIR, RESULTS_DIR, VIEW_DIR,
     GLM_OCR_URL, QWEN_VLM_URL, STEP_ENABLED,
+    AUTH_ENABLED, AUTH_USERNAME, AUTH_PASSWORD,
 )
 from config.database import init_database
+import base64 as _b64
 
 # ── Step module imports ──
 # Each step is a separate module in the steps/ directory with a run() function.
@@ -109,6 +111,39 @@ from steps import step20_report
 from steps import step14_implicit
 
 app = FastAPI(title="ComplyTrade Pilot V2", version="2.0.0")
+
+# ── HTTP Basic Auth middleware ──
+_auth_enabled = AUTH_ENABLED
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response as StarletteResponse
+
+class BasicAuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if not _auth_enabled:
+            return await call_next(request)
+        # Skip auth for favicon and static assets
+        path = request.url.path
+        if path in ('/favicon.ico', '/logo.png'):
+            return await call_next(request)
+        # Check Authorization header
+        auth = request.headers.get('Authorization', '')
+        if auth.startswith('Basic '):
+            try:
+                decoded = _b64.b64decode(auth[6:]).decode('utf-8')
+                user, pwd = decoded.split(':', 1)
+                if user == AUTH_USERNAME and pwd == AUTH_PASSWORD:
+                    return await call_next(request)
+            except Exception:
+                pass
+        # Return 401 with WWW-Authenticate header (browser shows login popup)
+        return StarletteResponse(
+            content='Unauthorized',
+            status_code=401,
+            headers={'WWW-Authenticate': 'Basic realm="ComplyTrade"'},
+        )
+
+app.add_middleware(BasicAuthMiddleware)
 
 # Ensure required directories exist
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -307,6 +342,172 @@ def checklist():
     raise HTTPException(404, "Checklist view not found")
 
 
+@app.get("/dashboard")
+def dashboard_page():
+    """Serve the analytics dashboard page."""
+    html_path = os.path.join(VIEW_DIR, "dashboard.html")
+    if os.path.exists(html_path):
+        return HTMLResponse(open(html_path, 'r', encoding='utf-8').read())
+    raise HTTPException(404, "Dashboard not found")
+
+
+@app.get("/api/dashboard")
+def get_dashboard():
+    """Get dashboard analytics — total jobs, pass/fail rates, avg time, top discrepancies."""
+    total = 0; compliant = 0; discrepant = 0; review = 0
+    total_time = 0; recent = []; all_discs = {}
+
+    # Scan all jobs from disk
+    if os.path.isdir(RESULTS_DIR):
+        for d in sorted(os.listdir(RESULTS_DIR), reverse=True):
+            dpath = os.path.join(RESULTS_DIR, d)
+            if not os.path.isdir(dpath) or d.startswith('_'):
+                continue
+            # Get LC number
+            lc_num = ''; filename = ''; elapsed = 0; decision = ''; date_str = ''
+            s06 = os.path.join(dpath, 'step06', 'step06_result.json')
+            if os.path.exists(s06):
+                try:
+                    with open(s06, 'r', encoding='utf-8') as f:
+                        s6d = json.load(f)
+                    lc_num = s6d.get('dc_number', '')
+                    elapsed = round(s6d.get('elapsed_seconds', 0))
+                except Exception:
+                    pass
+            # Get verification result
+            s19 = os.path.join(dpath, 'step19', 'step19_result.json')
+            if os.path.exists(s19):
+                try:
+                    with open(s19, 'r', encoding='utf-8') as f:
+                        s19d = json.load(f)
+                    decision = s19d.get('overall_decision', '')
+                    elapsed = round(s19d.get('elapsed_seconds', elapsed))
+                    total += 1
+                    if 'COMPLIANT' in decision.upper() and 'NON' not in decision.upper():
+                        compliant += 1
+                    elif 'DISCREPANT' in decision.upper() or 'NON' in decision.upper():
+                        discrepant += 1
+                    else:
+                        review += 1
+                    total_time += elapsed
+                    # Collect discrepancies
+                    for cf in s19d.get('critical_findings', []):
+                        dt = cf.get('result', '')[:40]
+                        if dt:
+                            all_discs[dt] = all_discs.get(dt, 0) + 1
+                except Exception:
+                    pass
+            # Get file info
+            s01 = os.path.join(dpath, 'step01')
+            if os.path.isdir(s01):
+                s01f = os.path.join(s01, 'step01_result.json')
+                if os.path.exists(s01f):
+                    try:
+                        with open(s01f, 'r', encoding='utf-8') as f:
+                            s1d = json.load(f)
+                        filename = s1d.get('filename', '')
+                        date_str = s1d.get('timestamp', '')[:10]
+                    except Exception:
+                        pass
+            if len(recent) < 10:
+                recent.append({
+                    'job_id': d, 'lc_number': lc_num, 'filename': filename,
+                    'decision': decision or 'Processing', 'elapsed': elapsed,
+                    'date': date_str, 'status': 'completed' if decision else 'processing',
+                })
+
+    top_discs = sorted(all_discs.items(), key=lambda x: -x[1])[:8]
+    avg_time = round(total_time / max(total, 1) / 60, 1)  # in minutes
+
+    return {
+        'total_jobs': total,
+        'compliant': compliant,
+        'discrepant': discrepant,
+        'review': review,
+        'avg_time': avg_time,
+        'top_discrepancies': [{'type': t, 'count': c} for t, c in top_discs],
+        'recent_jobs': recent,
+    }
+
+
+@app.get("/vessel-tracking")
+def vessel_tracking_page():
+    """Serve the vessel tracking page."""
+    html_path = os.path.join(VIEW_DIR, "vessel_tracking.html")
+    if os.path.exists(html_path):
+        return HTMLResponse(open(html_path, 'r', encoding='utf-8').read())
+    raise HTTPException(404, "Vessel tracking page not found")
+
+
+@app.get("/api/vessel/search")
+async def vessel_search(name: str):
+    """Search for a vessel by name using MyShipTracking API."""
+    import httpx, re as _re
+    _VESSEL_API_KEY = "f9NkQT*J!717@Vpj14A*yQJc9bWooMlSNq"
+    _VESSEL_API_BASE = "https://api.myshiptracking.com/api/v2"
+    clean = _re.sub(r'^(?:M/?V\.?\s+|MT\s+|SS\s+)', '', name.strip(), flags=_re.IGNORECASE).strip()
+    if len(clean) < 3:
+        return {"results": [], "message": "Name too short (min 3 chars)"}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{_VESSEL_API_BASE}/vessel/search",
+                                    headers={"Authorization": f"Bearer {_VESSEL_API_KEY}"},
+                                    params={"name": clean})
+            data = resp.json()
+            if data.get("status") == "success":
+                return {"results": data.get("data", [])}
+            return {"results": [], "message": data.get("message", "No results")}
+    except Exception as e:
+        return {"results": [], "error": str(e)}
+
+
+@app.get("/api/vessel/details")
+async def vessel_details(mmsi: int):
+    """Get vessel position and details by MMSI."""
+    import httpx
+    _VESSEL_API_KEY = "f9NkQT*J!717@Vpj14A*yQJc9bWooMlSNq"
+    _VESSEL_API_BASE = "https://api.myshiptracking.com/api/v2"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{_VESSEL_API_BASE}/vessel",
+                                    headers={"Authorization": f"Bearer {_VESSEL_API_KEY}"},
+                                    params={"mmsi": mmsi, "response": "extended"})
+            data = resp.json()
+            if data.get("status") == "success":
+                return {"vessel": data.get("data", {})}
+            return {"vessel": {}, "message": data.get("message", "Not found")}
+    except Exception as e:
+        return {"vessel": {}, "error": str(e)}
+
+
+@app.get("/api/vessel/portcalls")
+async def vessel_portcalls(mmsi: int, days: int = 30):
+    """Get port call history for a vessel."""
+    import httpx
+    _VESSEL_API_KEY = "f9NkQT*J!717@Vpj14A*yQJc9bWooMlSNq"
+    _VESSEL_API_BASE = "https://api.myshiptracking.com/api/v2"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{_VESSEL_API_BASE}/port/calls",
+                                    headers={"Authorization": f"Bearer {_VESSEL_API_KEY}"},
+                                    params={"mmsi": mmsi, "days": days})
+            data = resp.json()
+            if data.get("status") == "success":
+                return {"port_calls": data.get("data", [])}
+            return {"port_calls": [], "message": data.get("message", "No data")}
+    except Exception as e:
+        return {"port_calls": [], "error": str(e)}
+
+
+@app.get("/document-compare")
+def document_compare_page():
+    """Serve the document comparison page."""
+    html_path = os.path.join(VIEW_DIR, "document_compare.html")
+    if os.path.exists(html_path):
+        return HTMLResponse(open(html_path, 'r', encoding='utf-8').read())
+    raise HTTPException(404, "Document comparison page not found")
+
+
 @app.get("/report-viewer")
 def report_viewer_page():
     """Serve the interactive compliance report viewer."""
@@ -314,6 +515,59 @@ def report_viewer_page():
     if os.path.exists(html_path):
         return HTMLResponse(open(html_path, 'r', encoding='utf-8').read())
     raise HTTPException(404, "Report viewer not found")
+
+
+@app.get("/sanctions")
+def sanctions_page():
+    """Serve the sanctions list management page."""
+    html_path = os.path.join(VIEW_DIR, "sanctions.html")
+    if os.path.exists(html_path):
+        return HTMLResponse(open(html_path, 'r', encoding='utf-8').read())
+    raise HTTPException(404, "Sanctions page not found")
+
+
+@app.get("/api/sanctions")
+def get_sanctions():
+    """Get all sanctions lists (banks, countries, goods) from database."""
+    try:
+        from config.database import get_connection
+        conn = get_connection()
+        cur = conn.cursor()
+        result = {"banks": [], "countries": [], "goods": []}
+        for cat in result.keys():
+            cur.execute("SELECT value FROM sanctions WHERE category = %s ORDER BY id", (cat,))
+            result[cat] = [row[0] for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+        return result
+    except Exception as e:
+        print(f"[WARN] Sanctions DB read failed: {e}")
+        return {"banks": [], "countries": [], "goods": []}
+
+
+@app.post("/api/sanctions")
+async def save_sanctions(request: Request):
+    """Save sanctions lists to database. Replaces all items per category."""
+    body = await request.json()
+    try:
+        from config.database import get_connection
+        conn = get_connection()
+        conn.autocommit = True
+        cur = conn.cursor()
+        for cat in ['banks', 'countries', 'goods']:
+            items = body.get(cat, [])
+            # Clear existing items for this category
+            cur.execute("DELETE FROM sanctions WHERE category = %s", (cat,))
+            # Insert new items
+            for item in items:
+                if item and isinstance(item, str):
+                    cur.execute("INSERT INTO sanctions (category, value) VALUES (%s, %s)", (cat, item))
+        cur.close()
+        conn.close()
+        return {"status": "ok", "message": "Sanctions list saved to database"}
+    except Exception as e:
+        print(f"[ERROR] Sanctions DB write failed: {e}")
+        raise HTTPException(500, f"Database error: {str(e)}")
 
 
 @app.get("/compliance")
@@ -2364,6 +2618,10 @@ def get_settings():
             "vlm_timeout": _cfg.VLM_TIMEOUT,
         },
         "confidence_threshold": _cfg.CONFIDENCE_THRESHOLD,
+        "auth": {
+            "enabled": _auth_enabled,
+            "username": _cfg.AUTH_USERNAME,
+        },
     }
 
 
@@ -2392,6 +2650,33 @@ async def update_settings(request: Request):
     # Update confidence threshold
     if 'confidence_threshold' in body:
         _cfg.CONFIDENCE_THRESHOLD = float(body['confidence_threshold'])
+
+    # Update model selection
+    if 'models' in body:
+        m = body['models']
+        if 'qwen_vlm_url' in m:
+            _cfg.QWEN_VLM_URL = m['qwen_vlm_url']
+        if 'qwen_vlm_model' in m:
+            _cfg.QWEN_VLM_MODEL = m['qwen_vlm_model']
+        if 'glm_ocr_url' in m:
+            _cfg.GLM_OCR_URL = m['glm_ocr_url']
+
+    # Update timeouts
+    if 'timeouts' in body:
+        t = body['timeouts']
+        if 'ocr_timeout' in t:
+            _cfg.OCR_TIMEOUT = int(t['ocr_timeout'])
+        if 'vlm_timeout' in t:
+            _cfg.VLM_TIMEOUT = int(t['vlm_timeout'])
+
+    # Update auth
+    if 'auth' in body:
+        global _auth_enabled
+        a = body['auth']
+        if 'enabled' in a:
+            _auth_enabled = bool(a['enabled'])
+        if 'password' in a and a['password']:
+            _cfg.AUTH_PASSWORD = a['password']
 
     return {"status": "ok", "message": "Settings updated"}
 

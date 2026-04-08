@@ -113,10 +113,18 @@ def init_database():
         reviewed_at TIMESTAMP DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS sanctions (
+        id SERIAL PRIMARY KEY,
+        category TEXT NOT NULL,  -- 'banks', 'countries', 'goods'
+        value TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+    );
+
     CREATE INDEX IF NOT EXISTS idx_pages_job ON pages(job_id);
     CREATE INDEX IF NOT EXISTS idx_packets_job ON packets(job_id);
     CREATE INDEX IF NOT EXISTS idx_verification_job ON verification_rows(job_id);
     CREATE INDEX IF NOT EXISTS idx_reviews_job ON human_reviews(job_id);
+    CREATE INDEX IF NOT EXISTS idx_sanctions_cat ON sanctions(category);
     """)
 
     cur.close()
