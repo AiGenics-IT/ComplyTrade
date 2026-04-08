@@ -1044,6 +1044,7 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             '49': r'^Confirmation\s+Instructions\s*[\n\r]*',
             '50': r'^Applicant\s*[\n\r]*',
             '51A': r'^Applicant\s+Bank.*?(?:Identifier\s+Code)?\s*[\n\r]*',
+            '51D': r'^(?:Applicant\s+Bank|Bank)\s*-?\s*(?:Party)?.*?(?:Name\s+and\s+Address)?:?\s*[\n\r]*',
             '52A': r'^(?:Issuing\s+Bank|Applicant\s+Bank).*?(?:Identifier\s+Code)?\s*[\n\r]*',
             '53A': r'^Reimbursing\s+Bank.*?(?:Identifier\s+Code)?\s*[\n\r]*',
             '57A': r'^[\'"]?Advise\s+Through[\'"]?\s+Bank.*?(?:Identifier\s+Code)?\s*[\n\r]*',
