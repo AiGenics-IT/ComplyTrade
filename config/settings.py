@@ -11,8 +11,8 @@ QWEN_7B_URL = "http://10.20.10.3:8000/v1/chat/completions"
 QWEN_7B_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-7B-Instruct"
 
 # Qwen VLM for classification, decomposition, verification
-QWEN_VLM_URL = "http://10.20.10.3:8000/v1/chat/completions"
-QWEN_VLM_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-7B-Instruct"
+QWEN_VLM_URL = "http://10.20.10.2:8085/v1/chat/completions"
+QWEN_VLM_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-72B-Instruct-AWQ"
 
 # ── Server ──
 SERVER_HOST = "0.0.0.0"
