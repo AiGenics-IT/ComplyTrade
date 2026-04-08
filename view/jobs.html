@@ -360,7 +360,47 @@ async function showDocs(jobId) {
         const docs = data.identified_objects || data.documents || [];
         if (!docs.length) { body.innerHTML = '<p style="color:var(--muted)">No documents identified yet.</p>'; return; }
 
+        // Build packet summary — count individual pages as copies for shipping docs
+        const typeCounts = {};
+        docs.forEach(d => {
+            const dd = d.data || d;
+            const dt = dd.document_type || d.object_type || d.type || 'Unknown';
+            const key = dt.toLowerCase();
+            const pages = d.pages || d.page_numbers || [];
+            const pgCount = pages.length || 1;
+            if (!typeCounts[key]) typeCounts[key] = {name: dt, original: 0, copy: 0, non_negotiable: 0, total: 0, pages: 0};
+            typeCounts[key].total++;
+            typeCounts[key].pages += pgCount;
+            // For docs where each page is a separate copy (BL, Invoice copies),
+            // count pages individually. For multi-page single docs (LC, Packing List),
+            // count as 1.
+            const copy = (dd.copy_status || '').toLowerCase();
+            // Check if all pages in this packet have the same copy status
+            // If so, each page is likely a separate copy
+            const isContinuation = pgCount > 1 && (dd.is_multi_page || false);
+            const copyCount = pgCount; // Each page = 1 copy
+            if (copy === 'original') typeCounts[key].original += copyCount;
+            else if (copy === 'non_negotiable') typeCounts[key].non_negotiable += copyCount;
+            else if (copy === 'copy') typeCounts[key].copy += copyCount;
+            else typeCounts[key].original += 1; // default
+        });
         let html = `<p style="margin-bottom:8px;color:var(--muted)">${docs.length} documents identified</p>`;
+        html += '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">';
+        Object.values(typeCounts).forEach(tc => {
+            const isLc = tc.name.toLowerCase().includes('lc') || tc.name.toLowerCase().includes('amendment') || tc.name.toLowerCase().includes('final');
+            // For LC/Amendment: show as single doc with page count
+            // For shipping docs: show copy breakdown
+            let detail = '';
+            if (!isLc) {
+                const parts = [];
+                if (tc.original) parts.push(tc.original + ' orig');
+                if (tc.non_negotiable) parts.push(tc.non_negotiable + ' non-neg');
+                if (tc.copy) parts.push(tc.copy + ' copy');
+                if (parts.length) detail = ' (' + parts.join(', ') + ')';
+            }
+            html += '<div style="padding:6px 12px;background:' + (isLc ? '#e0f2fe' : '#f3e8ff') + ';border-radius:6px;font-size:.78em;font-weight:600;color:' + (isLc ? '#0369a1' : '#7c3aed') + '">' + esc(tc.name) + (isLc ? '' : ' x' + tc.total) + detail + ' <span style="opacity:.6">' + tc.pages + 'pg</span></div>';
+        });
+        html += '</div>';
         html += '<table class="docs-tbl"><thead><tr><th>#</th><th>Document Type</th><th>Pages</th><th>Copy</th><th>Details</th></tr></thead><tbody>';
         docs.forEach((d, i) => {
             const dd = d.data || d;
