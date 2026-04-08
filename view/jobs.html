@@ -16,7 +16,7 @@
     .header-links a{color:#fff;text-decoration:none;font-size:.85em;padding:6px 16px;border:1px solid rgba(255,255,255,.4);border-radius:6px;transition:.2s}
     .header-links a:hover{background:rgba(255,255,255,.15)}
 
-    .main{max-width:1400px;margin:24px auto;padding:0 20px}
+    .main{max-width:1600px;margin:24px auto;padding:0 20px}
 
     .stats-bar{display:flex;gap:16px;margin-bottom:24px;flex-wrap:wrap}
     .stat-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 24px;text-align:center;flex:1;min-width:140px}
@@ -189,6 +189,18 @@
     </div>
 </div>
 
+<!-- Notes Modal -->
+<div class="modal-overlay" id="note-modal" onclick="if(event.target===this)closeNoteModal()">
+    <div class="modal-box" style="max-width:500px">
+        <h3 style="color:var(--primary);margin-bottom:12px">Job Notes</h3>
+        <textarea id="note-text" rows="6" style="width:100%;padding:10px;border:1.5px solid var(--border);border-radius:8px;font-family:inherit;font-size:.9em;resize:vertical" placeholder="Add your notes here..."></textarea>
+        <div class="modal-actions" style="margin-top:12px">
+            <button class="mbtn mbtn-cancel" onclick="closeNoteModal()">Cancel</button>
+            <button class="mbtn" style="background:var(--primary);color:#fff" onclick="saveNote()">Save</button>
+        </div>
+    </div>
+</div>
+
 <!-- Delete Confirmation Modal -->
 <div class="modal-overlay" id="del-modal" onclick="if(event.target===this)closeDeleteModal()">
     <div class="modal-box">
@@ -279,7 +291,12 @@ function renderJobs(jobs) {
             <td style="font-size:.78em;color:var(--muted);white-space:nowrap">${elapsed || '—'}</td>
             <td class="step-info">Step ${j.current_step || '—'} / 20</td>
             <td><span class="status-badge ${statusCls}">${statusCls}</span></td>
-            <td style="min-width:120px"><span class="job-note" id="note-${j.job_id}" style="font-size:.78em;color:#666;cursor:pointer" onclick="editNote('${j.job_id}')" title="Click to edit">${esc(j.notes||'—')}</span></td>
+            <td style="min-width:180px;max-width:250px">
+              <div style="display:flex;align-items:flex-start;gap:6px">
+                <span style="font-size:.75em;color:#555;flex:1;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.3">${j.notes ? esc(j.notes) : '<span style=\"color:#ccc\">No notes</span>'}</span>
+                <button class="abtn" style="background:#6366f1;font-size:.65em;padding:2px 6px;white-space:nowrap;flex-shrink:0" onclick="openNoteModal('${j.job_id}','${esc(j.notes||'').replace(/'/g,"\\'")}')">${j.notes ? 'Edit' : '+ Add'}</button>
+              </div>
+            </td>
             <td><div class="actions">${actions}</div></td>
         </tr>`;
     });
@@ -350,21 +367,32 @@ function showToast(msg, success) {
 
 function showSteps() { document.getElementById('steps-modal').classList.add('active'); }
 
-function editNote(jobId) {
-    const el = document.getElementById('note-' + jobId);
-    const current = el.textContent === '—' ? '' : el.textContent;
-    const note = prompt('Add note for this job:', current);
-    if (note === null) return; // cancelled
-    el.textContent = note || '—';
-    // Save to server
-    fetch(`${API}/api/jobs/${jobId}/notes`, {
+let _noteJobId = '';
+function openNoteModal(jobId, currentNote) {
+    _noteJobId = jobId;
+    document.getElementById('note-text').value = currentNote || '';
+    document.getElementById('note-modal').classList.add('active');
+    document.getElementById('note-text').focus();
+}
+function closeNoteModal() {
+    document.getElementById('note-modal').classList.remove('active');
+}
+function saveNote() {
+    const note = document.getElementById('note-text').value.trim();
+    fetch(`${API}/api/jobs/${_noteJobId}/notes`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({notes: note})
     }).then(r => {
-        if (r.ok) showToast('Note saved', true);
-        else showToast('Failed to save note', false);
-    }).catch(() => showToast('Failed to save note', false));
+        if (r.ok) {
+            showToast('Note saved', true);
+            closeNoteModal();
+            // Update the job in allJobs and re-render
+            const job = allJobs.find(j => j.job_id === _noteJobId);
+            if (job) job.notes = note;
+            renderJobs(allJobs);
+        } else showToast('Failed to save', false);
+    }).catch(() => showToast('Failed to save', false));
 }
 
 async function showDocs(jobId) {

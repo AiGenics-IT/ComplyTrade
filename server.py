@@ -911,7 +911,15 @@ def get_result(job_id: str):
     sr = job.get('step_results', {})
 
     # Load step results from disk if not in memory (server restarted)
+    _has_overrides = job.get('overrides', {}) if job_id in _jobs else {}
+
     def _load_step(step_name):
+        # If overrides exist, always reload from disk (overrides are saved to disk)
+        if _has_overrides and step_name in ('step03', 'step08', 'step09'):
+            _f = os.path.join(_results_dir, step_name, f'{step_name}_result.json')
+            if os.path.exists(_f):
+                with open(_f, 'r', encoding='utf-8') as fh:
+                    return json.load(fh)
         cached = sr.get(step_name, {})
         if cached and (cached.get('pages') or cached.get('packets') or cached.get('final_lc')
                        or cached.get('consolidated_fields') or cached.get('total_pages')):

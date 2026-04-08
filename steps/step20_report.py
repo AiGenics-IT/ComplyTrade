@@ -364,6 +364,7 @@ def _build_cover(lc: Dict, decision: str, stats: Dict, styles) -> List:
     # LC Key Details table
     _detail_rows = []
     _detail_fields = [
+        ('Form of Documentary Credit', lc.get('form_of_credit', '')),
         ('Applicant', lc.get('applicant', '')),
         ('Beneficiary', lc.get('beneficiary', '')),
         ('Amount', lc.get('amount', '')),
@@ -665,16 +666,7 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
         if not section.get('clauses', []):
             continue
 
-        # Section header with stats
-        sp = section.get('total_pass', 0)
-        sf = section.get('total_fail', 0)
-        sr_count = section.get('total_review', 0)
-        elements.append(Spacer(1, 4 * mm))
-        elements.append(Paragraph(
-            f'<b><font color="#1F3864" size="13">{_esc(section_name)}</font></b>'
-            f'  <font color="#888888" size="8">({sp}P / {sf}F / {sr_count}R)</font>',
-            styles['Normal']))
-        elements.append(HRFlowable(width="100%", thickness=1, color=BRAND_BLUE, spaceAfter=4))
+        # Section header removed — clause tables have their own headers
 
         for clause in section.get('clauses', []):
 

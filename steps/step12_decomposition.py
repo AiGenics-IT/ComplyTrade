@@ -144,6 +144,7 @@ RETURN EMPTY ARRAY [] FOR THESE CLAUSE TYPES:
   • Bank-to-bank obligations: "NEGOTIATING BANK MUST...", "ADVISING BANK MUST..."
   • Fee/charge clauses: "DISCREPANCY HANDLING CHARGES", "BANK CHARGES WILL BE DEDUCTED"
   • Document forwarding: "ALL DOCUMENTS TO BE FORWARDED TO US BY COURIER"
+  • Regulatory/compliance statements: "TRANSPORTATION SHOULD BE EFFECTED BY COMPANIES OPERATING IN ACCORDANCE WITH...LAWS AND REGULATIONS", "SANCTIONED BY...", "BOUND BY SANCTIONS" (these cannot be verified from documents)
   • Pure permissive clauses: "LARGER QUANTITIES ACCEPTABLE", "CHARTER PARTY BL ACCEPTABLE", "GOODS DESCRIPTION SHOWING [X] TO BE ACCEPTABLE"
   • Tolerance specifications: "PLUS/MINUS X PERCENT TOLERANCE" (handled by code)
   • Date validity: "DOCUMENTS DATED PRIOR TO... NOT ACCEPTABLE" (handled separately)
@@ -176,7 +177,11 @@ CLAUSE STRUCTURE — READ CAREFULLY:
 RULES FOR CREATING CONDITIONS
 ═══════════════════════════════════════════════════════════════
 1. Each condition must be independently verifiable against a SINGLE document
-2. If a condition applies to MULTIPLE documents, create SEPARATE conditions for each
+2. If a condition applies to MULTIPLE documents, create SEPARATE conditions for each document
+   CRITICAL: "X SHOULD APPEAR ON BILL OF LADING AND INVOICES" = TWO conditions:
+   - One checking X on Bill of Lading
+   - One checking X on Commercial Invoice
+   NEVER skip a document. If the clause says "AND", create conditions for EVERY document listed.
 3. condition_text: clear, human-readable description of what to verify
 4. document_to_check: the exact document type (e.g., "Bill of Lading", "Commercial Invoice")
 5. look_for_value: the specific value, text, or pattern to search for

@@ -304,6 +304,8 @@ def _parse_date(date_str: str) -> Optional[datetime]:
     if not date_str:
         return None
     date_str = str(date_str).strip()
+    # Strip ordinal suffixes: 29th -> 29, 1st -> 1, 2nd -> 2, 3rd -> 3
+    date_str = re.sub(r'(\d+)(st|nd|rd|th)\b', r'\1', date_str, flags=re.IGNORECASE)
     for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d", "%d %b %Y", "%d %B %Y",
                 "%b %d, %Y", "%B %d, %Y", "%Y%m%d", "%d.%m.%Y", "%m/%d/%Y", "%d-%b-%Y"):
         try:

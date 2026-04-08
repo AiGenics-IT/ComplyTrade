@@ -282,12 +282,15 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
     clauses = []
     text = text.strip()
 
-    # F45A (Description of Goods) should NOT be split — it's one continuous description
+    # F45A: split if it has numbered sub-items (1-, 2-, 1., 2.), otherwise keep as one
     if tag in ('45A', 'F45A'):
-        return [Clause(clause_number=1, clause_id=f"{tag}-1", text=text, parent_tag=tag)]
+        # Check if it has numbered sub-items like "1-", "2-", "1.", "2)"
+        if not re.search(r'(?:^|\n)\s*\d+\s*[-.)]\s+', text):
+            return [Clause(clause_number=1, clause_id=f"{tag}-1", text=text, parent_tag=tag)]
+        # Fall through to normal splitting
 
-    # Try numbered: "1.", "2.", "1)", "2)"
-    numbered = re.split(r'\n\s*(\d+)\s*[.)]\s+', '\n' + text)
+    # Try numbered: "1.", "2.", "1)", "2)", "1-", "2-"
+    numbered = re.split(r'\n\s*(\d+)\s*[-.)]\s+', '\n' + text)
     if len(numbered) >= 3:
         for i in range(1, len(numbered) - 1, 2):
             clause_text = numbered[i + 1].strip()
