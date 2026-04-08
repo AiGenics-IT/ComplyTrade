@@ -16,7 +16,7 @@
     .header-links a{color:#fff;text-decoration:none;font-size:.85em;padding:6px 16px;border:1px solid rgba(255,255,255,.4);border-radius:6px;transition:.2s}
     .header-links a:hover{background:rgba(255,255,255,.15)}
 
-    .main{max-width:1100px;margin:24px auto;padding:0 20px}
+    .main{max-width:1400px;margin:24px auto;padding:0 20px}
 
     .stats-bar{display:flex;gap:16px;margin-bottom:24px;flex-wrap:wrap}
     .stat-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 24px;text-align:center;flex:1;min-width:140px}
@@ -245,7 +245,7 @@ function renderJobs(jobs) {
 
     let html = `<table class="job-table">
         <thead><tr>
-            <th>#</th><th>Job ID</th><th>LC Number</th><th>Filename</th><th>Pages</th><th>Date</th><th>Time</th><th>Step</th><th>Status</th><th>Actions</th>
+            <th>#</th><th>Job ID</th><th>LC Number</th><th>Filename</th><th>Pages</th><th>Created</th><th>Time</th><th>Step</th><th>Status</th><th>Notes</th><th>Actions</th>
         </tr></thead><tbody>`;
 
     jobs.forEach((j, i) => {
@@ -253,7 +253,7 @@ function renderJobs(jobs) {
         const lcDisplay = lcs.length > 0 ? lcs.join(', ') : '<span style="color:#999">N/A</span>';
         const statusCls = j.status || 'uploaded';
         const shortId = (j.job_id || '').substring(0, 8);
-        const dateStr = j.created_at ? new Date(j.created_at).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '';
+        const dateStr = j.created_at ? new Date(j.created_at).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) + ' ' + new Date(j.created_at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : '';
         const elapsed = j.elapsed_seconds ? (j.elapsed_seconds >= 60 ? Math.floor(j.elapsed_seconds/60)+'m '+Math.round(j.elapsed_seconds%60)+'s' : Math.round(j.elapsed_seconds)+'s') : '';
 
         // Build action buttons for each LC
@@ -279,6 +279,7 @@ function renderJobs(jobs) {
             <td style="font-size:.78em;color:var(--muted);white-space:nowrap">${elapsed || '—'}</td>
             <td class="step-info">Step ${j.current_step || '—'} / 20</td>
             <td><span class="status-badge ${statusCls}">${statusCls}</span></td>
+            <td style="min-width:120px"><span class="job-note" id="note-${j.job_id}" style="font-size:.78em;color:#666;cursor:pointer" onclick="editNote('${j.job_id}')" title="Click to edit">${esc(j.notes||'—')}</span></td>
             <td><div class="actions">${actions}</div></td>
         </tr>`;
     });
@@ -348,6 +349,23 @@ function showToast(msg, success) {
 }
 
 function showSteps() { document.getElementById('steps-modal').classList.add('active'); }
+
+function editNote(jobId) {
+    const el = document.getElementById('note-' + jobId);
+    const current = el.textContent === '—' ? '' : el.textContent;
+    const note = prompt('Add note for this job:', current);
+    if (note === null) return; // cancelled
+    el.textContent = note || '—';
+    // Save to server
+    fetch(`${API}/api/jobs/${jobId}/notes`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({notes: note})
+    }).then(r => {
+        if (r.ok) showToast('Note saved', true);
+        else showToast('Failed to save note', false);
+    }).catch(() => showToast('Failed to save note', false));
+}
 
 async function showDocs(jobId) {
     const body = document.getElementById('docs-body');

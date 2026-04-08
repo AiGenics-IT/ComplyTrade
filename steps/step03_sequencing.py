@@ -187,6 +187,9 @@ IMPORTANT — DO NOT CONFUSE REFERENCES WITH DOCUMENT TYPE:
 - If the page has "H.B/L No." or "B/L No." or "Marks & Nos." or "Description of Goods" column headers, it is a BILL OF LADING — even if it mentions invoice numbers in the cargo text.
 - Look at the PAGE HEADER and STRUCTURE (column headers, form fields) to determine document type — NOT keywords in the body text.
 
+ATTACHED SHEETS:
+- If a Bill of Lading says "Details As Per Attached Sheet(s)" or "See Attached" or "As Per Rider", the NEXT page(s) are continuation sheets of that BL — they should be classified as "Bill of Lading" with is_continuation=true, even if they have their own header.
+
 BANK HEADER / COVERING PAGES:
 - A page showing only a bank's letterhead, logo, address, and SWIFT codes (like OCBC Bank, HSBC, Citibank) WITHOUT any SWIFT F-tag fields (F20:, F31C:, F46A:, :20:, :31C:) is a "Covering Letter" or "Header Page" — NOT an LC.
 - An LC page MUST contain SWIFT field tags like F20/F31C/F46A/F47A (Fusion) or :20:/:31C:/:46A: (Alliance) or bare tags like "20: Documentary Credit Number". Just having a bank name and SWIFT code on a page does NOT make it an LC.
@@ -707,9 +710,51 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                 cls['copy_status'] = 'copy'
                 cls['copy_label'] = 'COPY'
 
-    # Phase 1b: Sandwich heuristic REMOVED — VLM is the sole classifier.
-    # The heuristic was merging correctly classified pages (e.g., Agents Certificate
-    # between BL pages) into the wrong document type.
+    # ── Phase 1b: Multi-page document detection via content similarity ──
+    # If two consecutive pages have the SAME document type but DIFFERENT content,
+    # the second is a continuation (e.g., BL front + cargo details).
+    # If they have SAME content, they're separate copies (e.g., 3 original BLs).
+    for i in range(1, len(classifications)):
+        curr = classifications[i]
+        prev = classifications[i - 1]
+        curr_type = (curr.get('document_type', '') or '').lower()
+        prev_type = (prev.get('document_type', '') or '').lower()
+
+        # Only check same document types, skip SWIFT pages
+        if curr_type != prev_type or not curr_type:
+            continue
+        if curr.get('page_number', 0) in _swift_preclassified:
+            continue
+        if curr.get('is_continuation', False):
+            continue  # Already marked as continuation
+
+        # Get OCR text for both pages
+        prev_text = ''
+        curr_text = ''
+        for _pn, _ip, _tx in all_page_data:
+            if _pn == prev.get('page_number', 0):
+                prev_text = (_tx or '').upper()[:500]
+            if _pn == curr.get('page_number', 0):
+                curr_text = (_tx or '').upper()[:500]
+
+        if not prev_text or not curr_text:
+            continue
+
+        # Calculate word overlap (similarity)
+        prev_words = set(prev_text.split())
+        curr_words = set(curr_text.split())
+        if not prev_words or not curr_words:
+            continue
+        overlap = len(prev_words & curr_words)
+        total = max(len(prev_words), len(curr_words))
+        similarity = overlap / total if total > 0 else 0
+
+        # High similarity (>70%) = separate copies (identical BLs) → keep separate
+        # Low similarity (<40%) = different content (BL front + cargo) → continuation
+        if similarity < 0.40:
+            curr['is_continuation'] = True
+            curr['copy_status'] = prev.get('copy_status', curr.get('copy_status', ''))
+            _progress(f"  Page {curr.get('page_number', '?')}: CONTINUATION of page {prev.get('page_number', '?')} (similarity={similarity:.0%})")
 
     # ── Phase 2: Group pages into document packets ──
     _progress("Grouping pages into document packets...")

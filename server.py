@@ -616,6 +616,7 @@ def list_jobs():
             'lc_numbers': lc_numbers,
             'created_at': job.get('created_at', ''),
             'elapsed_seconds': round(_elapsed, 1),
+            'notes': job.get('notes', ''),
         })
 
     # Also scan results directory for jobs not in memory
@@ -685,6 +686,15 @@ def list_jobs():
                             pass
                         break
             status = 'completed' if current_step >= 11 else 'processing' if current_step > 0 else 'uploaded'
+            # Load notes from disk
+            _notes = ''
+            _notes_path = os.path.join(dpath, '_notes.txt')
+            if os.path.exists(_notes_path):
+                try:
+                    with open(_notes_path, 'r', encoding='utf-8') as _nf:
+                        _notes = _nf.read().strip()
+                except Exception:
+                    pass
             jobs_list.append({
                 'job_id': d,
                 'filename': filename,
@@ -694,6 +704,7 @@ def list_jobs():
                 'lc_numbers': lc_numbers,
                 'created_at': created_at,
                 'elapsed_seconds': round(elapsed_seconds, 1),
+                'notes': _notes,
             })
 
     # Sort by most recent first (jobs with higher step counts first)
@@ -2025,6 +2036,23 @@ def vessel_status(job_id: str):
 def vessel_track():
     """Vessel tracking request (placeholder — not yet implemented)."""
     return {"status": "not_available"}
+
+
+@app.post("/api/jobs/{job_id}/notes")
+async def save_job_notes(job_id: str, request: Request):
+    """Save notes for a job."""
+    body = await request.json()
+    notes = body.get('notes', '')
+    # Save to disk
+    results_dir = os.path.join(RESULTS_DIR, job_id)
+    if os.path.isdir(results_dir):
+        notes_path = os.path.join(results_dir, '_notes.txt')
+        with open(notes_path, 'w', encoding='utf-8') as f:
+            f.write(notes)
+    # Save in memory
+    if job_id in _jobs:
+        _jobs[job_id]['notes'] = notes
+    return {"status": "ok"}
 
 
 @app.post("/api/cancel/{job_id}")

@@ -342,7 +342,7 @@ async function saveClassOverride() {
             p.document_type = newType;
             p.copy_status = newCopy;
             // Refresh sidebar and toolbar
-            rSB();
+            rList();
             sel(si);
             document.getElementById('edit-class-form').remove();
             alert('Classification updated. Re-run verification to apply changes.');
