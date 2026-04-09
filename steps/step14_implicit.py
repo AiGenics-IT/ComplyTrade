@@ -1418,9 +1418,44 @@ def run(
                 tol_minus = max(tol_minus, 10.0)
 
             if lc_amount:
+                # P69: Helper — run the amount check across all matched
+                # packets of a given doc-class, but emit ONLY ONE row to
+                # the report. Avoids the duplicate-row bug where two
+                # cover-schedule packets (or two drafts) produced both a
+                # PASS row and a "Amount not extractable" REVIEW row for
+                # what the user sees as the same logical document.
+                #
+                # Selection priority (highest first):
+                #   1. PASS  — fully verified, amount matches
+                #   2. FAIL  — fully verified, amount differs
+                #   3. REVIEW — fallback when nothing better is available
+                # Within the same priority bucket, the first packet wins.
+                def _emit_one(matched_pkts, check_type, label):
+                    if not matched_pkts:
+                        return None
+                    _best = None
+                    _best_rank = 99
+                    _rank = {'PASS': 0, 'FAIL': 1, 'REVIEW': 2}
+                    for _p in matched_pkts:
+                        _r = _hybrid_amount_check(
+                            lc_amount, lc_currency, tol_plus, tol_minus, _p,
+                            'amount_currency', check_type, _inv_amounts_str_local,
+                        )
+                        _rk = _rank.get(str(_r.compliance).upper(), 3)
+                        if _rk < _best_rank:
+                            _best = _r
+                            _best_rank = _rk
+                            if _best_rank == 0:
+                                break  # PASS — stop searching
+                    if _best is not None:
+                        all_results.append(_best)
+                        progress_fn(f"  [amount_currency] [{label}]: {_best.compliance} - {_best.result[:50]}")
+                    return _best
+
                 # Get invoice amounts — track numeric total for draft/cover comparison
                 invoices = _get_docs_by_type(packets, 'commercial invoice', 'invoice')
                 _inv_total_numeric = 0.0
+                _inv_amounts_str_local = ''  # available for the helper above
                 for inv in invoices:
                     r = _hybrid_amount_check(lc_amount, lc_currency, tol_plus, tol_minus, inv,
                         'amount_currency', 'invoice_vs_lc', '')
@@ -1431,22 +1466,20 @@ def run(
                         _inv_total_numeric = max(_inv_total_numeric, _inv_amt)  # Use largest invoice (they're usually the same or one is the total)
                     progress_fn(f"  [amount_currency] [{inv.get('document_type','')}]: {r.compliance} - {r.result[:50]}")
 
-                _inv_amounts_str = f"{lc_currency} {_inv_total_numeric:,.2f}" if _inv_total_numeric else ''
-                progress_fn(f"  [amount_currency] Invoice total for draft/cover comparison: {_inv_amounts_str}")
+                _inv_amounts_str_local = f"{lc_currency} {_inv_total_numeric:,.2f}" if _inv_total_numeric else ''
+                progress_fn(f"  [amount_currency] Invoice total for draft/cover comparison: {_inv_amounts_str_local}")
 
-                # Draft vs invoice total
-                for draft in _get_docs_by_type(packets, 'draft', 'bill of exchange'):
-                    r = _hybrid_amount_check(lc_amount, lc_currency, tol_plus, tol_minus, draft,
-                        'amount_currency', 'draft_vs_invoice', _inv_amounts_str)
-                    all_results.append(r)
-                    progress_fn(f"  [amount_currency] [{draft.get('document_type','')}]: {r.compliance} - {r.result[:50]}")
+                # Draft vs invoice total — emit ONE row
+                _emit_one(
+                    _get_docs_by_type(packets, 'draft', 'bill of exchange'),
+                    'draft_vs_invoice', 'Draft',
+                )
 
-                # Cover vs invoice total
-                for cover in _get_docs_by_type(packets, 'remittance', 'covering', 'cover', 'schedule'):
-                    r = _hybrid_amount_check(lc_amount, lc_currency, tol_plus, tol_minus, cover,
-                        'amount_currency', 'cover_vs_invoice', _inv_amounts_str)
-                    all_results.append(r)
-                    progress_fn(f"  [amount_currency] [{cover.get('document_type','')}]: {r.compliance} - {r.result[:50]}")
+                # Cover vs invoice total — emit ONE row
+                _emit_one(
+                    _get_docs_by_type(packets, 'remittance', 'covering', 'cover', 'schedule'),
+                    'cover_vs_invoice', 'Cover Schedule',
+                )
 
     # ── Build VLM-only tasks for remaining checks ──
     all_tasks = []
