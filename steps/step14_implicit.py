@@ -44,13 +44,12 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-try:
-    from config.settings import QWEN_VLM_URL, QWEN_VLM_MODEL, MAX_CONCURRENT_VLM, VLM_TIMEOUT
-except ImportError:
-    QWEN_VLM_URL = "http://10.20.10.3:8000/v1/chat/completions"
-    QWEN_VLM_MODEL = ""
-    MAX_CONCURRENT_VLM = 4
-    VLM_TIMEOUT = 600
+# Single source of truth: config/settings.py decides which Qwen VLM this
+# step talks to (7B vs 72B) via VLM_MODEL_SIZE. No silent fallback — if
+# the import fails, fail loudly instead of using the wrong model.
+import sys as _sys_imp
+_sys_imp.path.insert(0, str(Path(__file__).parent.parent))
+from config.settings import QWEN_VLM_URL, QWEN_VLM_MODEL, MAX_CONCURRENT_VLM, VLM_TIMEOUT
 
 try:
     import httpx

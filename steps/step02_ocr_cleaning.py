@@ -22,7 +22,7 @@ OUTPUT:
         * corrections: log of VLM additions (rule='vlm_missing_text')
 
 MODEL:
-    Qwen 2.5-VL-72B @ http://10.20.10.2:8085 (VLM text completion)
+    Qwen VLM at QWEN_VLM_URL (7B or 72B per VLM_MODEL_SIZE switch in config/settings.py)
 """
 
 import re
@@ -143,13 +143,10 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
     import requests as _requests
     import os as _os
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    try:
-        from config.settings import QWEN_VLM_URL, QWEN_VLM_MODEL, VLM_TIMEOUT, MAX_CONCURRENT_VLM
-    except ImportError:
-        QWEN_VLM_URL = "http://10.20.10.2:8085/v1/chat/completions"
-        QWEN_VLM_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-72B-Instruct-AWQ"
-        VLM_TIMEOUT = 600
-        MAX_CONCURRENT_VLM = 4
+    # Single source of truth: config/settings.py decides which Qwen VLM
+    # this step talks to (7B vs 72B) via VLM_MODEL_SIZE. Do not fall back
+    # to hardcoded URLs — that would silently override the switch.
+    from config.settings import QWEN_VLM_URL, QWEN_VLM_MODEL, VLM_TIMEOUT, MAX_CONCURRENT_VLM
 
     # Garbage detection: GLM sometimes echoes the prompt instead of reading the page
     _GARBAGE_MARKERS = [

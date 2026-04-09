@@ -24,9 +24,11 @@ OUTPUT:
         * page_image_path: saved PNG of the rendered page (for VLM steps later)
 
 MODEL:
-    GLM-OCR @ http://10.20.10.3:8001/api/ocr
+    GLM-OCR @ http://10.20.10.2:8001/api/ocr
     A specialized OCR model that handles scanned documents, stamps, signatures,
     and mixed-layout pages common in trade finance paperwork.
+    Step 1 ALWAYS uses GLM regardless of the VLM_MODEL_SIZE switch in
+    config/settings.py — that switch only affects Qwen VLM steps (2–14).
 
 STRATEGY:
     1. Try sending the entire PDF at once (fastest, fewer API calls)

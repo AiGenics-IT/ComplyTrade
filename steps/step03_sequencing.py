@@ -28,7 +28,8 @@ WHY QWEN FOR EVERY PAGE:
 INPUT:  Step 2 output -- list of PageCleaned (cleaned_text + raw_text + page_image_path)
 OUTPUT: List of DocumentPacket objects with pages[], doc_type, boundary_confidence
 
-MODEL:  Qwen VLM @ http://10.20.10.2:8085 (classifies every page)
+MODEL:  Qwen VLM at QWEN_VLM_URL (7B or 72B per VLM_MODEL_SIZE switch in
+        config/settings.py — classifies every page).
         GLM text included in every prompt (Qwen reviews, never rewrites)
 """
 

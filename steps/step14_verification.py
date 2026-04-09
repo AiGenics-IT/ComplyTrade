@@ -27,8 +27,9 @@ OUTPUTS:
     - dict with 'rows' (verified rows with findings, result, compliance,
       confidence), 'summary', 'elapsed_seconds'
 
-AI MODEL: Qwen 2.5-VL-72B @ http://10.20.10.2:8085/v1/chat/completions
-    Used for ALL verification -- no code-based fallbacks.
+AI MODEL: Qwen VLM at QWEN_VLM_URL (resolved from config/settings.py via
+          the VLM_MODEL_SIZE switch — 7B or 72B). Used for ALL verification
+          -- no code-based fallbacks.
 """
 
 import json

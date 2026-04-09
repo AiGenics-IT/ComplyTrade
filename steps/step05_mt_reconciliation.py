@@ -24,7 +24,8 @@ SELECTIVE PROCESSING:
 INPUT:  Step 4 output -- list of ClassifiedPacket with mt_type
 OUTPUT: List of ReconciledPacket with refined_text, change_log
 
-MODEL:  Qwen VLM @ http://10.20.10.2:8085
+MODEL:  Qwen VLM at QWEN_VLM_URL (7B or 72B per VLM_MODEL_SIZE switch in
+        config/settings.py)
 """
 
 import os

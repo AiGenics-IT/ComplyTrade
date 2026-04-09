@@ -37,9 +37,13 @@ PIPELINE OVERVIEW (20 Steps in Two Phases):
       Step 20: Report Generation — produce the PDF compliance report
 
 AI MODELS:
-    - GLM-OCR @ http://10.20.10.3:8001 — Raw text extraction from PDF page images (Step 1)
-    - Qwen 2.5-VL-7B @ http://10.20.10.3:8000 — Classification, decomposition, verification,
-      and cross-document checks (Steps 4, 8, 12, 14)
+    - GLM-OCR @ http://10.20.10.2:8001 — Raw text extraction from PDF page
+      images (Step 1). Always used regardless of VLM_MODEL_SIZE.
+    - Qwen VLM at QWEN_VLM_URL — Classification, decomposition, verification,
+      and cross-document checks (Steps 2–14). Switch the entire VLM pipeline
+      between 7B and 72B by setting VLM_MODEL_SIZE in config/settings.py:
+        • "72B" → http://10.20.10.2:8085 (Qwen2.5-VL-72B-Instruct-AWQ)
+        • "7B"  → http://10.20.10.3:8000 (Qwen2.5-VL-7B-Instruct)
 
 TRADE FINANCE CONTEXT:
     A Letter of Credit (LC) is a bank guarantee used in international trade. The

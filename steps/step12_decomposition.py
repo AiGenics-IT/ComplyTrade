@@ -38,9 +38,10 @@ TRADE FINANCE CONTEXT:
     - F78 = Instructions to Paying/Accepting/Negotiating Bank
     - Some fields (31D, 44C, 48, 32B) are checked by code logic, not VLM (implicit checks)
 
-AI MODEL: Qwen 2.5-VL-7B @ http://10.20.10.3:8000/v1/chat/completions
-    Used for decomposing clause text into individual conditions.
-    Implicit checks (dates, amounts) bypass the VLM entirely.
+AI MODEL: Qwen VLM at QWEN_VLM_URL (resolved from config/settings.py
+          via the VLM_MODEL_SIZE switch — 7B or 72B). Used for decomposing
+          clause text into individual conditions. Implicit checks (dates,
+          amounts) bypass the VLM entirely.
 """
 
 import json

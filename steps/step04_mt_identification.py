@@ -27,7 +27,8 @@ SWIFT FORMATS:
 INPUT:  Step 3 output -- list of DocumentPacket objects
 OUTPUT: List of ClassifiedPacket with mt_type, mt_confidence, swift_format
 
-MODEL:  Qwen VLM @ http://10.20.10.2:8085 (only for ambiguous classification)
+MODEL:  Qwen VLM at QWEN_VLM_URL (7B or 72B per VLM_MODEL_SIZE switch in
+        config/settings.py — only for ambiguous classification)
 """
 
 import os
