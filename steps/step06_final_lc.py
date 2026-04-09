@@ -1919,6 +1919,79 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
         _amt = re.sub(r'(?i)^Increase\s+of\s+Documentary\s+Credit\s+Amount\s*[\n\r]*', '', _amt).strip()
         _cf['32B'] = _amt
 
+    # 4b. P66: Final 32B hardening pass.
+    # Some extraction paths (Alliance OCR fallback, VLM fallback, multi-page
+    # SWIFT continuation) write 32B without going through the inline cleanup
+    # at extraction time. This catches any residual bleeding such as:
+    #   "USD US DOLLAR 97216,00 #97,216.00F41D: Available With..."
+    #   "USD\nUS DOLLAR\n516000,00\n#516,000.00\nF41D ..."
+    #   "F32B: USD 97,216.00"
+    # The output is always normalised to "{CCY} {amount with US thousands
+    # format}" — e.g. "USD 97,216.00".
+    _amt = _cf.get('32B', '')
+    if _amt and isinstance(_amt, str):
+        _v = _amt
+        # Strip a leading "F32B:" / "32B:" label
+        _v = re.sub(r'^\s*F?32B\s*[:\-]\s*', '', _v, flags=re.IGNORECASE)
+        # Truncate at any downstream F-tag header glued in (F41D, F39A, etc.)
+        _next = re.search(r'\bF?\d{2}[A-Z]?\s*:', _v)
+        if _next and _next.start() > 0:
+            _v = _v[:_next.start()]
+        # Strip the spelt-out currency word(s) — keep just the ISO code
+        _v = re.sub(
+            r'\b(?:US\s*DOLLAR|US\s*DOLLARS|DOLLAR|DOLLARS|EURO|EUROS|POUND\s*STERLING|'
+            r'POUNDS|JAPANESE\s*YEN|YEN|FRANC|FRANCS|RUPEE|RUPEES|YUAN|RIYAL|DIRHAM)\b',
+            '', _v, flags=re.IGNORECASE,
+        )
+        # Strip "#" separators
+        _v = _v.replace('#', ' ')
+        # Find ISO currency code (3 uppercase letters, default USD)
+        _ccy_m = re.search(r'\b([A-Z]{3})\b', _v)
+        _ccy_str = _ccy_m.group(1) if _ccy_m else 'USD'
+        # Try to find the amount in any common format
+        _amt_value = None
+        # 1. US format: 97,216.00 / 1,234,567.89
+        _us = re.search(r'(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?)', _v)
+        if _us:
+            try:
+                _amt_value = float(_us.group(1).replace(',', ''))
+            except ValueError:
+                pass
+        # 2. European format: 97216,00 / 1.234.567,89
+        if _amt_value is None:
+            _eu = re.search(r'(\d{1,3}(?:\.\d{3})+,\d{1,2})', _v)
+            if _eu:
+                try:
+                    _amt_value = float(_eu.group(1).replace('.', '').replace(',', '.'))
+                except ValueError:
+                    pass
+        # 3. Plain digits with European decimal comma: 97216,00
+        if _amt_value is None:
+            _eu2 = re.search(r'(\d+,\d{2})\b', _v)
+            if _eu2:
+                try:
+                    _amt_value = float(_eu2.group(1).replace(',', '.'))
+                except ValueError:
+                    pass
+        # 4. Plain digits with US decimal point: 97216.00
+        if _amt_value is None:
+            _us2 = re.search(r'(\d+\.\d{2})\b', _v)
+            if _us2:
+                try:
+                    _amt_value = float(_us2.group(1))
+                except ValueError:
+                    pass
+        # 5. Bare integer: 97216
+        if _amt_value is None:
+            _int = re.search(r'\b(\d{3,})\b', _v)
+            if _int:
+                try:
+                    _amt_value = float(_int.group(1))
+                except ValueError:
+                    pass
+        if _amt_value is not None and _amt_value > 0:
+            _cf['32B'] = f"{_ccy_str} {_amt_value:,.2f}"
+
     # -- Split clause fields --
     for tag in CLAUSE_TAGS:
         value = final_lc.consolidated_fields.get(tag, '')

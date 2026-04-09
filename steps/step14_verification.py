@@ -561,7 +561,13 @@ CRITICAL RULES (follow strictly):
 4. Shipment BEFORE latest date = PASS. Shipment AFTER latest date = check F47A first. If F47A allows late shipment, mark REVIEW.
 5. CHARTER PARTY: If F47A says "CHARTER PARTY BL ACCEPTABLE", then charter party BL = PASS.
 6. Name matching: key words must match (UNITED BANK = UNITED BANK LIMITED = UBL). Minor spelling differences are acceptable.
-7. Amount: The invoice/draft amount can be LESS than the LC amount (partial/short shipment) — only EXCEEDING the LC amount + tolerance is a discrepancy.
+7. INVOICE / DRAFT AMOUNT (read carefully — this is the most common false-fail):
+   • Use the EXPLICIT printed "Total Amount" / "Grand Total" / "Invoice Total" line at the bottom of the invoice as the AUTHORITATIVE invoice amount. Do NOT sum line items yourself — the printed Total already does that.
+   • The "INVOICE PRINTED TOTAL AMOUNT" line in the SYSTEM PRE-CALCULATED SUMMARY at the top of the document text is the de-duplicated correct figure — TRUST IT and use it as the invoice amount.
+   • Do NOT count the same Total twice. If a multi-copy invoice (e.g. octuplicate) was merged, the same "Total Amount: 97,216.00" line may appear several times in the raw text — this is ONE invoice with ONE total, not multiple invoices. The SUMMARY at the top has already deduped this for you.
+   • For a multi-page invoice, the Total line on the LAST page is the figure for the whole invoice — do not add per-page subtotals on top of it.
+   • The invoice amount can be LESS than the LC amount (partial/short shipment, allowed under UCP 600 Art 30 tolerance) — that is PASS.
+   • Only when invoice Total > LC amount × (1 + tolerance%) is it a FAIL. Verify your arithmetic: 97,216 is NOT greater than 97,216. 95,000 is LESS than 97,216 (PASS, not FAIL).
 8. THIRD PARTY: If F47A says "THIRD PARTY DOCUMENTS ACCEPTABLE", third party documents = PASS.
 9. CERTIFICATION: If the condition asks for origin certification and the document says "We certify the goods are of [COUNTRY] origin" or similar statement, that IS a valid certification = PASS. Do not fail just because the exact word "CERTIFICATE" is not used — any statement certifying origin, quality, weight, etc. is a certification.
 10. DOCUMENT VERIFICATION: If the document text does NOT look like the expected document type (e.g., the condition checks a "Phytosanitary Certificate" but the document text looks like a quality certificate or inspection report), mark as REVIEW with "Document type may be misclassified".
@@ -666,10 +672,42 @@ def _call_vlm(
     _doc_summary = ''
     if document_text and len(document_text) > 500:
         import re as _re_sum
-        # Find "Total Amount" or "Total:" lines
-        _totals = _re_sum.findall(r'(?:Total\s*(?:Amount)?|TOTAL)[:\s]*(?:USD|EUR|GBP)?\s*([\d,]+\.?\d*)', document_text, _re_sum.IGNORECASE)
-        if _totals:
-            _doc_summary += f"TOTAL AMOUNTS FOUND: {', '.join(_totals)}\n"
+        # P66: Tighter regex — must be "Total Amount" / "Grand Total" /
+        # "Invoice Total" / "Sub Total". Bare "TOTAL" matches table headers
+        # and weight totals which contaminated the summary.
+        _totals_raw = _re_sum.findall(
+            r'(?:Total\s+Amount|Grand\s+Total|Invoice\s+Total|Sub\s*Total|Net\s+Total|Amount\s+Total)\s*[:\s]*'
+            r'(?:USD|EUR|GBP|JPY|CHF|AUD|CAD|CNY|HKD|SGD|INR|PKR|AED|SAR)?\s*([\d.,]+)',
+            document_text, _re_sum.IGNORECASE,
+        )
+        # P66: Dedupe identical totals — when a multi-copy invoice is merged,
+        # the SAME "Total Amount: 97,216.00" line appears N times. Without
+        # dedup, the precalc summary becomes "97,216.00, 97,216.00, ..." and
+        # the verifier sums them, falsely flagging "INVOICE EXCEEDS CREDIT".
+        if _totals_raw:
+            _seen_totals = set()
+            _totals = []
+            for _t in _totals_raw:
+                _norm = _t.strip().rstrip('.,').replace(' ', '')
+                # Normalise for dedup: treat "97,216.00" and "97216,00" as same
+                try:
+                    if ',' in _norm and '.' in _norm:
+                        # US format with thousands
+                        _key = f"{float(_norm.replace(',', '')):.2f}"
+                    elif ',' in _norm and _norm.count(',') == 1 and len(_norm.split(',')[1]) == 2:
+                        # European format: 97216,00
+                        _key = f"{float(_norm.replace(',', '.')):.2f}"
+                    else:
+                        _key = f"{float(_norm.replace(',', '')):.2f}"
+                except ValueError:
+                    _key = _norm
+                if _key not in _seen_totals:
+                    _seen_totals.add(_key)
+                    _totals.append(_t)
+            if len(_totals) == 1:
+                _doc_summary += f"INVOICE PRINTED TOTAL AMOUNT (use this single value, do NOT sum): {_totals[0]}\n"
+            else:
+                _doc_summary += f"TOTAL AMOUNTS FOUND (deduped): {', '.join(_totals)}\n"
         # Find quantity totals
         _qty_totals = _re_sum.findall(r'(?:Total\s*(?:Quantity)?|TOTAL)[:\s]*([\d,]+\.?\d*)\s*(?:Ea|pcs|KGS|MT|MMBTU|units|rolls|drums)', document_text, _re_sum.IGNORECASE)
         if _qty_totals:
