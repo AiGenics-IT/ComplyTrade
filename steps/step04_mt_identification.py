@@ -278,6 +278,45 @@ def _is_mt799_amendment(text: str) -> bool:
     return has_lc_ref
 
 
+# ── MT799 free-format header / structural markers ──
+# Used by _looks_like_mt799_free_format() to recognise a 799 page even
+# when OCR has lost the explicit "MT 799" header. These markers must
+# NOT appear on a normal MT700/MT707 — they are specific to free format.
+_MT799_FREE_FORMAT_MARKERS = [
+    re.compile(r'\bFREE\s*FORMAT\s*MESSAGE\b', re.IGNORECASE),
+    re.compile(r'\bBANK\s*TO\s*BANK\s*MESSAGE\b', re.IGNORECASE),
+    re.compile(r'\bBANK[- ]TO[- ]BANK\s*MESSAGE\b', re.IGNORECASE),
+    re.compile(r'(?:^|\n)\s*Type\s*:\s*7?99\b', re.IGNORECASE),
+    re.compile(r'(?:^|\n)\s*Message\s*Type\s*:?\s*7?99\b', re.IGNORECASE),
+    re.compile(r'\b(?:fin|FIN)\s*\.\s*7?99\b'),
+    re.compile(r'\bF79\s*:', re.IGNORECASE),       # MT799 narrative field
+    re.compile(r'(?:^|\n)\s*:79:', re.IGNORECASE),
+    re.compile(r'\bMT\s*7?99\b', re.IGNORECASE),    # belt-and-braces
+    re.compile(r'\bATTN\s*:?\s*TRADE\s*FINANCE\b', re.IGNORECASE),
+    re.compile(r'\bATTENTION\s*:?\s*TRADE\s*FINANCE\b', re.IGNORECASE),
+]
+
+
+def _looks_like_mt799_free_format(text: str) -> bool:
+    """
+    True if the text looks like a free-format SWIFT message (MT799/MT999)
+    based on structural markers, regardless of whether the literal
+    "MT 799" header survived OCR.
+
+    Heuristic: at least one explicit free-format marker AND no F26E
+    (formal amendment-number tag, which only MT707 uses).
+    """
+    if not text:
+        return False
+    has_marker = any(p.search(text) for p in _MT799_FREE_FORMAT_MARKERS)
+    if not has_marker:
+        return False
+    # If the page carries a real F26E amendment-number tag, it's an MT707,
+    # not a 799 — even if a free-format marker also appears.
+    has_f26e = bool(re.search(r'\b(?:F26E|:26E:)\s*\w', text, re.IGNORECASE))
+    return not has_f26e
+
+
 def _get_packet_text(packet) -> str:
     """Concatenate cleaned text from all pages in a packet."""
     pages = packet.pages if hasattr(packet, 'pages') else packet.get('pages', [])
@@ -318,11 +357,14 @@ def _classify_by_text(text: str) -> dict:
 
     Priority:
     1. Covering letter (checked first -- can contain MT references as false positives)
-    2. Explicit MT type reference (MT700, MT707, etc.)
-    3. F-tag count (3+ F-tags = likely SWIFT message)
-    4. Alliance tag count
-    5. Shipping document patterns
-    6. Default: unknown
+    2. MT799/MT999 free-format detection (BEFORE explicit-MT loop because a 799
+       page often references field tags like F45A in its body, which would
+       otherwise trigger the MT700/MT707 F-tag fallback below)
+    3. Explicit MT type reference (MT700, MT707, etc.)
+    4. F-tag count (3+ F-tags = likely SWIFT message)
+    5. Alliance tag count
+    6. Shipping document patterns
+    7. Default: unknown
     """
     # Covering letter check first
     cl_score = sum(1 for p in _COVERING_LETTER_PATTERNS if p.search(text))
@@ -332,6 +374,30 @@ def _classify_by_text(text: str) -> dict:
             'confidence': 0.90,
             'reason': f'{cl_score} covering letter patterns',
             'swift_format': '',
+        }
+
+    # ── MT799/MT999 free-format pre-check ──
+    # If the page shows free-format structural markers (FREE FORMAT MESSAGE,
+    # BANK TO BANK MESSAGE, :79: narrative tag, "MT 799" header, etc.) and
+    # does NOT carry a formal F26E amendment-number tag, classify as MT799
+    # NOW — before the F-tag fallback below misroutes it to MT700/MT707
+    # because the body happens to mention "F45A" / "F47A" etc.
+    if _looks_like_mt799_free_format(text):
+        if _is_mt799_amendment(text):
+            return {
+                'mt_type': 'MT707',
+                'confidence': 0.90,
+                'reason': 'MT799 free-format with amendment instructions (promoted to MT707)',
+                'swift_format': _detect_swift_format(text),
+                'source_mt': 'MT799',
+                'is_799_amendment': True,
+            }
+        return {
+            'mt_type': 'MT799',
+            'confidence': 0.90,
+            'reason': 'MT799 free-format markers detected (no F26E, no amendment instructions)',
+            'swift_format': _detect_swift_format(text),
+            'is_799_amendment': False,
         }
 
     # Check for explicit MT type
@@ -371,6 +437,28 @@ def _classify_by_text(text: str) -> dict:
     # Check F-tags (Fusion format)
     ftag_matches = _FTAG_RE.findall(text)
     if len(ftag_matches) >= 3:
+        # Second safety net: even if the explicit-MT loop didn't fire,
+        # the F-tag count alone can misroute a free-format MT799 that
+        # only REFERENCES field tags in its amendment body. Re-check
+        # for free-format markers and amendment language before
+        # collapsing to MT700/MT707.
+        if _looks_like_mt799_free_format(text) or _is_mt799_amendment(text):
+            if _is_mt799_amendment(text):
+                return {
+                    'mt_type': 'MT707',
+                    'confidence': 0.85,
+                    'reason': 'Free-format amendment in body (F-tag fallback rerouted to MT799 amendment)',
+                    'swift_format': _detect_swift_format(text),
+                    'source_mt': 'MT799',
+                    'is_799_amendment': True,
+                }
+            return {
+                'mt_type': 'MT799',
+                'confidence': 0.80,
+                'reason': 'Free-format markers detected (F-tag fallback rerouted to MT799)',
+                'swift_format': _detect_swift_format(text),
+                'is_799_amendment': False,
+            }
         is_amendment = any(p.search(text) for p in _AMENDMENT_PATTERNS)
         mt_type = 'MT707' if is_amendment else 'MT700'
         return {
@@ -389,6 +477,26 @@ def _classify_by_text(text: str) -> dict:
         '45A', '46A', '47A', '48', '49', '50', '59', '71D', '78',
     )]
     if len(swift_tags) >= 3:
+        # Same safety net as the F-tag fallback above — a free-format
+        # MT799 amendment can reference :45A: / :47A: in its body and
+        # otherwise look like an Alliance MT700/MT707.
+        if _looks_like_mt799_free_format(text) or _is_mt799_amendment(text):
+            if _is_mt799_amendment(text):
+                return {
+                    'mt_type': 'MT707',
+                    'confidence': 0.85,
+                    'reason': 'Free-format amendment in body (Alliance fallback rerouted to MT799 amendment)',
+                    'swift_format': 'alliance',
+                    'source_mt': 'MT799',
+                    'is_799_amendment': True,
+                }
+            return {
+                'mt_type': 'MT799',
+                'confidence': 0.80,
+                'reason': 'Free-format markers detected (Alliance fallback rerouted to MT799)',
+                'swift_format': 'alliance',
+                'is_799_amendment': False,
+            }
         is_amendment = any(p.search(text) for p in _AMENDMENT_PATTERNS)
         mt_type = 'MT707' if is_amendment else 'MT700'
         return {
@@ -400,6 +508,25 @@ def _classify_by_text(text: str) -> dict:
 
     # Weak F-tag signal
     if len(ftag_matches) >= 1 or len(swift_tags) >= 1:
+        # Final safety net for the weak-signal path: if there are free-format
+        # markers, prefer MT799 over a low-confidence MT700 guess.
+        if _looks_like_mt799_free_format(text) or _is_mt799_amendment(text):
+            if _is_mt799_amendment(text):
+                return {
+                    'mt_type': 'MT707',
+                    'confidence': 0.75,
+                    'reason': 'Free-format amendment (weak-signal path rerouted to MT799 amendment)',
+                    'swift_format': _detect_swift_format(text),
+                    'source_mt': 'MT799',
+                    'is_799_amendment': True,
+                }
+            return {
+                'mt_type': 'MT799',
+                'confidence': 0.70,
+                'reason': 'Free-format markers detected (weak-signal path rerouted to MT799)',
+                'swift_format': _detect_swift_format(text),
+                'is_799_amendment': False,
+            }
         swift_fmt = _detect_swift_format(text)
         return {
             'mt_type': 'MT700',

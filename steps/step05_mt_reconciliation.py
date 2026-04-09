@@ -421,6 +421,19 @@ def run(step4_result: dict, output_dir: str = None, progress_callback=None) -> d
                     # — Step 4 already established it carries amendment instructions.
                     if pd.get('is_799_amd') and new_mt in ('MT799', 'MT999'):
                         new_mt = pd['orig_mt']
+                    # Don't let VLM upgrade an MT799 to MT700/MT707/MT710/MT720
+                    # just because the body references field tags. Step 4 has
+                    # multiple safety nets to detect free-format MT799 — if it
+                    # decided MT799, the VLM should not override that without
+                    # an extremely high confidence (>= 0.90). MT799 is the
+                    # most-misclassified type because its body LOOKS like an
+                    # LC by referencing fields F45A/F46A/F47A.
+                    if pd['orig_mt'] in ('MT799', 'MT999') and new_mt in (
+                        'MT700', 'MT701', 'MT705', 'MT707', 'MT708',
+                        'MT710', 'MT711', 'MT720', 'MT721',
+                    ):
+                        if new_conf < 0.90:
+                            new_mt = pd['orig_mt']
                     if new_mt != pd['orig_mt'] and new_conf > 0.60:
                         refined_mt = new_mt
                         refined_conf = new_conf

@@ -2203,11 +2203,66 @@ def _process_pipeline(job_id: str):
             job['current_step'] = 4
             _p("Step 4: MT Document Identification (from Step 3 classification)...")
 
-            _lc_types = {'lc', 'amendment', 'mt700', 'mt707'}
+            _lc_types = {'lc', 'amendment', 'mt700', 'mt701', 'mt705', 'mt707', 'mt708',
+                         'mt710', 'mt711', 'mt720', 'mt721'}
+            # MT799 / MT999 = SWIFT free-format messages. These are NOT LCs but
+            # they often carry amendment instructions in the narrative body
+            # ("UNDER FIELD 45A SHOULD READ AS X I/O Y"). When that happens we
+            # promote the packet to MT707 so step06 will apply the amendment
+            # via _extract_mt799_amendment_fields().
+            _free_format_types = {'mt799', 'mt999', 'free format message',
+                                  'free_format_message', 'bank-to-bank message'}
             # Endorsement pages and blank pages are BACK SIDES of the previous document
             # They carry stamps, endorsements, signatures — merge into previous packet
             _back_page_types = {'blank page', 'blank_page', 'endorsement page'}
             _s3_packets = s3.get('packets', [])
+
+            # Import the MT799 amendment detector from step04 so we can apply
+            # the same promotion logic the standalone runner uses.
+            from steps.step04_mt_identification import (
+                _is_mt799_amendment as _s4_is_mt799_amendment,
+                _looks_like_mt799_free_format as _s4_looks_like_mt799_ff,
+            )
+
+            # Build a {page_number: cleaned_text} index from Step 2's output.
+            # Step 3 stores packets with only page-number references, not the
+            # actual cleaned text — so a `_pkt['pages'][i]['cleaned_text']`
+            # lookup returns empty. We must source text from Step 2 directly.
+            _s2_page_text = {}
+            for _pg in s2.get('pages', []) or []:
+                if isinstance(_pg, dict):
+                    _pn = _pg.get('page_number')
+                    _txt = _pg.get('cleaned_text') or _pg.get('raw_text') or ''
+                else:
+                    _pn = getattr(_pg, 'page_number', None)
+                    _txt = getattr(_pg, 'cleaned_text', '') or getattr(_pg, 'raw_text', '')
+                if _pn is not None and _txt:
+                    _s2_page_text[int(_pn)] = _txt
+
+            def _packet_full_text(_pkt):
+                """Concatenate cleaned text for every page in the packet,
+                pulling from the Step-2 page-text index (Step-3 packets do
+                not carry the cleaned text inline)."""
+                _parts = []
+                # Try inline pages first (covers the case where step3 did
+                # carry cleaned_text in some configurations)
+                for _pg in _pkt.get('pages', []) or []:
+                    if isinstance(_pg, dict):
+                        _t = _pg.get('cleaned_text') or _pg.get('raw_text') or ''
+                    else:
+                        _t = getattr(_pg, 'cleaned_text', '') or getattr(_pg, 'raw_text', '')
+                    if _t:
+                        _parts.append(_t)
+                # Fall back to the Step-2 index by page number
+                if not _parts:
+                    for _pn in _pkt.get('page_numbers', []) or []:
+                        try:
+                            _t = _s2_page_text.get(int(_pn), '')
+                        except (TypeError, ValueError):
+                            _t = ''
+                        if _t:
+                            _parts.append(_t)
+                return '\n'.join(_parts)
 
             _mt_packets = []
             _shipping_packets = []
@@ -2228,6 +2283,29 @@ def _process_pipeline(job_id: str):
                         _p(f"  Merged {_dt} (pg {_pkt.get('page_numbers', [])}) into previous {_prev_packet.get('document_type', '?')}")
                     continue
                 _pkt_copy = dict(_pkt)
+
+                # ── MT799 / MT999 free-format ──
+                # Check this BEFORE the LC branch because step03 may have
+                # mislabelled an MT799 as "LC" if its body references F-tags.
+                # We re-inspect the packet text for free-format markers and
+                # amendment instructions and route accordingly.
+                _pkt_text = _packet_full_text(_pkt)
+                _is_ff = _dt in _free_format_types or _s4_looks_like_mt799_ff(_pkt_text)
+                if _is_ff:
+                    if _s4_is_mt799_amendment(_pkt_text):
+                        _pkt_copy['mt_type'] = 'MT707'
+                        _pkt_copy['source_mt'] = 'MT799'
+                        _pkt_copy['is_799_amendment'] = True
+                        _p(f"  pkt {_pkt.get('packet_id','?')} pages={_pkt.get('page_numbers',[])} → MT799 amendment (promoted to MT707)")
+                    else:
+                        _pkt_copy['mt_type'] = 'MT799'
+                        _pkt_copy['source_mt'] = 'MT799'
+                        _pkt_copy['is_799_amendment'] = False
+                        _p(f"  pkt {_pkt.get('packet_id','?')} pages={_pkt.get('page_numbers',[])} → MT799 free format")
+                    _mt_packets.append(_pkt_copy)
+                    _prev_packet = _pkt_copy
+                    continue
+
                 if _dt in _lc_types:
                     _pkt_copy['mt_type'] = 'MT707' if 'amend' in _dt else 'MT700'
                     _mt_packets.append(_pkt_copy)

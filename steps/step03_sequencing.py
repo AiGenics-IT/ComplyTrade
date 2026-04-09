@@ -113,7 +113,7 @@ CLASSIFY this page. Return ONLY valid JSON:
 }}
 
 DOCUMENT TYPES — Use the EXACT document title/heading visible on the page. Common types include but are NOT limited to:
-  LC, Amendment, Bill of Lading, Commercial Invoice, Draft Bill of Exchange,
+  LC, Amendment, MT799, MT999, Bill of Lading, Commercial Invoice, Draft Bill of Exchange,
   Packing List, Certificate of Origin, Insurance Certificate, Insurance Policy,
   Weight Certificate, Quality Certificate, Quantity Certificate,
   Shipment Advice, Document Remittance, Beneficiary Certificate,
@@ -145,6 +145,19 @@ DOCUMENT TYPES — Use the EXACT document title/heading visible on the page. Com
 CLASSIFICATION RULES:
 - SWIFT F-tags (F20:, F31C:, F42A:, F46A:, F47A:, :20:, :31C:, :46A:) or "Message type: 700/707" -> "LC" or "Amendment"
 - "26E: Number of Amendment" or "Date of Amendment" -> "Amendment"
+- ── MT799 / MT999 FREE FORMAT MESSAGES (CRITICAL — read carefully) ──
+  An MT799 or MT999 is a SWIFT free-format bank-to-bank message. It is NOT a Letter of Credit and NOT an MT707 amendment, even though it OFTEN references the underlying LC ("WITH REFERENCE TO OUR MT 700 DATED ...", "OUR LC NO. ...", "ABOVE CAPTIONED CREDIT").
+  Identify an MT799/MT999 by ANY of these signals on the page:
+    • "Identifier: fin.799" / "fin.799" / "fin.999"
+    • "Expansion: Free Format Message"
+    • "Free Format Message" anywhere on the page
+    • "Bank-to-Bank Message" / "Bank to Bank Message"
+    • "Message type: 799" / "Message Type: 799" / "MT 799" / "MT799"
+    • A narrative field labelled "F79: Narrative" or ":79:" (this is the unique field of MT799 — it does NOT exist in MT700/707)
+    • A SWIFT report header that shows "799" instead of "700"/"707"
+  When you see ANY of those, classify the page as "MT799" (or "MT999"), regardless of what fields appear in the message body.
+  In particular: an MT799 may carry F20 (Transaction Reference), F21 (Related Reference), F79 (Narrative). It may even MENTION F45A / F46A / F47A in the narrative body when the bank is sending an amendment via free format (e.g. "UNDER FIELD 45A RATE SHOULD READ AS 'EUR 141,396.00' I/O 'EUR 141,396.56'"). The presence of those field references in the BODY does NOT make it an LC or an MT707 — only F26E (Number of Amendment) makes a message a real MT707 amendment.
+  If the page is an MT799 carrying free-format amendment instructions, STILL classify it as "MT799" — the downstream pipeline will detect the amendment intent and apply it.
 - "Page X of Y" continuation or no own header -> is_continuation = true
 - Page with "FUSION TRADE INNOVATION" header + "Select 'Print' to output" but NO SWIFT content -> "Header Page"
 - Page mostly blank with only "TO THE ORDER OF" endorsement stamps/signatures -> "Endorsement Page"
@@ -194,6 +207,7 @@ ATTACHED SHEETS:
 BANK HEADER / COVERING PAGES:
 - A page showing only a bank's letterhead, logo, address, and SWIFT codes (like OCBC Bank, HSBC, Citibank) WITHOUT any SWIFT F-tag fields (F20:, F31C:, F46A:, :20:, :31C:) is a "Covering Letter" or "Header Page" — NOT an LC.
 - An LC page MUST contain SWIFT field tags like F20/F31C/F46A/F47A (Fusion) or :20:/:31C:/:46A: (Alliance) or bare tags like "20: Documentary Credit Number". Just having a bank name and SWIFT code on a page does NOT make it an LC.
+- An LC page MUST be type 700 or 701 — if the page header / report identifier shows "fin.799", "fin.999", "Free Format Message", "Message type: 799", or "Bank-to-Bank Message", it is NOT an LC, classify as "MT799" or "MT999" instead. F20 alone is not enough — both LC and MT799 carry F20 (Transaction Reference Number).
 - If a page has a bank logo at the top and a table/form below with transaction details but NO SWIFT field tags, it is likely a "Covering Letter", "Export DC Document Presentation Schedule", or "Document Remittance" — NOT an LC.
 """
 
@@ -411,13 +425,29 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         r'Increase\s+of\s+Documentary\s+Credit',
         r'Decrease\s+of\s+Documentary\s+Credit',
     ]
+    # MT799 is a free-format SWIFT message. Alliance Message Management
+    # reports show it as `Identifier: fin.799` / `Expansion: Free Format
+    # Message` — NOT as "Message type: 799". The narrative body field is
+    # F79 / :79:. None of these were caught by the original two-pattern
+    # list, so 799 pages with F20 (Transaction Reference) were getting
+    # misclassified as LC because is_lc fired before is_799.
     _SWIFT_799_PATTERNS = [
-        r'Message\s+type:\s*799',
-        r'SWIFT_MT799',
+        r'Message\s+type:\s*7?99',
+        r'\bSWIFT[_ ]?MT[_ ]?7?99\b',
+        r'\bMT\s*7?99\b',
+        r'\bfin\.\s*7?99\b',
+        r'\bIdentifier\s*:\s*fin\.\s*7?99\b',
+        r'\bFREE\s+FORMAT\s+MESSAGE\b',
+        r'\bBANK[- ]TO[- ]BANK\s+MESSAGE\b',
+        r'(?:^|\n)\s*F79\s*:',          # MT799 narrative field (Fusion)
+        r'(?:^|\n)\s*:79:',             # MT799 narrative field (Alliance)
     ]
     _SWIFT_999_PATTERNS = [
         r'Message\s+type:\s*999',
-        r'SWIFT_MT999',
+        r'\bSWIFT[_ ]?MT[_ ]?999\b',
+        r'\bMT\s*999\b',
+        r'\bfin\.\s*999\b',
+        r'\bIdentifier\s*:\s*fin\.\s*999\b',
     ]
     _SWIFT_CONTINUATION_PATTERNS = [
         r'(?:^|\n)\s*(?::|\bF)45A[\s:]+',  # Description of goods
@@ -475,17 +505,22 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         is_swift_cont = any(re.search(p, text, re.IGNORECASE) for p in _SWIFT_CONTINUATION_PATTERNS)
         is_fusion_header = any(re.search(p, text, re.IGNORECASE) for p in _FUSION_HEADER_PATTERNS)
 
+        # PRIORITY ORDER MATTERS: a free-format MT799 page often references
+        # field tags (F20, F45A, etc.) in its body, which would otherwise
+        # match _SWIFT_LC_PATTERNS and get the page misclassified as LC.
+        # So MT799/MT999 must be checked BEFORE the LC patterns.
+        # Same for Amendment vs LC: an MT707 amendment also has F20.
+        if is_799:
+            _page_swift_type[pg_num] = 'MT799'
+        elif is_999:
+            _page_swift_type[pg_num] = 'MT999'
         # MT701 is LC continuation (not a new LC)
-        if is_lc_cont:
+        elif is_lc_cont:
             _page_swift_type[pg_num] = 'LC'  # Treat as LC, will be marked continuation later
         elif is_amendment:
             _page_swift_type[pg_num] = 'Amendment'
         elif is_lc:
             _page_swift_type[pg_num] = 'LC'
-        elif is_799:
-            _page_swift_type[pg_num] = 'MT799'
-        elif is_999:
-            _page_swift_type[pg_num] = 'MT999'
         elif is_swift_cont:
             _page_swift_type[pg_num] = '_swift_continuation'
         elif is_fusion_header:

@@ -271,6 +271,15 @@ def _extract_mt799_amendment_fields(
         FIELD 47A SHOULD READ AS '...' INSTEAD OF '...'
         PLEASE AMEND LATEST DATE OF SHIPMENT TO READ AS 15.05.2026 I/O 30.04.2026
 
+    Real-world MT799 messages from Alliance often format the values on the
+    NEXT line after "SHOULD READ AS" and wrap them in DOUBLE single-quotes
+    (`''X''`), e.g.:
+        UNDER FIELD 45A RATE SHOULD READ AS
+        ''EUR 141,396.00'' I/O ''EUR 141,396.56''
+    so the parser must (a) tolerate one or more newlines between the verb
+    and the value, and (b) tolerate one or more quote characters of either
+    style around the value.
+
     Returns a list of SwiftField records carrying amendment OPERATIONS that
     `_apply_amendment` / `_apply_text_amendment` will then merge into the base
     LC fields. The value is wrapped as "TO READ AS '<new>' INSTEAD OF '<old>'"
@@ -279,24 +288,21 @@ def _extract_mt799_amendment_fields(
     if not text:
         return []
 
+    # Pre-normalise: collapse runs of single/double quotes (e.g. `''X''` →
+    # `'X'`) so the value-capture regexes only need to handle one quote on
+    # each side. Also normalise smart quotes to ASCII.
+    norm = text
+    norm = norm.replace('\u2018', "'").replace('\u2019', "'")
+    norm = norm.replace('\u201c', '"').replace('\u201d', '"')
+    norm = re.sub(r"'{2,}", "'", norm)
+    norm = re.sub(r'"{2,}', '"', norm)
+
     out: List[SwiftField] = []
     seen_tags = set()
 
-    # Pattern 1: "UNDER FIELD 45A [optional label] SHOULD READ AS 'X' I/O 'Y'"
-    pat_field = re.compile(
-        r'(?:UNDER\s+)?FIELD\s+(\d{2}[A-Z]?)\b[^\n]{0,80}?'
-        r'(?:SHOULD|SHALL|NOW|TO)\s+READ\s+AS\s+'
-        r'["\']?(.+?)["\']?\s*(?:I\s*/\s*O|INSTEAD\s+OF)\s+["\']?(.+?)["\']?'
-        r'(?:\s*[\.\n]|$)',
-        re.IGNORECASE,
-    )
-    for m in pat_field.finditer(text):
-        raw_tag = m.group(1).upper().strip()
-        new_val = m.group(2).strip().strip("'\"")
-        old_val = m.group(3).strip().strip("'\"")
-        canon_tag = _MT799_TAG_TO_FIELD.get(raw_tag, raw_tag)
+    def _record(canon_tag, new_val, old_val):
         if canon_tag in seen_tags or not new_val:
-            continue
+            return
         seen_tags.add(canon_tag)
         out.append(SwiftField(
             tag=canon_tag,
@@ -306,35 +312,86 @@ def _extract_mt799_amendment_fields(
             source_mt=source_mt,
         ))
 
-    # Pattern 2: "<TAG>: <label> SHOULD READ AS X I/O Y"
-    pat_colon = re.compile(
-        r'(?:^|\n)\s*(\d{2}[A-Z]?)\s*:[^\n]{0,80}?'
-        r'SHOULD\s+READ\s+AS\s+["\']?(.+?)["\']?\s*'
-        r'(?:I\s*/\s*O|INSTEAD\s+OF)\s+["\']?(.+?)["\']?(?:\s*[\.\n]|$)',
+    # ── Pattern 1a: QUOTED form ──
+    #   UNDER FIELD 45A [RATE] SHOULD READ AS
+    #   'EUR 141,396.00' I/O 'EUR 141,396.56'
+    # The value char class excludes quotes and newlines, so the closing
+    # quote bounds the capture cleanly even with periods inside the value.
+    pat_field_quoted = re.compile(
+        r'(?:UNDER\s+)?FIELD\s+(\d{2}[A-Z]?)\b[^\n]{0,80}?'   # FIELD 45A [RATE]
+        r'(?:SHOULD|SHALL|NOW|TO)\s+READ\s+AS'                # SHOULD READ AS
+        r'[\s\n\r]*'                                          # whitespace incl. newline
+        r'[\'"]\s*([^\'"\n\r]+?)\s*[\'"]'                     # 'new value'
+        r'\s*(?:I\s*/\s*O|INSTEAD\s+OF)\s*'                   # I/O / INSTEAD OF
+        r'[\'"]\s*([^\'"\n\r]+?)\s*[\'"]',                    # 'old value'
         re.IGNORECASE,
     )
-    for m in pat_colon.finditer(text):
+    for m in pat_field_quoted.finditer(norm):
         raw_tag = m.group(1).upper().strip()
-        new_val = m.group(2).strip().strip("'\"")
-        old_val = m.group(3).strip().strip("'\"")
+        new_val = m.group(2).strip()
+        old_val = m.group(3).strip()
         canon_tag = _MT799_TAG_TO_FIELD.get(raw_tag, raw_tag)
-        if canon_tag in seen_tags or not new_val:
-            continue
-        seen_tags.add(canon_tag)
-        out.append(SwiftField(
-            tag=canon_tag,
-            label=SWIFT_FIELD_LABELS.get(canon_tag, f'Field {canon_tag}'),
-            value=f"TO READ AS '{new_val}' INSTEAD OF '{old_val}'",
-            source_page=source_page,
-            source_mt=source_mt,
-        ))
+        _record(canon_tag, new_val, old_val)
+
+    # ── Pattern 1b: UNQUOTED form ──
+    #   UNDER FIELD 45A SHOULD READ AS EUR 141.00 I/O EUR 140.00
+    # Bound by newline, period, or another keyword.
+    pat_field_unquoted = re.compile(
+        r'(?:UNDER\s+)?FIELD\s+(\d{2}[A-Z]?)\b[^\n]{0,80}?'
+        r'(?:SHOULD|SHALL|NOW|TO)\s+READ\s+AS\s+'
+        r'([^\n\r\'"]{1,200}?)'                                # new value (no quotes, no newline)
+        r'\s+(?:I\s*/\s*O|INSTEAD\s+OF)\s+'
+        r'([^\n\r\'"]{1,200}?)'                                # old value
+        r'(?=\s*(?:[\n\r]|$|REGARDS\b|THANKS\b))',
+        re.IGNORECASE,
+    )
+    for m in pat_field_unquoted.finditer(norm):
+        raw_tag = m.group(1).upper().strip()
+        new_val = m.group(2).strip().rstrip('.,;')
+        old_val = m.group(3).strip().rstrip('.,;')
+        canon_tag = _MT799_TAG_TO_FIELD.get(raw_tag, raw_tag)
+        _record(canon_tag, new_val, old_val)
+
+    # ── Pattern 2: "<TAG>: <label> SHOULD READ AS X I/O Y" ──
+    # Same dual quoted/unquoted handling.
+    pat_colon_quoted = re.compile(
+        r'(?:^|\n)\s*(\d{2}[A-Z]?)\s*:[^\n]{0,80}?'
+        r'(?:SHOULD|SHALL|NOW|TO)\s+READ\s+AS'
+        r'[\s\n\r]*'
+        r'[\'"]\s*([^\'"\n\r]+?)\s*[\'"]'
+        r'\s*(?:I\s*/\s*O|INSTEAD\s+OF)\s*'
+        r'[\'"]\s*([^\'"\n\r]+?)\s*[\'"]',
+        re.IGNORECASE,
+    )
+    for m in pat_colon_quoted.finditer(norm):
+        raw_tag = m.group(1).upper().strip()
+        new_val = m.group(2).strip()
+        old_val = m.group(3).strip()
+        canon_tag = _MT799_TAG_TO_FIELD.get(raw_tag, raw_tag)
+        _record(canon_tag, new_val, old_val)
+
+    pat_colon_unquoted = re.compile(
+        r'(?:^|\n)\s*(\d{2}[A-Z]?)\s*:[^\n]{0,80}?'
+        r'(?:SHOULD|SHALL|NOW|TO)\s+READ\s+AS\s+'
+        r'([^\n\r\'"]{1,200}?)'
+        r'\s+(?:I\s*/\s*O|INSTEAD\s+OF)\s+'
+        r'([^\n\r\'"]{1,200}?)'
+        r'(?=\s*(?:[\n\r]|$|REGARDS\b|THANKS\b))',
+        re.IGNORECASE,
+    )
+    for m in pat_colon_unquoted.finditer(norm):
+        raw_tag = m.group(1).upper().strip()
+        new_val = m.group(2).strip().rstrip('.,;')
+        old_val = m.group(3).strip().rstrip('.,;')
+        canon_tag = _MT799_TAG_TO_FIELD.get(raw_tag, raw_tag)
+        _record(canon_tag, new_val, old_val)
 
     # Pattern 3: amount-only "AMOUNT INCREASED/DECREASED BY <CCY> <NUM>"
     if '32B' not in seen_tags:
         m = re.search(
             r'(?:AMOUNT|VALUE)\s+(INCREASED|DECREASED|REDUCED|RAISED)\s+BY\s+'
             r'([A-Z]{3})\s*([\d,]+(?:\.\d+)?)',
-            text, re.IGNORECASE,
+            norm, re.IGNORECASE,
         )
         if m:
             op = m.group(1).upper()
@@ -355,9 +412,10 @@ def _extract_mt799_amendment_fields(
     if '47A' not in seen_tags:
         m = re.search(
             r'PLEASE\s+(?:AMEND|CHANGE|CORRECT|REPLACE)\s+(.{5,80}?)\s+'
-            r'TO\s+READ\s+AS\s+["\']?(.+?)["\']?\s*'
-            r'(?:I\s*/\s*O|INSTEAD\s+OF)\s+["\']?(.+?)["\']?(?:\s*[\.\n]|$)',
-            text, re.IGNORECASE,
+            r'TO\s+READ\s+AS[\s\n\r]*["\']?\s*([^\'"\n\r]+?)\s*["\']?\s*'
+            r'(?:I\s*/\s*O|INSTEAD\s+OF)\s*["\']?\s*([^\'"\n\r]+?)\s*["\']?'
+            r'(?=\s*(?:[\.\n\r]|$))',
+            norm, re.IGNORECASE,
         )
         if m:
             desc = m.group(1).strip()
@@ -601,6 +659,59 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
         if old_text in result:
             result = result.replace(old_text, new_text)
 
+    # F1b: bare "TO READ AS 'new' INSTEAD OF 'old'" (no clause-number prefix).
+    # Produced by _extract_mt799_amendment_fields() for MT799 free-format
+    # rate / value corrections like:
+    #     UNDER FIELD 45A RATE SHOULD READ AS
+    #     ''EUR 141,396.00'' I/O ''EUR 141,396.56''
+    # The parser converts this to: TO READ AS 'EUR 141,396.00' INSTEAD OF 'EUR 141,396.56'
+    # which we apply as a targeted substring replace inside the base field
+    # — leaving the rest of the goods description intact.
+    #
+    # Real-world wrinkle: the amendment usually quotes the value with its
+    # currency prefix ("EUR 141,396.56"), but the base F45A may have the
+    # currency on a different line ("EURO\n141,396.56"). So an exact-match
+    # replace fails. We try several candidate forms in priority order:
+    #   1. Exact text from the amendment
+    #   2. Without the leading currency code (3-letter or "EURO" word)
+    #   3. Just the bare numeric value (digits + grouping + decimals)
+    # The first form that's actually present in the base field wins.
+    def _replace_old_with_new(base: str, old_text: str, new_text: str) -> str:
+        if not old_text:
+            return base
+        candidates_old = [old_text]
+        candidates_new = [new_text]
+        # Strip leading currency code (USD, EUR, GBP, etc. or "EURO")
+        _strip_ccy = re.compile(
+            r'^(?:[A-Z]{3}|EURO|DOLLAR|POUND|YEN)\s+',
+            re.IGNORECASE,
+        )
+        _bare_old = _strip_ccy.sub('', old_text).strip()
+        _bare_new = _strip_ccy.sub('', new_text).strip()
+        if _bare_old != old_text:
+            candidates_old.append(_bare_old)
+            candidates_new.append(_bare_new)
+        # Just the numeric part — last resort, only when both old and new
+        # parse as numbers. This catches "EUR 141,396.56" → "141,396.56".
+        _num_re = re.compile(r'[\d,]+(?:\.\d+)?')
+        _num_old = _num_re.search(old_text)
+        _num_new = _num_re.search(new_text)
+        if _num_old and _num_new:
+            candidates_old.append(_num_old.group(0))
+            candidates_new.append(_num_new.group(0))
+        for _co, _cn in zip(candidates_old, candidates_new):
+            if _co and _co in base:
+                return base.replace(_co, _cn)
+        return base
+
+    for m in re.finditer(
+        r'TO\s+READ\s+AS\s+' + Q + r'(.+?)' + Q + r'\s+INSTEAD\s+OF\s+' + Q + r'(.+?)' + Q,
+        amd, re.IGNORECASE | re.DOTALL,
+    ):
+        new_text = m.group(1).strip()
+        old_text = m.group(2).strip()
+        result = _replace_old_with_new(result, old_text, new_text)
+
     # F2a: CLAUSE NO. X TO READ AS "new" INSTEAD OF "old"
     for m in re.finditer(r'C\w{1,5}E\s+NO\.?\s*(\d+)\s+(?:NOW\s+)?TO\s+READ\s+AS\s+' + Q + r'(.+?)' + Q + r'\s+INSTEAD\s+OF\s+' + Q + r'(.+?)' + Q,
                          amd, re.IGNORECASE | re.DOTALL):
@@ -727,6 +838,54 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
 
 # == Amendment application ====================================================
 
+def _strip_field_sub_labels(tag: str, value: str) -> str:
+    """
+    Strip the full chain of SWIFT sub-labels that bleed into a field value
+    after the main label has been removed. Used by both the base-field
+    cleanup loop AND _apply_amendment so that amendment values get the
+    same treatment as base values.
+
+    Handles patterns like:
+        - Party Identifier - Identifier Code
+        Identifier Code:
+        UNILPKKA
+        UNITED BANK LIMITED
+        KARACHI PK
+    by stripping "- Party Identifier - Identifier Code" and "Identifier Code:"
+    while preserving the actual SWIFT BIC + bank name lines below.
+    """
+    if not value:
+        return value
+    v = value
+    # "- Party Identifier - Identifier Code"
+    v = re.sub(r'-?\s*Party\s+Identifier\s*-?\s*Identifier\s*(?:Code)?\s*\n?',
+               '', v, flags=re.IGNORECASE).strip()
+    # leading "- "
+    v = re.sub(r'^-\s+', '', v).strip()
+    # "Identifier Code:" / "Identifier:"
+    v = re.sub(r'Identifier\s+Code:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'^Identifier:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    # "Name and Address:" header rows
+    v = re.sub(r'^Name\s+and\s+Address:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'-\s*Name\s+and\s+Address\s*-?\s*(?:Name\s+and\s+Address)?:?\s*[\n\r]*',
+               '', v, flags=re.IGNORECASE).strip()
+    # Fusion "... By ..." availability prefix
+    v = re.sub(r'\.{2,}\s*By\s*\.{2,}\s*-?\s*(?:Name\s+and\s+Address\s*-?\s*)*:?\s*[\n\r]*',
+               '', v, flags=re.IGNORECASE).strip()
+    # Drawee / Applicant Bank "- Party ... Code" sub-headers
+    v = re.sub(r'^Drawee\s*-?\s*Party.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'^Applicant\s+Bank\s*-?\s*Party.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'^Issuing\s+Bank\s*-?\s*Party.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'^Reimbursing\s+Bank\s*-?\s*Party.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'^[\'"]?Advise\s+Through[\'"]?\s+Bank\s*-?\s*Party.*?Code\s*\n?',
+               '', v, flags=re.IGNORECASE).strip()
+    # "Available With ... By ... Code" prefix (used by 41A/41D)
+    v = re.sub(r'^Available\s+With.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    # "Applicable Rules" prefix (40E)
+    v = re.sub(r'^Applicable\s+Rules:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    return v
+
+
 def _apply_amendment(
     base_fields: Dict[str, str],
     amendment_fields: List[SwiftField],
@@ -801,7 +960,18 @@ def _apply_amendment(
         amd_val = sf.value.strip()
         # Normalize double slashes: //REPALL// -> /REPALL/
         amd_val = re.sub(r'//', '/', amd_val)
-        if re.search(r'/ADD/|/DEL/|/DELETE/|/REPALL/|PLEASE\s+READ', amd_val, re.IGNORECASE) or re.search(r'(?:^|\n)\+?\s*\)', amd_val):
+        # ALSO trigger the operation path for the bare "TO READ AS 'X' INSTEAD
+        # OF 'Y'" form that the MT799 free-format parser produces. Without
+        # this, an MT799 amendment would fall into the wholesale-replace
+        # branch below and clobber the entire base field with the literal
+        # instruction string.
+        _is_to_read_as = bool(re.search(
+            r'TO\s+READ\s+AS\b.*?\bINSTEAD\s+OF\b',
+            amd_val, re.IGNORECASE | re.DOTALL,
+        ))
+        if (re.search(r'/ADD/|/DEL/|/DELETE/|/REPALL/|PLEASE\s+READ', amd_val, re.IGNORECASE)
+                or re.search(r'(?:^|\n)\+?\s*\)', amd_val)
+                or _is_to_read_as):
             # This is an amendment instruction — apply operations to base value
             new_val = _apply_text_amendment(old_val, amd_val)
             base_fields[actual_tag] = new_val
@@ -824,6 +994,12 @@ def _apply_amendment(
                 r'Port\s+of\s+Loading.*?Departure|Port\s+of\s+Discharge.*?Destination|'
                 r'Beneficiary|Applicant|Charges)\s*[\n\r]*',
                 '', amd_val, flags=re.IGNORECASE).strip()
+
+            # Run the same sub-label cleanup the base-field loop uses,
+            # so amendment values for fields like F52A (Issuing Bank) end
+            # up as just "UNILPKKA / UNITED BANK LIMITED / KARACHI PK"
+            # instead of the full label chain.
+            clean_val = _strip_field_sub_labels(actual_tag, clean_val)
 
             base_fields[actual_tag] = clean_val if clean_val else amd_val
             if old_val != base_fields[actual_tag]:
@@ -1331,33 +1507,45 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             src_mt_label = _get_packet_field(amd_pkt, 'source_mt', '') or 'MT707'
 
             if is_799:
-                # MT799 free-format amendment: use the free-format parser FIRST,
-                # since the message has no F-tag / Alliance-tag structure.
+                # MT799 free-format amendment: use the free-format parser ONLY.
+                # We must NOT fall back to _extract_swift_fields() on a 799 page
+                # because that would extract F20/F79 (the narrative tag) and
+                # apply them as regular consolidated fields, polluting the LC.
+                # If the parser can't recognise the amendment instructions, we
+                # leave amd_fields empty and skip the amendment — better to
+                # under-apply than to corrupt the consolidated LC.
                 amd_fields = _extract_mt799_amendment_fields(
                     amd_text, source_page=amd_page, source_mt=src_mt_label or 'MT799',
                 )
-                _progress(
-                    f"    Amendment {i + 1}: MT799 free-format → "
-                    f"{len(amd_fields)} amendment field(s) from packet {pkt_id}"
-                )
-                # If the regex parser found nothing, try the structured extractor
-                # then VLM as a last resort.
+                # Defensive filter: drop any tag that should NEVER come from a
+                # 799 amendment regardless of source. F79 (narrative), F20
+                # (transaction reference), F21 (related reference), F23
+                # (issuing bank reference) are 799-specific routing fields,
+                # not LC fields.
+                amd_fields = [f for f in amd_fields if f.tag not in ('79', '20', '21', '23')]
                 if not amd_fields:
-                    amd_fields = _extract_swift_fields(
-                        amd_text, source_page=amd_page, source_mt=src_mt_label or 'MT799',
+                    _progress(
+                        f"    Amendment {i + 1}: MT799 free-format from packet {pkt_id} "
+                        f"— parser found 0 amendment instructions; skipping (no fields applied)"
+                    )
+                else:
+                    _progress(
+                        f"    Amendment {i + 1}: MT799 free-format → "
+                        f"{len(amd_fields)} amendment field(s) from packet {pkt_id}: "
+                        f"{[f.tag for f in amd_fields]}"
                     )
             else:
                 amd_fields = _extract_swift_fields(amd_text, source_page=amd_page, source_mt='MT707')
-
-            # VLM fallback for amendments
-            if len(amd_fields) < 2:
-                try:
-                    vlm_amd = _extract_fields_vlm(amd_pkt, amd_text, amd_page, _progress)
-                    if len(vlm_amd) > len(amd_fields):
-                        amd_fields = vlm_amd
-                except Exception:
-                    pass
-            _progress(f"    Amendment {i + 1}: {len(amd_fields)} fields from packet {pkt_id}")
+                # VLM fallback for STRUCTURED amendments only — never for 799
+                # (the VLM has no notion of "should read as / I/O" semantics).
+                if len(amd_fields) < 2:
+                    try:
+                        vlm_amd = _extract_fields_vlm(amd_pkt, amd_text, amd_page, _progress)
+                        if len(vlm_amd) > len(amd_fields):
+                            amd_fields = vlm_amd
+                    except Exception:
+                        pass
+                _progress(f"    Amendment {i + 1}: {len(amd_fields)} fields from packet {pkt_id}")
 
             record = _apply_amendment(
                 final_lc.consolidated_fields,
