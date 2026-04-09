@@ -188,6 +188,94 @@ RULES FOR CREATING CONDITIONS
    - One checking X on Bill of Lading
    - One checking X on Commercial Invoice
    NEVER skip a document. If the clause says "AND", create conditions for EVERY document listed.
+
+═══════════════════════════════════════════════════════════════
+DISTRIBUTIVE CONJUNCTION RULE — READ THIS BEFORE GENERATING CONDITIONS
+═══════════════════════════════════════════════════════════════
+When a clause has the form:
+    "[Subject1] AND [Subject2] should appear on [Target1] AND [Target2]"
+you MUST generate ALL CROSS-PRODUCT combinations — Subjects × Targets.
+Do NOT generate fewer just because some combinations seem unusual in real-world
+practice (e.g. "H.S. codes don't normally go on a BL"). The CLAUSE is the
+source of truth, not your real-world prior knowledge.
+
+WORKED EXAMPLE — STUDY THIS:
+
+Clause: "L/C NUMBER SHOULD APPEAR ON INVOICES AND DRAFT AND H.S. CODE NO.
+         1205.1000 AND IMPORTER'S NTN NO. 2128133-5 SHOULD APPEAR ON
+         BILL OF LADING AND INVOICES."
+
+This is TWO sub-sentences joined by AND:
+  Sub-sentence 1:  L/C number → [Invoices, Draft]               (1 subject × 2 targets = 2 conditions)
+  Sub-sentence 2:  [H.S. Code, NTN] → [Bill of Lading, Invoices] (2 subjects × 2 targets = 4 conditions)
+
+You MUST produce 2 + 4 = 6 conditions:
+  1. L/C number             → Commercial Invoice
+  2. L/C number             → Draft
+  3. H.S. Code 1205.1000    → Bill of Lading      ← do NOT skip this even though
+                                                     H.S. codes are unusual on a BL.
+                                                     The clause requires it.
+  4. H.S. Code 1205.1000    → Commercial Invoice
+  5. NTN 2128133-5          → Bill of Lading
+  6. NTN 2128133-5          → Commercial Invoice
+
+ANOTHER EXAMPLE:
+Clause: "Beneficiary name and address must appear on the BL, Invoice and Packing List."
+  Subjects: [Beneficiary name, Beneficiary address]
+  Targets:  [Bill of Lading, Commercial Invoice, Packing List]
+You MUST produce 2 × 3 = 6 conditions, one per (subject, target) pair.
+
+SELF-CHECK BEFORE RETURNING:
+- For each sub-sentence, count len(subjects) × len(targets) and call this K.
+- The total number of conditions you emit MUST equal the sum of K across
+  all sub-sentences.
+- If your count doesn't match, you missed a combination — go back and add it.
+- NEVER return fewer conditions than the math demands.
+
+═══════════════════════════════════════════════════════════════
+ROUTING RULES — WHICH DOCUMENT TO CHECK
+═══════════════════════════════════════════════════════════════
+The "document_to_check" must be the document where the EVIDENCE for the
+check lives — NOT necessarily the document the clause is "about".
+
+  • For "STALE BL NOT ACCEPTABLE" / "BL must not be stale" / "DOCUMENTS
+    MUST NOT BE STALE":
+    → document_to_check = "Documentary Remittance" (or "Cover Schedule")
+    → Reason: "stale" means presentation_date - shipment_date > F48 days.
+      The presentation date lives ONLY on the Documentary Remittance /
+      Cover Schedule. The BL has the shipment date but cannot tell you
+      whether the BL is stale on its own. Routing this check to the BL
+      forces the verifier to hallucinate a comparison against today's
+      date, which is wrong.
+    → condition_text: "Documents must be presented within F48 days of BL
+      shipment date — if presentation is later, the BL is stale (per UCP
+      600 Art 14(c))"
+    → look_for_value: "presentation date on Documentary Remittance /
+      Cover Schedule"
+
+  • For "DOCUMENTS PRESENTED LATER THAN N DAYS NOT ACCEPTABLE" /
+    "DOCUMENTS PRESENTED AFTER LC EXPIRY":
+    → document_to_check = "Documentary Remittance"
+    → Same reason: presentation date lives there.
+
+  • For "SHIPPED ON/BEFORE [date]" / "LATEST SHIPMENT":
+    → document_to_check = "Bill of Lading"
+    → Reason: shipment date lives on the BL (CLEAN ON BOARD / SHIPPED
+      ON BOARD notation).
+
+  • For "DOCUMENTS DATED ON OR AFTER LC ISSUE DATE":
+    → document_to_check = the document being checked (Commercial Invoice,
+      BL, etc.) — the document's own issue date is on the document itself.
+
+  • For "[NUMBER/CODE] MUST APPEAR ON [DOCUMENT]":
+    → document_to_check = the named target document (one row per target).
+
+GENERAL PRINCIPLE:
+"Where does the evidence live?" — that's the document to check, even if
+the clause is grammatically about a different document.
+
+═══════════════════════════════════════════════════════════════
+
 3. condition_text: clear, human-readable description of what to verify
 4. document_to_check: the exact document type (e.g., "Bill of Lading", "Commercial Invoice")
 5. look_for_value: the specific value, text, or pattern to search for
