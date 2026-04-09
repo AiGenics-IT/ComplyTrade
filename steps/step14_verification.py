@@ -649,13 +649,21 @@ def _call_vlm(
         elapsed = time.time() - start
 
         if resp.status_code != 200:
+            # P62: surface the actual vLLM error body so we can diagnose
+            # 400s (context overflow), 413s (payload too large), etc.
+            # without having to grep server logs.
+            err_body = ""
+            try:
+                err_body = (resp.text or "")[:300].replace("\n", " ").replace("\r", " ")
+            except Exception:
+                pass
             return {
                 "row_id": row_id,
                 "findings": "Nil",
-                "result": f"VLM error HTTP {resp.status_code}",
+                "result": f"VLM error HTTP {resp.status_code}: {err_body}" if err_body else f"VLM error HTTP {resp.status_code}",
                 "compliance": "review",
                 "confidence": 0.0,
-                "reasoning": f"VLM returned HTTP {resp.status_code}",
+                "reasoning": f"VLM returned HTTP {resp.status_code}: {err_body}" if err_body else f"VLM returned HTTP {resp.status_code}",
                 "elapsed": elapsed,
             }
 
