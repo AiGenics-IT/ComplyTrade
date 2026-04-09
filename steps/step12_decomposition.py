@@ -170,6 +170,23 @@ DOCUMENT IDENTIFICATION:
   • "SHIPMENT ADVICE" or "BENEFICIARY SHIPMENT ADVICE" = document type "Shipment Advice"
   • "CERTIFICATE FROM SHIPPING COMPANY OR THEIR AUTHORIZED AGENTS" = "Shipping Company Certificate"
   • "INSURANCE POLICY" or "INSURANCE CERTIFICATE" = "Insurance Policy/Certificate"
+  • SYNONYMS — these all mean the SAME document; always use "Shipping
+    Company Certificate" as document_to_check, never "Agent's Certificate":
+      - "Shipping Company Certificate"
+      - "Shipping Certificate"
+      - "Agent's Certificate" / "Agents Certificate" / "Agent Certificate"
+      - "Shipping Agent's Certificate" / "Shipping Agent Certificate"
+      - "Carrier's Certificate" / "Carrier Certificate"
+      - "Certificate from Shipping Company"
+      - "Certificate from Shipping Company or Their Authorized Agents"
+  • SYNONYMS — these all mean the SAME document; always use "Documentary
+    Remittance" as document_to_check:
+      - "Documentary Remittance"
+      - "Covering Letter" / "Covering Schedule" / "Cover Schedule"
+      - "Export DC Document Presentation Schedule"
+      - "Export DC Presentation Schedule"
+      - "Document Presentation Schedule" / "Presentation Schedule"
+      - "Schedule of Documents" / "Letter of Transmittal"
 
 CLAUSE STRUCTURE — READ CAREFULLY:
   • "INSURANCE COVERED BY APPLICANT, BENEFICIARY SHIPMENT ADVICE QUOTING [items] SHOULD BE SENT TO [address]"
@@ -240,23 +257,30 @@ check lives — NOT necessarily the document the clause is "about".
 
   • For "STALE BL NOT ACCEPTABLE" / "BL must not be stale" / "DOCUMENTS
     MUST NOT BE STALE":
-    → document_to_check = "Documentary Remittance" (or "Cover Schedule")
+    → document_to_check = "Documentary Remittance"
     → Reason: "stale" means presentation_date - shipment_date > F48 days.
-      The presentation date lives ONLY on the Documentary Remittance /
-      Cover Schedule. The BL has the shipment date but cannot tell you
-      whether the BL is stale on its own. Routing this check to the BL
-      forces the verifier to hallucinate a comparison against today's
-      date, which is wrong.
+      The presentation date lives ONLY on the Documentary Remittance.
+      The BL has the shipment date but cannot tell you whether the BL is
+      stale on its own. Routing this check to the BL forces the verifier
+      to hallucinate a comparison against today's date, which is wrong.
     → condition_text: "Documents must be presented within F48 days of BL
       shipment date — if presentation is later, the BL is stale (per UCP
       600 Art 14(c))"
-    → look_for_value: "presentation date on Documentary Remittance /
-      Cover Schedule"
+    → look_for_value: "presentation date on Documentary Remittance"
+    → SYNONYMS — these all refer to the SAME document, always use
+      "Documentary Remittance" as document_to_check:
+        - "Documentary Remittance"
+        - "Covering Letter" / "Covering Schedule" / "Cover Schedule"
+        - "Export DC Document Presentation Schedule"
+        - "Export DC Presentation Schedule"
+        - "Document Presentation Schedule"
+        - "Schedule of Documents" / "Letter of Transmittal"
 
   • For "DOCUMENTS PRESENTED LATER THAN N DAYS NOT ACCEPTABLE" /
     "DOCUMENTS PRESENTED AFTER LC EXPIRY":
     → document_to_check = "Documentary Remittance"
     → Same reason: presentation date lives there.
+    → Same synonym list as above applies.
 
   • For "SHIPPED ON/BEFORE [date]" / "LATEST SHIPMENT":
     → document_to_check = "Bill of Lading"

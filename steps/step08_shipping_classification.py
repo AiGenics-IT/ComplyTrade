@@ -314,6 +314,16 @@ _DOC_INDICATORS = {
     "Documentary Remittance": [
         r'DOCUMENTARY\s+REMITTANCE',
         r'COVERING\s+(?:LETTER|SCHEDULE)',
+        # P64: "Export DC Document Presentation Schedule" and its variants
+        # are the same document as Documentary Remittance — the bank's
+        # covering schedule sent with presented documents under an LC.
+        r'EXPORT\s+DC\s+DOCUMENT\s+PRESENTATION\s+SCHEDULE',
+        r'EXPORT\s+DC\s+PRESENTATION\s+SCHEDULE',
+        r'DOCUMENT\s+PRESENTATION\s+SCHEDULE',
+        r'(?<!NO\s)PRESENTATION\s+SCHEDULE',
+        r'DC\s+PRESENTATION\s+SCHEDULE',
+        r'EXPORT\s+(?:LC|L/C|DC|D/C)\s+PRESENTATION',
+        r'SCHEDULE\s+OF\s+PRESENTATION',
         r'ENCLOSED\s+HEREWITH',
         r'WE\s+(?:ARE\s+)?ENCLOS(?:E|ING|URE)',
         r'DOCUMENTS?\s+ATTACHED',

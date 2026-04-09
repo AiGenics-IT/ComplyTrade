@@ -102,6 +102,16 @@ DOC_TYPE_ALIASES = {
     "documentary remittance": [
         "documentary remittance", "covering letter", "remittance letter",
         "schedule of documents", "letter of transmittal", "covering schedule",
+        # P64: "Export DC Document Presentation Schedule" is the same
+        # document as Documentary Remittance -- it is the covering schedule
+        # the beneficiary's bank sends with the presented documents.
+        "export dc document presentation schedule",
+        "export dc presentation schedule",
+        "document presentation schedule",
+        "presentation schedule",
+        "dc presentation schedule",
+        "export presentation schedule",
+        "schedule of presentation",
     ],
     "inspection certificate": [
         "inspection certificate", "survey report", "inspection report",
@@ -124,6 +134,17 @@ DOC_TYPE_ALIASES = {
     "shipping company certificate": [
         "shipping company certificate", "shipping certificate",
         "agent certificate", "agents certificate",
+        # P64: Agent's Certificate is the same document as Shipping Company
+        # Certificate — UCP/ISBP treats a certificate signed by a shipping
+        # company OR by its authorised agent as the same instrument.
+        "agent's certificate", "agents' certificate",
+        "shipping agent certificate", "shipping agent's certificate",
+        "carrier's certificate", "carriers certificate",
+        "carrier certificate",
+        "certificate from shipping company",
+        "certificate from shipping agent",
+        "certificate from carrier",
+        "certificate of shipping company",
     ],
     "surveyor certificate": [
         "surveyor certificate", "survey certificate", "surveyor report",
