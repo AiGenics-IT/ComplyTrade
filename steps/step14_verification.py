@@ -439,6 +439,64 @@ def _build_f47a_context(step06_result: dict) -> str:
     return "\n".join(parts) if parts else "(No F47A additional conditions in this LC)"
 
 
+def _sanitize_lc_field_value(field_tag: str, val: str) -> str:
+    """
+    P64: Verification-layer sanitizer for consolidated LC field values.
+
+    Some upstream consolidations leave residual content from neighbouring
+    SWIFT fields glued onto the start or end of a value (most commonly
+    32B Amount text bleeding into 41D Available With, or an "F41D:" /
+    "F32B:" label glued onto the value itself). Cleaning this at the
+    verification read site keeps the report and the VLM prompt clean
+    without disturbing the consolidator.
+    """
+    if not val:
+        return ""
+    s = str(val)
+
+    # 1) Remove any leading currency+amount block that belongs to 32B
+    #    when it appears glued onto a non-amount field (anything other
+    #    than 32B/32A/32D/33B itself).
+    if field_tag not in ("32A", "32B", "32D", "33B"):
+        # e.g. "USD US DOLLAR 97216,00 #97,216.00F41D: ..."
+        _amt_prefix = re.match(
+            r'^\s*(?:USD|EUR|GBP|JPY|CHF|AUD|CAD|CNY|HKD|SGD|INR|PKR|AED|SAR)'
+            r'(?:\s+(?:US\s+)?(?:DOLLAR|DOLLARS|EURO|POUND|POUNDS|YEN|FRANC|FRANCS))?'
+            r'\s*[\d.,#]+(?:\s*[#]?[\d.,]+)*\s*',
+            s, flags=re.IGNORECASE,
+        )
+        if _amt_prefix:
+            s = s[_amt_prefix.end():]
+
+    # 2) Strip a leading "F<tag>:" or "<tag>:" label if it survived consolidation
+    s = re.sub(rf'^\s*F?{re.escape(field_tag)}\s*[:\-]\s*', '', s, flags=re.IGNORECASE)
+
+    # 3) Strip the SWIFT human-readable sub-labels that sometimes get glued in
+    #    e.g. "Available With... By... - Name and Address - Name and Address: ANY BANK..."
+    _sublabel_patterns = [
+        r'^\s*Available\s+With\.{0,3}\s*By\.{0,3}\s*[-–—]?\s*',
+        r'^\s*Name\s+and\s+Address\s*[-–—:]\s*',
+        r'^\s*\(?\s*Name\s+and\s+Address\s*\)?\s*[-–—:]\s*',
+        r'^\s*Code\s*[-–—:]\s*',
+    ]
+    _changed = True
+    while _changed:
+        _changed = False
+        for _p in _sublabel_patterns:
+            _new = re.sub(_p, '', s, flags=re.IGNORECASE)
+            if _new != s:
+                s = _new
+                _changed = True
+
+    # 4) If a downstream F-tag header is glued in the middle (e.g. value
+    #    contains "...F42A:..." for a 41D field), cut at that boundary.
+    _other_tag = re.search(r'\bF?(?:32[ABD]|33B|39[ABC]|40[AE]|41[AD]|42[ACDM]|43[PT]|44[ABCDEF]|45[AB]|46[AB]|47[AB]|49|50|51[AD]|52[AD]|53[AD]|57[ABCD]|58[AD]|59[A]?|71[ABD]|72|78)\s*:', s)
+    if _other_tag and _other_tag.start() > 0:
+        s = s[:_other_tag.start()]
+
+    return s.strip(' \t\r\n.-:;|#')
+
+
 def _get_lc_field_value(step06_result: dict, field_tag: str) -> str:
     """Get a specific LC field value by tag (e.g. '31D', '44E')."""
     final_lc = step06_result.get("final_lc", step06_result)
@@ -449,13 +507,13 @@ def _get_lc_field_value(step06_result: dict, field_tag: str) -> str:
     if isinstance(val, dict):
         val = val.get("value", str(val))
     if val:
-        return str(val).strip()
+        return _sanitize_lc_field_value(field_tag, str(val))
 
     # Try with 'F' prefix
     val = fields.get(f"F{field_tag}", "")
     if isinstance(val, dict):
         val = val.get("value", str(val))
-    return str(val).strip() if val else ""
+    return _sanitize_lc_field_value(field_tag, str(val)) if val else ""
 
 
 # ---------------------------------------------------------------------------
