@@ -1815,6 +1815,85 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 _cf[_dt_tag] = f"{_formatted}\n{_rest}".strip() if _rest else _formatted
                 _progress(f"  F{_dt_tag}: formatted date {_raw} → {_formatted}")
 
+    # 1b. P73: SWIFT continuation marker resolution.
+    #
+    # Some Fusion / Alliance exports break a long field across two physical
+    # SWIFT fields and stitch them with "(CONT FROM FIELD XX)" markers.
+    # Example seen in the wild:
+    #   F48: "Period for Presentation in Days
+    #         Days: 21
+    #         Narrative: /(CONT FROM FIELD 47A)"
+    #   F47A: "(CONT FROM FIELD 48)
+    #          DAYS FROM DATE OF SHIPMENT BUT WITHIN THE VALIDITY OF LC
+    #          ...real F47A clauses..."
+    #
+    # The continuation chunk in F47A actually belongs to F48, not F47A.
+    # This pre-pass walks every field, finds "(CONT FROM FIELD XX)" markers,
+    # extracts the chunk that belongs to field XX, appends it to XX, and
+    # removes it from the current field. After this pass the regular
+    # cross-reference resolver and the per-field cleanup see clean values.
+    #
+    # The chunk boundary is one of:
+    #   • a blank line followed by an UPPERCASE label like "F47A:" / "47A:"
+    #   • a blank line followed by a tag-like prefix
+    #   • a numbered clause start ("1.", "2)" etc.) at column 0
+    #   • end of value
+    _cont_marker_re = re.compile(
+        r'(?P<lead>(?:^|\n)\s*[/\\]?\s*)'
+        r'\(\s*CONT(?:INUED|INUATION)?\s+FROM\s+FIELD\s+(?P<src>\d{2}[A-Z]?)\s*\)\s*'
+        r'(?P<rest>.*?)'
+        r'(?=\n\s*(?:\d+[\.\)]\s|F?\d{2}[A-Z]?\s*:|[A-Z]{4,}\s*:)|\Z)',
+        re.IGNORECASE | re.DOTALL,
+    )
+    _cont_pulled: Dict[str, list] = {}
+    for _tag in list(_cf.keys()):
+        if _tag.startswith('_'):
+            continue
+        _val = _cf.get(_tag, '')
+        if not isinstance(_val, str) or 'CONT' not in _val.upper():
+            continue
+        _new_val = _val
+        _had_match = False
+        # Iterate matches from end to start so the indexes stay valid as
+        # we slice them out.
+        _matches = list(_cont_marker_re.finditer(_val))
+        for _m in reversed(_matches):
+            _src_tag = _m.group('src').upper()
+            _chunk = (_m.group('rest') or '').strip()
+            # Skip the empty self-reference seen in F48 ("Narrative: /(CONT
+            # FROM FIELD 47A)") — there's no payload to move, the payload
+            # lives in F47A and will be handled when we process F47A.
+            if not _chunk:
+                _new_val = (_new_val[:_m.start()] + _new_val[_m.end():])
+                _had_match = True
+                continue
+            # Don't move content into itself.
+            if _src_tag == _tag.upper():
+                continue
+            _cont_pulled.setdefault(_src_tag, []).append(_chunk)
+            _new_val = (_new_val[:_m.start()] + _new_val[_m.end():])
+            _had_match = True
+        if _had_match:
+            _cf[_tag] = re.sub(r'\n{3,}', '\n\n', _new_val).strip()
+    # Append the pulled continuation chunks into their target fields.
+    for _src_tag, _chunks in _cont_pulled.items():
+        _existing = _cf.get(_src_tag, '') or ''
+        # Strip a stray "(CONT FROM FIELD XX)" / "/(CONT FROM FIELD XX)"
+        # back-reference left in the target so we don't have a marker
+        # next to the merged content.
+        _existing = re.sub(
+            r'(?:^|\n)\s*[/\\]?\s*\(\s*CONT(?:INUED|INUATION)?\s+FROM\s+FIELD\s+\d{2}[A-Z]?\s*\)\s*',
+            '\n', _existing, flags=re.IGNORECASE,
+        ).strip()
+        _merged_chunks = '\n'.join(_chunks).strip()
+        if _existing:
+            _cf[_src_tag] = f"{_existing}\n{_merged_chunks}".strip()
+        else:
+            _cf[_src_tag] = _merged_chunks
+        _progress(f"  F{_src_tag}: merged continuation chunk(s) "
+                  f"({sum(len(c) for c in _chunks)} chars from "
+                  f"{len(_chunks)} marker(s))")
+
     # 2. Resolve cross-references
     # Pattern A: "++++SEE FIELD 47A++++" → look up value from 47A (marker-based)
     # Pattern B: "REFER CLAUSE NO.10 OF FIELD 47A" → look up clause 10 from 47A
