@@ -1204,6 +1204,39 @@ def _build_tasks(
             })
             continue
 
+        # P76: Auto-PASS physical packing instructions —
+        # "COPY OF X SHOULD BE PLACED INSIDE/IN ANY OF THE CARTON/DRUM/CASE/BOX",
+        # "COPY OF X TO BE INSERTED INSIDE THE PACKING", etc.
+        # The bank cannot verify the physical interior of a carton from
+        # the document text. The auditable obligation is that a COPY of
+        # the named document was prepared. If the named document exists
+        # in the submission, the requirement is satisfied — mark PASS.
+        # If it does not exist, the missing-document check elsewhere in
+        # the same clause already produces the FAIL.
+        _phys_pack_re = re.compile(
+            r'(?:COPY|COPIES|ONE\s+COPY|A\s+COPY|DUPLICATE)[^.\n]{0,80}'
+            r'(?:SHOULD\s+BE|MUST\s+BE|TO\s+BE|SHALL\s+BE|IS\s+TO\s+BE)?'
+            r'[^.\n]{0,40}'
+            r'(?:PLACED|INSERTED|ENCLOSED|KEPT|PACKED|PUT)'
+            r'[^.\n]{0,30}'
+            r'(?:INSIDE|IN|WITHIN|INTO)'
+            r'[^.\n]{0,30}'
+            r'(?:ANY\s+OF\s+(?:THE\s+)?)?'
+            r'(?:CARTON|DRUM|CASE|BOX|CRATE|PACKAGE|PACKING|CONTAINER)',
+            re.IGNORECASE,
+        )
+        if _phys_pack_re.search(condition_text):
+            _set(row, "compliance", "PASS")
+            _set(row, "result", "Physical packing instruction — copy prepared by beneficiary, placement inside carton/drum cannot be verified from documents (UCP 600 Art 14(h))")
+            _set(row, "findings", "Physical packing requirement — beneficiary obligation, not document-verifiable")
+            _set(row, "confidence", 1.0)
+            tasks.append({
+                "row": row,
+                "skip": True,
+                "reason": "physical_packing_auto_pass",
+            })
+            continue
+
         # P66: Defensive insurance filter — even if step12 slipped and asked
         # the verifier to check an Insurance Policy/Certificate when the LC
         # clearly says insurance is the applicant's responsibility, drop the
@@ -1266,6 +1299,39 @@ def _build_tasks(
             # Fallback: use document_checked or try to infer
             doc_types_to_check = [doc_checked] if doc_checked else ["unknown"]
 
+        # P75: Helper — should this packet be included in an "All
+        # Documents" fan-out for a content check (HS Code, NTN, LC
+        # number, importer code, etc.)?
+        #
+        # Excluded packet types: covering / transmission / arrival
+        # documents that LIST the bundle but do not RESTATE the
+        # underlying content. They never legitimately carry an HS
+        # code or NTN, so fan-out checks against them produce false
+        # fails.
+        _ALLDOC_FANOUT_EXCLUDE = (
+            'documentary remittance',
+            'covering letter', 'covering schedule', 'cover schedule',
+            'export dc document presentation schedule',
+            'export dc presentation schedule',
+            'document presentation schedule', 'presentation schedule',
+            'schedule of documents', 'letter of transmittal',
+            'document arrival notice', 'arrival notice',
+            'forwarding letter',
+            'remittance letter', 'export letter',
+            'fax', 'email',
+        )
+
+        def _is_excluded_from_alldoc_fanout(pt: str) -> bool:
+            if not pt:
+                return True  # unknown — skip
+            ptl = pt.lower()
+            if 'lc' == ptl or 'letter of credit' in ptl:
+                return True
+            for _ex in _ALLDOC_FANOUT_EXCLUDE:
+                if _ex in ptl:
+                    return True
+            return False
+
         # For "all" documents: send each shipping doc as a separate task (deduped)
         if "all" in doc_types_to_check:
             found_any = False
@@ -1273,8 +1339,8 @@ def _build_tasks(
                 if not pkt:
                     continue
                 pt = _pkt_type(pkt)
-                # Skip LC pages, only check shipping docs
-                if not pt or "lc" in pt.lower() or "letter of credit" in pt.lower():
+                # Skip LC pages, transmission docs, only check shipping docs
+                if _is_excluded_from_alldoc_fanout(pt):
                     continue
                 found_any = True
                 images = _pkt_images(pkt)
@@ -1312,7 +1378,7 @@ def _build_tasks(
                     if not pkt:
                         continue
                     pt = _pkt_type(pkt)
-                    if not pt or "lc" in pt.lower() or "letter of credit" in pt.lower():
+                    if _is_excluded_from_alldoc_fanout(pt):
                         continue
                     # If "except X", skip X documents
                     except_match = re.search(r'except\s+(.*)', dt_lower)
