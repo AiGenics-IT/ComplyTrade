@@ -619,7 +619,82 @@ CRITICAL RULES (follow strictly):
 17. AGENT vs FORWARDER: "AS AGENTS ONLY FOR AND BY AUTHORITY OF THE MASTER" on a BL means the carrier's agent signed — this is NORMAL and NOT a freight forwarder BL. A freight forwarder BL would say "FIATA", "HOUSE BILL", or show a forwarder company as the ISSUER (not as agent of master).
 18. COPIES/DUPLICATES: "IN DUPLICATE" = 2 copies, "IN TRIPLICATE" = 3, "IN QUADRUPLICATE" = 4, "IN OCTUPLICATE" = 8, "FULL SET" = 3/3 originals. The number of copies is verified by the SYSTEM (not you) — it counts how many separate document packets exist. When you see a condition about copies/duplicates, mark it as PASS — the system handles copy counting separately. Do NOT fail a document for "not in duplicate/octuplicate" — you are only seeing ONE representative copy.
 19. MISSING DOCUMENT: If a required document is completely MISSING from the submission, report ONE failure: "Required document missing". Do NOT add sub-failures for content checks (importer name, language, etc.) on a missing document — those are meaningless if the document doesn't exist.
-20. PORT MATCHING: Ports are the SAME if the city/country matches, even if qualifiers differ. "KARACHI SEAPORT, PAKISTAN" = "KARACHI, PAKISTAN" = "KARACHI PORT, PAKISTAN". The word "SEAPORT"/"PORT" is just a qualifier. Similarly: "PENANG PORT, MALAYSIA" = "PENANG, MALAYSIA". Also "ANY [COUNTRY] PORT/SEAPORT" means ANY port in that country = PASS if port is in that country. "ANY MALAYSIA PORT" matches "PENANG PORT, MALAYSIA". "ANY CANADIAN PORT" matches "VANCOUVER, CANADA". "ANY CHINESE SEAPORT" matches "HONGKONG SEAPORT, CHINA" or "SHANGHAI, CHINA" or any port in China (including Hong Kong, Macau — they are part of China). The word "CHINESE" = "CHINA".
+20. PORT MATCHING: Ports are the SAME if the city/country matches, even if qualifiers differ. "KARACHI SEAPORT, PAKISTAN" = "KARACHI, PAKISTAN" = "KARACHI PORT, PAKISTAN". The word "SEAPORT"/"PORT" is just a qualifier. Similarly: "PENANG PORT, MALAYSIA" = "PENANG, MALAYSIA". Also "ANY [COUNTRY] PORT/SEAPORT" means ANY port in that country = PASS if port is in that country. "ANY MALAYSIA PORT" matches "PENANG PORT, MALAYSIA". "ANY CANADIAN PORT" matches "VANCOUVER, CANADA". "ANY CHINESE SEAPORT" matches "HONGKONG SEAPORT, CHINA" or "SHANGHAI, CHINA" or any port in China (including Hong Kong, Macau — they are part of China). The word "CHINESE" = "CHINA". Country adjectives ALWAYS equal the country noun: CHINESE=CHINA, MALAYSIAN=MALAYSIA, INDIAN=INDIA, PAKISTANI=PAKISTAN, JAPANESE=JAPAN, KOREAN=KOREA, GERMAN=GERMANY, FRENCH=FRANCE, ITALIAN=ITALY, SPANISH=SPAIN, AMERICAN=USA=UNITED STATES, BRITISH=ENGLISH=UK=UNITED KINGDOM, DUTCH=NETHERLANDS, BELGIAN=BELGIUM, SWISS=SWITZERLAND, BRAZILIAN=BRAZIL, ARGENTINEAN=ARGENTINA, EGYPTIAN=EGYPT, SAUDI=SAUDI ARABIA, EMIRATI=UAE=UNITED ARAB EMIRATES, TURKISH=TURKEY, RUSSIAN=RUSSIA. So "ANY CHINESE SEAPORT" = "ANY CHINA SEAPORT" = "ANY CHINA PORT" = "ANY PORT IN CHINA".
+
+20a. TRADE TERMS / INCOTERMS — MATCH THE CODE ONLY (CRITICAL):
+    When the LC condition asks for a "trade term" / "Incoterm" / "delivery term" to appear on a document (typically the Commercial Invoice), you MUST verify ONLY the Incoterm CODE, not the country, city, port or any other suffix that follows it.
+
+    Recognised Incoterm codes (Incoterms 2010 / 2020 + common variants):
+       EXW, FCA, FAS, FOB, CFR, CNF, C&F, CIF, CIP, CPT,
+       DAP, DPU, DDP, DAT, DAF, DDU, DES, DEQ
+    Common modifiers / suffixes that are PART of the Incoterm code and
+    must also match if present:
+       FO  = "Free Out"        e.g. "CFR FO"   = "CFR FREE OUT"
+       FI  = "Free In"         e.g. "CFR FI"   = "CFR FREE IN"
+       FIO = "Free In and Out" e.g. "CFR FIO"  = "CFR FREE IN AND OUT"
+       FILO, LIFO, FIOST, etc. (rare; pass them through verbatim)
+    The Incoterm-code COMPARISON ignores everything after the code +
+    its modifier. The trailing place name ("ANY CHINESE SEAPORT",
+    "SHANGHAI", "KARACHI PORT, PAKISTAN", "DESTINATION PORT", etc.)
+    is NOT part of the Incoterm and is verified SEPARATELY by the
+    port-of-loading / port-of-discharge checks. Do NOT FAIL or
+    REVIEW a trade-terms row because the country / port wording
+    differs — those rows have their own checks.
+
+    Step A — Extract the Incoterm + modifier from BOTH the LC value
+             and the document value. Strip everything else.
+       LC value: "FOB ANY CHINESE SEAPORT, PAKISTAN"
+                 → Incoterm = "FOB", modifier = none, place = ignored
+       Doc value: "FOB ANY CHINA SEAPORT"
+                 → Incoterm = "FOB", modifier = none, place = ignored
+
+    Step B — Compare ONLY the Incoterm + modifier:
+       • Same Incoterm and same modifier (or both absent) → PASS
+       • Same Incoterm but modifier differs (e.g. LC "CFR FO" vs
+         doc "CFR" with no FO) → FAIL with "Incoterm modifier
+         missing/extra"
+       • Different Incoterm (e.g. LC "FOB" vs doc "CIF") → FAIL
+       • Equivalent codes are the same: CNF = C&F = CFR (these are
+         all the same Incoterm under different names). Treat them
+         as identical → PASS.
+
+    WORKED EXAMPLES — STUDY ALL:
+
+    Example 1 (PASS — adjective vs noun in trailing place):
+       LC condition: "Trade terms 'FOB ANY CHINESE SEAPORT, PAKISTAN'
+                      must appear on the Commercial Invoice"
+       Invoice text: "FOB ANY CHINA SEAPORT"
+       Step A: LC=FOB, Doc=FOB.  Step B: same → PASS
+       Verdict: PASS — "Incoterm FOB matches" (do NOT mark this
+                row PARTIALLY MATCH because of CHINESE vs CHINA;
+                the place name is ignored for the Incoterm check
+                AND CHINESE=CHINA per rule 20 anyway)
+
+    Example 2 (PASS — modifier match):
+       LC condition: "CFR FO ANY MALAYSIA PORT must appear..."
+       Invoice text: "CFR FO PENANG, MALAYSIA"
+       Step A: LC=CFR FO, Doc=CFR FO.  Step B: same → PASS
+
+    Example 3 (PASS — equivalent codes):
+       LC condition: "C&F SHANGHAI must appear..."
+       Invoice text: "CFR SHANGHAI" or "CNF SHANGHAI"
+       Step A: LC=C&F, Doc=CFR (or CNF).  Step B: equivalent → PASS
+
+    Example 4 (FAIL — different Incoterm):
+       LC condition: "FOB KARACHI must appear..."
+       Invoice text: "CIF KARACHI"
+       Step A: LC=FOB, Doc=CIF.  Step B: different → FAIL
+
+    Example 5 (FAIL — modifier missing):
+       LC condition: "CFR FO ANY CHINA PORT must appear..."
+       Invoice text: "CFR SHANGHAI" (no FO)
+       Step A: LC=CFR FO, Doc=CFR.  Step B: modifier differs → FAIL
+
+    REMINDER: For trade-terms rows, NEVER mark the row REVIEW or
+    "PARTIALLY MATCHES" because of the trailing port/country
+    wording. The trailing place is not part of the Incoterm. If
+    you can identify the Incoterm code on both sides and they
+    match, the row is PASS — period.
 21. QUANTITY MATCHING: LC may say "QTY 736" and invoice may show individual line items that SUM to 736. Check the SYSTEM PRE-CALCULATED SUMMARY at the top of the document text — it shows per-product totals. Use these totals instead of counting line items yourself.
 Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 981E" = "LN981E". Ignore spaces in product codes when matching.
 22. PARTY REFERENCES: When the condition says "NOTIFY APPLICANT" or "TO ORDER OF ISSUING BANK", look at the LC PARTIES section above to find the actual name. Then check if that name appears on the document. "NOTIFY APPLICANT" means the notify party field must show the APPLICANT's name (given above). Do NOT look for the literal words "NOTIFY APPLICANT" — look for the applicant's ACTUAL NAME. Check the TOTAL quantity, not individual lines. Also "Ea" (each) is a valid unit — 736 Ea = 736 pieces. If LC says "QTY 736 AT THE RATE OF USD 98.00" and invoice shows 736 units × $98.00 = correct.
