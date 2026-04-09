@@ -623,6 +623,82 @@ CRITICAL RULES (follow strictly):
 21. QUANTITY MATCHING: LC may say "QTY 736" and invoice may show individual line items that SUM to 736. Check the SYSTEM PRE-CALCULATED SUMMARY at the top of the document text — it shows per-product totals. Use these totals instead of counting line items yourself.
 Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 981E" = "LN981E". Ignore spaces in product codes when matching.
 22. PARTY REFERENCES: When the condition says "NOTIFY APPLICANT" or "TO ORDER OF ISSUING BANK", look at the LC PARTIES section above to find the actual name. Then check if that name appears on the document. "NOTIFY APPLICANT" means the notify party field must show the APPLICANT's name (given above). Do NOT look for the literal words "NOTIFY APPLICANT" — look for the applicant's ACTUAL NAME. Check the TOTAL quantity, not individual lines. Also "Ea" (each) is a valid unit — 736 Ea = 736 pieces. If LC says "QTY 736 AT THE RATE OF USD 98.00" and invoice shows 736 units × $98.00 = correct.
+
+    PARTY-NAME OCR TOLERANCE (ISBP 821 paragraph A1 & UCP 600 Art 14(d/e)):
+    Company / party names (Applicant, Beneficiary, Consignee, Notify
+    Party, Issuing Bank, etc.) MUST be matched semantically, not
+    character-by-character. The bank's job is to confirm the parties
+    are the same legal entity, NOT to police OCR perfection.
+
+    Step 1 — Normalise both sides:
+      • Strip company-form suffixes / abbreviations: PVT, PVT., PVT LTD,
+        PRIVATE LIMITED, LTD, LIMITED, LLC, LLP, INC, CORP, CO,
+        COMPANY, GMBH, AG, SA, BV, S.A., S.A.S., S.R.L., PTE, PTE LTD,
+        SDN BHD, FZE, FZ-LLC, OPC.
+      • Strip address punctuation differences: ".", ",", "/", "-", "(", ")"
+      • Treat single-letter / two-letter run-together abbreviations
+        as the same: "G.I" = "GI" = "G I" = "G.I." (and the same for
+        any other 1-2 letter initial cluster).
+      • Treat the following OCR-confusable letter pairs as IDENTICAL
+        when they appear inside a SHORT initial cluster (≤ 3 letters)
+        or right next to a punctuation mark — these are the canonical
+        single-pixel OCR mistakes:
+            I ↔ L     (G.I ↔ G.L, II ↔ IL ↔ LI ↔ LL)
+            I ↔ 1     (BIN ↔ B1N inside short codes)
+            O ↔ 0     (CO ↔ C0 inside short codes)
+            B ↔ 8     (B-3 ↔ 8-3 inside short codes)
+            S ↔ 5     (S5 ↔ SS inside short codes)
+            Z ↔ 2
+            G ↔ 6
+        These swaps are ONLY allowed inside an initial / abbreviation
+        cluster — NOT inside the body of a regular English word. So
+        "GLOBAL" stays "GLOBAL" (we do NOT change it to "GIOBAL"),
+        but "G.L" can match "G.I" because that is a 2-letter initial
+        cluster bordered by a dot.
+      • Address: ignore differences in block format ("BLOCK E" vs
+        "BLOCK(E)" vs "BLOCK-E"), in slash usage ("C-3/1" vs "C 3-1"
+        vs "C3/1"), and in line-break placement.
+      • Case differences are ALWAYS irrelevant.
+
+    Step 2 — Decision:
+      • If the normalised CORE NAME (e.g. "GI ENTERPRISES" or "GL
+        ENTERPRISES" → both normalise to two letters + ENTERPRISES)
+        plus the CITY plus the COUNTRY all match, the parties are the
+        SAME legal entity → PASS.
+      • Even better: if at least TWO of {core name, street/block,
+        city, country, postal code} match exactly and the remaining
+        differences are explainable by the OCR-confusable swaps in
+        the table above, → PASS.
+      • Only if the differences are SUBSTANTIVE (a clearly different
+        company name, a clearly different city, a clearly different
+        country, a clearly different street address) → FAIL.
+
+    WORKED EXAMPLE — STUDY THIS (this exact case was wrongly FAILED):
+       LC APPLICANT:
+         "G.I ENTERPRISES (PVT) LTD C 3-1 PL-10 AL-HAMRA SQUARE
+          BLOCK E NORTH NAZIMABAD KARACHI, PAKISTAN"
+       BL NOTIFY PARTY:
+         "GL ENTERPRISES PRIVATE LIMITED C-3/1 AL-HAMRA SQUARE
+          BLOCK(E), NORTH NAZIMABAD, KARACHI, PAKISTAN"
+       Differences:
+         (a) "G.I" vs "GL"  → 2-letter initial cluster, I↔L swap, allowed
+         (b) "(PVT) LTD" vs "PRIVATE LIMITED" → company suffix, both stripped
+         (c) "C 3-1" vs "C-3/1" → punctuation, address normalisation
+         (d) "BLOCK E" vs "BLOCK(E)" → punctuation
+         (e) "PL-10" missing on BL → minor omission, not substantive
+       Core name: "GI ENTERPRISES" vs "GL ENTERPRISES" — letters differ
+         only by an allowed OCR swap inside a short initial cluster.
+       Address: "AL-HAMRA SQUARE", "NORTH NAZIMABAD", "KARACHI",
+         "PAKISTAN" — ALL match exactly.
+       VERDICT: PASS — the parties are the same legal entity; the
+         "G.I" → "GL" difference is a known OCR confusable swap and
+         every other identifying field matches. Do NOT mark this FAIL.
+
+    REMINDER: this rule is NOT a licence to ignore real differences.
+    If the city is different, the country is different, or the core
+    name uses entirely different words ("GI ENTERPRISES" vs "MARWAN
+    TRADING"), that is FAIL. The tolerance applies only to the
+    canonical OCR-pixel mistakes listed above.
 23. SHORT FORM / BLANK BACK BILL OF LADING (UCP 600 Art 20(a)(v)): A "short form" or "blank back" Bill of Lading is one that does NOT print the detailed terms and conditions of carriage on its reverse side. UCP 600 Art 20(a)(v) ACCEPTS such bills of lading by default — banks will not examine the contents of those terms. ONLY raise a discrepancy when the LC explicitly forbids them with wording like "SHORT FORM / BLANK BACK BL NOT ACCEPTABLE", and even then, check the DOCUMENT VISUAL METADATA above:
    • If "BL Form Status: full_form" → the BL is a full-form BL = PASS (the carriage terms are present, either on this BL or on a separate T&C page in the same submission set).
    • If "BL Terms Page Present in Set: True" → the carriage terms are supplied on a separate sheet within the document set; the BL is therefore a full-form BL = PASS, even if the LC forbids blank-back.
