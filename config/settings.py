@@ -49,7 +49,7 @@ else:
 # ── Server ──
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8082
-BUILD_TAG = "2026-04-09-P56"
+BUILD_TAG = "2026-04-09-P57"
 
 # ── Processing ──
 MAX_CONCURRENT_OCR = 8

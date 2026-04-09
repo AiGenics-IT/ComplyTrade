@@ -838,6 +838,204 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
 
 # == Amendment application ====================================================
 
+# Label-strip patterns reused by both base extraction and amendment cleanup.
+# Each entry strips the leading label that the SWIFT regex captured along
+# with the actual value (e.g. "Latest Date of Shipment\n251030 Oct 30").
+_FIELD_LABEL_STRIP = {
+    '20':  r'^(?:Documentary\s+Credit\s+Number|Sender\'?s?\s+Reference)\s*[\n\r]*',
+    '27':  r'^Sequence\s+of\s+Total\s*[\n\r]*',
+    '31C': r'^Date\s+of\s+Issue\s*[\n\r]*',
+    '31D': r'^Date\s+and\s+Place\s+of\s+Expiry\s*[\n\r]*',
+    '32B': r'^(?:Currency\s+Code,?\s*Amount|Increase\s+of\s+Documentary\s+Credit\s+Amount)\s*[\n\r]*',
+    '39A': r'^Percentage\s+Credit\s+Amount\s+Tolerance\s*[\n\r]*',
+    '40A': r'^Form\s+of\s+Documentary\s+Credit\s*[\n\r]*',
+    '40E': r'^Applicable\s+Rules\s*[\n\r]*',
+    '41A': r'^(?:Available\s+With.*?(?:By\.{0,3})?|\.{2,}\s*By\s*\.{2,}.*?(?:Name\s+and\s+Address)?:?)\s*[\n\r]*',
+    '41D': r'^(?:Available\s+With.*?(?:Code|By\.{0,3})?|\.{2,}\s*By\s*\.{2,}.*?(?:Name\s+and\s+Address)?:?)\s*[\n\r]*',
+    '42A': r'^(?:Drawee|Issuing\s+Bank).*?(?:Identifier\s+Code)?\s*[\n\r]*',
+    '42C': r'^Drafts\s+at\s*\.{0,3}\s*[\n\r]*',
+    '42P': r'^(?:Negotiation/)?Deferred\s+Payment\s+Details\s*[\n\r]*',
+    '43P': r'^Partial\s+Shipments?[\.,;:]?\s*[\n\r]*',
+    '43T': r'^Trans[sh]?ipment[\.,;:]?\s*[\n\r]*',
+    '44A': r'^Place\s+of\s+Taking.*?\s*[\n\r]*',
+    '44C': r'^Latest\s+Date\s+of\s+Shipment\s*[\n\r]*',
+    '44E': r'^Port\s+of\s+Loading.*?Departure\s*[\n\r]*',
+    '44F': r'^Port\s+of\s+Discharge.*?Destination\s*[\n\r]*',
+    '45A': r'^Description\s+of\s+Goods.*?Services?\s*[\n\r]*',
+    '46A': r'^Documents?\s+Required\s*[\n\r]*',
+    '47A': r'^Additional\s+Conditions\s*[\n\r]*',
+    '48':  r'^Period\s+for\s+Presentation.*?Days\s*[\n\r]*',
+    '49':  r'^Confirmation\s+Instructions\s*[\n\r]*',
+    '50':  r'^Applicant\s*[\n\r]*',
+    '51A': r'^Applicant\s+Bank.*?(?:Identifier\s+Code)?\s*[\n\r]*',
+    '51D': r'^(?:Applicant\s+Bank|Bank)\s*-?\s*(?:Party)?.*?(?:Name\s+and\s+Address)?:?\s*[\n\r]*',
+    '52A': r'^(?:Issuing\s+Bank|Applicant\s+Bank).*?(?:Identifier\s+Code)?\s*[\n\r]*',
+    '53A': r'^Reimbursing\s+Bank.*?(?:Identifier\s+Code)?\s*[\n\r]*',
+    '57A': r'^[\'"]?Advise\s+Through[\'"]?\s+Bank.*?(?:Identifier\s+Code)?\s*[\n\r]*',
+    '59':  r'^Beneficiary\s*[\n\r]*(?:Name\s+and\s+Address:?\s*[\n\r]*)?',
+    '71D': r'^Charges\s*[\n\r]*',
+    '78':  r'^Instructions\s+to\s+the\s+Paying.*?Bank\s*[\n\r]*',
+}
+
+
+def _clean_consolidated_field_value(tag: str, value: str) -> str:
+    """
+    Apply the FULL cleanup pipeline used by the base-field extraction loop
+    to a single (tag, value) pair. Used for both base values and amendment
+    values so the consolidated LC has consistent cleaning.
+
+    Strips:
+      • SWIFT label prefixes (per _FIELD_LABEL_STRIP)
+      • "- Party Identifier - Identifier Code / Identifier Code:" sub-labels
+      • "Name and Address:" headers
+      • Fusion "... By ..." availability prefixes
+      • Drawee / Issuing Bank / Reimbursing Bank "- Party ... Code" headers
+      • "Available With ... Code" prefix (41A/41D)
+      • "Applicable Rules" prefix (40E)
+      • "Other\\nDelivery overdue / Network delivery / Payment Confirmation"
+        SWIFT report footer that bleeds in when a field is the LAST tag
+        on the message (typically F44C, F47A, F78)
+      • "Report Footer\\nNumber of Entities ... End of Report" PDF footer
+      • "(CONT FROM FIELD ...)" cross-references
+      • Trailing F-tag merge (e.g. "...F41D: Available With...")
+      • "Page X of Y" page numbering
+      • OCR garbage from blank/unreadable pages
+      • Inline "Date:", "Place:", "Currency:", "Amount:", "Days:",
+        "Narrative:", "Number:", "Total:", "Tolerance N:", "Code:" sub-labels
+    Converts:
+      • SWIFT date format "260131 2026 Jan 31" → "2026-01-31" (for 31C/31D/44C)
+      • F32B amount: "USD #516,000.00#" → "USD 516,000.00", European
+        format "516000,00" → "516,000.00"
+      • Removes raw "260131" 6-digit codes after they've been converted
+    """
+    if not value:
+        return value
+    v = value
+
+    # 1. Strip leading SWIFT label per tag
+    _strip_pat = _FIELD_LABEL_STRIP.get(tag, '')
+    if _strip_pat:
+        v = re.sub(_strip_pat, '', v, flags=re.IGNORECASE).strip()
+
+    # 2. Sub-label chains: "- Party Identifier - Identifier Code\nIdentifier Code:\n..."
+    v = re.sub(r'-?\s*Party\s+Identifier\s*-?\s*Identifier\s*(?:Code)?\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'^-\s+', '', v).strip()
+    v = re.sub(r'Identifier\s+Code:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'^Identifier:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'^Name\s+and\s+Address:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
+
+    # 3. Fusion availability prefix
+    v = re.sub(r'\.{2,}\s*By\s*\.{2,}\s*-?\s*(?:Name\s+and\s+Address\s*-?\s*)*:?\s*[\n\r]*',
+               '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'-\s*Name\s+and\s+Address\s*-?\s*(?:Name\s+and\s+Address)?:?\s*[\n\r]*',
+               '', v, flags=re.IGNORECASE).strip()
+
+    # 4. Currency-name strip (32B)
+    if tag == '32B':
+        v = re.sub(r'\b(?:US\s+DOLLAR|EURO|POUND\s+STERLING|JAPANESE\s+YEN)\s*[\n\r]*',
+                   '', v, flags=re.IGNORECASE).strip()
+
+    # 5. Other prefix headers
+    v = re.sub(r'^Applicable\s+Rules:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'^Available\s+With.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'^Drawee\s*-?\s*Party.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'^Applicant\s+Bank\s*-?\s*Party.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'^Issuing\s+Bank\s*-?\s*Party.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'^Reimbursing\s+Bank\s*-?\s*Party.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'^[\'"]?Advise\s+Through[\'"]?\s+Bank\s*-?\s*Party.*?Code\s*\n?',
+               '', v, flags=re.IGNORECASE).strip()
+
+    # 6. SWIFT message footer ("Other\nDelivery overdue / Network delivery /
+    # Payment Confirmation" section that bleeds into the LAST tag on the
+    # message — typically F44C, F47A, F78). Strip everything from "Other"
+    # to end of value.
+    v = re.sub(
+        r'\n\s*Other\s*\n\s*(?:Delivery\s+overdue|Network\s+delivery|Payment\s+Confirmation).*$',
+        '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+
+    # 7. PDF / report footer that follows the SWIFT footer ("Report Footer
+    # / Number of Entities / End of Report"). Sometimes the SWIFT footer
+    # was already stripped at message-export time, so the PDF footer is
+    # the only remaining trailing garbage.
+    v = re.sub(
+        r'\n\s*Report\s+Footer\b.*$',
+        '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(
+        r'\n\s*Number\s+of\s+Entities\b.*$',
+        '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(
+        r'\n\s*End\s+of\s+Report\b.*$',
+        '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+
+    # 8. (CONT FROM FIELD ...) cross-references
+    v = re.sub(r'\(CONT\s+FROM\s+FIELD\s+\w+\)', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'/\(CONT\s+FROM\s+FIELD\s+\w+\)', '', v, flags=re.IGNORECASE).strip()
+
+    # 9. Truncate at next F-tag if it merged in
+    _ftag_merge = re.search(r'F\d{2}[A-Z]?\s*:', v)
+    if _ftag_merge:
+        v = v[:_ftag_merge.start()].strip()
+
+    # 10. "Page X of Y" page numbering
+    v = re.sub(r'\bPage\s+\d+\s+of\s+\d+\b', '', v, flags=re.IGNORECASE).strip()
+
+    # 11. OCR garbage
+    v = re.sub(r'There is no visible text.*?(?:clearly visible|another version)[.\s]*',
+               '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(r'The image appears to be blank[.\s]*',
+               '', v, flags=re.IGNORECASE).strip()
+
+    # 12. Inline sub-labels: "Date:", "Place:", "Currency:", "Amount:", etc.
+    v = re.sub(r'\bDate:?\s*', '', v).strip()
+    v = re.sub(r'\bPlace:?\s*', '', v).strip()
+    v = re.sub(r'\bCurrency:?\s*', '', v).strip()
+    v = re.sub(r'\bAmount:?\s*', '', v).strip()
+    v = re.sub(r'\bDays:?\s*', '', v).strip()
+    v = re.sub(r'\bNarrative:?\s*/?', '', v).strip()
+    v = re.sub(r'\bNumber:?\s*', '', v).strip()
+    v = re.sub(r'\bTotal:?\s*', '', v).strip()
+    v = re.sub(r'\bTolerance\s+\d:?\s*', '', v).strip()
+    v = re.sub(r'\bCode:?\s*', '', v).strip()
+
+    # 13. SWIFT date conversion (31C, 31D, 44C)
+    if tag in ('31C', '31D', '44C'):
+        _dm = re.search(r'(\d{6})\s+(\d{4})\s+(\w{3})\s+(\d{1,2})', v)
+        if _dm:
+            _months = {'Jan':'01','Feb':'02','Mar':'03','Apr':'04','May':'05','Jun':'06',
+                       'Jul':'07','Aug':'08','Sep':'09','Oct':'10','Nov':'11','Dec':'12'}
+            _date_str = f"{_dm.group(2)}-{_months.get(_dm.group(3),'01')}-{int(_dm.group(4)):02d}"
+            v = (v[:_dm.start()] + _date_str + v[_dm.end():]).strip()
+        # Remove leftover raw 6-digit SWIFT date codes
+        v = re.sub(r'\b\d{6}\b\s*', '', v).strip()
+
+    # 14a. Strip a leading punctuation-only line (e.g. '.\nALLOWED' →
+    # 'ALLOWED'). This catches the residue when the SWIFT label was
+    # followed by a stray '.' / ',' / ';' / ':' before the newline that
+    # the label-strip regex couldn't consume because punctuation isn't
+    # whitespace. Safe because no LC field value legitimately STARTS
+    # with a punctuation-only line.
+    v = re.sub(r'^[\.,;:]\s*[\n\r]+', '', v).strip()
+    v = re.sub(r'^[\.,;:]+\s*(?=[A-Za-z0-9])', '', v).strip()
+
+    # 14b. F32B amount cleanup
+    if tag == '32B':
+        _ccy = re.search(r'\b([A-Z]{3})\b', v)
+        _ccy_str = _ccy.group(1) if _ccy else 'USD'
+        _am = re.search(r'#([\d,]+\.\d+)#?', v)
+        if _am:
+            v = f"{_ccy_str} {_am.group(1)}"
+        else:
+            _am2 = re.search(r'(\d[\d.]*,\d{2})\b', v)
+            if _am2:
+                _amt = _am2.group(1).replace('.', '').replace(',', '.')
+                try:
+                    v = f"{_ccy_str} {float(_amt):,.2f}"
+                except ValueError:
+                    pass
+
+    return v.strip()
+
+
 def _strip_field_sub_labels(tag: str, value: str) -> str:
     """
     Strip the full chain of SWIFT sub-labels that bleed into a field value
@@ -1358,8 +1556,8 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             '42A': r'^(?:Drawee|Issuing\s+Bank).*?(?:Identifier\s+Code)?\s*[\n\r]*',
             '42C': r'^Drafts\s+at\s*\.{0,3}\s*[\n\r]*',
             '42P': r'^(?:Negotiation/)?Deferred\s+Payment\s+Details\s*[\n\r]*',
-            '43P': r'^Partial\s+Shipments?\s*[\n\r]*',
-            '43T': r'^Trans[sh]?ipment\s*[\n\r]*',
+            '43P': r'^Partial\s+Shipments?[\.,;:]?\s*[\n\r]*',
+            '43T': r'^Trans[sh]?ipment[\.,;:]?\s*[\n\r]*',
             '44A': r'^Place\s+of\s+Taking.*?\s*[\n\r]*',
             '44C': r'^Latest\s+Date\s+of\s+Shipment\s*[\n\r]*',
             '44E': r'^Port\s+of\s+Loading.*?Departure\s*[\n\r]*',
@@ -1470,6 +1668,14 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             if sf.tag in ('31C', '31D', '44C'):
                 sf.value = re.sub(r'\b\d{6}\b\s*', '', sf.value).strip()
 
+            # Strip a leading punctuation-only line (e.g. ".\nALLOWED" →
+            # "ALLOWED"). The label-strip regex doesn't consume a stray
+            # "." or "," that the SWIFT export sometimes leaves between
+            # the field label and the value (typically on F43P / F43T
+            # short enums like "Transhipment.\n  ALLOWED").
+            sf.value = re.sub(r'^[\.,;:]\s*[\n\r]+', '', sf.value).strip()
+            sf.value = re.sub(r'^[\.,;:]+\s*(?=[A-Za-z0-9])', '', sf.value).strip()
+
             final_lc.consolidated_fields[sf.tag] = sf.value
             final_lc.original_fields[sf.tag] = sf.value
             _progress(f"    F{sf.tag}: {sf.value[:80]}{'...' if len(sf.value) > 80 else ''}")
@@ -1555,6 +1761,23 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             )
             final_lc.amendment_log.append(record)
             final_lc.source_packets.append(pkt_id)
+
+            # Re-run the FULL base-field cleanup pipeline on every field
+            # this amendment changed. _apply_amendment writes raw amendment
+            # values directly to consolidated_fields, so without this pass
+            # an amendment to F44C / F47A / F78 brings the SWIFT message
+            # footer ("Other / Delivery overdue / Network delivery / Payment
+            # Confirmation / Report Footer") and unconverted SWIFT date
+            # codes ("251030 2025 Oct 30") into the Final LC.
+            for _ch_tag in record.fields_changed:
+                _raw = final_lc.consolidated_fields.get(_ch_tag, '')
+                _cleaned = _clean_consolidated_field_value(_ch_tag, _raw)
+                if _cleaned != _raw:
+                    final_lc.consolidated_fields[_ch_tag] = _cleaned
+                    # Keep the change_details in-sync so the audit log
+                    # reflects the final visible value, not the raw one.
+                    if _ch_tag in record.change_details:
+                        record.change_details[_ch_tag]['new'] = _cleaned
 
             if record.fields_changed:
                 _progress(f"      Changed: {', '.join(record.fields_changed)}")

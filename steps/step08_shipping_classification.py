@@ -606,6 +606,64 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
     pages = packet.get('pages', packet.get('original_pages', []))
     image_paths = packet.get('page_image_paths', packet.get('image_paths', []))
 
+    # ── Respect prior structural classification from Step 3 ──
+    # If Step 3 already classified this packet as a structural / non-document
+    # page (Header Page, Blank Page, Endorsement Page, Covering Letter / Cover
+    # Letter, Fusion Header, Endorsement, Back Page) then we MUST NOT let the
+    # VLM force-fit it into one of the LC's required document slots. These
+    # pages are bank letterheads, blank reverses, or endorsement stamps with
+    # almost no content — when sent to the VLM with the LC's required-docs
+    # list, the model hallucinates a match (e.g. promoting an OCBC header
+    # page to "Draft Bill of Exchange") and pollutes the verification with
+    # false REVIEW rows for amount / currency / drawee checks against an
+    # empty page.
+    #
+    # Detection: read step 3's document_type from the packet itself OR from
+    # the first page's classification (step 3 stores it on each page object).
+    _STRUCTURAL_TYPES = {
+        'header page', 'blank page', 'endorsement page', 'endorsement',
+        'covering letter', 'cover letter', 'fusion header', 'back page',
+    }
+    _prior_dt = (packet.get('document_type') or '').strip().lower()
+    if not _prior_dt and pages:
+        _first = pages[0] if isinstance(pages[0], dict) else {}
+        _prior_dt = (_first.get('document_type') or '').strip().lower()
+    if _prior_dt in _STRUCTURAL_TYPES:
+        # Keep the structural classification, skip VLM, do NOT match to any
+        # LC requirement. The downstream verifier will see no packets in
+        # the relevant document buckets and will report each genuinely
+        # missing document ONCE via the F46A presence check.
+        elapsed = time.time() - start
+        keep_dt = (packet.get('document_type') or
+                   (pages[0].get('document_type') if pages and isinstance(pages[0], dict) else '')
+                   or 'Header Page')
+        return asdict(ClassifiedPacket(
+            packet_id=packet.get('packet_id', "packet_%03d" % packet_index),
+            original_pages=pages if isinstance(pages, list) else [pages],
+            page_image_paths=image_paths if isinstance(image_paths, list) else [image_paths],
+            raw_text=packet.get('raw_text', ''),
+            cleaned_text=packet.get('cleaned_text', glm_text),
+            document_type=keep_dt,
+            classification_status='informational',
+            match_confidence=0.99,
+            matched_requirement_index=-1,
+            matched_requirement_name='',
+            vlm_top_matches=[],
+            vlm_reasoning=f'Structural page from Step 3 ({keep_dt}) — not matched to any LC requirement',
+            document_summary='',
+            document_number='',
+            document_date='',
+            document_amount='',
+            stamps=[], signatures=[], seals=[], logos=[],
+            copy_status='', copy_label='', marking_status='',
+            issued_by='', lc_reference='',
+            confidence=0.99,
+            ambiguity_flag=False,
+            ambiguity_notes='',
+            elapsed_seconds=round(elapsed, 2),
+            is_bl_terms_page=False,
+        ))
+
     # Build required docs list for prompt
     req_lines = []
     for i, d in enumerate(expected_docs):
@@ -835,6 +893,23 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
     # so the run()-level pass can decide whether other BLs in the set are
     # blank-back or full-form.
     is_bl_terms_page = _looks_like_bl_terms_page(glm_text)
+
+    # ── Canonicalise document_type ──
+    # The VLM returns inconsistent casing for the same logical document
+    # (e.g. "Shipment Advice" on one copy and "SHIPMENT ADVICE" on the
+    # next). When the packet is matched to an LC requirement, use the
+    # LC's exact spelling as the canonical name so all copies of the
+    # same document collapse to one type. Downstream consumers (step 9
+    # reconciliation, step 13 row construction, step 14 verifier) then
+    # don't double-count or duplicate rows for casing-only differences.
+    if matched_index >= 0 and matched_name:
+        document_type = matched_name
+    else:
+        # Title-case fallback when there's no LC match — at least
+        # collapses casing variants of the same string.
+        document_type = (document_type or '').strip()
+        if document_type and document_type.isupper():
+            document_type = document_type.title()
 
     elapsed = time.time() - start
 

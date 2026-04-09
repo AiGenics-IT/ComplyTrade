@@ -60,6 +60,21 @@ DOC_TYPE_ALIASES = {
     "bill of lading": [
         "bill of lading", "bl", "b/l", "ocean bill", "marine bill",
         "transport document", "multimodal",
+        "short form bill of lading", "blank back bill of lading",
+        "liner bill of lading", "charter party bill of lading",
+        "combined transport bill of lading", "multimodal bill of lading",
+    ],
+    # Air Waybill and Courier Receipt are treated as ONE family (per the
+    # step08 classifier change). Step 12 may decompose a clause as "AWB",
+    # "Air Waybill", "Courier Receipt", "DHL receipt", etc. — they all
+    # need to map to whichever packet was classified into either label.
+    "air waybill": [
+        "air waybill", "airway bill", "awb", "hawb", "mawb",
+        "house air waybill", "master air waybill",
+        "courier receipt", "courier waybill", "courier service receipt",
+        "express waybill", "express envelope", "express courier",
+        "express delivery receipt",
+        "dhl", "fedex", "fed ex", "ups", "tnt", "aramex",
     ],
     "commercial invoice": [
         "commercial invoice", "invoice", "tax invoice", "signed invoice",

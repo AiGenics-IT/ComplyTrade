@@ -25,8 +25,8 @@
         .field-row { display: flex; border-bottom: 1px solid #e2e8f0; }
         .field-row:nth-child(even) { background: #f8fafc; }
         .field-row:hover { background: #eff6ff; }
-        .field-tag { width: 80px; padding: 10px 15px; font-weight: 700; color: #1554ca; font-size: 0.85em; border-right: 1px solid #e2e8f0; display: flex; align-items: center; }
-        .field-name { width: 200px; padding: 10px 15px; font-weight: 600; color: #334155; font-size: 0.85em; border-right: 1px solid #e2e8f0; display: flex; align-items: center; }
+        .field-tag { width: 140px; min-width: 140px; padding: 10px 15px; font-weight: 700; color: #1554ca; font-size: 0.85em; border-right: 1px solid #e2e8f0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+        .field-name { width: 220px; min-width: 220px; padding: 10px 15px; font-weight: 600; color: #334155; font-size: 0.85em; border-right: 1px solid #e2e8f0; display: flex; align-items: center; }
         .field-value { flex: 1; padding: 8px 12px; }
         .field-value textarea { width: 100%; border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px 10px; font-family: inherit; font-size: 0.9em; resize: vertical; min-height: 32px; color: #1e293b; }
         .field-value textarea:focus { outline: none; border-color: #1554ca; box-shadow: 0 0 0 2px rgba(21,84,202,0.15); }
@@ -79,15 +79,62 @@ let changeCount = 0;
 let amendedFields = [];
 
 const TAG_NAMES = {
-    '20':'Documentary Credit Number','31C':'Date of Issue','31D':'Date and Place of Expiry',
-    '32B':'Currency Code, Amount','39A':'Tolerance','40A':'Form of Documentary Credit',
-    '40E':'Applicable Rules','41D':'Available With / By','42A':'Drawee','42C':'Drafts at',
-    '43P':'Partial Shipments','43T':'Transshipment','44A':'Place of Taking in Charge',
-    '44B':'Place of Final Destination','44C':'Latest Date of Shipment',
-    '44E':'Port of Loading','44F':'Port of Discharge','45A':'Description of Goods',
-    '46A':'Documents Required','47A':'Additional Conditions','48':'Period for Presentation',
-    '49':'Confirmation Instructions','50':'Applicant','51A':'Applicant Bank',
-    '59':'Beneficiary','71D':'Charges','78':'Instructions to Bank',
+    '20':'Documentary Credit Number',
+    '21':'Documentary Credit Number',
+    '23':'Reference to Pre-Advice',
+    '26E':'Number of Amendment',
+    '27':'Sequence of Total',
+    '30':'Date of Amendment',
+    '31C':'Date of Issue',
+    '31D':'Date and Place of Expiry',
+    '32B':'Currency Code, Amount',
+    '33B':'Additional Amount Covered',
+    '34B':'New Documentary Credit Amount',
+    '39A':'Percentage Credit Amount Tolerance',
+    '39B':'Maximum Credit Amount',
+    '39C':'Additional Amounts Covered',
+    '40A':'Form of Documentary Credit',
+    '40E':'Applicable Rules',
+    '41A':'Available With / By',
+    '41D':'Available With / By',
+    '42A':'Drawee',
+    '42C':'Drafts at',
+    '42M':'Mixed Payment Details',
+    '42P':'Negotiation/Deferred Payment Details',
+    '43P':'Partial Shipments',
+    '43T':'Transshipment',
+    '44A':'Place of Taking in Charge',
+    '44B':'Place of Final Destination',
+    '44C':'Latest Date of Shipment',
+    '44D':'Shipment Period',
+    '44E':'Port of Loading / Airport of Departure',
+    '44F':'Port of Discharge / Airport of Destination',
+    '45A':'Description of Goods and/or Services',
+    '45B':'Description of Goods (Amendment)',
+    '46A':'Documents Required',
+    '46B':'Documents Required (Amendment)',
+    '47A':'Additional Conditions',
+    '47B':'Additional Conditions (Amendment)',
+    '48':'Period for Presentation',
+    '49':'Confirmation Instructions',
+    '50':'Applicant',
+    '51A':'Applicant Bank',
+    '51D':'Applicant Bank',
+    '52A':'Issuing Bank',
+    '52D':'Issuing Bank',
+    '53A':'Reimbursing Bank',
+    '53D':'Reimbursing Bank',
+    '57A':'Advise Through Bank',
+    '57D':'Advise Through Bank',
+    '58A':'Requested Confirmation Party',
+    '58D':'Requested Confirmation Party',
+    '59':'Beneficiary',
+    '71B':'Charges',
+    '71D':'Charges',
+    '72':'Sender to Receiver Information',
+    '77A':'Delivery of Documents and Settlement',
+    '78':'Instructions to the Paying/Accepting/Negotiating Bank',
+    '79':'Narrative',
 };
 
 const CLAUSE_FIELDS = new Set(['45A','46A','47A','46B','47B','45B','78','79','72']);

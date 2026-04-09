@@ -298,34 +298,174 @@ def _get_doc_text(pkt: Dict) -> str:
 # VLM CALL
 # ══════════════════════════════════════════════════════════════
 
+_MONTH_NAMES = {
+    'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+    'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+    'january': 1, 'february': 2, 'march': 3, 'april': 4,
+    'june': 6, 'july': 7, 'august': 8, 'september': 9,
+    'october': 10, 'november': 11, 'december': 12,
+    # SWIFT 3-letter abbreviations (already in the short form above)
+    'sept': 9,
+}
+
+# python-dateutil is the primary parser — handles ~80% of real-world formats
+# out of the box. Imported lazily so the module still loads on minimal installs.
+try:
+    from dateutil import parser as _du_parser
+    _HAS_DATEUTIL = True
+except ImportError:  # pragma: no cover
+    _HAS_DATEUTIL = False
+
+
 def _parse_date(date_str: str) -> Optional[datetime]:
-    """Parse various date formats to datetime."""
+    """
+    Parse virtually any human-written or machine-written date string to a
+    datetime. The trade-finance pipeline sees an enormous variety of date
+    formats coming from OCR + VLM extraction — this needs to handle all of
+    them OR return None gracefully.
+
+    Supported (non-exhaustive):
+      ISO            2026-01-20  2026/01/20  2026.01.20  20260120
+      DMY            20-01-2026  20/01/2026  20.01.2026  20 01 2026
+      MDY            01-20-2026  01/20/2026  01.20.2026
+      Long          "Jan 20, 2026"  "January 20, 2026"  "20 January 2026"
+      Glued         "Jan20, 2026"  "Jan.20, 2026"  "Jan. 20 2026"
+                    "20-Jan-2026"  "20.Jan.2026"  "20Jan2026"  "20-JAN-26"
+      Ordinal       "1st March 2026"  "20th January, 2026"  "the 3rd of May 2026"
+      SWIFT         260120 (YYMMDD — only when context is a SWIFT date field)
+                    20260120 (YYYYMMDD)
+      With time     "2026-01-20T00:00:00"  "2026-01-20 14:30"  "Jan 20 2026 14:30"
+      Mixed         "Date: Jan.20, 2026"  "Issued on 2026-01-20"  "(20.01.2026)"
+
+    Returns None if the string cannot be confidently parsed.
+    """
     if not date_str:
         return None
-    date_str = str(date_str).strip()
+    raw = str(date_str).strip()
+    if not raw:
+        return None
+
+    # Pre-normalisation
+    s = raw
+    # Strip enclosing punctuation: "(2026-01-20)" -> "2026-01-20"
+    s = s.strip("()[]{}<>'\"")
+    # Strip noise prefixes that often sit in front of the date in OCR text
+    s = re.sub(
+        r'^(?:Date|Dated|Issued\s+on|Issue\s+date|Issuance\s+date|'
+        r'Document\s+date|D/?O/?I|DOI)\s*[:\-]?\s*',
+        '', s, flags=re.IGNORECASE,
+    ).strip()
+    # Strip "the" before ordinals: "the 3rd of May 2026"
+    s = re.sub(r'\bthe\s+', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'\s+of\s+', ' ', s, flags=re.IGNORECASE)
     # Strip ordinal suffixes: 29th -> 29, 1st -> 1, 2nd -> 2, 3rd -> 3
-    date_str = re.sub(r'(\d+)(st|nd|rd|th)\b', r'\1', date_str, flags=re.IGNORECASE)
-    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d", "%d %b %Y", "%d %B %Y",
-                "%b %d, %Y", "%B %d, %Y", "%Y%m%d", "%d.%m.%Y", "%m/%d/%Y", "%d-%b-%Y"):
+    s = re.sub(r'(\d+)(st|nd|rd|th)\b', r'\1', s, flags=re.IGNORECASE)
+    # Collapse repeated whitespace
+    s = re.sub(r'\s+', ' ', s).strip()
+
+    # ── Pass 1: pure-digit SWIFT-style dates (no separators) ──
+    # YYYYMMDD or YYMMDD — only when the entire string is digits and
+    # the length is unambiguous. We check this BEFORE dateutil because
+    # dateutil treats "260120" as a year (year 260120-something).
+    if re.fullmatch(r'\d{8}', s):
         try:
-            return datetime.strptime(date_str, fmt)
+            return datetime(int(s[0:4]), int(s[4:6]), int(s[6:8]))
+        except ValueError:
+            pass
+    if re.fullmatch(r'\d{6}', s):
+        try:
+            yy = int(s[0:2])
+            mm = int(s[2:4])
+            dd = int(s[4:6])
+            # Pivot at 50: 00-49 → 2000s, 50-99 → 1900s
+            yyyy = 2000 + yy if yy < 50 else 1900 + yy
+            return datetime(yyyy, mm, dd)
+        except ValueError:
+            pass
+
+    # ── Pass 2: dateutil (handles the majority of common formats) ──
+    if _HAS_DATEUTIL:
+        # Trade finance LCs are international — most use DD/MM/YYYY, so
+        # dayfirst=True is the safer default. dateutil will still pick MDY
+        # when day > 12 makes DMY impossible.
+        try:
+            d = _du_parser.parse(s, dayfirst=True, fuzzy=True)
+            return datetime(d.year, d.month, d.day)
+        except (ValueError, OverflowError, _du_parser.ParserError):
+            pass
+        # If DMY parsing failed AND the string looks unambiguous in MDY,
+        # try once more with dayfirst=False
+        try:
+            d = _du_parser.parse(s, dayfirst=False, fuzzy=True)
+            return datetime(d.year, d.month, d.day)
+        except (ValueError, OverflowError, _du_parser.ParserError):
+            pass
+
+    # ── Pass 3: hand-rolled regex fallbacks for the cases dateutil
+    # struggles with (glued formats like "Jan.20, 2026" or "Jan20, 2026") ──
+    # Try strptime with a wide format list first
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d",
+                "%d %b %Y", "%d %B %Y", "%b %d, %Y", "%B %d, %Y",
+                "%Y%m%d", "%d.%m.%Y", "%m/%d/%Y", "%d-%b-%Y",
+                "%d.%b.%Y", "%d %b. %Y", "%b %d %Y", "%B %d %Y",
+                "%d-%b-%y", "%d/%b/%Y", "%d %b, %Y"):
+        try:
+            return datetime.strptime(s, fmt)
         except ValueError:
             continue
-    m = re.search(r'(\d{4})-(\d{2})-(\d{2})', date_str)
+
+    # ISO-ish "YYYY-MM-DD" anywhere in the string
+    m = re.search(r'(\d{4})[\-./](\d{1,2})[\-./](\d{1,2})', s)
     if m:
-        try: return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        except: pass
-    m = re.search(r'(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(\d{4})', date_str, re.IGNORECASE)
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except Exception:
+            pass
+
+    # "DD <month> YYYY" — date first, with any separator
+    m = re.search(
+        r'(\d{1,2})[\s\.\-/]+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?[\s\.\-/]*(\d{2,4})',
+        s, re.IGNORECASE,
+    )
     if m:
-        months = {'jan':1,'feb':2,'mar':3,'apr':4,'may':5,'jun':6,'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12}
-        try: return datetime(int(m.group(3)), months[m.group(2).lower()[:3]], int(m.group(1)))
-        except: pass
-    # Try "Month DD, YYYY" or "MONTH DD YYYY"
-    m = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(\d{1,2}),?\s+(\d{4})', date_str, re.IGNORECASE)
+        try:
+            yyyy = int(m.group(3))
+            if yyyy < 100:
+                yyyy = 2000 + yyyy if yyyy < 50 else 1900 + yyyy
+            return datetime(yyyy, _MONTH_NAMES[m.group(2).lower()[:4]
+                                                 if m.group(2).lower() == 'sept' else m.group(2).lower()[:3]],
+                            int(m.group(1)))
+        except Exception:
+            pass
+
+    # "<month> DD YYYY" / "<month> DD, YYYY" — month first, ANY separator (or none)
+    m = re.search(
+        r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?'
+        r'\s*[\.\-/,]?\s*'                  # optional separator: space/period/dash/slash/comma, or none
+        r'(\d{1,2})\s*[,\.\-/]?\s*(\d{2,4})',
+        s, re.IGNORECASE,
+    )
     if m:
-        months = {'jan':1,'feb':2,'mar':3,'apr':4,'may':5,'jun':6,'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12}
-        try: return datetime(int(m.group(3)), months[m.group(1).lower()[:3]], int(m.group(2)))
-        except: pass
+        try:
+            yyyy = int(m.group(3))
+            if yyyy < 100:
+                yyyy = 2000 + yyyy if yyyy < 50 else 1900 + yyyy
+            mname = m.group(1).lower()
+            mkey = mname[:4] if mname == 'sept' else mname[:3]
+            return datetime(yyyy, _MONTH_NAMES[mkey], int(m.group(2)))
+        except Exception:
+            pass
+
+    # "DD/MM/YY" / "DD-MM-YY" — last resort 2-digit year
+    m = re.search(r'(\d{1,2})[\-./](\d{1,2})[\-./](\d{2})\b', s)
+    if m:
+        try:
+            yy = int(m.group(3))
+            yyyy = 2000 + yy if yy < 50 else 1900 + yy
+            return datetime(yyyy, int(m.group(2)), int(m.group(1)))
+        except Exception:
+            pass
+
     return None
 
 
@@ -849,12 +989,51 @@ RULES:
 LC Port of Loading (F44E): {port}
 
 RULES:
-1. Find the PORT OF LOADING on the Bill of Lading
-2. It must match the LC requirement: "{port}"
-3. CRITICAL: If the LC says "ANY [COUNTRY] PORT" or "ANY PORT IN [COUNTRY]" (e.g., "ANY CANADA PORT"), then ANY port in that country is acceptable = PASS. For example, Vancouver is a Canada port, so "ANY CANADA PORT" matches Vancouver = PASS.
-4. Minor spelling differences are acceptable (e.g., "KARACHI PORT" vs "PORT OF KARACHI")
-5. Only mark FAIL if the port is in a completely DIFFERENT country than required
-6. Extract: the exact port of loading stated on the BL""",
+1. Find the PORT OF LOADING on the Bill of Lading.
+2. It must match the LC requirement: "{port}".
+3. ━━━ "ANY [COUNTRY] PORT" RULE — READ CAREFULLY ━━━
+   If the LC says "ANY [COUNTRY] PORT/SEAPORT", "ANY PORT IN [COUNTRY]", or "ANY [COUNTRY ADJECTIVE] PORT/SEAPORT", then ANY port located IN THAT COUNTRY is acceptable → PASS.
+   The country adjective form ALWAYS refers to the same country as the noun form:
+       CHINESE = CHINA           CANADIAN = CANADA          PAKISTANI = PAKISTAN
+       INDIAN = INDIA            MALAYSIAN = MALAYSIA       INDONESIAN = INDONESIA
+       SINGAPOREAN = SINGAPORE   THAI = THAILAND            VIETNAMESE = VIETNAM
+       JAPANESE = JAPAN          KOREAN = (SOUTH) KOREA     BANGLADESHI = BANGLADESH
+       FILIPINO = PHILIPPINES    EMIRATI = UAE              SAUDI = SAUDI ARABIA
+       TURKISH = TURKEY          GERMAN = GERMANY           ITALIAN = ITALY
+       SPANISH = SPAIN           BRITISH/ENGLISH = UK       AMERICAN = USA
+       BRAZILIAN = BRAZIL        AUSTRALIAN = AUSTRALIA     KENYAN = KENYA
+       SOUTH AFRICAN = SOUTH AFRICA
+   So "ANY CHINESE SEAPORT" = "ANY CHINA PORT" — both mean any port in China.
+4. ━━━ COUNTRY MEMBERSHIP — READ CAREFULLY ━━━
+   The following cities/regions are PART OF CHINA for the purpose of "any Chinese port":
+       Hong Kong / HONGKONG / HK / HKG / KWAI CHUNG, Macau / MACAO,
+       Shanghai, Shenzhen, Ningbo, Qingdao, Tianjin, Guangzhou, Xiamen,
+       Dalian, Yantian, Huangpu, Hong Kong International, Kaohsiung
+   Other useful country memberships:
+       SINGAPORE = Singapore (city-state)
+       MALAYSIA: Port Klang, Penang, Johor, Tanjung Pelepas
+       INDONESIA: Jakarta, Tanjung Priok, Surabaya, Belawan
+       UAE: Dubai (Jebel Ali), Abu Dhabi, Sharjah
+       UK: Felixstowe, Southampton, London Gateway, Liverpool
+       USA: Long Beach, Los Angeles, NY/NJ, Houston, Charleston, Savannah
+       INDIA: Mumbai (Nhava Sheva), Chennai, Kolkata, Cochin, Kandla
+       PAKISTAN: Karachi, Port Qasim, Bin Qasim
+   So "HONGKONG SEAPORT, CHINA" matches "ANY CHINESE SEAPORT" → PASS, because Hong Kong is in China.
+5. EXAMPLES THAT MUST PASS (do not mark these as FAIL):
+   • LC: "ANY CHINESE SEAPORT"     BL: "HONGKONG SEAPORT, CHINA"   → PASS (Hong Kong is in China)
+   • LC: "ANY CHINESE SEAPORT"     BL: "SHANGHAI, CHINA"           → PASS
+   • LC: "ANY CHINESE SEAPORT"     BL: "MACAU, CHINA"              → PASS
+   • LC: "ANY CHINA PORT"          BL: "HUANGPU CHINA"             → PASS
+   • LC: "ANY CANADIAN PORT"       BL: "VANCOUVER, CANADA"         → PASS
+   • LC: "ANY MALAYSIA PORT"       BL: "PENANG PORT, MALAYSIA"     → PASS
+   • LC: "KARACHI PORT, PAKISTAN"  BL: "PORT OF KARACHI"           → PASS (same city, qualifier varies)
+   • LC: "SHANGHAI"                BL: "SHANGHAI SEAPORT"          → PASS (qualifier varies)
+6. EXAMPLES THAT MUST FAIL:
+   • LC: "ANY CHINESE SEAPORT"     BL: "PORT OF KARACHI, PAKISTAN" → FAIL (Pakistan is not China)
+   • LC: "KARACHI"                 BL: "MUMBAI"                    → FAIL (different cities, different countries)
+7. Minor spelling differences are acceptable (e.g., "KARACHI PORT" vs "PORT OF KARACHI", "HONGKONG" vs "HONG KONG").
+8. Only mark FAIL if the port is in a COMPLETELY DIFFERENT country than what the LC requires.
+9. Extract: the exact port of loading stated on the BL.""",
                 "doc_text": _get_doc_text(bl),
                 "image_path": (bl.get('page_image_paths', [None]) or [None])[0],
                 "clause_ref": "F44E", "condition": f"Port of Loading must match: {port}",
@@ -873,11 +1052,26 @@ RULES:
 LC Port of Discharge (F44F): {port}
 
 RULES:
-1. Find the PORT OF DISCHARGE / DESTINATION on the Bill of Lading
-2. It must match the LC requirement: "{port}"
-3. Minor spelling differences are acceptable
-4. If the port is completely different, it is a FAIL
-5. Extract: the exact port of discharge stated on the BL""",
+1. Find the PORT OF DISCHARGE / DESTINATION on the Bill of Lading.
+2. It must match the LC requirement: "{port}".
+3. ━━━ "ANY [COUNTRY] PORT" RULE — same as Port of Loading ━━━
+   "ANY [COUNTRY] PORT/SEAPORT" or "ANY [COUNTRY ADJECTIVE] PORT/SEAPORT" matches ANY port in that country.
+   Country adjectives ALWAYS map to the country noun:
+       CHINESE = CHINA, CANADIAN = CANADA, PAKISTANI = PAKISTAN, INDIAN = INDIA,
+       MALAYSIAN = MALAYSIA, INDONESIAN = INDONESIA, JAPANESE = JAPAN,
+       KOREAN = KOREA, BANGLADESHI = BANGLADESH, EMIRATI = UAE,
+       SAUDI = SAUDI ARABIA, AMERICAN = USA, BRITISH = UK, etc.
+4. CHINA includes: Hong Kong / HONGKONG / HK / HKG, Macau / MACAO, Shanghai,
+   Shenzhen, Ningbo, Qingdao, Tianjin, Guangzhou, Xiamen, Dalian, Yantian, Huangpu, Kaohsiung.
+   So "HONGKONG, CHINA" satisfies "ANY CHINESE PORT" → PASS.
+5. EXAMPLES THAT MUST PASS:
+   • LC "ANY CHINESE SEAPORT"  vs BL "HONGKONG SEAPORT, CHINA"  → PASS
+   • LC "KARACHI PORT, PAKISTAN" vs BL "PORT OF KARACHI"        → PASS
+   • LC "ANY UK PORT"          vs BL "FELIXSTOWE, UK"           → PASS
+6. Minor spelling / qualifier differences are acceptable
+   ("KARACHI PORT" = "PORT OF KARACHI" = "KARACHI SEAPORT").
+7. Only mark FAIL if the port is in a COMPLETELY DIFFERENT country than required.
+8. Extract: the exact port of discharge stated on the BL.""",
                 "doc_text": _get_doc_text(bl),
                 "image_path": (bl.get('page_image_paths', [None]) or [None])[0],
                 "clause_ref": "F44F", "condition": f"Port of Discharge must match: {port}",
