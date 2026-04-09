@@ -456,11 +456,22 @@ F47A ADDITIONAL CONDITIONS (read these FIRST -- they may override or modify the 
 {f47a_context}
 
 DOCUMENT BEING CHECKED: {document_type}
-DOCUMENT TEXT (from GLM OCR -- trusted):
+DOCUMENT TEXT (from GLM OCR -- trusted, complete page text):
 {document_text}
 
-DOCUMENT VISUAL METADATA (stamps, signatures, seals, copy/original status detected):
+DOCUMENT VISUAL METADATA (already extracted by upstream steps -- stamps,
+signatures, seals, copy/original status, BL form status, document number,
+issue date, amount, issuer, LC reference, all extracted fields, marks,
+endorsements, etc.):
 {visual_metadata}
+
+NOTE: The DOCUMENT TEXT and DOCUMENT VISUAL METADATA above together contain
+EVERYTHING that has been observed on the page (text + every visual element
+detected by the OCR and classification stages). They are your COMPLETE source
+of truth for this verification. Do NOT request, assume, or hallucinate any
+information that is not present in these two blocks. If a fact you need is
+not in either block, treat it as "not stated on the document" and decide
+accordingly (usually REVIEW, not FAIL).
 
 VERIFY: Does the document satisfy this condition?
 
@@ -555,8 +566,20 @@ def _call_vlm(
 ) -> dict:
     """
     Send a single verification request to Qwen VLM.
-    If image_path is provided and the file exists, the image is included
-    as a base64-encoded content block alongside the text prompt.
+
+    P63: TEXT-ONLY VERIFICATION.
+    By the time we reach Step 14, every visually-derivable fact has already
+    been extracted by Steps 1, 8 and 9 and is carried into the prompt via
+    `document_text` (full GLM OCR) and `visual_metadata` (stamps, signatures,
+    seals, copy/original status, BL form status, all extracted_fields, etc.).
+    Sending the page image again is:
+      • redundant — same information delivered twice,
+      • expensive — a single high-res BL scan can encode to 5000-8000 visual
+        tokens and was pushing requests past the 72B's max_model_len=16384
+        causing HTTP 400 (`max_tokens must be at least 1, got -602`),
+      • slower — large base64 payload + image preprocessing on the server.
+    The `image_path` parameter is preserved for caller compatibility but is
+    intentionally NOT attached to the request payload.
     """
     start = time.time()
 
@@ -618,22 +641,9 @@ def _call_vlm(
         visual_metadata=visual_metadata or "(No visual metadata available)",
     )
 
-    # Build message content -- text only or text + image
-    content_parts = []
-
-    # Include image if available
-    if image_path and os.path.isfile(image_path):
-        try:
-            with open(image_path, "rb") as fh:
-                img_b64 = base64.b64encode(fh.read()).decode()
-            content_parts.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{img_b64}"},
-            })
-        except Exception:
-            pass  # Fall back to text-only if image read fails
-
-    content_parts.append({"type": "text", "text": prompt_text})
+    # P63: text-only verification. document_text + visual_metadata already
+    # carry every fact the image would provide (see docstring above).
+    content_parts = [{"type": "text", "text": prompt_text}]
 
     payload = {
         "model": QWEN_VLM_MODEL,
