@@ -156,6 +156,173 @@ ACCOMPANIMENT CLAUSES:
   • Date validity: "DOCUMENTS DATED PRIOR TO... NOT ACCEPTABLE" (handled separately)
 
 ═══════════════════════════════════════════════════════════════
+TRANSMISSION CLAUSES — ONE SET / VIA EMAIL / VIA COURIER (CRITICAL)
+═══════════════════════════════════════════════════════════════
+A "transmission clause" describes HOW a bundle of documents was
+delivered (typically a courier copy or an email copy sent to the
+applicant or to a third party). It is NOT a list of separate
+documents to verify. The whole clause maps to ONE compliance row
+that asks whether the transmission evidence is present in the
+submission set — usually a covering email screenshot, a courier
+airway bill, or a remittance schedule that lists what was sent.
+
+Recognise these wordings as transmission clauses:
+  • "ONE SET OF NON-NEGOTIABLE DOCUMENTS COMPRISING OF ... TO BE
+     SENT TO THE APPLICANT VIA EMAIL"
+  • "A COPY OF THE FOLLOWING DOCUMENTS ... TO BE DISPATCHED TO
+     THE APPLICANT BY EMAIL / COURIER / FAX"
+  • "PHOTOCOPIES OF ... TO BE FORWARDED DIRECTLY TO THE APPLICANT"
+  • "ONE SET OF SHIPPING DOCUMENTS TO BE SENT BY COURIER TO ..."
+  • "DOCUMENTS LISTED ABOVE TO BE EMAILED TO ..."
+
+WHEN YOU SEE A TRANSMISSION CLAUSE:
+  → Emit EXACTLY ONE condition for the whole clause.
+  → document_to_check = "Documentary Remittance"
+    (the covering email / fax / courier evidence is grouped under
+    Documentary Remittance — see the synonym list below)
+  → condition_text = a single human-readable summary of what must
+    be evidenced, e.g.
+       "One set of non-negotiable documents (signed Invoice,
+        Packing List, Form 7, Form 3, Certificate of Analysis,
+        Air Waybill copy) must have been sent to the applicant
+        via email — verify the covering email / remittance
+        schedule shows the bundle was dispatched."
+  → Do NOT create separate rows for each document listed inside
+    the bundle. Those documents are ALREADY checked by their own
+    F46A clauses elsewhere in this LC. Re-checking them here
+    duplicates work and produces false fails when the verifier
+    looks for an email header on each individual PDF.
+  → Do NOT create rows with document_to_check = "All Documents"
+    or with the individual document names ("Commercial Invoice",
+    "Packing List", "Form 7", etc.). One row, one document type,
+    one piece of evidence — that is the rule.
+
+WORKED COUNTER-EXAMPLE 1 — "ONE SET ... VIA EMAIL":
+   Clause: "ONE SET OF NON-NEGOTIABLE DOCUMENTS COMPRISING OF
+            MANUALLY SIGNED INVOICE, PACKING LIST, COPIES OF
+            FORM 7 (BATCH CERTIFICATE), FORM 3, CERTIFICATE OF
+            ANALYSIS, COPY OF AWB, TO BE SENT TO THE APPLICANT
+            VIA EMAIL."
+
+   WRONG decomposition (do NOT do this):
+     ❌ 7 separate rows, each asking the verifier to find email
+        evidence on the corresponding document. Result: 7 false
+        FAILs because individual documents do not carry email
+        headers.
+
+   CORRECT decomposition (one row only):
+     1. document_to_check = "Documentary Remittance"
+        condition_text   = "One set of non-negotiable documents
+            (signed Commercial Invoice, Packing List, Form 7
+            Batch Certificate, Form 3, Certificate of Analysis,
+            and a copy of the Air Waybill) must have been sent
+            to the applicant via email. Verify a covering email,
+            remittance schedule, or transmission record exists
+            in the submission showing this bundle was dispatched
+            to the applicant."
+        is_implicit      = false
+
+═══════════════════════════════════════════════════════════════
+DISPATCH + BENEFICIARY-CERTIFICATE-TO-THIS-EFFECT CLAUSES
+═══════════════════════════════════════════════════════════════
+A second very common pattern is a clause that says:
+  • Some original document (FTA Certificate, COO, Quality Cert,
+    Insurance Policy, etc.) must be dispatched / couriered /
+    sent / handed over to a named party (the applicant or a
+    third party), AND
+  • A "BENEFICIARY CERTIFICATE TO THIS EFFECT" must accompany
+    the presented documents stating that the dispatch happened.
+
+These clauses always reduce to EXACTLY TWO compliance rows:
+
+  ROW A — physical-document presence:
+    document_to_check = the named original document
+                        (e.g. "FTA Certificate", "Certificate of
+                         Origin", "Insurance Policy")
+    condition_text    = "<doc> must be present in the submission
+                         (the original is dispatched separately,
+                         a copy is presented along with the other
+                         documents)"
+    NOTE: there is no need to check "was the original dispatched"
+    on the document itself — the document's own face cannot tell
+    you whether someone couriered it. Only check that it exists.
+
+  ROW B — beneficiary-certificate evidence:
+    document_to_check = "Beneficiary Certificate"
+    condition_text    = "Beneficiary Certificate must state that
+                         the original <doc> was dispatched to
+                         <named recipient> at the address given,
+                         along with the non-negotiable documents,
+                         within <time limit if any>."
+    ONE row, not three. The "to <recipient>", "at <address>",
+    "along with non-negotiable documents", "within <days>" are
+    parts of the SAME sentence the Beneficiary Certificate must
+    contain. They are NOT separate compliance items. The verifier
+    reads the Beneficiary Certificate once and decides PASS / FAIL
+    on whether the required statement is present.
+
+Do NOT generate:
+  ❌ Separate rows for "<doc> must be dispatched immediately",
+     "<doc> must be sent to <address>", "<doc> must be sent along
+     with non-negotiable documents". The original document does
+     not carry this information on its own face.
+  ❌ Separate rows on the Beneficiary Certificate for each part
+     of the statement. The certificate carries ONE sentence that
+     covers all parts.
+  ❌ A separate "<doc> must accompany original documents" row
+     when the clause already says the ORIGINAL is dispatched
+     AND a non-negotiable copy travels with the bundle — that
+     is the same fact stated in two ways. Pick ROW A only.
+
+WORKED COUNTER-EXAMPLE 2 — FTA dispatch + Beneficiary Certificate:
+   Clause: "FTA CERTIFICATE REQUIRED. ORIGINAL FTA SHOULD BE
+            DISPATCHED IMMEDIATELY TO GETZ PHARMA (PVT) LTD.
+            POSTAL ADDRESS ALONG WITH NON-NEGOTIABLE DOCUMENTS.
+            BENEFICIARY CERTIFICATE TO THIS EFFECT TO ACCOMPANY
+            ORIGINAL DOCUMENTS. DAYS FROM SHIPMENT DATE BUT
+            WITHIN THE VALIDITY OF LC."
+
+   WRONG decomposition (do NOT do this):
+     ❌ 7 rows like
+        - "Original FTA Certificate must be dispatched immediately
+           to Getz Pharma"  (FTA Certificate)
+        - "FTA Certificate must be sent to the postal address of
+           Getz Pharma"  (FTA Certificate)
+        - "FTA Certificate must be sent along with non-negotiable
+           documents"  (FTA Certificate)
+        - "Beneficiary Certificate must state that the original
+           FTA Certificate was dispatched immediately to Getz
+           Pharma"  (Beneficiary Certificate)
+        - "Beneficiary Certificate must state that the FTA
+           Certificate was sent to the postal address of Getz
+           Pharma"  (Beneficiary Certificate)
+        - "Beneficiary Certificate must state that the FTA
+           Certificate was sent along with non-negotiable
+           documents"  (Beneficiary Certificate)
+        - "Beneficiary Certificate must accompany the original
+           documents"  (Beneficiary Certificate)
+        These produce six false fails because the FTA Certificate
+        cannot self-report being dispatched, and the Beneficiary
+        Certificate carries one combined sentence, not three
+        separate statements.
+
+   CORRECT decomposition (exactly two rows):
+     1. document_to_check = "FTA Certificate"
+        condition_text   = "An FTA Certificate must be present
+            in the submission. The original is dispatched to the
+            applicant separately; a copy travels with the other
+            non-negotiable documents."
+        is_implicit      = false
+
+     2. document_to_check = "Beneficiary Certificate"
+        condition_text   = "Beneficiary Certificate must state
+            that the original FTA Certificate was dispatched
+            immediately to Getz Pharma (Pvt) Ltd. at its postal
+            address, along with the non-negotiable documents,
+            within the LC validity."
+        is_implicit      = false
+
+═══════════════════════════════════════════════════════════════
 TRADE FINANCE KNOWLEDGE
 ═══════════════════════════════════════════════════════════════
   • "FULL SET" = 3/3 originals (e.g., "FULL SET OF BILLS OF LADING" = 3 original BLs)
