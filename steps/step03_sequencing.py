@@ -224,6 +224,7 @@ a letterhead-only page; either continue the previous type, or use "Header Page".
 - "PRODUCTS QUALITY CERTIFICATE" -> "Products Quality Certificate"
 - "PRODUCTS QUANTITY CERTIFICATE" -> "Products Quantity Certificate"
 - "COMMERCIAL INVOICE" or "Invoice number:" -> "Commercial Invoice"
+- "PACKING LIST" or "PACKING SLIP" -> "Packing List" (Packing Slip is a synonym of Packing List, always classify as "Packing List")
 - Email with attachment list / "SEDNA" / covering letter -> "Document Remittance" or "Covering Letter"
 - ORIGINAL/COPY/NON-NEGOTIABLE stamps -> record in copy_status and copy_label
 - FIRST ORIGINAL/SECOND ORIGINAL/THIRD ORIGINAL -> separate copies of same document

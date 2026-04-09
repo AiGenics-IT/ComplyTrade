@@ -282,7 +282,8 @@ _DOC_INDICATORS = {
         r'ORIGIN\s+CRITERIA', r'CHAMBER\s+OF\s+COMMERCE',
     ],
     "Packing List": [
-        r'PACKING\s+LIST', r'NET\s+WEIGHT', r'GROSS\s+WEIGHT',
+        r'PACKING\s+LIST', r'PACKING\s+SLIP',
+        r'NET\s+WEIGHT', r'GROSS\s+WEIGHT',
         r'CARTONS?', r'PACKAGES?', r'DIMENSIONS',
     ],
     "Weight List": [

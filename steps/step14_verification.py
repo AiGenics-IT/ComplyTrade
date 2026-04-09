@@ -85,6 +85,7 @@ DOC_TYPE_ALIASES = {
     ],
     "packing list": [
         "packing list", "packing note", "packing specification",
+        "packing slip",
     ],
     "certificate of origin": [
         "certificate of origin", "coo", "origin certificate",
