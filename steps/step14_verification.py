@@ -937,6 +937,40 @@ def _build_tasks(
             })
             continue
 
+        # P66: Defensive insurance filter — even if step12 slipped and asked
+        # the verifier to check an Insurance Policy/Certificate when the LC
+        # clearly says insurance is the applicant's responsibility, drop the
+        # row as N/A instead of producing a false MISSING discrepancy.
+        # Triggers when ALL of these are true:
+        #   • document_to_check is an Insurance Policy/Certificate
+        #   • F47A context contains "INSURANCE COVERED BY APPLICANT" (or
+        #     equivalent phrasing) anywhere in the LC's additional conditions
+        _doc_checked_lower = (_get(row, "document_checked", "") or "").lower()
+        if ("insurance policy" in _doc_checked_lower
+                or "insurance certificate" in _doc_checked_lower
+                or "insurance policy/certificate" in _doc_checked_lower):
+            _f47a_upper = (f47a_context or "").upper()
+            _insurance_by_applicant = bool(re.search(
+                r'INSURANCE\s+(?:TO\s+BE\s+)?(?:COVERED|EFFECTED|ARRANGED|HANDLED|DONE|TAKEN)\s*'
+                r'(?:OUT\s+)?BY\s+(?:THE\s+)?(?:APPLICANT|BUYER|OPENER)'
+                r'|INSURANCE\s+ON\s+(?:BUYER|APPLICANT|OPENER)[\'A-Z\s]*\s+ACCOUNT'
+                r'|INSURANCE\s+NOT\s+REQUIRED'
+                r'|INSURANCE\s+BY\s+(?:THE\s+)?(?:APPLICANT|BUYER|OPENER)',
+                _f47a_upper,
+            ))
+            if _insurance_by_applicant:
+                _set(row, "compliance", "N/A")
+                _set(row, "result", "Disregarded — insurance covered by applicant (no insurance document required from beneficiary)")
+                _set(row, "findings", "F47A states insurance is covered by the applicant; beneficiary does not present an insurance document")
+                _set(row, "document_checked", "(non-documentary — insurance is applicant's responsibility)")
+                _set(row, "confidence", 1.0)
+                tasks.append({
+                    "row": row,
+                    "skip": True,
+                    "reason": "insurance_by_applicant",
+                })
+                continue
+
         condition_text = _get(row, "condition_text", "")
         clause_ref = _get(row, "clause_ref", "")
         field_tag = _get(row, "field_tag", "")

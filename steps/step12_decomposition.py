@@ -166,6 +166,99 @@ TRADE FINANCE KNOWLEDGE
   • "INSURANCE COVERED BY APPLICANT" = applicant handles insurance, beneficiary must send SHIPMENT ADVICE (not insurance doc)
   • "ENDORSED TO THE ORDER OF [BANK]" on BL = consignee field shows "TO THE ORDER OF [BANK]"
 
+═══════════════════════════════════════════════════════════════
+INSURANCE — HARD PROHIBITION (READ THIS BEFORE EVERY F47A CLAUSE)
+═══════════════════════════════════════════════════════════════
+The mere appearance of the word "INSURANCE" in a clause does NOT mean
+the document_to_check is "Insurance Policy/Certificate". Most F47A
+mentions of insurance describe HOW INSURANCE IS HANDLED, not what
+document the beneficiary must present. You MUST follow these rules:
+
+RULE I-1 (the most important):
+If a clause contains ANY of the following phrases — anywhere in the
+clause text — the beneficiary will NOT submit any insurance document.
+You MUST NEVER create a condition with document_to_check =
+"Insurance Policy" or "Insurance Certificate" or "Insurance Policy/
+Certificate" for ANY part of such a clause:
+  • "INSURANCE COVERED BY APPLICANT"
+  • "INSURANCE TO BE COVERED BY APPLICANT"
+  • "INSURANCE TO BE EFFECTED BY APPLICANT"
+  • "INSURANCE ARRANGED BY APPLICANT"
+  • "INSURANCE ON BUYER'S ACCOUNT"
+  • "INSURANCE NOT REQUIRED"
+  • "INSURANCE COVERED BY BUYER"
+  • "INSURANCE BY APPLICANT"
+
+RULE I-2 (Incoterms):
+For LCs whose Incoterms are CFR / CNF / FOB / EXW / FCA / FAS, the
+beneficiary does NOT supply insurance. Only CIF / CIP terms require
+insurance from the beneficiary. If you can see the LC Incoterms in the
+context and they are non-insurance Incoterms, you MUST NOT create
+"Insurance Policy/Certificate" conditions for ANY clause in this LC.
+
+RULE I-3 (real intent of insurance-mentioning clauses):
+When a clause contains "INSURANCE COVERED BY APPLICANT" together with
+instructions to ADVISE / NOTIFY / SEND DETAILS to the insurer or
+applicant within N days of shipment, the SUBJECT of the clause is the
+SHIPMENT ADVICE the beneficiary must produce — NOT an insurance
+document. Use document_to_check = "Shipment Advice" for every
+condition derived from such a clause. The cover note number, the email
+address of the insurer, the list of details (L/C no, vessel, BL date,
+etc.) — these are all things that must appear on the SHIPMENT ADVICE.
+
+RULE I-4 ("ALL DOCUMENTS" fan-out):
+When a clause says "L/C NUMBER MUST APPEAR ON ALL DOCUMENTS" (or any
+"ALL DOCUMENTS" fan-out), use document_to_check = "All Documents"
+(literal string). Do NOT enumerate doc types yourself. The verifier
+will fan out at run time across documents that are ACTUALLY present in
+this submission. NEVER include "Insurance Policy/Certificate" in such
+a fan-out unless RULE I-1 and RULE I-2 both confirm that insurance is
+required from the beneficiary in this LC.
+
+WORKED COUNTER-EXAMPLE — STUDY THIS:
+Clause: "INSURANCE COVERED BY APPLICANT. ALL SHIPMENT(S) UNDER THIS
+CREDIT MUST BE ADVISED BY THE BENEFICIARY WITHIN THREE WORKING DAYS
+AFTER SHIPMENT TO M/S. SINDH INSURANCE, KARACHI, PAKISTAN AND TO THE
+APPLICANT, REFERRING TO THEIR COVER NOTE NO. SIL/D/T001/0000001192/
+0925/001 DATED 04-09-2025 VIA EMAIL INFO(AT)SIUT.ORG GIVING FULL
+DETAILS OF SHIPMENT, SUCH AS L/C NO., INVOICE VALUE, PORT OF SHIPMENT,
+VESSEL NAME, SHIPPED ON BOARD DATE. A COPY OF THIS SHIPMENT ADVICE TO
+ACCOMPANY EACH SET OF DOCUMENT(S)"
+
+CORRECT decomposition (every condition uses Shipment Advice — never
+Insurance Policy/Certificate):
+  1. document_to_check="Shipment Advice", condition="Beneficiary must
+     send a Shipment Advice within 3 working days after shipment"
+  2. document_to_check="Shipment Advice", condition="Shipment Advice
+     must be addressed to M/s. Sindh Insurance, Karachi, Pakistan AND
+     to the Applicant"
+  3. document_to_check="Shipment Advice", condition="Shipment Advice
+     must reference Cover Note No. SIL/D/T001/0000001192/0925/001
+     dated 04-09-2025"
+  4. document_to_check="Shipment Advice", condition="Shipment Advice
+     must be sent via email to info(at)siut.org"
+  5. document_to_check="Shipment Advice", condition="Shipment Advice
+     must show L/C number"
+  6. document_to_check="Shipment Advice", condition="Shipment Advice
+     must show invoice value"
+  7. document_to_check="Shipment Advice", condition="Shipment Advice
+     must show port of shipment"
+  8. document_to_check="Shipment Advice", condition="Shipment Advice
+     must show vessel name"
+  9. document_to_check="Shipment Advice", condition="Shipment Advice
+     must show shipped on board date"
+ 10. document_to_check="Shipment Advice", condition="A copy of the
+     Shipment Advice must accompany each set of presented documents"
+
+INCORRECT decomposition (DO NOT DO THIS):
+  ❌ document_to_check="Insurance Policy/Certificate", condition="..."
+  ❌ Any row asking the verifier to find anything on an Insurance
+     Policy or Insurance Certificate.
+The reason is simple: there IS no insurance document in this
+presentation — the applicant arranged the cover separately. Creating
+an Insurance row guarantees a false "REQUIRED DOCUMENT MISSING"
+discrepancy on every run.
+
 DOCUMENT IDENTIFICATION:
   • "SHIPMENT ADVICE" or "BENEFICIARY SHIPMENT ADVICE" = document type "Shipment Advice"
   • "CERTIFICATE FROM SHIPPING COMPANY OR THEIR AUTHORIZED AGENTS" = "Shipping Company Certificate"
