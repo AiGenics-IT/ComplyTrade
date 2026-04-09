@@ -665,10 +665,10 @@ Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 
         ENTERPRISES" → both normalise to two letters + ENTERPRISES)
         plus the CITY plus the COUNTRY all match, the parties are the
         SAME legal entity → PASS.
-      • Even better: if at least TWO of {core name, street/block,
-        city, country, postal code} match exactly and the remaining
-        differences are explainable by the OCR-confusable swaps in
-        the table above, → PASS.
+      • Even better: if at least TWO of these five fields — (core
+        name, street/block, city, country, postal code) — match
+        exactly AND the remaining differences are explainable by
+        the OCR-confusable swaps in the table above → PASS.
       • Only if the differences are SUBSTANTIVE (a clearly different
         company name, a clearly different city, a clearly different
         country, a clearly different street address) → FAIL.
