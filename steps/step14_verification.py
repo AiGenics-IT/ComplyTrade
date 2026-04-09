@@ -1008,7 +1008,12 @@ def run(
 
         if reason in ("doc_not_found", "no_shipping_docs"):
             prefilled = task.get("prefilled", _DOC_MISSING_RESULT)
-            doc_target = task.get("doc_type_target", "unknown")
+            # Use the actual doc target the row was looking for. Fall back
+            # to the row's existing document_checked if the task didn't
+            # carry one (e.g. for "no_shipping_docs" reason).
+            doc_target = (task.get("doc_type_target")
+                          or _get(row, "document_checked", "")
+                          or "Unknown document")
             clause_ref = _get(row, "clause_ref", "")
             # Deduplicate: only show "missing" once per clause+doc_type combo
             _missing_key = f"{clause_ref}|{doc_target}"
@@ -1019,15 +1024,24 @@ def run(
                 _set(row, "findings", "")
                 continue
             _seen_missing.add(_missing_key)
-            _set(row, "findings", prefilled["findings"])
-            _set(row, "found_text", prefilled["findings"])
-            _set(row, "result", prefilled["result"])
+            # Use the actual document name in the message instead of the
+            # generic "Document not found in submission" — gives the
+            # reviewer a clear "what is missing" without having to trace
+            # the row back to its decomposition.
+            _named_findings = f"{doc_target} not found in submission"
+            _named_result   = f"Required document missing: {doc_target}"
+            # Set document_checked to the target so the report's
+            # Document column shows the actual name (was previously "N/A"
+            # when the row was created with doc_to_check empty).
+            _set(row, "document_checked", doc_target)
+            _set(row, "findings", _named_findings)
+            _set(row, "found_text", _named_findings)
+            _set(row, "result", _named_result)
             _set(row, "compliance", prefilled["compliance"].upper())
             _set(row, "confidence", prefilled["confidence"])
             _set(row, "verification_notes", prefilled.get("reasoning", ""))
             _progress(
-                f"  {_get(row, 'row_id', '?')}: FAIL - "
-                f"Document not found: {doc_target}"
+                f"  {_get(row, 'row_id', '?')}: FAIL - {_named_result}"
             )
 
     # ------------------------------------------------------------------ #

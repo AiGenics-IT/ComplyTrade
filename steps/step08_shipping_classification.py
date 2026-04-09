@@ -126,16 +126,46 @@ class ClassifiedPacket:
 
 # ── Classification Prompt ──
 
-_CLASSIFICATION_PROMPT = """You are classifying a trade finance shipping document.
+_CLASSIFICATION_PROMPT = """You are a trade finance SHIPPING DOCUMENT classifier.
 
-GLM OCR TEXT (trusted):
-{glm_text}
+CRITICAL RULES (read first, follow strictly):
+- The Letter of Credit (LC / MT700 / MT707 / MT799) has ALREADY been classified
+  upstream. The document you are looking at NOW is a SHIPPING DOCUMENT (e.g.
+  invoice, bill of lading, packing list, certificate, etc.).
+- You MUST NEVER return "Letter of Credit", "LC", "MT700", "MT707", or
+  "Amendment" as the document_type. Those values are FORBIDDEN. If the
+  page genuinely looks like an LC by mistake, classify it as the actual
+  shipping document type that best fits, or "Header Page" / "Covering
+  Letter" / "Unknown" if it has no shipping content.
+- Look at the PAGE IMAGE and the OCR TEXT FROM THIS PAGE ONLY. Do NOT
+  classify based on what the LC requires — that list is only a HINT for
+  resolving the spelling of the document type if there is a match.
 
-The LC requires these documents:
+==================== CANDIDATE DOCUMENT TYPES (HINT ONLY) ====================
+The LC's required-document list is shown below. This is a HINT for choosing
+the EXACT spelling when the document on the page matches one of these. It is
+NOT a description of what the page contains. Do NOT assume the page is one of
+these types — verify against the actual page image and OCR text.
+
 {required_docs_list}
+==============================================================================
 
-Based on the image and text, classify this document:
-1. document_type: exact name from the required list if it matches, OR the ACTUAL document title/heading visible on the page. NEVER force-fit a document into an incorrect category — use the real name (e.g., "Port Clearance Certificate", "Time Sheet", "Tanker Cleanliness Certificate", "Shore Tank Measurements", "Vessel Experience Factor", "Master Receipt for Sealed Samples", "Letter of Authority", etc.)
+==================== PAGE TO CLASSIFY (FROM THE IMAGE) =======================
+Document text extracted by GLM-OCR:
+
+{glm_text}
+==============================================================================
+
+Based on the image AND the document text above, classify this page:
+1. document_type: the ACTUAL document title/heading visible on the PAGE. If
+   the page matches one of the LC's required types, use that EXACT spelling.
+   If no match, use the real title visible on the page (e.g., "Port Clearance
+   Certificate", "Time Sheet", "Tanker Cleanliness Certificate", "Shore Tank
+   Measurements", "Vessel Experience Factor", "Master Receipt for Sealed
+   Samples", "Letter of Authority", etc.).
+   FORBIDDEN VALUES: "Letter of Credit", "LC", "MT700", "MT707", "MT799",
+   "Amendment". If the page truly has no recognisable shipping content,
+   return "Unknown" or "Header Page" or "Blank Page".
    IMPORTANT DISAMBIGUATION RULES:
    • A DHL / FedEx / UPS / TNT / Aramex / EXPRESS ENVELOPE / WAYBILL / AWB / HAWB / MAWB / "Air Waybill" label is a "Courier Receipt" or "Airway Bill" — these two are TREATED AS THE SAME CATEGORY. Use whichever name appears in the LC's required-documents list; if the LC asked for "Courier Receipt" use that, if it asked for "Airway Bill" use that. It is NEVER a "Documentary Remittance" or "Beneficiary Certificate", even though it carries documents.
    • A bank-letterhead page that says "We enclose documents related to above referenced letter of credit", "Total Amount Claimed", "Presentation Number", "Our Reference No.", "Your Documentary Credit No.", or "remit funds to our correspondent" is a "Documentary Remittance" (covering schedule), NEVER a "Beneficiary Certificate".
@@ -721,6 +751,54 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
     except Exception as e:
         print("[Step 8] VLM classification failed for packet %d: %s" % (packet_index, e))
 
+    # ── Forbid the VLM from returning Letter of Credit / MT-side types ──
+    # Step 8 only ever sees SHIPPING documents (the MT-side packets are
+    # split out upstream by server.py / the inline step04 logic). Smaller
+    # VLMs (notably the 7B) sometimes hallucinate "Letter of Credit" as
+    # the document type because they bleed the prompt text ("The LC
+    # requires these documents:") into the answer instead of looking at
+    # the actual page. When that happens, drop the VLM document_type and
+    # fall back to step 3's prior classification (which is much more
+    # reliable because step 3 doesn't have the LC required-docs list in
+    # its prompt).
+    _forbidden = {
+        'letter of credit', 'lc', 'mt700', 'mt 700', 'mt707', 'mt 707',
+        'mt799', 'mt 799', 'amendment', 'documentary credit',
+    }
+    if vlm_result:
+        _vlm_dt = (vlm_result.get('document_type') or '').strip().lower()
+        if _vlm_dt in _forbidden:
+            # Strip the bad document_type but KEEP the metadata (number,
+            # date, amount, stamps, signatures, etc.) — those are still
+            # useful even when the type was hallucinated.
+            print(f"[Step 8] VLM returned forbidden type {_vlm_dt!r} for packet {packet_index} — using prior step3 classification, keeping VLM metadata")
+            vlm_result['document_type'] = ''
+
+    # ── TRUST STEP 3'S CLASSIFICATION when it produced a meaningful type ──
+    # Step 3 looks at each page IN ISOLATION (no LC required-docs context)
+    # and classifies it from the title/heading visible on the image. That
+    # makes it MUCH more reliable than step 8's VLM, which sees the LC
+    # required-docs list and is prone to prompt-bleed on small models.
+    #
+    # If step 3 already produced a meaningful document_type (anything that
+    # is not 'Unknown', 'LC', 'Amendment', or one of the structural types
+    # already handled above), we use that as the canonical answer and only
+    # let the step 8 VLM CONFIRM / REFINE it. The VLM result is then used
+    # primarily for metadata extraction (number, date, amount, stamps,
+    # signatures, copy_status, marking_status).
+    _prior_dt_for_match = (packet.get('document_type') or '').strip()
+    if not _prior_dt_for_match and pages:
+        _first = pages[0] if isinstance(pages[0], dict) else {}
+        _prior_dt_for_match = (_first.get('document_type') or '').strip()
+    _prior_lower = _prior_dt_for_match.lower()
+    _trust_prior = bool(
+        _prior_dt_for_match
+        and _prior_lower not in _forbidden
+        and _prior_lower not in {'unknown', '', 'header page', 'blank page',
+                                  'endorsement page', 'covering letter',
+                                  'cover letter', 'fusion header', 'back page'}
+    )
+
     # ── Combine results ──
     document_type = ""
     match_confidence = 0.0
@@ -813,9 +891,25 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
         matched_index, matched_name = _match_type_to_requirement(document_type, expected_docs)
         classification_status = "matched_document" if matched_index >= 0 else "alien_document"
     elif vlm_result:
+        # Default: take whatever the VLM said
         document_type = vlm_result.get('document_type', '')
         match_confidence = float(vlm_result.get('confidence', 0.0))
         reasoning = vlm_result.get('reasoning', '')
+        # ── PRIOR-CLASSIFICATION OVERRIDE ──
+        # If step 3 already produced a meaningful document_type for this
+        # packet AND the VLM either (a) returned the forbidden Letter of
+        # Credit value (now stripped to '') or (b) returned something
+        # generic/empty, prefer step 3's classification. Step 3 is more
+        # reliable because it sees the page in isolation without the LC
+        # required-documents list bleeding into the prompt.
+        if _trust_prior:
+            _vlm_dt_lower = (document_type or '').strip().lower()
+            if (not document_type
+                    or _vlm_dt_lower in _forbidden
+                    or _vlm_dt_lower in {'unknown', 'other', 'document'}):
+                document_type = _prior_dt_for_match
+                reasoning = f"Step 3 prior classification (preferred): {_prior_dt_for_match}"
+                match_confidence = max(match_confidence, 0.90)
         document_summary = vlm_result.get('summary', '')
         document_number = vlm_result.get('document_number', '')
         document_date = vlm_result.get('date', '')
@@ -854,6 +948,15 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
             classification_status = "matched_document"
         else:
             classification_status = "alien_document"
+
+    elif _trust_prior:
+        # No VLM result and no rule override, but step 3 already produced
+        # a meaningful document_type. Use that directly.
+        document_type = _prior_dt_for_match
+        match_confidence = 0.85
+        reasoning = f"Step 3 prior classification (VLM unavailable): {_prior_dt_for_match}"
+        matched_index, matched_name = _match_type_to_requirement(document_type, expected_docs)
+        classification_status = "matched_document" if matched_index >= 0 else "alien_document"
 
     elif rule_matches:
         # Fallback to rule-based

@@ -124,8 +124,6 @@ def _build_rows_from_decomposed(decomposed_clauses: list) -> List[VerificationRo
 
         # Create one row per condition — each is independently verifiable
         for cond in conditions:
-            row_counter += 1
-
             # Handle both dataclass and dict format for conditions
             if hasattr(cond, 'condition_text'):
                 cond_text = cond.condition_text
@@ -138,10 +136,48 @@ def _build_rows_from_decomposed(decomposed_clauses: list) -> List[VerificationRo
                 cond_text = cond.get('condition_text', '')
                 doc_to_check = cond.get('document_to_check', '')
                 look_for = cond.get('look_for_value', '')
-                cond_id = cond.get('condition_id', f"{clause_ref}-C{row_counter}")
+                cond_id = cond.get('condition_id', f"{clause_ref}-CX")
                 is_implicit = cond.get('is_implicit', False)
                 implicit_type = cond.get('implicit_type', '')
 
+            # ── Skip non-documentary conditions per UCP 600 Art 14(h) ──
+            # When step 12's decomposition cannot tie a condition to an
+            # actual document type, it returns document_to_check='N/A'
+            # (or empty / blank). These are non-documentary conditions
+            # like "documents to be sent via email", "intimate consignee
+            # by fax", "advise applicant by email" — the LC says HOW to
+            # do something, not WHAT to present. UCP 600 Art 14(h) says
+            # banks disregard non-documentary conditions, so we either:
+            #   (a) emit a single informational row noting the condition
+            #       was disregarded — preserves visibility for the user
+            #       without producing a false REQUIRED DOCUMENT MISSING
+            #   (b) skip the row entirely — cleanest for the report
+            # We go with (a) so the user can see at a glance that the
+            # clause IS recognised, just not enforced.
+            _doc_norm = (doc_to_check or '').strip()
+            if (not _doc_norm
+                    or _doc_norm.upper() == 'N/A'
+                    or _doc_norm.upper() == 'NA'
+                    or _doc_norm.upper() == 'NONE'):
+                row_counter += 1
+                rows.append(VerificationRow(
+                    row_id=f"R{row_counter:04d}",
+                    clause_ref=clause_ref,
+                    field_tag=field_tag,
+                    condition_id=cond_id,
+                    condition_text=cond_text,
+                    found_text="Non-documentary condition (UCP 600 Art 14(h))",
+                    document_checked="(non-documentary)",
+                    result="Disregarded — non-documentary condition per UCP 600 Art 14(h)",
+                    compliance="N/A",
+                    look_for_value=look_for,
+                    is_implicit=is_implicit,
+                    implicit_type=implicit_type,
+                    original_clause_text=original_text,
+                ))
+                continue
+
+            row_counter += 1
             rows.append(VerificationRow(
                 row_id=f"R{row_counter:04d}",
                 clause_ref=clause_ref,

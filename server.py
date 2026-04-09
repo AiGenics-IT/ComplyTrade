@@ -755,6 +755,46 @@ async def delete_job(job_id: str, request: Request):
     return {"status": "deleted", "job_id": job_id, "reason": reason}
 
 
+@app.post("/api/jobs/{job_id}/clear-verification")
+def clear_verification(job_id: str):
+    """
+    Clear ONLY the verification-stage outputs for a job (step12-step20).
+    Pre-verification stages (step01-step09) are kept intact so re-running
+    verification is fast (no OCR / classification re-run).
+
+    Used by the Jobs page "Clear Verification" button to allow the user
+    to re-trigger verification after fixing prompt / logic bugs without
+    paying the OCR cost again.
+    """
+    import shutil
+    job_dir = os.path.join(RESULTS_DIR, job_id)
+    if not os.path.isdir(job_dir):
+        raise HTTPException(404, f"Job results directory not found: {job_id}")
+
+    removed = []
+    # Verification + post-verification stages
+    _stages = ['step12', 'step13', 'step14', 'step14b', 'step15',
+               'step16', 'step17', 'step18', 'step19', 'step20']
+    for stage in _stages:
+        stage_path = os.path.join(job_dir, stage)
+        if os.path.isdir(stage_path):
+            shutil.rmtree(stage_path, ignore_errors=True)
+            removed.append(stage)
+
+    # Also clear any in-memory verification state for this job
+    if job_id in _jobs:
+        sr = _jobs[job_id].get('step_results', {})
+        for stage in _stages:
+            sr.pop(stage, None)
+
+    return {
+        "status": "cleared",
+        "job_id": job_id,
+        "removed_stages": removed,
+        "kept_stages": ["step01", "step02", "step03", "step06", "step07", "step08", "step09"],
+    }
+
+
 @app.get("/checks")
 def checks_config_page():
     """Serve the checks configuration page."""

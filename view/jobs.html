@@ -216,6 +216,22 @@
     </div>
 </div>
 
+<!-- Clear Verification Confirmation Modal -->
+<div class="modal-overlay" id="clr-modal" onclick="if(event.target===this)closeClearModal()">
+    <div class="modal-box">
+        <h3><span class="warn-icon" style="color:#0d9488">&#9888;</span> <span style="color:#0f766e">Clear Verification</span></h3>
+        <p>Job ID: <b id="clr-job-id" style="color:var(--text);font-family:monospace"></b></p>
+        <p>This will remove only the <b>verification stage</b> outputs (Steps 12&ndash;20) for this job.<br><br>
+           <span style="color:#16a34a"><b>Kept:</b></span> Step 01 (OCR), Step 02 (Cleaning), Step 03 (Sequencing), Step 06 (Final LC), Step 07 (Clauses), Step 08 (Classification), Step 09 (Reconciliation).<br><br>
+           <span style="color:#b91c1c"><b>Removed:</b></span> Step 12 (Decomposition), Step 13 (Rows), Step 14 (Verification), Step 14b (Implicit), Step 15&ndash;Step 20.<br><br>
+           After this, you can re-trigger verification from the checklist page &mdash; OCR / classification will not re-run, so it will be fast.</p>
+        <div class="modal-actions">
+            <button class="mbtn mbtn-cancel" onclick="closeClearModal()">Cancel</button>
+            <button class="mbtn" id="clr-confirm-btn" style="background:#0d9488;color:#fff" onclick="confirmClear()">Clear Verification</button>
+        </div>
+    </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -279,6 +295,7 @@ function renderJobs(jobs) {
         }
         actions += `<a class="abtn text" href="/extracted-text?job_id=${j.job_id}">Text</a>`;
         actions += `<button class="abtn" style="background:#6d28d9" onclick="showDocs('${j.job_id}')">Docs</button>`;
+        actions += `<button class="abtn" style="background:#0d9488" onclick="clearVerification('${j.job_id}')" title="Delete only verification stage results (step12-step20). Pre-verification stages stay so re-running is fast.">Clear Verif</button>`;
         actions += `<button class="abtn pdf" onclick="deleteJob('${j.job_id}')">Delete</button>`;
 
         html += `<tr>
@@ -314,6 +331,43 @@ function filterJobs() {
         (j.lc_numbers || []).some(lc => lc.toLowerCase().includes(q))
     );
     renderJobs(filtered);
+}
+
+let _clearJobId = null;
+function clearVerification(jobId) {
+    _clearJobId = jobId;
+    document.getElementById('clr-job-id').textContent = jobId;
+    document.getElementById('clr-modal').classList.add('active');
+}
+function closeClearModal() {
+    document.getElementById('clr-modal').classList.remove('active');
+    _clearJobId = null;
+}
+async function confirmClear() {
+    if (!_clearJobId) return;
+    const btn = document.getElementById('clr-confirm-btn');
+    btn.textContent = 'Clearing...';
+    btn.disabled = true;
+    try {
+        const r = await fetch(`${API}/api/jobs/${_clearJobId}/clear-verification`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+        });
+        if (!r.ok) {
+            const e = await r.json().catch(() => ({}));
+            throw new Error(e.detail || e.error || 'Server error');
+        }
+        const data = await r.json();
+        const removed = (data.removed_stages || []).join(', ') || '(nothing — already cleared)';
+        showToast('Verification cleared. Removed: ' + removed, true);
+        closeClearModal();
+        loadJobs();
+    } catch (e) {
+        showToast('Clear failed: ' + e.message, false);
+    } finally {
+        btn.textContent = 'Clear Verification';
+        btn.disabled = false;
+    }
 }
 
 let _deleteJobId = null;

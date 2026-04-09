@@ -143,6 +143,52 @@ DOCUMENT TYPES — Use the EXACT document title/heading visible on the page. Com
   visible on the document. NEVER force-fit a document into an incorrect category.
 
 CLASSIFICATION RULES:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HIGH-PRIORITY RULES — READ FIRST. DO NOT RETURN "unknown" if ANY of these match.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━ DRAFT / BILL OF EXCHANGE ━━━
+A page is a "Draft Bill of Exchange" if it contains ANY TWO of:
+  • "PAY THIS FIRST" / "PAY THIS SECOND" / "PAY THIS BILL OF EXCHANGE"
+  • "AT SIGHT" / "AT XX DAYS SIGHT" / "AT XX DAYS AFTER SIGHT"
+  • "TO THE ORDER OF"
+  • "DRAWN ON" (followed by a bank name or BIC)
+  • "FOR VALUE RECEIVED"
+  • "BILL OF EXCHANGE"
+  • "DRAWER" / "DRAWEE"
+  • "FIRST ORIGINAL" / "SECOND ORIGINAL" alongside "PAY"
+  • A typewritten "Pay this First / Second of exchange" block
+Examples that MUST classify as "Draft Bill of Exchange":
+  - "AT Sight PAY THIS Second First unpaid TO THE ORDER OF Ourselves... DRAWN ON: UNILPKKA"
+  - "Pay this First Bill of Exchange (Second of same tenor and date being unpaid) to the order of..."
+  - Any document showing currency amount + "AT Sight" + "DRAWN ON" + "L/C Number"
+A draft is usually only ~300-500 chars. Multiple copies (First / Second / Third) are common — each copy is its own "Draft Bill of Exchange" packet.
+
+━━━ CONGENBILL / GENCON / Bill of Lading ━━━
+A page is a "Bill of Lading" if it contains ANY of:
+  • "CONGENBILL" (BIMCO short-form BL — code name)
+  • "GENCON" (BIMCO general charter BL)
+  • "BILL OF LADING" / "B/L NO" / "BL NO"
+  • A header showing SHIPPER + CONSIGNEE + VESSEL + PORT OF LOADING + PORT OF DISCHARGE together
+  • "SHIPPED on board" / "CLEAN ON BOARD" / "LADEN ON BOARD"
+  • "FREIGHT PREPAID" / "FREIGHT COLLECT" with shipping context
+  • "AS PER CHARTER PARTY" / "CHARTER PARTY DATED"
+  • "Number of original Bs/L"
+A page that begins with "CODE NAME: CONGENBILL EDITION ____" is ALWAYS a Bill of Lading.
+
+━━━ COMMERCIAL INVOICE LETTERHEAD-ONLY PAGE ━━━
+If a page has ONLY the company letterhead / footer (name, address, phone, fax,
+email, website) and NO actual document content (no items, no amounts, no
+header words like "INVOICE" / "BILL OF LADING" / "CERTIFICATE"), classify it
+as the SAME type as the PREVIOUS document with is_continuation=true.
+For example: a page with only "Viterra B.V. | P.O. Box 1120, Rotterdam | info@bunge.com"
+following a Commercial Invoice page is the back/footer of that invoice — classify
+as "Commercial Invoice" with is_continuation=true. NEVER return "unknown" for
+a letterhead-only page; either continue the previous type, or use "Header Page".
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 - SWIFT F-tags (F20:, F31C:, F42A:, F46A:, F47A:, :20:, :31C:, :46A:) or "Message type: 700/707" -> "LC" or "Amendment"
 - "26E: Number of Amendment" or "Date of Amendment" -> "Amendment"
 - ── MT799 / MT999 FREE FORMAT MESSAGES (CRITICAL — read carefully) ──

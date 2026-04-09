@@ -167,6 +167,13 @@ DEFAULT_CHECKS_CONFIG = {
         "category": "dates",
         "severity": "hard",
     },
+    "transport_mode_match": {
+        "enabled": True,
+        "name": "Transport Mode Match (F44E/F44F/F46A)",
+        "description": "The mode of transport implied by the LC (sea / air / courier / road / rail) must match the actual transport document presented. e.g. an LC asking for an Air Waybill cannot be satisfied with a Bill of Lading, and vice versa. Deterministic check — no VLM call.",
+        "category": "documents",
+        "severity": "hard",
+    },
 
     # ── Document & Clause Checks (VLM-based, from Step 12→14) ──
     "f46a_verification": {
@@ -257,12 +264,38 @@ def save_checks_config(config: Dict, config_dir: str = "config") -> None:
 # ══════════════════════════════════════════════════════════════
 
 def _deduplicate_documents(packets: List[Dict]) -> List[Dict]:
-    """Select one representative document per unique (doc_type, doc_number) pair."""
+    """
+    Select one representative document per unique (doc_type, doc_number) pair.
+
+    KEY RULE: when document_number is empty (which happens when step 9 had
+    no text to extract from, e.g. on packets that came from empty step02
+    pages), DO NOT fall back to packet_id — that would make every packet
+    unique and defeat dedup. Instead, treat all packets of the same
+    document_type as copies of the same logical document.
+
+    Result:
+      • 3 'Bill of Lading' packets all with doc_number 'KYKHIG2600024'
+        → collapses to 1 representative (the Original / longest text).
+      • 3 'Bill of Lading' packets all with empty doc_number
+        → still collapses to 1 representative (treats them as copies
+        of the same logical doc, since we have no other signal).
+      • 2 'Bill of Lading' packets with DIFFERENT doc_numbers
+        → kept as 2 separate documents (genuinely different BLs).
+    """
     groups: Dict[str, List[Dict]] = {}
     for pkt in packets:
-        doc_type = pkt.get('document_type', 'Unknown')
-        doc_num = pkt.get('document_number', '') or pkt.get('packet_id', '')
-        key = f"{doc_type}|{doc_num}"
+        doc_type = (pkt.get('document_type', 'Unknown') or 'Unknown').strip()
+        doc_num = (pkt.get('document_number', '') or '').strip()
+        # Normalise the type so 'Bill of Lading' / 'BILL OF LADING' /
+        # 'bill of lading' all collapse to one bucket.
+        type_key = doc_type.lower()
+        if doc_num:
+            key = f"{type_key}|{doc_num.lower()}"
+        else:
+            # No document_number — collapse all copies of this type
+            # into one bucket. NEVER fall back to packet_id (that
+            # would defeat the entire purpose of the dedup).
+            key = f"{type_key}|"
         groups.setdefault(key, []).append(pkt)
 
     selected = []
@@ -273,7 +306,7 @@ def _deduplicate_documents(packets: List[Dict]) -> List[Dict]:
             originals = [d for d in docs if 'original' in str(d.get('copy_status', '')).lower()
                          or 'original' in str(d.get('copy_label', '')).lower()]
             pool = originals if originals else docs
-            best = max(pool, key=lambda d: len(d.get('refined_text', d.get('cleaned_text', ''))))
+            best = max(pool, key=lambda d: len(d.get('refined_text', d.get('cleaned_text', '')) or ''))
             selected.append(best)
     return selected
 
@@ -1105,6 +1138,138 @@ RULES:
                 "doc_type": bl.get('document_type', 'Bill of Lading'), "check_id": check_id, "severity": "hard",
             })
 
+    elif check_id == "transport_mode_match":
+        # ── DETERMINISTIC: no VLM call ──
+        # Detect the transport mode the LC expects from F44E (Port of
+        # Loading / Airport of Departure), F44F (Port of Discharge /
+        # Airport of Destination), and the F46A document requirements.
+        # Compare against what was actually presented (Bill of Lading vs
+        # Air Waybill vs Courier Receipt). Mismatch = hard discrepancy.
+        f44e = (lc_fields.get('44E') or lc_fields.get('F44E') or '').upper()
+        f44f = (lc_fields.get('44F') or lc_fields.get('F44F') or '').upper()
+        f46a_full = (lc_fields.get('46A') or lc_fields.get('F46A') or '').upper()
+        # Combine all 46A clauses if stored as a list
+        f46a_clauses = lc_fields.get('46A_clauses') or []
+        if isinstance(f46a_clauses, list):
+            f46a_full = (f46a_full + ' ' + ' '.join(str(c).upper() for c in f46a_clauses)).strip()
+        f43p = (lc_fields.get('43P') or lc_fields.get('F43P') or '').upper()  # Partial Shipments
+
+        def _expected_mode():
+            # AIR signals — strong
+            if any(k in f44e for k in ('AIRPORT', 'AIR PORT')):
+                return 'AIR'
+            if any(k in f44f for k in ('AIRPORT', 'AIR PORT')):
+                return 'AIR'
+            if any(k in f46a_full for k in (
+                'AIR WAYBILL', 'AIRWAY BILL', 'AIRWAYBILL', 'AWB', 'HAWB', 'MAWB',
+                'HOUSE AIR WAYBILL', 'MASTER AIR WAYBILL',
+                'CONSIGNEE AIRPORT', 'AIRPORT OF DEPARTURE', 'AIRPORT OF DESTINATION',
+            )):
+                return 'AIR'
+            # COURIER signals
+            if any(k in f46a_full for k in (
+                'COURIER RECEIPT', 'COURIER WAYBILL', 'COURIER SERVICE',
+                'EXPRESS COURIER', 'EXPRESS DELIVERY',
+            )):
+                return 'COURIER'
+            # SEA signals — strong
+            if any(k in f44e for k in ('SEAPORT', 'SEA PORT', 'PORT OF LOADING')):
+                return 'SEA'
+            if any(k in f44f for k in ('SEAPORT', 'SEA PORT', 'PORT OF DISCHARGE')):
+                return 'SEA'
+            if any(k in f46a_full for k in (
+                'BILL OF LADING', 'OCEAN BILL OF LADING', 'MARINE BILL OF LADING',
+                'SHIPPED ON BOARD', 'CHARTER PARTY BILL', 'COMBINED TRANSPORT BILL',
+                'MULTIMODAL TRANSPORT', 'CLEAN ON BOARD',
+            )):
+                return 'SEA'
+            return 'UNKNOWN'
+
+        def _detect_actual_mode_for_packet(p):
+            dt = (p.get('document_type', '') or '').lower()
+            if any(k in dt for k in ('air waybill', 'airway bill', 'airwaybill',
+                                      'awb', 'hawb', 'mawb',
+                                      'house air waybill', 'master air waybill')):
+                return 'AIR'
+            if any(k in dt for k in ('courier receipt', 'courier waybill',
+                                      'courier service', 'express envelope',
+                                      'express waybill', 'express delivery')):
+                return 'COURIER'
+            if 'bill of lading' in dt or dt.startswith('bl ') or dt == 'bl':
+                return 'SEA'
+            if 'truck receipt' in dt or 'cmr' in dt or 'road waybill' in dt:
+                return 'ROAD'
+            if 'rail consignment' in dt or 'railway bill' in dt:
+                return 'RAIL'
+            return None
+
+        expected = _expected_mode()
+        actual_modes = []
+        actual_packets_by_mode = {}
+        for p in packets:
+            m = _detect_actual_mode_for_packet(p)
+            if m:
+                actual_modes.append(m)
+                actual_packets_by_mode.setdefault(m, []).append(p)
+
+        # Skip the check entirely when we can't determine LC expectation
+        if expected == 'UNKNOWN':
+            return tasks
+
+        # Skip when no transport document was presented at all (the missing-
+        # document check will catch this elsewhere via the F46A presence pass)
+        if not actual_modes:
+            return tasks
+
+        # Determine the dominant actual mode
+        from collections import Counter as _Cnt
+        mode_counts = _Cnt(actual_modes)
+        dominant_mode = mode_counts.most_common(1)[0][0]
+
+        # Mismatch — emit a deterministic task that step 14's runner will
+        # flush straight through as a CheckResult (no VLM call).
+        if dominant_mode != expected:
+            example_pkt = actual_packets_by_mode[dominant_mode][0]
+            example_dt = example_pkt.get('document_type', dominant_mode)
+            tasks.append({
+                "prompt": "__DETERMINISTIC__",
+                "doc_text": "",
+                "image_path": None,
+                "clause_ref": "F44E/F46A",
+                "condition": f"Transport mode must be {expected} per LC",
+                "doc_type": example_dt,
+                "check_id": check_id,
+                "severity": "hard",
+                "_deterministic_result": {
+                    "result": "FAIL",
+                    "findings": (f"LC expects {expected} transport "
+                                  f"(F44E/F44F/F46A signals); documents presented "
+                                  f"are {dominant_mode} ({example_dt})"),
+                    "detail": f"Transport mode mismatch: LC={expected}, document={dominant_mode}",
+                    "confidence": 1.0,
+                },
+            })
+        else:
+            # PASS row so the report shows we checked
+            example_pkt = actual_packets_by_mode[dominant_mode][0]
+            example_dt = example_pkt.get('document_type', dominant_mode)
+            tasks.append({
+                "prompt": "__DETERMINISTIC__",
+                "doc_text": "",
+                "image_path": None,
+                "clause_ref": "F44E/F46A",
+                "condition": f"Transport mode must be {expected} per LC",
+                "doc_type": example_dt,
+                "check_id": check_id,
+                "severity": "hard",
+                "_deterministic_result": {
+                    "result": "PASS",
+                    "findings": f"{dominant_mode} transport — {example_dt}",
+                    "detail": f"Transport mode matches: LC={expected}, document={dominant_mode}",
+                    "confidence": 1.0,
+                },
+            })
+
     elif check_id == "presentation_period":
         period_str = lc_fields.get('48', lc_fields.get('F48', ''))
         period_days = '21'
@@ -1156,7 +1321,7 @@ RULES:
 _ENABLED_CHECK_IDS = [
     'date_of_issue', 'lc_expiry', 'amount_currency', 'draft_tenor',
     'transshipment', 'port_of_loading', 'port_of_discharge',
-    'latest_shipment', 'presentation_period',
+    'latest_shipment', 'presentation_period', 'transport_mode_match',
 ]
 
 
@@ -1299,6 +1464,33 @@ def run(
     # Execute VLM tasks concurrently (append to all_results from hybrid checks)
 
     def _execute_task(task: Dict) -> CheckResult:
+        # ── Short-circuit for deterministic checks ──
+        # Some builders (e.g. transport_mode_match) compute the result in
+        # pure Python and embed it on the task as `_deterministic_result`.
+        # The runner skips the VLM call entirely and emits the precomputed
+        # result. This makes those checks instant and immune to model
+        # hallucinations.
+        if task.get('prompt') == '__DETERMINISTIC__' and task.get('_deterministic_result'):
+            det = task['_deterministic_result']
+            compliance = (det.get('result') or 'REVIEW').upper()
+            if compliance not in ('PASS', 'FAIL', 'REVIEW'):
+                compliance = 'REVIEW'
+            findings = det.get('findings', '')
+            detail = det.get('detail', '')
+            confidence = float(det.get('confidence', 1.0))
+            progress_fn(f"  [{task['check_id']}] [{task['doc_type']}]: {compliance} (deterministic) - {detail or findings[:60]}")
+            return CheckResult(
+                check_id=task['check_id'],
+                clause_ref=task['clause_ref'],
+                condition=task['condition'],
+                document_checked=task['doc_type'],
+                findings=findings,
+                result=detail or compliance,
+                compliance=compliance,
+                confidence=confidence,
+                severity=task.get('severity', 'hard'),
+            )
+
         t1 = time.time()
         vlm_resp = _call_vlm(task['prompt'], task['doc_text'], task.get('image_path'))
         elapsed = round(time.time() - t1, 1)
