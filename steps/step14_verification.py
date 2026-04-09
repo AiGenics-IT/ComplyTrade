@@ -493,6 +493,34 @@ Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 
    • Only when "BL Form Status: short_form" AND no terms page exists in the set AND the LC explicitly forbids short-form/blank-back → mark as FAIL.
    In all other cases (including the LC being silent on short-form), short-form / blank-back BLs are acceptable per UCP 600 = PASS.
 
+24. CONSIGNEE vs NOTIFY PARTY — DO NOT CONFUSE THESE FIELDS (CRITICAL):
+    On a Bill of Lading these are TWO COMPLETELY DIFFERENT fields:
+       • CONSIGNEE — the named legal owner of the goods (transfers title)
+       • NOTIFY ADDRESS / NOTIFY PARTY — who the carrier informs on arrival (purely informational, does NOT transfer title)
+    They are SEPARATE fields with SEPARATE meanings. A party named only in the Notify field is NOT the consignee, and finding a party in the Notify field is NOT evidence that the BL is consigned or endorsed to that party.
+
+    When the LC condition asks for the BL to be "DRAWN TO THE ORDER OF [PARTY]" or "CONSIGNED TO [PARTY]" or "ENDORSED TO THE ORDER OF [PARTY]" or "DRAWN OR ENDORSED TO THE ORDER OF [PARTY]", you MUST verify ONLY the CONSIGNEE field (and any endorsement stamp on the back of the BL):
+       • PASS only if the CONSIGNEE field literally says "TO ORDER OF [PARTY]" / "CONSIGNED TO [PARTY]" / "TO THE ORDER OF [PARTY]" with the party name spelled out.
+       • PASS also if the CONSIGNEE field says "TO ORDER" (blank) AND there is a visible ENDORSEMENT stamp/signature on the back of the BL transferring it to [PARTY].
+       • FAIL if the CONSIGNEE field is just "TO ORDER" (blank) or "TO ORDER OF SHIPPER" with NO endorsement to [PARTY] visible on the BL — even if [PARTY] appears elsewhere on the document (notify, address block, etc.).
+       • FAIL if the CONSIGNEE is some other named party that is NOT [PARTY] — even if [PARTY] is in the Notify field.
+
+    Worked example — this MUST be a FAIL:
+       LC condition:  "BL must be drawn or endorsed to the order of UNITED BANK LTD., CPU (TRADE)"
+       BL CONSIGNEE:  "TO ORDER"
+       BL NOTIFY:     "DALDA FOODS LIMITED ... AND UNITED BANK LTD., CPU (TRADE) ..."
+       BL endorsement (back): not visible
+       VERDICT:       FAIL — "Consignee shows 'TO ORDER' (blank) with no endorsement to UBL on the BL. Presence of UBL in the Notify field does NOT satisfy 'drawn or endorsed to UBL'."
+       Do NOT pass this row by saying "UBL is on the BL". UBL is in the Notify field, NOT the Consignee field — these are different fields.
+
+    The LC condition asking for "NOTIFY [PARTY]" is the OPPOSITE direction:
+       • For "BL must notify [PARTY]" → check ONLY the NOTIFY field for [PARTY]'s name. Finding [PARTY] in the Consignee field is NOT a substitute for being in the Notify field (although it usually doesn't hurt either).
+
+    Common LC phrasings and where to look:
+       • "Consigned to X" / "Drawn to the order of X" / "To the order of X" → CONSIGNEE field (or endorsement)
+       • "Endorsed to X" / "Endorsed in favor of X" → ENDORSEMENT stamp on back of BL (or CONSIGNEE if "TO ORDER OF X")
+       • "Marked notify X" / "Notify X" / "Showing X as notify party" → NOTIFY ADDRESS field
+
 Return ONLY valid JSON:
 {{
     "findings": "exact text found in the document that relates to this condition",
