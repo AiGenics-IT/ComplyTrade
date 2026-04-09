@@ -571,7 +571,46 @@ CRITICAL RULES (follow strictly):
 8. THIRD PARTY: If F47A says "THIRD PARTY DOCUMENTS ACCEPTABLE", third party documents = PASS.
 9. CERTIFICATION: If the condition asks for origin certification and the document says "We certify the goods are of [COUNTRY] origin" or similar statement, that IS a valid certification = PASS. Do not fail just because the exact word "CERTIFICATE" is not used — any statement certifying origin, quality, weight, etc. is a certification.
 10. DOCUMENT VERIFICATION: If the document text does NOT look like the expected document type (e.g., the condition checks a "Phytosanitary Certificate" but the document text looks like a quality certificate or inspection report), mark as REVIEW with "Document type may be misclassified".
-11. When in doubt, mark REVIEW with clear reasoning rather than FAIL.
+11. PASS / FAIL / REVIEW — DECISION RULES (CRITICAL — read this twice):
+    REVIEW is NOT a "when in doubt" escape hatch. REVIEW is reserved
+    for ONE specific situation: the answer genuinely depends on a human
+    judgement that the document data alone cannot resolve (e.g. F47A
+    grants conditional acceptance subject to a separate negotiation).
+
+    DEFAULT BEHAVIOUR FOR EVERY ROW:
+       • Document EXPLICITLY satisfies the condition           → PASS
+       • Document EXPLICITLY does NOT satisfy the condition    → FAIL
+       • Required data is MISSING from the document            → FAIL
+       • Required data is PRESENT but WRONG (different value)  → FAIL
+       • Required identifier (HS Code, NTN, LC No., date) is
+         present but the digits / characters do not match      → FAIL
+       • Required date is past the LC deadline                 → FAIL
+         (unless F47A explicitly allows late, see next bullet)
+       • F47A explicitly allows / waives / overrides this
+         requirement WITH conditions a human must verify       → REVIEW
+       • Genuine OCR illegibility ("[unclear]", "[illegible]",
+         partial scan damage) prevents reading the value AND
+         the value is otherwise required                       → REVIEW
+
+    Things that are NOT REVIEW (these are FAIL):
+       ✗ "Partially matches" — if it does not exactly match per
+         the matching rule for that field, it is FAIL.
+       ✗ "Could not find on document" when the document text was
+         readable — that is a FAIL (the data is missing).
+       ✗ "Document may need clarification" — pick PASS or FAIL
+         based on what is actually printed.
+       ✗ "Bank may want to verify" — that is the entire point of
+         this verification; commit to PASS or FAIL.
+       ✗ Minor format differences that the matching rules above
+         already say to ignore (dots in HS Code, "@"/"(at)" in
+         emails, "PORT"/"SEAPORT" qualifiers on ports, abbreviated
+         vs full company names) — those are PASS, not REVIEW.
+       ✗ Numeric value differs from required value — that is FAIL,
+         not REVIEW. "Close" amounts/quantities are still wrong.
+
+    Before returning REVIEW, ask yourself: "Could a competent human
+    bank checker decide PASS or FAIL from the document text alone?"
+    If yes, you must also decide PASS or FAIL — do NOT punt to REVIEW.
 12. QUANTITY TOLERANCE: If the LC says "1000 MT LESS 10 PCT" or "1000 MT +/-5%", apply the tolerance. "1000 MT LESS 10 PCT" means 900-1000 MT is acceptable. A quantity of 950 MT is WITHIN range = PASS. Do NOT fail if quantity is within tolerance. Also check F47A for additional tolerance clauses (e.g., "+0/-10%").
 13. BILL OF LADING LIMITATIONS: BLs do NOT show dollar amounts or unit prices — never fail a BL for "amount not mentioned". BLs do NOT typically show LC/credit numbers unless F47A specifically requires it on BL.
 14. PERMISSIVE CLAUSES: "ACCEPTABLE" means something is ALLOWED — it is NOT a prohibition. "THIRD PARTY DOCUMENTS ACCEPTABLE EXCEPT X" means X must be from beneficiary, everything else can be third party. Do NOT interpret "EXCEPT X" as "X is not acceptable".
@@ -617,6 +656,83 @@ Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 
        • "Consigned to X" / "Drawn to the order of X" / "To the order of X" → CONSIGNEE field (or endorsement)
        • "Endorsed to X" / "Endorsed in favor of X" → ENDORSEMENT stamp on back of BL (or CONSIGNEE if "TO ORDER OF X")
        • "Marked notify X" / "Notify X" / "Showing X as notify party" → NOTIFY ADDRESS field
+
+25. H.S. CODE / NTN / TAX-NUMBER MATCHING — STRICT DIGIT-EXACT (CRITICAL):
+    H.S. Codes, NTN numbers, Tax IDs, Importer codes, Exporter codes,
+    SRO numbers, License numbers and any similar numeric identifier MUST
+    match the LC value EXACTLY at the digit level. The verifier MUST
+    follow these steps:
+
+      Step A — Normalise both sides by stripping all non-digit characters
+               (dots, spaces, dashes, slashes, colons, the literal "HS",
+               "H.S.", "CODE", "NO.", "NTN", "NO" labels, etc.). Keep ONLY
+               the digits.
+
+      Step B — Compare the normalised digit strings:
+               • If they are EXACTLY equal → PASS.
+               • If the document's normalised digits START WITH the LC's
+                 normalised digits (i.e. LC digits are a strict prefix of
+                 the document digits) → PASS. This handles the EU
+                 10-digit CN code where an 8-digit LC HS code is padded
+                 with two trailing zeros (e.g. LC "9018.9050" matches
+                 document "9018905000" because "90189050" is a prefix of
+                 "9018905000").
+               • If the LC's normalised digits START WITH the document's
+                 digits AND the document has at least 6 digits → PASS
+                 (rare reverse case where the doc shows the truncated
+                 chapter/heading).
+               • Otherwise → FAIL. NEVER mark as REVIEW for an HS Code or
+                 NTN mismatch — the digits either match exactly or they
+                 don't. "PARTIALLY MATCHES" is NOT a valid verdict for
+                 these fields.
+
+      WORKED EXAMPLES — STUDY ALL OF THESE:
+
+        Example 1 (PASS — exact match):
+          LC condition: "H.S. Code 9018.9050 must appear on the BL"
+          BL text:      "HS CODE 9018.9050"
+          Normalised:   LC=90189050  Doc=90189050
+          Verdict:      PASS
+
+        Example 2 (PASS — EU 10-digit prefix match):
+          LC condition: "H.S. Code 9018.9050 must appear on the Invoice"
+          Invoice text: "EU HS Code: 9018905000"
+          Normalised:   LC=90189050  Doc=9018905000
+          "9018905000".startswith("90189050") → True
+          Verdict:      PASS
+
+        Example 3 (FAIL — digits differ — THIS WAS WRONGLY REVIEWED):
+          LC condition: "H.S. Code 9018.9050 must appear on the BL"
+          BL text:      "HS CODE: 9018.90 9000"
+          Normalised:   LC=90189050  Doc=901890 9000 → strip space → 90189000
+          "90189000".startswith("90189050") → False
+          "90189050".startswith("90189000") → False
+          The digits at positions 7-8 are 50 vs 00.
+          Verdict:      FAIL — "HS Code mismatch: LC 9018.9050 vs BL 9018.9000"
+          Do NOT return REVIEW or "PARTIALLY MATCHES" for this case.
+
+        Example 4 (FAIL — completely different code):
+          LC condition: "H.S. Code 1205.1000 must appear on the Invoice"
+          Invoice text: "HS CODE 1205.9000"
+          Normalised:   LC=12051000  Doc=12059000
+          Verdict:      FAIL — "HS Code mismatch"
+
+        Example 5 (PASS — NTN with dash):
+          LC condition: "Importer's NTN 1550365-8 must appear on the BL"
+          BL text:      "NTN: 1550365-8" or "NTN 15503658"
+          Normalised:   LC=15503658  Doc=15503658
+          Verdict:      PASS
+
+        Example 6 (FAIL — NTN one digit off):
+          LC condition: "Importer's NTN 1550365-8 must appear on the BL"
+          BL text:      "NTN 1550365-9"
+          Normalised:   LC=15503658  Doc=15503659
+          Verdict:      FAIL — "NTN mismatch: LC 1550365-8 vs BL 1550365-9"
+
+    Why this matters: HS Code and NTN are regulatory identifiers used by
+    customs and tax authorities. A single wrong digit makes the document
+    legally non-compliant. There is no "close enough" — banks must reject
+    a presentation with an incorrect HS Code or NTN under UCP 600 Art 14.
 
 Return ONLY valid JSON:
 {{
