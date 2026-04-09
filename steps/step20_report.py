@@ -424,42 +424,12 @@ def _build_cover(lc: Dict, decision: str, stats: Dict, styles) -> List:
         ParagraphStyle('DateText', alignment=TA_CENTER, parent=styles['Normal']),
     ))
 
-    # Decision banner
-    elements.append(Spacer(1, 8 * mm))
-    dec_color = _decision_color(decision)
-    _dec_row = [[Paragraph(
-        f'<b><font size="14" color="white">DECISION: {_esc(decision)}</font></b>',
-        ParagraphStyle('DecisionText', parent=styles['Normal'], alignment=TA_CENTER),
-    )]]
-    _dec_tbl = Table(_dec_row, colWidths=[page_width])
-    _dec_tbl.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), dec_color),
-        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-        ('TOPPADDING', (0, 0), (-1, 0), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-    ]))
-    elements.append(_dec_tbl)
-
-    # Verification stats
-    elements.append(Spacer(1, 6 * mm))
-    tp = stats.get('total_pass', 0)
-    tf = stats.get('total_fail', 0)
-    tr = stats.get('total_review', 0)
-    elements.append(Paragraph(
-        f'<font size="9" color="#6b7280">'
-        f'<font color="#16a34a"><b>{tp}</b></font> Passed  |  '
-        f'<font color="#dc2626"><b>{tf}</b></font> Failed  |  '
-        f'<font color="#d97706"><b>{tr}</b></font> Review Required'
-        f'</font>',
-        ParagraphStyle('StatsText', alignment=TA_CENTER, parent=styles['Normal']),
-    ))
-
-    elements.append(Spacer(1, 8 * mm))
-    elements.append(HRFlowable(width='80%', thickness=1, color=MID_GRAY, spaceAfter=6))
-    elements.append(Paragraph(
-        '<font size="8" color="#9ca3af">Confidential \u2014 For authorized recipients only</font>',
-        ParagraphStyle('ConfText', alignment=TA_CENTER, parent=styles['Normal']),
-    ))
+    # P67: Removed the duplicated DECISION banner + Pass/Fail/Review stats
+    # + Confidential notice from the cover page. They overflowed onto the
+    # top of page 2 and were already shown again on the Executive Summary
+    # page. The cover now ends with the Report Date and a forced PageBreak
+    # so the Executive Summary always starts on a clean page.
+    elements.append(PageBreak())
 
     return elements
 
