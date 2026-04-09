@@ -83,36 +83,91 @@ class ClassifiedPacket:
     classification_method: str = ""    # "text_pattern" | "vlm" | "hybrid"
     classification_reason: str = ""
     swift_format: str = ""             # "alliance" | "fusion" | "unknown"
+    # MT799 free-format flagging: when an MT799 carries amendment instructions
+    # we promote mt_type to MT707 but remember the original MT here so the
+    # downstream pipeline (and report) can show "MT799 amendment".
+    source_mt: str = ""                # original MT type before any promotion (e.g. "MT799")
+    is_799_amendment: bool = False     # True when MT799/MT999 contained amendment instructions
 
 
 # == Text-pattern classification ==============================================
 
 # Direct MT type references -- highest confidence
+# IMPORTANT: MT799/MT999 (free format) checked FIRST so a 799 message that
+# REFERENCES an MT700 (e.g. "UNDER OUR MT700") is not misclassified as MT700.
+#
+# This list now covers the FULL SWIFT category-7 (Trade Services) range used
+# in documentary-credit operations:
+#
+#   Free-format          : MT799, MT999
+#   Documentary credit   : MT700/701 (issue), MT705 (pre-advice),
+#                          MT707/708 (amendment), MT710/711 (advice of third
+#                          bank), MT720/721 (transfer), MT730 (acknowledgement),
+#                          MT732 (advice of discharge), MT734 (advice of refusal),
+#                          MT735 (full refusal under reserve)
+#   Reimbursement        : MT740 (authorisation), MT742 (claim),
+#                          MT744 (notice of non-conforming claim),
+#                          MT747 (amendment to authorisation)
+#   Discrepancy / payment: MT750 (advice of discrepancy),
+#                          MT752 (authorisation to pay/accept/negotiate),
+#                          MT754 (advice of payment/acceptance/negotiation),
+#                          MT756 (advice of reimbursement or payment)
+#   Standby / guarantee  : MT760 (issue), MT767 (amendment),
+#                          MT768 (acknowledgement), MT769 (release/reduction),
+#                          MT775 (amendment), MT785 (notice of demand),
+#                          MT786 (notice of receipt), MT787 (acknowledgement)
 _MT_PATTERNS = [
-    (re.compile(r'\bMT\s*700\b', re.IGNORECASE), 'MT700', 0.95),
-    (re.compile(r'\bMT\s*707\b', re.IGNORECASE), 'MT707', 0.95),
+    # Free format -- checked FIRST so a 799 referencing MT700 stays a 799.
     (re.compile(r'\bMT\s*799\b', re.IGNORECASE), 'MT799', 0.95),
-    (re.compile(r'\bMT\s*710\b', re.IGNORECASE), 'MT710', 0.90),
-    (re.compile(r'\bMT\s*720\b', re.IGNORECASE), 'MT720', 0.90),
-    (re.compile(r'\bMT\s*740\b', re.IGNORECASE), 'MT740', 0.90),
-    (re.compile(r'\bMT\s*747\b', re.IGNORECASE), 'MT747', 0.90),
-    (re.compile(r'\bMT\s*750\b', re.IGNORECASE), 'MT750', 0.90),
+    (re.compile(r'\bMT\s*999\b', re.IGNORECASE), 'MT999', 0.95),
+    # Documentary credit issuance / amendment
+    (re.compile(r'\bMT\s*700\b', re.IGNORECASE), 'MT700', 0.95),
     (re.compile(r'\bMT\s*701\b', re.IGNORECASE), 'MT701', 0.90),
+    (re.compile(r'\bMT\s*705\b', re.IGNORECASE), 'MT705', 0.90),
+    (re.compile(r'\bMT\s*707\b', re.IGNORECASE), 'MT707', 0.95),
+    (re.compile(r'\bMT\s*708\b', re.IGNORECASE), 'MT708', 0.90),
+    # Advice of third bank's LC / transfer
+    (re.compile(r'\bMT\s*710\b', re.IGNORECASE), 'MT710', 0.90),
     (re.compile(r'\bMT\s*711\b', re.IGNORECASE), 'MT711', 0.90),
+    (re.compile(r'\bMT\s*720\b', re.IGNORECASE), 'MT720', 0.90),
+    (re.compile(r'\bMT\s*721\b', re.IGNORECASE), 'MT721', 0.90),
+    # Acknowledgement / discharge / refusal
     (re.compile(r'\bMT\s*730\b', re.IGNORECASE), 'MT730', 0.90),
     (re.compile(r'\bMT\s*732\b', re.IGNORECASE), 'MT732', 0.90),
     (re.compile(r'\bMT\s*734\b', re.IGNORECASE), 'MT734', 0.90),
+    (re.compile(r'\bMT\s*735\b', re.IGNORECASE), 'MT735', 0.90),
+    # Reimbursement
+    (re.compile(r'\bMT\s*740\b', re.IGNORECASE), 'MT740', 0.90),
     (re.compile(r'\bMT\s*742\b', re.IGNORECASE), 'MT742', 0.90),
+    (re.compile(r'\bMT\s*744\b', re.IGNORECASE), 'MT744', 0.90),
+    (re.compile(r'\bMT\s*747\b', re.IGNORECASE), 'MT747', 0.90),
+    # Discrepancy / authorisation / payment advice
+    (re.compile(r'\bMT\s*750\b', re.IGNORECASE), 'MT750', 0.90),
     (re.compile(r'\bMT\s*752\b', re.IGNORECASE), 'MT752', 0.90),
     (re.compile(r'\bMT\s*754\b', re.IGNORECASE), 'MT754', 0.90),
     (re.compile(r'\bMT\s*756\b', re.IGNORECASE), 'MT756', 0.90),
-    (re.compile(r'\bMT\s*999\b', re.IGNORECASE), 'MT999', 0.90),
+    # Guarantee / Standby LC
+    (re.compile(r'\bMT\s*760\b', re.IGNORECASE), 'MT760', 0.90),
+    (re.compile(r'\bMT\s*767\b', re.IGNORECASE), 'MT767', 0.90),
+    (re.compile(r'\bMT\s*768\b', re.IGNORECASE), 'MT768', 0.90),
+    (re.compile(r'\bMT\s*769\b', re.IGNORECASE), 'MT769', 0.90),
+    (re.compile(r'\bMT\s*775\b', re.IGNORECASE), 'MT775', 0.90),
+    (re.compile(r'\bMT\s*785\b', re.IGNORECASE), 'MT785', 0.90),
+    (re.compile(r'\bMT\s*786\b', re.IGNORECASE), 'MT786', 0.90),
+    (re.compile(r'\bMT\s*787\b', re.IGNORECASE), 'MT787', 0.90),
     # fin.XXX identifier format
     (re.compile(r'\bfin\.(\d{3})\b', re.IGNORECASE), None, 0.90),  # handled below
-    # SWIFT message type headers
+    # SWIFT message type headers (alternate "Type: 700" / "Message: 707" format)
     (re.compile(r'(?:Type|Message)\s*:?\s*700', re.IGNORECASE), 'MT700', 0.85),
     (re.compile(r'(?:Type|Message)\s*:?\s*707', re.IGNORECASE), 'MT707', 0.85),
     (re.compile(r'(?:Type|Message)\s*:?\s*710', re.IGNORECASE), 'MT710', 0.85),
+    (re.compile(r'(?:Type|Message)\s*:?\s*734', re.IGNORECASE), 'MT734', 0.85),
+    (re.compile(r'(?:Type|Message)\s*:?\s*735', re.IGNORECASE), 'MT735', 0.85),
+    (re.compile(r'(?:Type|Message)\s*:?\s*750', re.IGNORECASE), 'MT750', 0.85),
+    (re.compile(r'(?:Type|Message)\s*:?\s*754', re.IGNORECASE), 'MT754', 0.85),
+    (re.compile(r'(?:Type|Message)\s*:?\s*760', re.IGNORECASE), 'MT760', 0.85),
+    (re.compile(r'(?:Type|Message)\s*:?\s*767', re.IGNORECASE), 'MT767', 0.85),
+    (re.compile(r'(?:Type|Message)\s*:?\s*799', re.IGNORECASE), 'MT799', 0.85),
     (re.compile(r'(?:Type|Message)\s*:?\s*999', re.IGNORECASE), 'MT999', 0.85),
 ]
 
@@ -174,6 +229,52 @@ _AMENDMENT_PATTERNS = [
     re.compile(r'\bF26E\s*:', re.IGNORECASE),
     re.compile(r':26E:', re.IGNORECASE),
 ]
+
+# MT799 free-format amendment instruction patterns.
+# A 799 is an amendment when it contains explicit "should read as / instead of"
+# language OR explicit "please amend / replace / delete / add clause" instructions
+# referencing a field tag or LC clause.
+_MT799_AMENDMENT_INSTRUCTION_PATTERNS = [
+    re.compile(r'\bSHOULD\s+READ\s+AS\b', re.IGNORECASE),
+    re.compile(r'\bTO\s+READ\s+AS\b', re.IGNORECASE),
+    re.compile(r'\bNOW\s+READ\s+AS\b', re.IGNORECASE),
+    re.compile(r'\bI\s*/\s*O\b', re.IGNORECASE),               # I/O = "instead of"
+    re.compile(r'\bINSTEAD\s+OF\b', re.IGNORECASE),
+    re.compile(r'\bPLEASE\s+(?:AMEND|CORRECT|REPLACE|CHANGE)\b', re.IGNORECASE),
+    re.compile(r'\b(?:DELETE|ADD)\s+(?:AND\s+REPLACE|CLAUSE)\b', re.IGNORECASE),
+    re.compile(r'\bUNDER\s+FIELD\s+\d{2}[A-Z]?\b', re.IGNORECASE),
+    re.compile(r'\bAMEND(?:ED|MENT)\s+(?:AS\s+)?(?:UNDER|FOLLOWS?)\b', re.IGNORECASE),
+]
+
+# LC reference indicators (must accompany amendment language)
+_MT799_LC_REFERENCE_PATTERNS = [
+    re.compile(r'\bMT\s*700\b', re.IGNORECASE),
+    re.compile(r'\bOUR\s+(?:LC|CREDIT|MT|REF)\b', re.IGNORECASE),
+    re.compile(r'\bYOUR\s+(?:LC|CREDIT|MT|REF)\b', re.IGNORECASE),
+    re.compile(r'\bLETTER\s+OF\s+CREDIT\b', re.IGNORECASE),
+    re.compile(r'\bDOCUMENTARY\s+CREDIT\b', re.IGNORECASE),
+    re.compile(r'\bUNDER\s+(?:THE\s+)?(?:ABOVE|CAPTIONED|REFERENCED)\b', re.IGNORECASE),
+]
+
+
+def _is_mt799_amendment(text: str) -> bool:
+    """
+    Decide whether a free-format MT799 message contains amendment INSTRUCTIONS
+    (vs. a generic bank-to-bank notice / acknowledgement / status update).
+
+    Returns True only when BOTH:
+      - The message uses amendment-instruction language
+        ("should read as", "instead of", "please amend...", "under field 45A...")
+      - It references the underlying LC ("MT700", "our LC", "letter of credit",
+        "above captioned credit", etc.)
+    """
+    if not text:
+        return False
+    has_instruction = any(p.search(text) for p in _MT799_AMENDMENT_INSTRUCTION_PATTERNS)
+    if not has_instruction:
+        return False
+    has_lc_ref = any(p.search(text) for p in _MT799_LC_REFERENCE_PATTERNS)
+    return has_lc_ref
 
 
 def _get_packet_text(packet) -> str:
@@ -241,12 +342,30 @@ def _classify_by_text(text: str) -> dict:
                 conf *= 0.9
 
             swift_fmt = _detect_swift_format(text)
-            return {
+            result = {
                 'mt_type': mt_type,
                 'confidence': conf,
                 'reason': f'matched {mt_type} pattern',
                 'swift_format': swift_fmt,
             }
+            # MT799/MT999 free format: inspect content. If it carries
+            # amendment INSTRUCTIONS referencing the underlying LC, promote
+            # it to MT707 so step06 will apply the amendment. Otherwise
+            # keep it as MT799 (stored as supplementary narrative).
+            if mt_type in ('MT799', 'MT999'):
+                if _is_mt799_amendment(text):
+                    result['mt_type'] = 'MT707'
+                    result['confidence'] = max(conf * 0.9, 0.80)
+                    result['reason'] = (
+                        f'{mt_type} free-format with amendment instructions '
+                        f'(promoted to MT707)'
+                    )
+                    result['source_mt'] = mt_type
+                    result['is_799_amendment'] = True
+                else:
+                    result['reason'] = f'{mt_type} free-format message (no amendment instructions)'
+                    result['is_799_amendment'] = False
+            return result
 
     # Check F-tags (Fusion format)
     ftag_matches = _FTAG_RE.findall(text)
@@ -318,10 +437,34 @@ Here is the GLM OCR text for this page (first 1000 chars):
 
 Classify this document into ONE of these categories:
 - MT700: Original Letter of Credit (SWIFT LC issuance) -- contains fields like F20, F31C, F32B, F46A, F47A or :20:, :31C:, :32B:, :46A:, :47A:
+- MT701: Continuation of MT700 (overflow page)
+- MT705: Pre-Advice of a Documentary Credit
 - MT707: LC Amendment -- contains amendment number (F26E or :26E:), references to amending an existing LC
-- MT799: Free format SWIFT message -- bank-to-bank communication
-- MT710: Advice of third bank's LC
+- MT708: Continuation of MT707
+- MT710: Advice of Third Bank's LC
+- MT711: Continuation of MT710
 - MT720: Transfer of LC
+- MT721: Continuation of MT720
+- MT730: Acknowledgement
+- MT732: Advice of Discharge
+- MT734: Advice of Refusal
+- MT735: Full Refusal Under Reserve
+- MT740: Authorisation to Reimburse
+- MT742: Reimbursement Claim
+- MT744: Notice of Non-Conforming Reimbursement Claim
+- MT747: Amendment to Authorisation to Reimburse
+- MT750: Advice of Discrepancy
+- MT752: Authorisation to Pay / Accept / Negotiate
+- MT754: Advice of Payment / Acceptance / Negotiation
+- MT756: Advice of Reimbursement or Payment
+- MT760: Issue of Demand Guarantee / Standby LC
+- MT767: Amendment to Demand Guarantee / Standby
+- MT768: Acknowledgement of Guarantee Amendment
+- MT769: Notice of Reduction or Release
+- MT775: Further Amendment to Documentary Credit
+- MT785/MT786/MT787: Guarantee notice / receipt / acknowledgement
+- MT799: Free format SWIFT message -- bank-to-bank communication. IMPORTANT: an MT799 may CARRY amendment instructions (e.g. "UNDER FIELD 45A SHOULD READ AS X I/O Y", "PLEASE AMEND ... INSTEAD OF ..."). When the 799 contains such instructions, classify it as MT707 (treat as amendment), not MT799. Use MT799 ONLY when the message is a generic notice / acknowledgement / status with NO amendment instructions.
+- MT999: Free format SWIFT message (general financial — same handling as MT799)
 - shipping: Shipping/commercial document (Bill of Lading, Invoice, Packing List, Certificate, Draft, etc.)
 - covering_letter: Documentary Remittance / Covering Letter / Covering Schedule
 - unknown: Cannot determine
@@ -493,12 +636,37 @@ def run(step3_result: dict, output_dir: str = None, progress_callback=None) -> d
 
                     if 'error' not in vlm_cls:
                         if vlm_cls['confidence'] > tr['text_cls']['confidence']:
+                            # Preserve MT799-amendment classification if the
+                            # text-pattern already promoted it; VLM rarely sees
+                            # the "should read as / I/O" instruction language.
+                            prior = tr['text_cls']
+                            keep_799_amend = bool(prior.get('is_799_amendment'))
                             tr['text_cls'] = {
                                 'mt_type': vlm_cls['mt_type'],
                                 'confidence': vlm_cls['confidence'],
                                 'reason': f"vlm: {vlm_cls['reason']}",
-                                'swift_format': vlm_cls.get('swift_format', tr['text_cls'].get('swift_format', '')),
+                                'swift_format': vlm_cls.get('swift_format', prior.get('swift_format', '')),
                             }
+                            if keep_799_amend:
+                                tr['text_cls']['mt_type'] = 'MT707'
+                                tr['text_cls']['source_mt'] = prior.get('source_mt') or 'MT799'
+                                tr['text_cls']['is_799_amendment'] = True
+                                tr['text_cls']['reason'] = (
+                                    'MT799 free-format with amendment instructions '
+                                    f"(promoted to MT707); vlm: {vlm_cls['reason']}"
+                                )
+                            elif vlm_cls['mt_type'] in ('MT799', 'MT999'):
+                                # VLM identified as 799 — re-run amendment detection
+                                if _is_mt799_amendment(tr['full_text']):
+                                    tr['text_cls']['mt_type'] = 'MT707'
+                                    tr['text_cls']['source_mt'] = vlm_cls['mt_type']
+                                    tr['text_cls']['is_799_amendment'] = True
+                                    tr['text_cls']['reason'] = (
+                                        f"{vlm_cls['mt_type']} free-format with amendment "
+                                        f"instructions (promoted to MT707)"
+                                    )
+                                else:
+                                    tr['text_cls']['is_799_amendment'] = False
                             tr['cls_method'] = 'vlm'
                             if vlm_cls.get('doc_subtype'):
                                 tr['doc_hint'] = vlm_cls['doc_subtype']
@@ -529,6 +697,8 @@ def run(step3_result: dict, output_dir: str = None, progress_callback=None) -> d
             classification_method=cls_method,
             classification_reason=text_cls['reason'],
             swift_format=text_cls.get('swift_format', ''),
+            source_mt=text_cls.get('source_mt', ''),
+            is_799_amendment=bool(text_cls.get('is_799_amendment', False)),
         )
         classified.append(cpkt)
 

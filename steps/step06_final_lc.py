@@ -244,6 +244,136 @@ def _extract_swift_fields(text: str, source_page: int = 0, source_mt: str = '') 
     return fields
 
 
+# MT799 free-format → amendment field map
+_MT799_TAG_TO_FIELD = {
+    '45A': '45A', '45B': '45A',
+    '46A': '46A', '46B': '46A',
+    '47A': '47A', '47B': '47A',
+    '48': '48',
+    '44C': '44C', '44E': '44E', '44F': '44F',
+    '32B': '32B',
+    '31D': '31D',
+    '39A': '39A',
+    '49': '49',
+    '50': '50', '59': '59',
+}
+
+
+def _extract_mt799_amendment_fields(
+    text: str, source_page: int = 0, source_mt: str = 'MT799'
+) -> List[SwiftField]:
+    """
+    Parse field-level amendments embedded in a free-format MT799/MT999 message.
+
+    Recognises the patterns banks use when sending an amendment via 799 instead
+    of MT707, e.g.:
+        UNDER FIELD 45A RATE SHOULD READ AS 'EUR 141.00' I/O 'EUR 140.00'
+        FIELD 47A SHOULD READ AS '...' INSTEAD OF '...'
+        PLEASE AMEND LATEST DATE OF SHIPMENT TO READ AS 15.05.2026 I/O 30.04.2026
+
+    Returns a list of SwiftField records carrying amendment OPERATIONS that
+    `_apply_amendment` / `_apply_text_amendment` will then merge into the base
+    LC fields. The value is wrapped as "TO READ AS '<new>' INSTEAD OF '<old>'"
+    so the existing text-amendment path applies it.
+    """
+    if not text:
+        return []
+
+    out: List[SwiftField] = []
+    seen_tags = set()
+
+    # Pattern 1: "UNDER FIELD 45A [optional label] SHOULD READ AS 'X' I/O 'Y'"
+    pat_field = re.compile(
+        r'(?:UNDER\s+)?FIELD\s+(\d{2}[A-Z]?)\b[^\n]{0,80}?'
+        r'(?:SHOULD|SHALL|NOW|TO)\s+READ\s+AS\s+'
+        r'["\']?(.+?)["\']?\s*(?:I\s*/\s*O|INSTEAD\s+OF)\s+["\']?(.+?)["\']?'
+        r'(?:\s*[\.\n]|$)',
+        re.IGNORECASE,
+    )
+    for m in pat_field.finditer(text):
+        raw_tag = m.group(1).upper().strip()
+        new_val = m.group(2).strip().strip("'\"")
+        old_val = m.group(3).strip().strip("'\"")
+        canon_tag = _MT799_TAG_TO_FIELD.get(raw_tag, raw_tag)
+        if canon_tag in seen_tags or not new_val:
+            continue
+        seen_tags.add(canon_tag)
+        out.append(SwiftField(
+            tag=canon_tag,
+            label=SWIFT_FIELD_LABELS.get(canon_tag, f'Field {canon_tag}'),
+            value=f"TO READ AS '{new_val}' INSTEAD OF '{old_val}'",
+            source_page=source_page,
+            source_mt=source_mt,
+        ))
+
+    # Pattern 2: "<TAG>: <label> SHOULD READ AS X I/O Y"
+    pat_colon = re.compile(
+        r'(?:^|\n)\s*(\d{2}[A-Z]?)\s*:[^\n]{0,80}?'
+        r'SHOULD\s+READ\s+AS\s+["\']?(.+?)["\']?\s*'
+        r'(?:I\s*/\s*O|INSTEAD\s+OF)\s+["\']?(.+?)["\']?(?:\s*[\.\n]|$)',
+        re.IGNORECASE,
+    )
+    for m in pat_colon.finditer(text):
+        raw_tag = m.group(1).upper().strip()
+        new_val = m.group(2).strip().strip("'\"")
+        old_val = m.group(3).strip().strip("'\"")
+        canon_tag = _MT799_TAG_TO_FIELD.get(raw_tag, raw_tag)
+        if canon_tag in seen_tags or not new_val:
+            continue
+        seen_tags.add(canon_tag)
+        out.append(SwiftField(
+            tag=canon_tag,
+            label=SWIFT_FIELD_LABELS.get(canon_tag, f'Field {canon_tag}'),
+            value=f"TO READ AS '{new_val}' INSTEAD OF '{old_val}'",
+            source_page=source_page,
+            source_mt=source_mt,
+        ))
+
+    # Pattern 3: amount-only "AMOUNT INCREASED/DECREASED BY <CCY> <NUM>"
+    if '32B' not in seen_tags:
+        m = re.search(
+            r'(?:AMOUNT|VALUE)\s+(INCREASED|DECREASED|REDUCED|RAISED)\s+BY\s+'
+            r'([A-Z]{3})\s*([\d,]+(?:\.\d+)?)',
+            text, re.IGNORECASE,
+        )
+        if m:
+            op = m.group(1).upper()
+            ccy = m.group(2).upper()
+            amt = m.group(3)
+            verb = 'INCREASED' if op in ('INCREASED', 'RAISED') else 'DECREASED'
+            out.append(SwiftField(
+                tag='32B',
+                label=SWIFT_FIELD_LABELS['32B'],
+                value=f"{verb} BY {ccy} {amt}",
+                source_page=source_page,
+                source_mt=source_mt,
+            ))
+            seen_tags.add('32B')
+
+    # Pattern 4: simple "PLEASE AMEND <description> TO READ AS X I/O Y"
+    # Lands in 47A (Additional Conditions) since no specific tag is given.
+    if '47A' not in seen_tags:
+        m = re.search(
+            r'PLEASE\s+(?:AMEND|CHANGE|CORRECT|REPLACE)\s+(.{5,80}?)\s+'
+            r'TO\s+READ\s+AS\s+["\']?(.+?)["\']?\s*'
+            r'(?:I\s*/\s*O|INSTEAD\s+OF)\s+["\']?(.+?)["\']?(?:\s*[\.\n]|$)',
+            text, re.IGNORECASE,
+        )
+        if m:
+            desc = m.group(1).strip()
+            new_val = m.group(2).strip().strip("'\"")
+            old_val = m.group(3).strip().strip("'\"")
+            out.append(SwiftField(
+                tag='47A',
+                label=SWIFT_FIELD_LABELS['47A'],
+                value=f"{desc}: TO READ AS '{new_val}' INSTEAD OF '{old_val}'",
+                source_page=source_page,
+                source_mt=source_mt,
+            ))
+
+    return out
+
+
 def _detect_format_from_text(text: str) -> str:
     """Detect SWIFT format from GLM text content."""
     fusion_count = len(re.findall(r'\bF\d{2}[A-Z]?\s*:', text))
@@ -949,19 +1079,37 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
 
     for pkt in packets_in:
         mt = _get_packet_field(pkt, 'mt_type', '')
-        if mt in ('MT700', 'MT710', 'MT720'):
-            # MT710 (Advice of Third Bank's LC) and MT720 (Transfer) are treated as LC
+        # ── LC issuance family ──
+        # MT700  = Issue of Documentary Credit
+        # MT701  = Issue (continuation)
+        # MT705  = Pre-Advice of Documentary Credit
+        # MT710  = Advice of Third Bank's LC
+        # MT711  = Advice (continuation)
+        # MT720  = Transfer of Documentary Credit
+        # MT721  = Transfer (continuation)
+        # MT760  = Issue of Demand Guarantee / Standby LC
+        if mt in ('MT700', 'MT701', 'MT705', 'MT710', 'MT711',
+                  'MT720', 'MT721', 'MT760'):
             mt700_packets.append(pkt)
-        elif mt in ('MT707', 'MT747'):
-            # MT747 (Amendment to Authorization to Reimburse) treated as amendment
+        # ── Amendment family ──
+        # MT707 = Amendment to Documentary Credit
+        # MT708 = Amendment (continuation)
+        # MT747 = Amendment to Authorisation to Reimburse
+        # MT767 = Amendment to Demand Guarantee / Standby
+        # MT775 = Further Amendment to Documentary Credit
+        elif mt in ('MT707', 'MT708', 'MT747', 'MT767', 'MT775'):
             mt707_packets.append(pkt)
+        # ── Free format ──
         elif mt in ('MT799', 'MT999'):
             mt799_packets.append(pkt)
-        elif mt in ('MT701', 'MT711'):
-            # MT701/711 are continuation pages of MT700/710
-            mt700_packets.append(pkt)
+        # ── Bank-to-bank acknowledgements / advices / claims ──
+        # MT730 acknowledgement, MT732 discharge, MT734 refusal,
+        # MT735 full refusal under reserve, MT740 reimb auth,
+        # MT742 reimb claim, MT744 non-conforming claim, MT750 discrepancy,
+        # MT752 authorisation, MT754 advice of payment/acceptance/negotiation,
+        # MT756 reimbursement advice, MT768 guarantee ack, MT769 release,
+        # MT785/MT786/MT787 guarantee notices.
         elif mt.startswith('MT'):
-            # MT730, MT732, MT734, MT740, MT742, MT750, MT752, MT754, MT756 — bank-to-bank
             other_mt_packets.append(pkt)
         elif mt == 'shipping':
             shipping_packets.append(pkt)
@@ -1179,8 +1327,28 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             amd_text = _get_packet_refined_text(amd_pkt)
             amd_page = _get_packet_first_page(amd_pkt)
             pkt_id = _get_packet_field(amd_pkt, 'packet_id', 0)
+            is_799 = bool(_get_packet_field(amd_pkt, 'is_799_amendment', False))
+            src_mt_label = _get_packet_field(amd_pkt, 'source_mt', '') or 'MT707'
 
-            amd_fields = _extract_swift_fields(amd_text, source_page=amd_page, source_mt='MT707')
+            if is_799:
+                # MT799 free-format amendment: use the free-format parser FIRST,
+                # since the message has no F-tag / Alliance-tag structure.
+                amd_fields = _extract_mt799_amendment_fields(
+                    amd_text, source_page=amd_page, source_mt=src_mt_label or 'MT799',
+                )
+                _progress(
+                    f"    Amendment {i + 1}: MT799 free-format → "
+                    f"{len(amd_fields)} amendment field(s) from packet {pkt_id}"
+                )
+                # If the regex parser found nothing, try the structured extractor
+                # then VLM as a last resort.
+                if not amd_fields:
+                    amd_fields = _extract_swift_fields(
+                        amd_text, source_page=amd_page, source_mt=src_mt_label or 'MT799',
+                    )
+            else:
+                amd_fields = _extract_swift_fields(amd_text, source_page=amd_page, source_mt='MT707')
+
             # VLM fallback for amendments
             if len(amd_fields) < 2:
                 try:

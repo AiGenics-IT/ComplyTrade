@@ -145,6 +145,11 @@ RETURN EMPTY ARRAY [] FOR THESE CLAUSE TYPES:
   • Fee/charge clauses: "DISCREPANCY HANDLING CHARGES", "BANK CHARGES WILL BE DEDUCTED"
   • Document forwarding: "ALL DOCUMENTS TO BE FORWARDED TO US BY COURIER"
   • Regulatory/compliance statements: "TRANSPORTATION SHOULD BE EFFECTED BY COMPANIES OPERATING IN ACCORDANCE WITH...LAWS AND REGULATIONS", "SANCTIONED BY...", "BOUND BY SANCTIONS" (these cannot be verified from documents)
+  • Physical packing/shipping instructions: "COPY SHOULD BE PLACED IN CARTON/DRUM", "INTIMATE DETAILS TO CONSIGNEE ON E-MAIL", "DOCUMENTS TO BE SENT BY COURIER" (these are physical actions, not document requirements — cannot be verified from document content)
+
+ACCOMPANIMENT CLAUSES:
+  • "COPY OF X MUST ACCOMPANY ORIGINAL DOCUMENTS" means a copy of document X must be present in the submission. The document_to_check should be the document itself (e.g., "Shipment Advice"), NOT "Original Documents". Check if that document exists in the submission.
+  • Do NOT use "Original Documents" as a document_to_check — that is not a document type.
   • Pure permissive clauses: "LARGER QUANTITIES ACCEPTABLE", "CHARTER PARTY BL ACCEPTABLE", "GOODS DESCRIPTION SHOWING [X] TO BE ACCEPTABLE"
   • Tolerance specifications: "PLUS/MINUS X PERCENT TOLERANCE" (handled by code)
   • Date validity: "DOCUMENTS DATED PRIOR TO... NOT ACCEPTABLE" (handled separately)
@@ -441,7 +446,7 @@ def _call_vlm_decompose(clause_ref: str, field_tag: str, clause_number: int,
                 {"role": "system", "content": DECOMPOSITION_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
-            "temperature": 0.1,       # Low temperature for deterministic output
+            "temperature": 0.0,       # Zero temperature for fully deterministic output
             "max_tokens": 2048,
         }
 
@@ -750,6 +755,8 @@ def run(structured_lc: dict, output_dir: str = None, progress_callback=None) -> 
             filtered.append(cond)
 
         dc.conditions = filtered
+
+    # Post-processing: multi-document auto-add REMOVED — temperature 0 + prompt is sufficient
 
     # Sort by clause_ref for consistent ordering (e.g., 45A-1, 46A-1, 46A-2, 47A-1)
     decomposed.sort(key=lambda d: d.clause_ref)

@@ -113,6 +113,16 @@ class ClassifiedPacket:
     ambiguity_notes: str = ""
     elapsed_seconds: float = 0.0
 
+    # ── Bill of Lading: blank-back / short-form detection ──
+    # `is_bl_terms_page` is True when the packet IS the carriage T&Cs sheet
+    # (no shipper/consignee/route info, just the printed conditions of carriage).
+    # `has_bl_terms_pages_in_set` is True when ANY other packet in the same
+    # document set carries those T&Cs — meaning a BL otherwise looking like
+    # blank-back is actually a full-form BL whose terms are on a separate sheet.
+    is_bl_terms_page: bool = False
+    has_bl_terms_pages_in_set: bool = False
+    bl_short_form_status: str = ""  # "" | "full_form" | "short_form" | "blank_back"
+
 
 # ── Classification Prompt ──
 
@@ -126,6 +136,11 @@ The LC requires these documents:
 
 Based on the image and text, classify this document:
 1. document_type: exact name from the required list if it matches, OR the ACTUAL document title/heading visible on the page. NEVER force-fit a document into an incorrect category — use the real name (e.g., "Port Clearance Certificate", "Time Sheet", "Tanker Cleanliness Certificate", "Shore Tank Measurements", "Vessel Experience Factor", "Master Receipt for Sealed Samples", "Letter of Authority", etc.)
+   IMPORTANT DISAMBIGUATION RULES:
+   • A DHL / FedEx / UPS / TNT / Aramex / EXPRESS ENVELOPE / WAYBILL / AWB / HAWB / MAWB / "Air Waybill" label is a "Courier Receipt" or "Airway Bill" — these two are TREATED AS THE SAME CATEGORY. Use whichever name appears in the LC's required-documents list; if the LC asked for "Courier Receipt" use that, if it asked for "Airway Bill" use that. It is NEVER a "Documentary Remittance" or "Beneficiary Certificate", even though it carries documents.
+   • A bank-letterhead page that says "We enclose documents related to above referenced letter of credit", "Total Amount Claimed", "Presentation Number", "Our Reference No.", "Your Documentary Credit No.", or "remit funds to our correspondent" is a "Documentary Remittance" (covering schedule), NEVER a "Beneficiary Certificate".
+   • A "Beneficiary Certificate" is a short certificate ISSUED BY THE BENEFICIARY (the seller/exporter), titled "BENEFICIARY'S CERTIFICATE" or similar, certifying a single fact (e.g. "we hereby certify that one set of documents has been sent by courier"). It is on the beneficiary's letterhead, not a bank's.
+   • A "Short Form Bill of Lading" / "Blank Back Bill of Lading" / "Liner Bill of Lading" / "Charter Party Bill of Lading" / "Combined Transport Bill of Lading" / "Multimodal Bill of Lading" is STILL a "Bill of Lading" (per UCP 600 Art 20(a)(v)). It is NOT an "Airway Bill" and NOT a "Courier Receipt" — it just lacks the full carriage terms on the reverse side.
 2. confidence: 0.0 to 1.0
 3. summary: Detailed description including ALL key details: drawer/drawee, at sight/usance, to the order of, amount in figures AND words, tenor, maturity, endorsements, and any other relevant terms visible in the document
 4. document_number: if visible
@@ -173,9 +188,60 @@ _DOC_INDICATORS = {
         r'BILL\s+OF\s+LADING', r'B/?L\s+NO', r'SHIPPER', r'CONSIGNEE',
         r'PORT\s+OF\s+LOADING', r'PORT\s+OF\s+DISCHARGE', r'ON\s+BOARD',
         r'VESSEL\s+NAME', r'OCEAN\s+BILL',
+        # Short form / blank back / charter party / liner B/L variants —
+        # all still classified as "Bill of Lading" (UCP 600 Art 20(a)(v)).
+        r'SHORT\s+FORM\s+BILL\s+OF\s+LADING',
+        r'BLANK\s+BACK\s+BILL\s+OF\s+LADING',
+        r'LINER\s+BILL\s+OF\s+LADING',
+        r'CHARTER\s+PARTY\s+BILL\s+OF\s+LADING',
+        r'COMBINED\s+TRANSPORT\s+BILL\s+OF\s+LADING',
+        r'MULTIMODAL\s+(?:TRANSPORT\s+)?BILL\s+OF\s+LADING',
+        r'(?:CONDITIONS|TERMS)\s+OF\s+CARRIAGE\s+(?:ARE\s+)?(?:REFERRED|AVAILABLE)',
     ],
+    # ── Airway Bill / Courier Receipt are treated as the SAME category ──
+    # Both are single-piece air/courier transport documents (UCP 600 Art 23 /
+    # Art 25). Patterns for both kinds of waybill live here so either signal
+    # — an airline AWB or a DHL/FedEx/UPS/TNT/Aramex express envelope —
+    # produces the same classification. The companion entry "Courier Receipt"
+    # below is an ALIAS that mirrors the same patterns so the matcher in
+    # _match_type_to_requirement() will resolve to whichever label the LC
+    # expected list uses.
     "Airway Bill": [
-        r'AIR\s*WAY\s*BILL', r'AWB', r'AIRLINE', r'FLIGHT\s+NO',
+        # Classic air waybill signals
+        r'AIR\s*WAY\s*BILL', r'\bAWB\b', r'AIRLINE', r'FLIGHT\s+NO',
+        r'AIRPORT\s+OF\s+(?:DEPARTURE|DESTINATION)',
+        r'HOUSE\s+AIR\s*WAYBILL', r'MASTER\s+AIR\s*WAYBILL', r'\bHAWB\b', r'\bMAWB\b',
+        # Courier / express waybill signals (DHL, FedEx, UPS, TNT, Aramex, ...)
+        r'\bDHL\b', r'\bFEDEX\b', r'\bFED\s*EX\b', r'\bUPS\b', r'\bTNT\b',
+        r'\bARAMEX\b', r'\bSF\s+EXPRESS\b', r'\bBLUE\s+DART\b', r'\bSKYNET\b',
+        r'EXPRESS\s+ENVELOPE', r'EXPRESS\s+(?:WAYBILL|COURIER|DELIVERY)',
+        r'COURIER\s+(?:RECEIPT|WAYBILL|SERVICE)',
+        r'\bWAYBILL\b\s*(?:NO|NUMBER|#)?',
+        r'(?:PIECES|PCS)\s*(?:WEIGHT|/?WGT)',
+        r'CONTENTS?\s*:\s*DOCUMENTS',
+        r'TRACKING\s+(?:NUMBER|NO\.?)',
+        r'SHIPPER\s+REFERENCE',
+        r'\bXPD\b',          # DHL XPD service
+        r'\bWPX\b',          # DHL Worldwide Package Express
+    ],
+    # Alias category — same patterns as Airway Bill above. The rule-based
+    # classifier therefore produces a tied score for both names, and the
+    # downstream matcher resolves whichever the LC's expected document list
+    # actually requested ("Airway Bill", "Air Waybill", "Courier Receipt",
+    # "Courier Service Receipt", etc.).
+    "Courier Receipt": [
+        r'\bDHL\b', r'\bFEDEX\b', r'\bFED\s*EX\b', r'\bUPS\b', r'\bTNT\b',
+        r'\bARAMEX\b', r'\bSF\s+EXPRESS\b', r'\bBLUE\s+DART\b', r'\bSKYNET\b',
+        r'EXPRESS\s+ENVELOPE', r'EXPRESS\s+(?:WAYBILL|COURIER|DELIVERY)',
+        r'COURIER\s+(?:RECEIPT|WAYBILL|SERVICE)',
+        r'\bWAYBILL\b\s*(?:NO|NUMBER|#)?',
+        r'(?:PIECES|PCS)\s*(?:WEIGHT|/?WGT)',
+        r'CONTENTS?\s*:\s*DOCUMENTS',
+        r'TRACKING\s+(?:NUMBER|NO\.?)',
+        r'SHIPPER\s+REFERENCE',
+        r'\bXPD\b', r'\bWPX\b',
+        r'AIR\s*WAY\s*BILL', r'\bAWB\b', r'\bHAWB\b', r'\bMAWB\b',
+        r'AIRLINE', r'FLIGHT\s+NO', r'AIRPORT\s+OF\s+(?:DEPARTURE|DESTINATION)',
     ],
     "Insurance Policy/Certificate": [
         r'INSURANCE\s+(?:POLICY|CERTIFICATE)', r'INSURED\s+VALUE',
@@ -215,8 +281,25 @@ _DOC_INDICATORS = {
         r'HEALTH\s+CERTIFICATE', r'FIT\s+FOR\s+HUMAN\s+CONSUMPTION',
     ],
     "Documentary Remittance": [
-        r'DOCUMENTARY\s+REMITTANCE', r'COVERING\s+LETTER', r'ENCLOSED\s+HEREWITH',
-        r'WE\s+(?:ARE\s+)?ENCLOS', r'DOCUMENTS?\s+ATTACHED',
+        r'DOCUMENTARY\s+REMITTANCE',
+        r'COVERING\s+(?:LETTER|SCHEDULE)',
+        r'ENCLOSED\s+HEREWITH',
+        r'WE\s+(?:ARE\s+)?ENCLOS(?:E|ING|URE)',
+        r'DOCUMENTS?\s+ATTACHED',
+        r'PLEASE\s+(?:FIND|ACCEPT)\s+(?:ENCLOSED|ATTACHED|HEREWITH)',
+        r'WE\s+ENCLOSE\s+DOCUMENTS?\s+(?:RELATED|RELATING|UNDER|PERTAINING)',
+        # Bank covering-schedule structural fields
+        r'PRESENTATION\s+(?:NUMBER|NO\.?|DATE|AMOUNT)',
+        r'TOTAL\s+(?:AMOUNT\s+)?CLAIMED',
+        r'PRINCIPAL\s+AMOUNT\s+(?:CLAIMED|EUR|USD|GBP)',
+        r'AMOUNTS?\s+CLAIMED\s*[:\n]',
+        r'OUR\s+REFERENCE\s+NO',
+        r'YOUR\s+DOCUMENTARY\s+CREDIT\s+NO',
+        # "REMIT FUNDS / SETTLEMENT" — bank-to-bank reimbursement claim language
+        r'REMIT\s+FUNDS\s+TO\s+(?:OUR\s+)?CORRESPONDENT',
+        r'(?:UPON|FOR)\s+SETTLEMENT\s+PLEASE\s+REMIT',
+        r'CLAIM\s+REIMBURSEMENT',
+        r'QUOTING\s+OUR\s+REFERENCE',
     ],
     "Notice of Readiness": [
         r'NOTICE\s+OF\s+READINESS', r'NOR\s+(?:RE-?)?TENDER', r'VESSEL\s+HAS\s+OFFICIALLY\s+ARRIVED',
@@ -280,6 +363,69 @@ _DOC_INDICATORS = {
 }
 
 
+# ── Bill of Lading "Terms and Conditions of Carriage" page detector ──
+#
+# A blank-back / short-form BL is one whose REVERSE side does not carry the
+# detailed carriage terms. UCP 600 Art 20(a)(v) accepts these unconditionally
+# UNLESS the LC explicitly forbids them ("SHORT FORM / BLANK BACK / HOUSE /
+# STALE / FORWARDER AGENT BL NOT ACCEPTABLE").
+#
+# However, when the LC DOES forbid blank-back BLs, we must not raise the
+# discrepancy if the document set ALSO contains a separate page printing
+# the carriage terms — that page IS the "reverse side", just supplied on a
+# separate sheet, and the BL is therefore a full-form BL.
+#
+# This helper recognises a T&C page by counting BL legal-clause keywords.
+_BL_TERMS_KEYWORDS = [
+    r'CONDITIONS?\s+OF\s+CARRIAGE',
+    r'TERMS\s+AND\s+CONDITIONS\s+OF\s+(?:CARRIAGE|TRANSPORT)',
+    r'CARRIER\'?S?\s+(?:LIABILITY|RESPONSIBILITY|OBLIGATIONS?)',
+    r'HAGUE\s+(?:RULES|VISBY|VISBY\s+RULES)',
+    r'HAMBURG\s+RULES',
+    r'ROTTERDAM\s+RULES',
+    r'COGSA\b',                                       # Carriage of Goods by Sea Act
+    r'GENERAL\s+AVERAGE',
+    r'YORK[/\-]ANTWERP\s+RULES',
+    r'PARAMOUNT\s+CLAUSE',
+    r'JURISDICTION\s+(?:AND\s+)?(?:LAW|CLAUSE)',
+    r'LAW\s+AND\s+JURISDICTION',
+    r'NOTICE\s+OF\s+(?:CLAIM|LOSS\s+OR\s+DAMAGE)',
+    r'PERIOD\s+OF\s+RESPONSIBILITY',
+    r'DECK\s+CARGO',
+    r'LIVE\s+ANIMALS',
+    r'DANGEROUS\s+(?:GOODS|CARGO)',
+    r'FREIGHT\s+(?:PREPAID|COLLECT|PAYABLE)',
+    r'DEMURRAGE',
+    r'LIEN\s+ON\s+(?:CARGO|GOODS)',
+    r'SUB[- ]?CONTRACTING',
+    r'HIMALAYA\s+CLAUSE',
+    r'BOTH[- ]TO[- ]BLAME\s+COLLISION',
+    r'NEW\s+JASON\s+CLAUSE',
+    r'CLAUSE\s+PARAMOUNT',
+    r'MERCHANT\s+SHALL',
+    r'CARRIER\s+SHALL\s+NOT\s+BE\s+LIABLE',
+    r'INDEMNIFY\s+THE\s+CARRIER',
+]
+
+
+def _looks_like_bl_terms_page(text: str) -> bool:
+    """
+    True if `text` looks like a Bill of Lading "Terms and Conditions of
+    Carriage" / reverse-side page.
+
+    Detection rule: at least 3 distinct BL legal-clause keywords AND the
+    text contains the word CARRIER at least twice (so a BL front side that
+    happens to mention "Hague Rules" once doesn't get tagged).
+    """
+    if not text or len(text) < 200:
+        return False
+    upper = text.upper()
+    if upper.count('CARRIER') < 2:
+        return False
+    hits = sum(1 for p in _BL_TERMS_KEYWORDS if re.search(p, upper))
+    return hits >= 3
+
+
 def _rule_based_classify(text: str) -> List[dict]:
     """Pre-classify document using keyword matching. Returns sorted matches."""
     upper = text.upper()
@@ -289,10 +435,98 @@ def _rule_based_classify(text: str) -> List[dict]:
         if hits > 0:
             score = hits / len(patterns)
             scores[doc_type] = round(score, 3)
+
+    # ── Documentary Remittance / Covering Schedule override ──
+    # Bank covering schedules (e.g. "We enclose documents related to above
+    # referenced letter of credit ... Total Amount Claimed ... Presentation
+    # Number ... Our Reference No.") are routinely misread as Beneficiary
+    # Certificate because they sit on bank letterhead and contain
+    # "We hereby ...". When ≥3 high-specificity covering-schedule signals
+    # are present, force Documentary Remittance to the top so the VLM
+    # prompt and downstream matching see the correct candidate first.
+    dr_strong_signals = [
+        r'WE\s+ENCLOSE\s+DOCUMENTS?',
+        r'ENCLOSED\s+HEREWITH',
+        r'DOCUMENTS?\s+ATTACHED',
+        r'PRESENTATION\s+(?:NUMBER|NO\.?|DATE|AMOUNT)',
+        r'TOTAL\s+(?:AMOUNT\s+)?CLAIMED',
+        r'PRINCIPAL\s+AMOUNT\s+(?:CLAIMED|EUR|USD|GBP)',
+        r'AMOUNTS?\s+CLAIMED\s*[:\n]',
+        r'YOUR\s+DOCUMENTARY\s+CREDIT\s+NO',
+        r'OUR\s+REFERENCE\s+NO',
+        r'REMIT\s+FUNDS\s+TO\s+(?:OUR\s+)?CORRESPONDENT',
+        r'QUOTING\s+OUR\s+REFERENCE',
+        r'CLAIM\s+REIMBURSEMENT',
+        r'COVERING\s+(?:LETTER|SCHEDULE)',
+        r'DOCUMENTARY\s+REMITTANCE',
+    ]
+    dr_hits = sum(1 for p in dr_strong_signals if re.search(p, upper))
+
+    # ── Courier / Express Waybill override ──
+    # A DHL / FedEx / UPS / TNT / Aramex express envelope is a Courier
+    # Receipt (or Air Waybill), NEVER a Documentary Remittance, even
+    # though it travels alongside the document set. Detect courier
+    # signals and force Courier Receipt to win — also suppressing the
+    # DR override below to avoid the same misroute.
+    courier_signals = [
+        r'\bDHL\b', r'\bFEDEX\b', r'\bFED\s*EX\b', r'\bUPS\b',
+        r'\bTNT\b', r'\bARAMEX\b', r'\bSF\s+EXPRESS\b',
+        r'EXPRESS\s+ENVELOPE', r'\bWAYBILL\b',
+        r'\bXPD\b', r'\bWPX\b',
+        r'COURIER\s+(?:RECEIPT|WAYBILL|SERVICE)',
+        r'TRACKING\s+(?:NUMBER|NO\.?)',
+    ]
+    # Also accept generic AWB signals as part of the same family
+    awb_signals = [
+        r'AIR\s*WAY\s*BILL', r'\bAWB\b', r'\bHAWB\b', r'\bMAWB\b',
+        r'HOUSE\s+AIR\s*WAYBILL', r'MASTER\s+AIR\s*WAYBILL',
+        r'AIRLINE', r'FLIGHT\s+NO',
+        r'AIRPORT\s+OF\s+(?:DEPARTURE|DESTINATION)',
+    ]
+    awb_hits = sum(1 for p in awb_signals if re.search(p, upper))
+    courier_hits = sum(1 for p in courier_signals if re.search(p, upper))
+
+    # Air waybill OR courier waybill — same family per the user's
+    # operational rule. ≥2 hits from EITHER pool is enough.
+    is_courier_or_awb = (courier_hits >= 2) or (awb_hits >= 2) or (courier_hits + awb_hits >= 2)
+    if is_courier_or_awb:
+        scores['Courier Receipt'] = max(scores.get('Courier Receipt', 0), 0.99)
+        scores['Airway Bill']     = max(scores.get('Airway Bill', 0), 0.99)
+        # Suppress DR — courier/AWB labels are not covering schedules.
+        if 'Documentary Remittance' in scores:
+            scores['Documentary Remittance'] = min(scores['Documentary Remittance'], 0.10)
+        # Don't run the DR override either.
+        dr_hits = 0
+
+    if dr_hits >= 3:
+        # Override: this is a covering schedule. Boost score above all others.
+        scores['Documentary Remittance'] = max(scores.get('Documentary Remittance', 0), 0.99)
+        # Demote Beneficiary Certificate when DR signals dominate — a bank
+        # covering schedule is NEVER a beneficiary's certificate even if
+        # it contains "WE HEREBY" type language.
+        if 'Beneficiary Certificate' in scores:
+            scores['Beneficiary Certificate'] = min(scores['Beneficiary Certificate'], 0.10)
+
     return [
         {"document_name": name, "score": score}
         for name, score in sorted(scores.items(), key=lambda x: -x[1])
     ]
+
+
+def _is_courier_or_awb_label(name: str) -> bool:
+    """True if the document name refers to either an air waybill or a
+    courier receipt — they are treated as one family."""
+    if not name:
+        return False
+    n = name.upper()
+    return (
+        'COURIER' in n
+        or 'AWB' in n
+        or 'HAWB' in n
+        or 'MAWB' in n
+        or ('AIR' in n and ('WAY' in n or 'BILL' in n))
+        or 'EXPRESS' in n and ('WAYBILL' in n or 'ENVELOPE' in n or 'DELIVERY' in n)
+    )
 
 
 def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tuple:
@@ -302,10 +536,18 @@ def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tupl
     1. Exact containment (either direction)
     2. Normalized containment (strip plurals, strip 'OF', etc.)
     3. Fuzzy word overlap (1+ significant words match)
+    4. Air waybill ⇄ courier receipt equivalence
     """
     if not doc_type:
         return -1, ""
     dt_upper = doc_type.upper().strip()
+
+    # AWB / Courier Receipt are the same family — match either label to
+    # whichever the LC required.
+    if _is_courier_or_awb_label(dt_upper):
+        for i, ed in enumerate(expected_docs):
+            if _is_courier_or_awb_label(ed.get('document_name', '')):
+                return i, ed.get('document_name', '')
 
     # Normalize: strip plurals and common words for better matching
     def _normalize(s):
@@ -445,7 +687,74 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
     document_date = ""
     document_amount = ""
 
-    if vlm_result:
+    # If the rule-based classifier triggered a high-confidence override
+    # (Courier Receipt / Airway Bill, or Documentary Remittance via the
+    # dedicated signal checks above), trust it over the VLM — these are
+    # exactly the cases where the VLM tends to misroute (DHL labels →
+    # Documentary Remittance, bank covering schedules → Beneficiary
+    # Certificate).
+    #
+    # Air Waybill and Courier Receipt are operationally the same family;
+    # both names get the 0.99 boost together when courier/AWB signals fire.
+    # When that happens we resolve to whichever label the LC's expected
+    # document list actually requested, falling back to "Airway Bill".
+    rule_override_type = None
+    if rule_matches:
+        top_score = rule_matches[0].get('score', 0)
+        top_names_at_99 = {m['document_name'] for m in rule_matches
+                           if m.get('score', 0) >= 0.99}
+
+        if top_score >= 0.99:
+            if {'Courier Receipt', 'Airway Bill'} & top_names_at_99:
+                # Resolve to whichever the LC asked for
+                preferred = None
+                for ed in expected_docs:
+                    en = (ed.get('document_name') or '').upper()
+                    if 'COURIER' in en:
+                        preferred = 'Courier Receipt'; break
+                    if 'AIR' in en and ('WAY' in en or 'BILL' in en):
+                        preferred = 'Airway Bill'; break
+                rule_override_type = preferred or 'Airway Bill'
+            elif rule_matches[0]['document_name'] == 'Documentary Remittance':
+                rule_override_type = 'Documentary Remittance'
+
+    if rule_override_type:
+        document_type = rule_override_type
+        match_confidence = 0.95
+        reasoning = (
+            f"Rule-based override: strong {rule_override_type} signals "
+            f"(suppressing VLM classification: {vlm_result.get('document_type', '?') if vlm_result else 'n/a'})"
+        )
+        if vlm_result:
+            # Still keep the visual elements VLM extracted
+            document_summary = vlm_result.get('summary', '')
+            document_number = vlm_result.get('document_number', '')
+            document_date = vlm_result.get('date', '')
+            document_amount = vlm_result.get('amount', '')
+            raw_stamps = vlm_result.get('stamps', [])
+            if isinstance(raw_stamps, list):
+                stamps = [{"text": s.get("text", ""), "type": s.get("type", "rubber_stamp")}
+                          for s in raw_stamps if isinstance(s, dict)]
+            raw_sigs = vlm_result.get('signatures', [])
+            if isinstance(raw_sigs, list):
+                signatures = [{"description": s.get("description", ""), "type": s.get("type", "handwritten")}
+                              for s in raw_sigs if isinstance(s, dict)]
+            raw_seals = vlm_result.get('seals', [])
+            if isinstance(raw_seals, list):
+                seals = [{"description": s.get("description", "")}
+                         for s in raw_seals if isinstance(s, dict)]
+            raw_logos = vlm_result.get('logos', [])
+            if isinstance(raw_logos, list):
+                logos = [{"company_name": s.get("company_name", "")}
+                         for s in raw_logos if isinstance(s, dict)]
+            copy_status = vlm_result.get('copy_status', '')
+            copy_label = vlm_result.get('copy_label', '')
+            marking_status = vlm_result.get('marking_status', '')
+            issued_by = vlm_result.get('issued_by', '')
+            lc_reference = vlm_result.get('lc_reference', '')
+        matched_index, matched_name = _match_type_to_requirement(document_type, expected_docs)
+        classification_status = "matched_document" if matched_index >= 0 else "alien_document"
+    elif vlm_result:
         document_type = vlm_result.get('document_type', '')
         match_confidence = float(vlm_result.get('confidence', 0.0))
         reasoning = vlm_result.get('reasoning', '')
@@ -520,6 +829,13 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
                     top_matches[0]['document_name'], scores[0],
                     top_matches[1]['document_name'], scores[1])
 
+    # ── Detect BL terms-and-conditions-of-carriage page ──
+    # If this packet's text looks like the BL reverse-side legal clauses
+    # (Hague Rules, Carrier's liability, Paramount Clause, etc.), mark it
+    # so the run()-level pass can decide whether other BLs in the set are
+    # blank-back or full-form.
+    is_bl_terms_page = _looks_like_bl_terms_page(glm_text)
+
     elapsed = time.time() - start
 
     classified = ClassifiedPacket(
@@ -552,6 +868,7 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
         ambiguity_flag=ambiguity,
         ambiguity_notes=ambiguity_notes,
         elapsed_seconds=round(elapsed, 2),
+        is_bl_terms_page=is_bl_terms_page,
     )
 
     return asdict(classified)
@@ -645,6 +962,57 @@ def run(step3_result: dict, step7_result: dict, output_dir: str = None, progress
                         type_counts[mi], expected_total)
                     cp['ambiguity_notes'] = ("%s; %s" % (notes, extra_note)).strip('; ')
 
+    # ── Bill of Lading: blank-back vs full-form resolution ──
+    #
+    # Rule:
+    #   • A BL packet whose text contains the carriage T&Cs is a full-form BL.
+    #   • A BL packet whose text does NOT contain the T&Cs is treated as
+    #     short-form / blank-back UNLESS some OTHER packet in the same
+    #     classification set carries those T&Cs — in which case the BL is
+    #     a full-form BL whose terms were printed on a separate sheet.
+    #
+    # The downstream audit (step12 / step15) only raises a discrepancy when
+    # the LC explicitly forbids short-form / blank-back BLs; this flag tells
+    # it whether to fire.
+    has_terms_page_in_set = any(
+        p and p.get('is_bl_terms_page') for p in classified_packets
+    )
+
+    def _is_bl(cp: dict) -> bool:
+        if not cp:
+            return False
+        dt = (cp.get('document_type') or '').upper()
+        mr = (cp.get('matched_requirement_name') or '').upper()
+        return ('BILL OF LADING' in dt or 'BILL OF LADING' in mr
+                or dt == 'BILL OF LADING' or mr == 'BILL OF LADING')
+
+    for cp in classified_packets:
+        if not _is_bl(cp):
+            continue
+        if cp.get('is_bl_terms_page'):
+            # This packet IS the T&C sheet — not a real BL by itself.
+            cp['bl_short_form_status'] = 'full_form'
+            cp['has_bl_terms_pages_in_set'] = True
+            continue
+
+        cp['has_bl_terms_pages_in_set'] = has_terms_page_in_set
+
+        own_text = (cp.get('cleaned_text') or cp.get('raw_text') or '')
+        own_has_terms = _looks_like_bl_terms_page(own_text)
+
+        if own_has_terms:
+            cp['bl_short_form_status'] = 'full_form'
+        elif has_terms_page_in_set:
+            # Carriage terms supplied on a separate page in the same set →
+            # the BL is effectively a full-form BL.
+            cp['bl_short_form_status'] = 'full_form'
+        else:
+            # No T&Cs anywhere in the document set — treat as short-form /
+            # blank-back. (UCP 600 Art 20(a)(v) still ACCEPTS this unless
+            # the LC explicitly forbids it; the discrepancy is raised
+            # later by the cross-clause audit when that LC clause exists.)
+            cp['bl_short_form_status'] = 'short_form'
+
     # Summary
     summary = {
         'total': len(classified_packets),
@@ -653,6 +1021,10 @@ def run(step3_result: dict, step7_result: dict, output_dir: str = None, progress
         'extra': sum(1 for p in classified_packets if p and p.get('classification_status') == 'extra_document'),
         'unknown': sum(1 for p in classified_packets if p and p.get('classification_status') == 'unknown'),
         'ambiguous': sum(1 for p in classified_packets if p and p.get('ambiguity_flag')),
+        'bl_full_form': sum(1 for p in classified_packets
+                            if p and p.get('bl_short_form_status') == 'full_form'),
+        'bl_short_form': sum(1 for p in classified_packets
+                             if p and p.get('bl_short_form_status') == 'short_form'),
     }
 
     elapsed = time.time() - start_time

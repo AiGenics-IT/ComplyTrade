@@ -3,21 +3,21 @@ ComplyTrade Pilot V2 — Configuration
 """
 
 # ── Model Endpoints ──
-GLM_OCR_URL = "http://10.20.10.3:8001/api/ocr"
+GLM_OCR_URL = "http://72.255.9.104:8001/api/ocr"
 GLM_OCR_MODEL = "glm-ocr"
 
 # Qwen 7B for lightweight tasks (text cleaning, simple checks)
-QWEN_7B_URL = "http://10.20.10.3:8000/v1/chat/completions"
+QWEN_7B_URL = "http://72.255.9.104:8000/v1/chat/completions"
 QWEN_7B_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-7B-Instruct"
 
 # Qwen VLM for classification, decomposition, verification
-QWEN_VLM_URL = "http://10.20.10.2:8085/v1/chat/completions"
+QWEN_VLM_URL = "http://72.255.9.104:8085/v1/chat/completions"
 QWEN_VLM_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-72B-Instruct-AWQ"
 
 # ── Server ──
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8082
-BUILD_TAG = "2026-04-08-P51"
+BUILD_TAG = "2026-04-09-P54"
 
 # ── Processing ──
 MAX_CONCURRENT_OCR = 8

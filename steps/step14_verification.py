@@ -322,6 +322,17 @@ def _pkt_visual_metadata(pkt: dict) -> str:
     n_orig = pkt.get("number_of_originals", pkt.get("document_fields", {}).get("number_of_originals", ""))
     if n_orig:
         parts.append(f"Number of Originals: {n_orig}")
+    # ── Bill of Lading: short-form / blank-back / full-form status (Step 8) ──
+    # Step 8 sets bl_short_form_status to "full_form" when either the BL
+    # itself carries the carriage T&Cs OR another packet in the same set
+    # carries them on a separate sheet. It is "short_form" only when no
+    # T&Cs page exists anywhere in the submission. The verifier MUST use
+    # this — see rule #23 in the prompt.
+    bl_status = pkt.get("bl_short_form_status", "")
+    if bl_status:
+        has_terms = pkt.get("has_bl_terms_pages_in_set", False)
+        parts.append(f"BL Form Status: {bl_status}")
+        parts.append(f"BL Terms Page Present in Set: {bool(has_terms)}")
     # Also check nested pages for stamps/signatures
     for pg in pkt.get("pages", pkt.get("original_pages", [])):
         if isinstance(pg, dict):
@@ -456,9 +467,15 @@ CRITICAL RULES (follow strictly):
 17. AGENT vs FORWARDER: "AS AGENTS ONLY FOR AND BY AUTHORITY OF THE MASTER" on a BL means the carrier's agent signed — this is NORMAL and NOT a freight forwarder BL. A freight forwarder BL would say "FIATA", "HOUSE BILL", or show a forwarder company as the ISSUER (not as agent of master).
 18. COPIES/DUPLICATES: "IN DUPLICATE" = 2 copies, "IN TRIPLICATE" = 3, "IN QUADRUPLICATE" = 4, "IN OCTUPLICATE" = 8, "FULL SET" = 3/3 originals. The number of copies is verified by the SYSTEM (not you) — it counts how many separate document packets exist. When you see a condition about copies/duplicates, mark it as PASS — the system handles copy counting separately. Do NOT fail a document for "not in duplicate/octuplicate" — you are only seeing ONE representative copy.
 19. MISSING DOCUMENT: If a required document is completely MISSING from the submission, report ONE failure: "Required document missing". Do NOT add sub-failures for content checks (importer name, language, etc.) on a missing document — those are meaningless if the document doesn't exist.
-20. PORT MATCHING: Ports are the SAME if the city/country matches, even if qualifiers differ. "KARACHI SEAPORT, PAKISTAN" = "KARACHI, PAKISTAN" = "KARACHI PORT, PAKISTAN". The word "SEAPORT"/"PORT" is just a qualifier. Similarly: "PENANG PORT, MALAYSIA" = "PENANG, MALAYSIA". Also "ANY [COUNTRY] PORT" means ANY port in that country = PASS if port is in that country. "ANY MALAYSIA PORT" matches "PENANG PORT, MALAYSIA". "ANY CANADIAN PORT" matches "VANCOUVER, CANADA".
-21. QUANTITY MATCHING: LC may say "QTY 736" and invoice may show individual line items that SUM to 736.
+20. PORT MATCHING: Ports are the SAME if the city/country matches, even if qualifiers differ. "KARACHI SEAPORT, PAKISTAN" = "KARACHI, PAKISTAN" = "KARACHI PORT, PAKISTAN". The word "SEAPORT"/"PORT" is just a qualifier. Similarly: "PENANG PORT, MALAYSIA" = "PENANG, MALAYSIA". Also "ANY [COUNTRY] PORT/SEAPORT" means ANY port in that country = PASS if port is in that country. "ANY MALAYSIA PORT" matches "PENANG PORT, MALAYSIA". "ANY CANADIAN PORT" matches "VANCOUVER, CANADA". "ANY CHINESE SEAPORT" matches "HONGKONG SEAPORT, CHINA" or "SHANGHAI, CHINA" or any port in China (including Hong Kong, Macau — they are part of China). The word "CHINESE" = "CHINA".
+21. QUANTITY MATCHING: LC may say "QTY 736" and invoice may show individual line items that SUM to 736. Check the SYSTEM PRE-CALCULATED SUMMARY at the top of the document text — it shows per-product totals. Use these totals instead of counting line items yourself.
+Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 981E" = "LN981E". Ignore spaces in product codes when matching.
 22. PARTY REFERENCES: When the condition says "NOTIFY APPLICANT" or "TO ORDER OF ISSUING BANK", look at the LC PARTIES section above to find the actual name. Then check if that name appears on the document. "NOTIFY APPLICANT" means the notify party field must show the APPLICANT's name (given above). Do NOT look for the literal words "NOTIFY APPLICANT" — look for the applicant's ACTUAL NAME. Check the TOTAL quantity, not individual lines. Also "Ea" (each) is a valid unit — 736 Ea = 736 pieces. If LC says "QTY 736 AT THE RATE OF USD 98.00" and invoice shows 736 units × $98.00 = correct.
+23. SHORT FORM / BLANK BACK BILL OF LADING (UCP 600 Art 20(a)(v)): A "short form" or "blank back" Bill of Lading is one that does NOT print the detailed terms and conditions of carriage on its reverse side. UCP 600 Art 20(a)(v) ACCEPTS such bills of lading by default — banks will not examine the contents of those terms. ONLY raise a discrepancy when the LC explicitly forbids them with wording like "SHORT FORM / BLANK BACK BL NOT ACCEPTABLE", and even then, check the DOCUMENT VISUAL METADATA above:
+   • If "BL Form Status: full_form" → the BL is a full-form BL = PASS (the carriage terms are present, either on this BL or on a separate T&C page in the same submission set).
+   • If "BL Terms Page Present in Set: True" → the carriage terms are supplied on a separate sheet within the document set; the BL is therefore a full-form BL = PASS, even if the LC forbids blank-back.
+   • Only when "BL Form Status: short_form" AND no terms page exists in the set AND the LC explicitly forbids short-form/blank-back → mark as FAIL.
+   In all other cases (including the LC being silent on short-form), short-form / blank-back BLs are acceptable per UCP 600 = PASS.
 
 Return ONLY valid JSON:
 {{
@@ -510,14 +527,29 @@ def _call_vlm(
         _qty_totals = _re_sum.findall(r'(?:Total\s*(?:Quantity)?|TOTAL)[:\s]*([\d,]+\.?\d*)\s*(?:Ea|pcs|KGS|MT|MMBTU|units|rolls|drums)', document_text, _re_sum.IGNORECASE)
         if _qty_totals:
             _doc_summary += f"TOTAL QUANTITIES FOUND: {', '.join(_qty_totals)}\n"
-        # Find quantities — group by "Quantity Shipped" column (not "Quantity Ordered" to avoid double count)
-        # Look for shipped quantities or standalone Qty patterns
-        _shipped_qtys = _re_sum.findall(r'(?:Quantity\s+Shipped|Shipped)[:\s]*([\d,.]+)', document_text, _re_sum.IGNORECASE)
-        if _shipped_qtys:
-            _sum = sum(float(q.replace(',','')) for q in _shipped_qtys)
-            _doc_summary += f"TOTAL SHIPPED QUANTITY: {_sum:.0f} (from {len(_shipped_qtys)} line items)\n"
+        # Find quantities grouped by product/item code
+        # Look for patterns like: "0980E-00\nTPE DISPOSABLE SET, LN980E\n...Qty: 96"
+        _product_qtys = {}
+        _lines = document_text.split('\n')
+        _current_product = None
+        for _line in _lines:
+            _line_s = _line.strip()
+            # Detect product lines (item codes like 0980E-00 or product names)
+            _prod_m = _re_sum.search(r'\b(LN\s*\d+\w*)\b', _line_s, _re_sum.IGNORECASE)
+            if _prod_m:
+                _current_product = _re_sum.sub(r'\s+', '', _prod_m.group(1).upper())  # Normalize: "LN 980E" -> "LN980E"
+            # Detect quantity lines
+            _qty_m = _re_sum.search(r'(?:Qty|Quantity(?:\s+Shipped)?)[:\s]*(\d+)', _line_s, _re_sum.IGNORECASE)
+            if _qty_m and _current_product:
+                qty = int(_qty_m.group(1))
+                _product_qtys[_current_product] = _product_qtys.get(_current_product, 0) + qty
+
+        if _product_qtys:
+            for prod, qty in sorted(_product_qtys.items()):
+                _doc_summary += f"PRODUCT {prod} TOTAL QUANTITY: {qty}\n"
+            _doc_summary += f"GRAND TOTAL QUANTITY: {sum(_product_qtys.values())}\n"
         else:
-            # Fallback: look for Qty: patterns but avoid duplicates (Ordered vs Shipped)
+            # Fallback: simple sum
             _line_qtys = _re_sum.findall(r'(?:^|\n)\s*(?:Qty)[:\s]*(\d+)', document_text, _re_sum.IGNORECASE)
             if len(_line_qtys) > 2:
                 _sum = sum(int(q) for q in _line_qtys)

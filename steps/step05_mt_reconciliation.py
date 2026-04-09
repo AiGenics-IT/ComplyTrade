@@ -89,6 +89,9 @@ class ReconciledPacket:
     change_log: List[ChangeLogEntry] = field(default_factory=list)
     was_reclassified: bool = False
     text_was_corrected: bool = False
+    # MT799 amendment promotion (carried through from Step 4)
+    source_mt: str = ""
+    is_799_amendment: bool = False
 
 
 # == VLM reconciliation prompt ================================================
@@ -278,6 +281,8 @@ def run(step4_result: dict, output_dir: str = None, progress_callback=None) -> d
             orig_conf = pkt_in.mt_confidence
             swift_fmt = pkt_in.swift_format
             doc_hint = pkt_in.doc_hint
+            src_mt = getattr(pkt_in, 'source_mt', '')
+            is_799_amd = bool(getattr(pkt_in, 'is_799_amendment', False))
         else:
             pkt_id = pkt_in.get('packet_id', 0)
             pages_data = pkt_in.get('pages', [])
@@ -288,6 +293,8 @@ def run(step4_result: dict, output_dir: str = None, progress_callback=None) -> d
             orig_conf = pkt_in.get('mt_confidence', 0)
             swift_fmt = pkt_in.get('swift_format', '')
             doc_hint = pkt_in.get('doc_hint', '')
+            src_mt = pkt_in.get('source_mt', '')
+            is_799_amd = bool(pkt_in.get('is_799_amendment', False))
 
         # Decide if VLM is needed:
         # MT-side, unknown, covering_letter, or low-confidence shipping
@@ -330,6 +337,8 @@ def run(step4_result: dict, output_dir: str = None, progress_callback=None) -> d
             'orig_conf': orig_conf,
             'swift_fmt': swift_fmt,
             'doc_hint': doc_hint,
+            'src_mt': src_mt,
+            'is_799_amd': is_799_amd,
             'needs_vlm': needs_vlm,
             'vlm_results': {},  # page_index -> vlm_result
         })
@@ -407,6 +416,10 @@ def run(step4_result: dict, output_dir: str = None, progress_callback=None) -> d
                 if pg_idx == 0 and not vlm_result.get('classification_correct', True):
                     new_mt = vlm_result.get('correct_mt_type', pd['orig_mt'])
                     new_conf = float(vlm_result.get('confidence', pd['orig_conf']))
+                    # Don't let VLM downgrade an MT799-promoted-to-MT707 back to MT799
+                    # — Step 4 already established it carries amendment instructions.
+                    if pd.get('is_799_amd') and new_mt in ('MT799', 'MT999'):
+                        new_mt = pd['orig_mt']
                     if new_mt != pd['orig_mt'] and new_conf > 0.60:
                         refined_mt = new_mt
                         refined_conf = new_conf
@@ -450,6 +463,8 @@ def run(step4_result: dict, output_dir: str = None, progress_callback=None) -> d
             change_log=change_log,
             was_reclassified=packet_reclassified,
             text_was_corrected=packet_text_corrected,
+            source_mt=pd.get('src_mt', ''),
+            is_799_amendment=pd.get('is_799_amd', False),
         )
         reconciled.append(rpkt)
 
