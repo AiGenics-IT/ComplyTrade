@@ -347,6 +347,18 @@ _DOC_INDICATORS = {
         r'CLAIM\s+REIMBURSEMENT',
         r'QUOTING\s+OUR\s+REFERENCE',
     ],
+    # P81: Form 7 = Batch Certificate (Pakistan Drug Act Rule 14(d)(i))
+    # Form 3 = Drug Registration / Import Certificate
+    "Form 7 (Batch Certificate)": [
+        r'FORM\s+7', r'BATCH\s+CERTIFIC(?:ATE|ATION)',
+        r'RULE\s+14\s*\(\s*d\s*\)', r'BATCH\s+NO',
+        r'DATE\s+OF\s+MANUFACT', r'DATE\s+OF\s+EXPIRY',
+        r'DRUG\s+ACT\s+1976',
+    ],
+    "Form 3": [
+        r'FORM\s+3\b', r'DRUG\s+REGISTRATION\s+CERTIFICATE',
+        r'IMPORT\s+CERTIFICATE\s+FOR\s+DRUG',
+    ],
     "Notice of Readiness": [
         r'NOTICE\s+OF\s+READINESS', r'NOR\s+(?:RE-?)?TENDER', r'VESSEL\s+HAS\s+OFFICIALLY\s+ARRIVED',
     ],

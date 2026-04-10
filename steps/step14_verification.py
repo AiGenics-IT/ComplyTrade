@@ -122,6 +122,33 @@ DOC_TYPE_ALIASES = {
     "phytosanitary certificate": [
         "phytosanitary certificate", "phytosanitary",
     ],
+    # P81: Form 7 = Batch Certificate (Pakistan Drug Act Rule 14(d)(i))
+    # Form 3 = Drug Registration Certificate / Import Certificate
+    # These regulatory forms are referred to by their form number in
+    # Pakistani LC clauses but classified by their descriptive name
+    # by the VLM. Both names must map to the same bucket.
+    "form 7": [
+        "form 7", "form7", "form no 7", "form no. 7",
+        "batch certificate", "batch certification",
+        "form 7 batch certificate", "form 7 (batch certificate)",
+        "form 7 batch certification",
+    ],
+    "batch certificate": [
+        "batch certificate", "batch certification",
+        "form 7", "form7", "form no 7", "form no. 7",
+        "form 7 batch certificate", "form 7 (batch certificate)",
+        "form 7 batch certification",
+    ],
+    "form 7 (batch certificate)": [
+        "form 7 (batch certificate)", "form 7 batch certificate",
+        "form 7", "form7", "batch certificate", "batch certification",
+        "form no 7", "form no. 7",
+    ],
+    "form 3": [
+        "form 3", "form3", "form no 3", "form no. 3",
+        "drug registration certificate", "import certificate",
+        "form 3 certificate", "drug import certificate",
+    ],
     "shipping advice": [
         "shipping advice", "shipment advice", "beneficiary shipment advice",
     ],
