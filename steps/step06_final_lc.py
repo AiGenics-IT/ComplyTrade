@@ -478,11 +478,22 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
         # Fall through to normal splitting
 
     # Try numbered: "1.", "2.", "1)", "2)", "1-", "2-"
-    # P77: Also handles "7.THE" (no space after the period) which is
-    # a common SWIFT / OCR artefact where the clause number touches
-    # the text directly. The regex now requires zero-or-more whitespace
-    # after the delimiter (\s*) instead of one-or-more (\s+).
-    numbered = re.split(r'\n\s*(\d+)\s*[-.)]\s*', '\n' + text)
+    # P77/P80: Also handles "7.THE" (no space after the period) and
+    # mid-line clause starts like "...EXPIRY. 7.THE CARRIER..." where
+    # there is no newline before the clause number. We pre-normalize
+    # the text by inserting \n before any mid-line "N." / "N)" / "N-"
+    # pattern that follows a sentence-ending period or whitespace.
+    _normalized = text
+    # Insert \n before mid-line numbered clause starts:
+    # Match: (sentence-end punctuation + space(s)) + (digit(s)) + (clause delimiter)
+    # e.g. "EXPIRY. 7.THE" → "EXPIRY.\n7.THE"
+    # e.g. "SEPARATELY. 10. SOME" → "SEPARATELY.\n10. SOME"
+    _normalized = re.sub(
+        r'(?<=[.;:!?\s])\s+(\d{1,2})\s*([.\-)])\s*(?=[A-Z])',
+        r'\n\1\2 ',
+        _normalized,
+    )
+    numbered = re.split(r'\n\s*(\d+)\s*[-.)]\s*', '\n' + _normalized)
     if len(numbered) >= 3:
         for i in range(1, len(numbered) - 1, 2):
             clause_text = numbered[i + 1].strip()
