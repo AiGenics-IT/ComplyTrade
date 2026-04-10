@@ -1353,18 +1353,29 @@ def run(
         if check_id == 'date_of_issue':
             lc_date = lc_fields.get('31C', lc_fields.get('F31C', ''))
             if lc_date:
+                # P86: Only run the date-of-issue check if the LC
+                # EXPLICITLY says documents dated prior to the credit
+                # are NOT acceptable. Without that clause, there is no
+                # requirement to check document dates against LC issue
+                # date — documents can be dated before the LC is opened
+                # (which is normal for manufacturing certificates,
+                # proforma invoices, quality reports, etc.).
                 lc_text_all = ' '.join(str(v) for v in lc_fields.values()).upper()
-                prior_accepted = bool(re.search(r'DOCUMENT.{0,30}DATED\s+PRIOR.{0,30}(?:ISSUANCE|ISSUE|CREDIT).{0,20}(?:ACCEPT|PERMIT|ALLOW)', lc_text_all))
-                if not prior_accepted:
-                    exempt_types = {'analysis', 'inspection', 'certificate of origin', 'coo', 'packing list', 'packing', 'weight list', 'draft', 'bill of exchange', 'invoice', 'inception', 'beneficiary'}
+                prior_prohibited = bool(re.search(
+                    r'DOCUMENT.{0,40}DATED?\s+(?:PRIOR|BEFORE|EARLIER).{0,40}'
+                    r'(?:ISSUANCE|ISSUE|CREDIT|DATE\s+OF\s+(?:THIS\s+)?CREDIT).{0,30}'
+                    r'(?:NOT\s+ACCEPT|NOT\s+PERMIT|NOT\s+ALLOW|UNACCEPT|PROHIBIT|REJECT)',
+                    lc_text_all,
+                ))
+                if prior_prohibited:
                     for pkt in _deduplicate_documents(packets):
                         dt = pkt.get('document_type', 'Unknown')
-                        if any(ex in dt.lower() for ex in exempt_types):
-                            continue
                         r = _hybrid_date_check('date_of_issue', 'F31C', lc_date, pkt,
                             f"Document must be dated on/after LC issue date ({lc_date})", 'after')
                         all_results.append(r)
                         progress_fn(f"  [date_of_issue] [{dt}]: {r.compliance} - {r.result[:50]}")
+                else:
+                    progress_fn(f"  [date_of_issue] SKIPPED — LC does not prohibit documents dated prior to credit")
 
         elif check_id == 'lc_expiry':
             expiry = lc_fields.get('31D', lc_fields.get('F31D', ''))

@@ -249,19 +249,7 @@ WHAT TO GENERATE (read all rules before decomposing):
     report), they must still be generated so the checker sees the
     COMPLETE list of requirements for that document.
 
-  RULE D-2 — Beneficiary-certificate content row:
-    The Beneficiary Certificate must state the dispatch happened.
-    → document_to_check = "Beneficiary Certificate"
-    → Combine all the dispatch details into ONE condition text:
-      "Beneficiary Certificate must state that the original <doc>
-       was dispatched to <recipient> at <address>, along with the
-       non-negotiable documents, within <time limit if stated>."
-    → Do NOT split this into separate rows for "sent to recipient",
-      "sent to address", "sent along with non-negotiable docs" —
-      these are parts of ONE sentence the certificate must contain,
-      not separate compliance items.
-
-  RULE D-3 — Beneficiary-certificate accompaniment row:
+  RULE D-2 — Beneficiary-certificate accompaniment row:
     If the clause says "BENEFICIARY CERTIFICATE TO THIS EFFECT TO
     ACCOMPANY ORIGINAL DOCUMENTS", create a separate row:
     → document_to_check = "Beneficiary Certificate"
@@ -277,11 +265,21 @@ WHAT TO GENERATE (read all rules before decomposing):
     TO COMMERCIAL INVOICE"), decompose those too — each becomes
     its own row with the appropriate document_to_check.
 
-  RULE D-5 — What NOT to generate:
+  RULE D-3 — What NOT to generate:
+    ❌ "Beneficiary Certificate must STATE that the original
+       <doc> was dispatched to <recipient>..." — do NOT create
+       a content-check row asking the verifier to find a specific
+       dispatch statement inside the Beneficiary Certificate.
+       The Beneficiary Certificate just needs to EXIST and
+       ACCOMPANY the original documents (Rule D-2). The wording
+       "TO THIS EFFECT" in the clause means the certificate's
+       existence IS the evidence — it does not mean the verifier
+       must parse the certificate for a specific sentence about
+       the dispatch. Creating such a row produces a false FAIL
+       because the certificate's exact wording never matches the
+       decomposer's invented condition text.
     ❌ Multiple rows on the Beneficiary Certificate splitting
-       the same dispatch statement into sub-phrases. The
-       certificate carries ONE combined sentence — that is
-       RULE D-2 only.
+       the dispatch details into sub-phrases.
     ❌ Duplicate conditions that say the same thing in different
        words (e.g. "FTA must accompany original documents" AND
        "FTA must be sent with non-negotiable documents" — these
@@ -319,7 +317,7 @@ WORKED COUNTER-EXAMPLE 2 — FTA dispatch + Beneficiary Certificate:
         Certificate carries one combined sentence, not three
         separate statements.
 
-   CORRECT decomposition (applying rules D-1 through D-3):
+   CORRECT decomposition (applying rules D-1 and D-2):
      1. (Rule D-1) document_to_check = "FTA Certificate"
         condition_text   = "An FTA Certificate must be present
             in the submission."
@@ -337,13 +335,6 @@ WORKED COUNTER-EXAMPLE 2 — FTA dispatch + Beneficiary Certificate:
             with non-negotiable documents."
 
      5. (Rule D-2) document_to_check = "Beneficiary Certificate"
-        condition_text   = "Beneficiary Certificate must state
-            that the original FTA Certificate was dispatched
-            immediately to Getz Pharma (Pvt) Ltd. at its postal
-            address, along with the non-negotiable documents,
-            within the LC validity."
-
-     6. (Rule D-3) document_to_check = "Beneficiary Certificate"
         condition_text   = "Beneficiary Certificate must
             accompany the original documents."
 
