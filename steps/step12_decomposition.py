@@ -233,46 +233,56 @@ A second very common pattern is a clause that says:
   • A "BENEFICIARY CERTIFICATE TO THIS EFFECT" must accompany
     the presented documents stating that the dispatch happened.
 
-These clauses always reduce to EXACTLY TWO compliance rows:
+WHAT TO GENERATE (read all rules before decomposing):
 
-  ROW A — physical-document presence:
-    document_to_check = the named original document
-                        (e.g. "FTA Certificate", "Certificate of
-                         Origin", "Insurance Policy")
-    condition_text    = "<doc> must be present in the submission
-                         (the original is dispatched separately,
-                         a copy is presented along with the other
-                         documents)"
-    NOTE: there is no need to check "was the original dispatched"
-    on the document itself — the document's own face cannot tell
-    you whether someone couriered it. Only check that it exists.
+  RULE D-1 — Document presence row:
+    The named original document (FTA Certificate, COO, Insurance
+    Policy, etc.) must be present in the submission.
+    → document_to_check = the named document type
+    → condition_text describes that the document must be present
+    → NOTE: do NOT add conditions on the dispatched document
+      asking "was it dispatched?" or "was it sent to address?"
+      — the document's own face cannot tell you whether someone
+      couriered it. Only check that it EXISTS.
 
-  ROW B — beneficiary-certificate evidence:
-    document_to_check = "Beneficiary Certificate"
-    condition_text    = "Beneficiary Certificate must state that
-                         the original <doc> was dispatched to
-                         <named recipient> at the address given,
-                         along with the non-negotiable documents,
-                         within <time limit if any>."
-    ONE row, not three. The "to <recipient>", "at <address>",
-    "along with non-negotiable documents", "within <days>" are
-    parts of the SAME sentence the Beneficiary Certificate must
-    contain. They are NOT separate compliance items. The verifier
-    reads the Beneficiary Certificate once and decides PASS / FAIL
-    on whether the required statement is present.
+  RULE D-2 — Beneficiary-certificate content row:
+    The Beneficiary Certificate must state the dispatch happened.
+    → document_to_check = "Beneficiary Certificate"
+    → Combine all the dispatch details into ONE condition text:
+      "Beneficiary Certificate must state that the original <doc>
+       was dispatched to <recipient> at <address>, along with the
+       non-negotiable documents, within <time limit if stated>."
+    → Do NOT split this into separate rows for "sent to recipient",
+      "sent to address", "sent along with non-negotiable docs" —
+      these are parts of ONE sentence the certificate must contain,
+      not separate compliance items.
 
-Do NOT generate:
-  ❌ Separate rows for "<doc> must be dispatched immediately",
-     "<doc> must be sent to <address>", "<doc> must be sent along
-     with non-negotiable documents". The original document does
-     not carry this information on its own face.
-  ❌ Separate rows on the Beneficiary Certificate for each part
-     of the statement. The certificate carries ONE sentence that
-     covers all parts.
-  ❌ A separate "<doc> must accompany original documents" row
-     when the clause already says the ORIGINAL is dispatched
-     AND a non-negotiable copy travels with the bundle — that
-     is the same fact stated in two ways. Pick ROW A only.
+  RULE D-3 — Beneficiary-certificate accompaniment row:
+    If the clause says "BENEFICIARY CERTIFICATE TO THIS EFFECT TO
+    ACCOMPANY ORIGINAL DOCUMENTS", create a separate row:
+    → document_to_check = "Beneficiary Certificate"
+    → condition_text = "Beneficiary Certificate must accompany
+      the original documents."
+    This is a physical presence check confirming the certificate
+    is in the submission set.
+
+  RULE D-4 — Any other genuinely separate conditions:
+    If the clause contains OTHER requirements beyond the dispatch
+    and beneficiary certificate (e.g. a time limit like "WITHIN 7
+    DAYS FROM SHIPMENT DATE", or "A COPY OF FTA MUST BE ATTACHED
+    TO COMMERCIAL INVOICE"), decompose those too — each becomes
+    its own row with the appropriate document_to_check.
+
+  RULE D-5 — What NOT to generate:
+    ❌ Rows where document_to_check is the dispatched document
+       (FTA, COO, etc.) for dispatch/postal/courier conditions.
+       The document itself cannot self-report being dispatched.
+    ❌ Multiple rows on the Beneficiary Certificate splitting
+       the same dispatch statement into sub-phrases.
+    ❌ Rows asking the dispatched document whether it was "sent
+       to the postal address" or "sent along with non-negotiable
+       documents" — those are dispatch facts, not document
+       attributes.
 
 WORKED COUNTER-EXAMPLE 2 — FTA dispatch + Beneficiary Certificate:
    Clause: "FTA CERTIFICATE REQUIRED. ORIGINAL FTA SHOULD BE
@@ -306,21 +316,23 @@ WORKED COUNTER-EXAMPLE 2 — FTA dispatch + Beneficiary Certificate:
         Certificate carries one combined sentence, not three
         separate statements.
 
-   CORRECT decomposition (exactly two rows):
-     1. document_to_check = "FTA Certificate"
+   CORRECT decomposition (applying rules D-1 through D-3):
+     1. (Rule D-1) document_to_check = "FTA Certificate"
         condition_text   = "An FTA Certificate must be present
             in the submission. The original is dispatched to the
             applicant separately; a copy travels with the other
             non-negotiable documents."
-        is_implicit      = false
 
-     2. document_to_check = "Beneficiary Certificate"
+     2. (Rule D-2) document_to_check = "Beneficiary Certificate"
         condition_text   = "Beneficiary Certificate must state
             that the original FTA Certificate was dispatched
             immediately to Getz Pharma (Pvt) Ltd. at its postal
             address, along with the non-negotiable documents,
             within the LC validity."
-        is_implicit      = false
+
+     3. (Rule D-3) document_to_check = "Beneficiary Certificate"
+        condition_text   = "Beneficiary Certificate must
+            accompany the original documents."
 
 ═══════════════════════════════════════════════════════════════
 TRADE FINANCE KNOWLEDGE
