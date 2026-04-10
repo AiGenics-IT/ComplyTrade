@@ -646,6 +646,58 @@ CRITICAL RULES (follow strictly):
        EXAMPLE: LC says "QTY 9025 KGS", F43P = "ALLOWED", invoice shows 10000 KGS → FAIL (exceeds LC quantity).
     c) UCP 600 Art 30(b): Unless the LC prohibits partial shipment, a tolerance of 5% more or less in quantity is allowed, provided the total amount does not exceed the LC amount. So even without explicit tolerance, 5% variation is acceptable if partial shipment is not prohibited.
 13. BILL OF LADING LIMITATIONS: BLs do NOT show dollar amounts or unit prices — never fail a BL for "amount not mentioned". BLs do NOT typically show LC/credit numbers unless F47A specifically requires it on BL.
+
+13a. DATE LABEL ABBREVIATIONS (CRITICAL — do NOT miss these):
+    Documents (especially invoices, batch certificates, packing lists)
+    use many abbreviated date labels. ALL of the following mean the
+    SAME thing and MUST be treated as valid:
+
+    MANUFACTURING DATE / DATE OF MANUFACTURE:
+      Mfg.Date, Mfg Date, MFG.DATE, Mfg.Dt, Manufacturing Date,
+      Date of Manufacture, Date of Mfg, DOM, D.O.M., Manuf. Date,
+      Production Date, Date of Production
+
+    EXPIRY DATE / DATE OF EXPIRY:
+      Exp.Date, Exp Date, EXP.DATE, Exp.Dt, Expiry Date,
+      Date of Expiry, Date of Exp, DOE, D.O.E., Best Before,
+      Use Before, Valid Until, Shelf Life Expiry, Expiration Date
+
+    If the condition asks for "date of manufacturing" and the document
+    shows "Mfg.Date:2025.06.17" — that IS the manufacturing date → PASS.
+    If the condition asks for "expiry date" and the document shows
+    "Exp.Date:2029.06.16" — that IS the expiry date → PASS.
+    Do NOT fail because the exact words "date of manufacturing" or
+    "expiry date" are not spelled out. The abbreviation IS the date.
+
+13b. DRUG NAME / PRODUCT NAME MATCHING:
+    When the condition asks for "name of drug" or "name of product"
+    to appear on a document, look for the ACTUAL drug/product name
+    anywhere in the document text. Common patterns:
+      • Line item description: "LEVOFLOXACIN HEMIHYDRATE USP43"
+      • After "Name of Drug:" or "Product:" label
+      • In the goods description block
+    If ANY recognisable drug/product name appears in the document
+    text, the condition is satisfied → PASS. Do NOT require the
+    exact phrase "NAME OF DRUG" to be printed — the drug name
+    itself is what must appear.
+
+13c. PHYSICAL CONTAINER/PACK MARKING vs DOCUMENT CONTENT:
+    When the condition says "individual containers/packs should
+    clearly mark [X]" (name of drug, batch no, mfg date, expiry
+    date), this requirement has TWO levels:
+      Level 1 (document-verifiable): The information (drug name,
+        batch number, mfg date, expiry date) must APPEAR somewhere
+        on the document (invoice, packing list, batch certificate).
+        If the information IS present on the document → PASS.
+      Level 2 (not document-verifiable): Whether the physical
+        drums/cartons have the information printed on their labels
+        cannot be verified from the document text. Do NOT fail a
+        row just because the document doesn't say "we confirm the
+        drums are marked with..." — if the information itself
+        (the date, the batch number, the drug name) appears on the
+        document, that is sufficient evidence → PASS.
+    Only FAIL if the required information (the actual date, batch
+    number, or drug name) is genuinely ABSENT from the document.
 14. PERMISSIVE CLAUSES: "ACCEPTABLE" means something is ALLOWED — it is NOT a prohibition. "THIRD PARTY DOCUMENTS ACCEPTABLE EXCEPT X" means X must be from beneficiary, everything else can be third party. Do NOT interpret "EXCEPT X" as "X is not acceptable".
 15. MATH: When comparing numbers, verify your arithmetic. 950 is LESS than 1000 (not more). 490,200 is LESS than 516,000 (not more). Get the direction right before marking FAIL.
 16. EMAIL EQUIVALENCE: In SWIFT messages, "@" is written as "(AT)" or "(at)". So "INFO(AT)CICL.COM.PK" in the LC is the SAME as "info@cicl.com.pk" in the document. Treat (AT) and @ as identical when comparing email addresses. Also ignore case differences in emails.
