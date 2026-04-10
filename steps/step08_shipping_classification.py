@@ -167,12 +167,7 @@ Based on the image AND the document text above, classify this page:
    "Amendment". If the page truly has no recognisable shipping content,
    return "Unknown" or "Header Page" or "Blank Page".
    IMPORTANT DISAMBIGUATION RULES:
-   • COURIER RECEIPT vs AIRWAY BILL — these are DIFFERENT document types with DIFFERENT labels:
-     - "Courier Receipt" = a shipping label / receipt from a courier company (DHL, FedEx, UPS, TNT, Aramex, SF Express). It shows a tracking number, sender/receiver addresses, ship date, weight. Classify as "Courier Receipt".
-     - "Airway Bill" = an actual airline air waybill (AWB/HAWB/MAWB) from an airline cargo department or freight forwarder. It shows flight number, airport of departure/destination, airline name. Classify as "Airway Bill".
-     If the document shows a courier company name (DHL, FedEx, UPS, TNT, Aramex), it is ALWAYS "Courier Receipt", NEVER "Airway Bill".
-     If the document shows airline/airport/flight information WITHOUT a courier company name, it is "Airway Bill".
-     Both are NEVER a "Documentary Remittance" or "Beneficiary Certificate", even though they travel alongside documents.
+   • A DHL / FedEx / UPS / TNT / Aramex / EXPRESS ENVELOPE / WAYBILL / AWB / HAWB / MAWB / "Air Waybill" label is a "Courier Receipt" or "Airway Bill" — these two are TREATED AS THE SAME CATEGORY. Use whichever name appears in the LC's required-documents list; if the LC asked for "Courier Receipt" use that, if it asked for "Airway Bill" use that. It is NEVER a "Documentary Remittance" or "Beneficiary Certificate", even though it carries documents.
    • A bank-letterhead page that says "We enclose documents related to above referenced letter of credit", "Total Amount Claimed", "Presentation Number", "Our Reference No.", "Your Documentary Credit No.", or "remit funds to our correspondent" is a "Documentary Remittance" (covering schedule), NEVER a "Beneficiary Certificate".
    • A "Beneficiary Certificate" is a short certificate ISSUED BY THE BENEFICIARY (the seller/exporter), titled "BENEFICIARY'S CERTIFICATE" or similar, certifying a single fact (e.g. "we hereby certify that one set of documents has been sent by courier"). It is on the beneficiary's letterhead, not a bank's.
    • A "Short Form Bill of Lading" / "Blank Back Bill of Lading" / "Liner Bill of Lading" / "Charter Party Bill of Lading" / "Combined Transport Bill of Lading" / "Multimodal Bill of Lading" is STILL a "Bill of Lading" (per UCP 600 Art 20(a)(v)). It is NOT an "Airway Bill" and NOT a "Courier Receipt" — it just lacks the full carriage terms on the reverse side.
@@ -544,30 +539,17 @@ def _rule_based_classify(text: str) -> List[dict]:
     awb_hits = sum(1 for p in awb_signals if re.search(p, upper))
     courier_hits = sum(1 for p in courier_signals if re.search(p, upper))
 
-    # P80: Courier Receipt and Airway Bill are DIFFERENT classifications.
-    # A document from DHL/FedEx/UPS/TNT/Aramex is a "Courier Receipt".
-    # An actual airline AWB (with AIRLINE, AIRPORT OF DEPARTURE, MAWB,
-    # FLIGHT NO) is an "Airway Bill". They are treated as the same
-    # FAMILY for LC requirement matching (DOC_TYPE_ALIASES in step14),
-    # but the CLASSIFICATION label must be accurate.
-    #
-    # Priority:
-    #   courier_hits >= 2                    → "Courier Receipt"
-    #   awb_hits >= 2 AND courier_hits == 0  → "Airway Bill"
-    #   mixed signals (both >= 1)            → "Courier Receipt" (courier wins)
+    # Air waybill OR courier waybill — same family. DHL/FedEx/UPS/TNT
+    # are airline carriers that issue air waybills, not just couriers.
+    # A FedEx Express shipping label IS an AWB — it serves as the
+    # official shipping contract and tracking document. Both labels
+    # are boosted equally; the VLM or LC requirement determines which
+    # name appears. They are interchangeable for verification purposes
+    # via DOC_TYPE_ALIASES in step14.
     is_courier_or_awb = (courier_hits >= 2) or (awb_hits >= 2) or (courier_hits + awb_hits >= 2)
     if is_courier_or_awb:
-        if courier_hits >= 1:
-            # Courier company detected → label as Courier Receipt
-            scores['Courier Receipt'] = max(scores.get('Courier Receipt', 0), 0.99)
-            # Demote Airway Bill so it doesn't win
-            if 'Airway Bill' in scores:
-                scores['Airway Bill'] = min(scores['Airway Bill'], 0.50)
-        else:
-            # Pure AWB signals, no courier company → label as Airway Bill
-            scores['Airway Bill'] = max(scores.get('Airway Bill', 0), 0.99)
-            if 'Courier Receipt' in scores:
-                scores['Courier Receipt'] = min(scores['Courier Receipt'], 0.50)
+        scores['Courier Receipt'] = max(scores.get('Courier Receipt', 0), 0.99)
+        scores['Airway Bill']     = max(scores.get('Airway Bill', 0), 0.99)
         # Suppress DR — courier/AWB labels are not covering schedules.
         if 'Documentary Remittance' in scores:
             scores['Documentary Remittance'] = min(scores['Documentary Remittance'], 0.10)
