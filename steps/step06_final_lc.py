@@ -1843,10 +1843,9 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
     #   • a numbered clause start ("1.", "2)" etc.) at column 0
     #   • end of value
     _cont_marker_re = re.compile(
-        r'(?P<lead>(?:^|\n)\s*[/\\]?\s*)'
+        r'[/\\]?\s*'
         r'\(\s*CONT(?:INUED|INUATION)?\s+FROM\s+FIELD\s+(?P<src>\d{2}[A-Z]?)\s*\)\s*'
-        r'(?P<rest>.*?)'
-        r'(?=\n\s*(?:\d+[\.\)]\s|F?\d{2}[A-Z]?\s*:|[A-Z]{4,}\s*:)|\Z)',
+        r'(?P<rest>(?:(?!\n\s*\d+\s*[.\-\)]\s)(?!\n\s*F?\d{2}[A-Z]?\s*:).)*)',
         re.IGNORECASE | re.DOTALL,
     )
     _cont_pulled: Dict[str, list] = {}
