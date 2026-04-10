@@ -489,7 +489,7 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
     # e.g. "EXPIRY. 7.THE" → "EXPIRY.\n7.THE"
     # e.g. "SEPARATELY. 10. SOME" → "SEPARATELY.\n10. SOME"
     _normalized = re.sub(
-        r'(?<=[.;:!?\s])\s+(\d{1,2})\s*([.\-)])\s*(?=[A-Z])',
+        r'(?<=[.;:!?])\s*(\d{1,2})\s*([.\-)])\s*(?=[A-Z])',
         r'\n\1\2 ',
         _normalized,
     )
