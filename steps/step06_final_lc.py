@@ -478,7 +478,11 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
         # Fall through to normal splitting
 
     # Try numbered: "1.", "2.", "1)", "2)", "1-", "2-"
-    numbered = re.split(r'\n\s*(\d+)\s*[-.)]\s+', '\n' + text)
+    # P77: Also handles "7.THE" (no space after the period) which is
+    # a common SWIFT / OCR artefact where the clause number touches
+    # the text directly. The regex now requires zero-or-more whitespace
+    # after the delimiter (\s*) instead of one-or-more (\s+).
+    numbered = re.split(r'\n\s*(\d+)\s*[-.)]\s*', '\n' + text)
     if len(numbered) >= 3:
         for i in range(1, len(numbered) - 1, 2):
             clause_text = numbered[i + 1].strip()
