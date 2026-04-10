@@ -235,15 +235,19 @@ A second very common pattern is a clause that says:
 
 WHAT TO GENERATE (read all rules before decomposing):
 
-  RULE D-1 — Document presence row:
-    The named original document (FTA Certificate, COO, Insurance
-    Policy, etc.) must be present in the submission.
-    → document_to_check = the named document type
-    → condition_text describes that the document must be present
-    → NOTE: do NOT add conditions on the dispatched document
-      asking "was it dispatched?" or "was it sent to address?"
-      — the document's own face cannot tell you whether someone
-      couriered it. Only check that it EXISTS.
+  RULE D-1 — Document conditions:
+    Decompose ALL conditions that relate to the named original
+    document (FTA Certificate, COO, Insurance Policy, etc.).
+    Each becomes a separate row with document_to_check = the
+    named document type. This includes:
+      • document must be present in the submission
+      • document must be dispatched to <recipient>
+      • document must be sent to <postal address>
+      • document must be sent along with non-negotiable documents
+    Even though some of these conditions CANNOT be verified when
+    the document is missing (they will appear as N/A in the
+    report), they must still be generated so the checker sees the
+    COMPLETE list of requirements for that document.
 
   RULE D-2 — Beneficiary-certificate content row:
     The Beneficiary Certificate must state the dispatch happened.
@@ -274,15 +278,14 @@ WHAT TO GENERATE (read all rules before decomposing):
     its own row with the appropriate document_to_check.
 
   RULE D-5 — What NOT to generate:
-    ❌ Rows where document_to_check is the dispatched document
-       (FTA, COO, etc.) for dispatch/postal/courier conditions.
-       The document itself cannot self-report being dispatched.
     ❌ Multiple rows on the Beneficiary Certificate splitting
-       the same dispatch statement into sub-phrases.
-    ❌ Rows asking the dispatched document whether it was "sent
-       to the postal address" or "sent along with non-negotiable
-       documents" — those are dispatch facts, not document
-       attributes.
+       the same dispatch statement into sub-phrases. The
+       certificate carries ONE combined sentence — that is
+       RULE D-2 only.
+    ❌ Duplicate conditions that say the same thing in different
+       words (e.g. "FTA must accompany original documents" AND
+       "FTA must be sent with non-negotiable documents" — these
+       are the same requirement, keep only one).
 
 WORKED COUNTER-EXAMPLE 2 — FTA dispatch + Beneficiary Certificate:
    Clause: "FTA CERTIFICATE REQUIRED. ORIGINAL FTA SHOULD BE
@@ -319,18 +322,28 @@ WORKED COUNTER-EXAMPLE 2 — FTA dispatch + Beneficiary Certificate:
    CORRECT decomposition (applying rules D-1 through D-3):
      1. (Rule D-1) document_to_check = "FTA Certificate"
         condition_text   = "An FTA Certificate must be present
-            in the submission. The original is dispatched to the
-            applicant separately; a copy travels with the other
-            non-negotiable documents."
+            in the submission."
 
-     2. (Rule D-2) document_to_check = "Beneficiary Certificate"
+     2. (Rule D-1) document_to_check = "FTA Certificate"
+        condition_text   = "Original FTA Certificate must be
+            dispatched immediately to Getz Pharma (Pvt) Ltd."
+
+     3. (Rule D-1) document_to_check = "FTA Certificate"
+        condition_text   = "FTA Certificate must be sent to the
+            postal address of Getz Pharma (Pvt) Ltd."
+
+     4. (Rule D-1) document_to_check = "FTA Certificate"
+        condition_text   = "FTA Certificate must be sent along
+            with non-negotiable documents."
+
+     5. (Rule D-2) document_to_check = "Beneficiary Certificate"
         condition_text   = "Beneficiary Certificate must state
             that the original FTA Certificate was dispatched
             immediately to Getz Pharma (Pvt) Ltd. at its postal
             address, along with the non-negotiable documents,
             within the LC validity."
 
-     3. (Rule D-3) document_to_check = "Beneficiary Certificate"
+     6. (Rule D-3) document_to_check = "Beneficiary Certificate"
         condition_text   = "Beneficiary Certificate must
             accompany the original documents."
 
