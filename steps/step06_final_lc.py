@@ -119,6 +119,7 @@ SWIFT_FIELD_LABELS = {
     '41A': 'Available With... By...',
     '41D': 'Available With... By...',
     '42A': 'Drawee',
+    '42D': 'Drawee - Name and Address',
     '42C': 'Drafts at...',
     '42M': 'Mixed Payment Details',
     '42P': 'Negotiation/Deferred Payment Details',
@@ -159,7 +160,7 @@ CLAUSE_TAGS = {'45A', '45B', '46A', '46B', '47A', '47B', '78', '79', '72'}
 # Tags to extract -- ordered by typical SWIFT message appearance
 EXTRACTION_TAGS = [
     '20', '23', '26E', '27', '30', '31C', '31D', '32B', '33B', '34B',
-    '39A', '39B', '39C', '40A', '40E', '41A', '41D', '42A', '42C',
+    '39A', '39B', '39C', '40A', '40E', '41A', '41D', '42A', '42C', '42D',
     '42M', '42P', '43P', '43T', '44A', '44B', '44C', '44D', '44E', '44F',
     '45A', '45B', '46A', '46B', '47A', '47B', '48', '49', '50', '51A',
     '51D', '52A', '52D', '53A', '57A', '57D', '59', '71D', '72', '78', '79',
@@ -219,6 +220,13 @@ def _extract_swift_fields(text: str, source_page: int = 0, source_mt: str = '') 
     Extract all known SWIFT fields from GLM text using regex.
     First match wins per tag (avoids duplicates when both formats match).
     """
+    # P101: Pre-normalize — insert newline before F-tags that are glued to
+    # the previous field's value (OCR artifact).
+    # e.g. "#31,674.67F45B: Description..." → "#31,674.67\nF45B: Description..."
+    text = re.sub(r'([^\n])(F\d{2}[A-Z]?\s*:)', r'\1\n\2', text)
+    # Also for Alliance colon-format: "...valueF:32B:" → "...value\n:32B:"
+    text = re.sub(r'([^\n])(:\d{2}[A-Z]?:)', r'\1\n\2', text)
+
     fields = []
     found_tags = set()
 
@@ -956,6 +964,7 @@ _FIELD_LABEL_STRIP = {
     '41A': r'^(?:Available\s+With.*?(?:By\.{0,3})?|\.{2,}\s*By\s*\.{2,}.*?(?:Name\s+and\s+Address)?:?)\s*[\n\r]*',
     '41D': r'^(?:Available\s+With.*?(?:Code|By\.{0,3})?|\.{2,}\s*By\s*\.{2,}.*?(?:Name\s+and\s+Address)?:?)\s*[\n\r]*',
     '42A': r'^(?:Drawee|Issuing\s+Bank).*?(?:Identifier\s+Code)?\s*[\n\r]*',
+    '42D': r'^(?:Drawee.*?(?:Name\s+and\s+Address|Party\s+Identifier).*?|Name\s+and\s+Address\s*:?\s*)\s*[\n\r]*',
     '42C': r'^Drafts\s+at\s*\.{0,3}\s*[\n\r]*',
     '42P': r'^(?:Negotiation/)?Deferred\s+Payment\s+Details\s*[\n\r]*',
     '43P': r'^Partial\s+Shipments?[\.,;:]?\s*[\n\r]*',
@@ -1078,8 +1087,12 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
         '', v, flags=re.IGNORECASE | re.DOTALL).strip()
 
     # 8. (CONT FROM/IN FIELD ...) cross-references — P87: also match "IN"
-    v = re.sub(r'\(CONT\.?\s*(?:FROM|IN)\s+FIELD\s+\w+\)', '', v, flags=re.IGNORECASE).strip()
-    v = re.sub(r'/\(CONT\.?\s*(?:FROM|IN)\s+FIELD\s+\w+\)', '', v, flags=re.IGNORECASE).strip()
+    # P101: Strip the marker AND any trailing continuation text that belongs
+    # to the referenced field, not to the current field.
+    # e.g. "...\n(CONT. FROM FIELD 48)\nDAYS FROM SHIPMENT DATE..." →
+    # the "DAYS FROM..." belongs to F48, not to this field.
+    v = re.sub(r'\s*/?\(CONT\.?\s*(?:FROM|IN)\s+FIELD\s+\w+\).*', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(r'/\(CONT\.?\s*(?:FROM|IN)\s+FIELD\s+\w+\).*', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
 
     # 9. Truncate at next F-tag if it merged in
     _ftag_merge = re.search(r'F\d{2}[A-Z]?\s*:', v)
@@ -1238,7 +1251,12 @@ def _apply_amendment(
             continue
 
         # New amount — may be replacement or increment
-        if tag == '34B':
+        # P101: In Alliance MT707, the increase amount comes as F32B with
+        # "Increase of Documentary Credit Amount" label, not F34B.
+        # Handle both tag 34B and tag 32B with "increase" in the value.
+        _is_amount_field = (tag == '34B' or
+                            (tag == '32B' and re.search(r'increase', sf.value, re.IGNORECASE)))
+        if _is_amount_field:
             old_val = base_fields.get('32B', '')
             new_val = sf.value
             # Strip "Increase of Documentary Credit Amount" label
@@ -1306,6 +1324,23 @@ def _apply_amendment(
         # Check if amendment value contains /ADD/ or /DEL/ instructions
         # These are amendment OPERATIONS, not replacement values
         amd_val = sf.value.strip()
+
+        # P101: Clean Alliance MT707 formatting artifacts.
+        # Alliance wraps amendment text in structured prefixes:
+        #   "Description of Goods and/or Services\nLine 1\nCode: /REPALL/\n
+        #    Narrative: UNDER FIELD 45A,\nLines 2-100\nNarrative: text..."
+        # Strip these so the amendment parser sees clean content.
+        # 1. Strip leading field label (Description of Goods, Documents Required, etc.)
+        _label_strip = _FIELD_LABEL_STRIP.get(actual_tag, _FIELD_LABEL_STRIP.get(tag))
+        if _label_strip:
+            amd_val = re.sub(_label_strip, '', amd_val, flags=re.IGNORECASE).strip()
+        # 2. Strip "Line N" and "Lines N-M" markers
+        amd_val = re.sub(r'(?:^|\n)\s*Lines?\s+\d+(?:\s*[-–]\s*\d+)?\s*(?:\n|$)', '\n', amd_val).strip()
+        # 3. Strip "Code:" prefix (e.g. "Code: /REPALL/")
+        amd_val = re.sub(r'(?:^|\n)\s*Code\s*:\s*', '\n', amd_val).strip()
+        # 4. Strip "Narrative:" prefixes from each line
+        amd_val = re.sub(r'(?:^|\n)\s*Narrative\s*:\s*', '\n', amd_val).strip()
+
         # Normalize double slashes: //REPALL// -> /REPALL/
         amd_val = re.sub(r'//', '/', amd_val)
         # ALSO trigger the operation path for the bare "TO READ AS 'X' INSTEAD

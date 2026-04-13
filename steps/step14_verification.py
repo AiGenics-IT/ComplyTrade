@@ -114,6 +114,9 @@ DOC_TYPE_ALIASES = {
         "dc presentation schedule",
         "export presentation schedule",
         "schedule of presentation",
+        # P101: "L/C Bills Schedule" is the Standard Chartered name for
+        # the covering schedule / documentary remittance.
+        "l/c bills schedule", "lc bills schedule", "bills schedule",
     ],
     "inspection certificate": [
         "inspection certificate", "survey report", "inspection report",
@@ -1577,6 +1580,7 @@ def _build_tasks(
         _ALLDOC_FANOUT_EXCLUDE = (
             'documentary remittance',
             'covering letter', 'covering schedule', 'cover schedule',
+            'l/c bills schedule', 'lc bills schedule', 'bills schedule',
             'export dc document presentation schedule',
             'export dc presentation schedule',
             'document presentation schedule', 'presentation schedule',
