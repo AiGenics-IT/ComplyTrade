@@ -114,7 +114,7 @@ from steps import step19_consolidation
 from steps import step20_report
 from steps import step14_implicit
 
-app = FastAPI(title="ComplyTrade Pilot V2", version="2.0.0")
+app = FastAPI(title="ComplyTrade Pilot V2", version="2.1.0")
 
 # ── HTTP Basic Auth middleware ──
 _auth_enabled = AUTH_ENABLED

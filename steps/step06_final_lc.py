@@ -501,7 +501,7 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
     # "01.2025" that start a line after a colon ("DATED:\n07-01-2025").
     # A clause number is followed by text content, not by more digits.
     # Use a negative lookahead (?!\d) to exclude digit-after-delimiter.
-    numbered = re.split(r'\n\s*(\d+)\s*[-.)]\s*(?!\d)', '\n' + _normalized)
+    numbered = re.split(r'\n\s*(\d{1,2})\s*[-.)]\s*(?!\d)', '\n' + _normalized)
     if len(numbered) >= 3:
         for i in range(1, len(numbered) - 1, 2):
             clause_text = numbered[i + 1].strip()

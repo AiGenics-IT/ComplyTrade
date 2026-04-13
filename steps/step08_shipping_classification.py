@@ -641,6 +641,32 @@ def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tupl
         if dt_norm in ed_norm or ed_norm in dt_norm:
             return i, ed.get('document_name', '')
 
+    # ── Pharma regulatory form alias matching ──
+    # Pakistani LCs reference "Form 7" or "Batch Certificate" interchangeably.
+    # Similarly "Form 3" = "Form of Undertaking". Match either name to the
+    # LC's required document regardless of which label was used.
+    _PHARMA_ALIASES = {
+        'FORM 7': {'BATCH CERTIFICATE', 'BATCH CERTIFICATION', 'FORM 7 (BATCH CERTIFICATE)'},
+        'BATCH CERTIFICATE': {'FORM 7', 'FORM 7 (BATCH CERTIFICATE)', 'BATCH CERTIFICATION'},
+        'FORM 3': {'FORM OF UNDERTAKING', 'DRUG REGISTRATION CERTIFICATE', 'IMPORT CERTIFICATE',
+                   'FORM 3 (FORM OF UNDERTAKING)'},
+        'FORM OF UNDERTAKING': {'FORM 3', 'FORM 3 (FORM OF UNDERTAKING)',
+                                'DRUG REGISTRATION CERTIFICATE'},
+        'CERTIFICATE OF ANALYSIS': {'ANALYSIS CERTIFICATE', 'ANALYTICAL CERTIFICATE',
+                                    'TEST REPORT', 'TEST CERTIFICATE'},
+    }
+    # Check both directions: doc_type → expected and expected → doc_type
+    for _alias_key, _alias_set in _PHARMA_ALIASES.items():
+        if _alias_key in dt_upper or dt_upper in _alias_key:
+            # doc_type matches an alias key — look for any alias value in expected
+            for i, ed in enumerate(expected_docs):
+                ed_upper2 = ed.get('document_name', '').upper()
+                if ed_upper2 in _alias_set or _alias_key in ed_upper2 or ed_upper2 in _alias_key:
+                    return i, ed.get('document_name', '')
+                for av in _alias_set:
+                    if av in ed_upper2 or ed_upper2 in av:
+                        return i, ed.get('document_name', '')
+
     # Fuzzy: check if any significant words overlap (1+ is enough)
     dt_words = set(re.findall(r'[A-Z]{3,}', _normalize(dt_upper)))
     # Remove common filler words
@@ -1036,6 +1062,32 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
     # so the run()-level pass can decide whether other BLs in the set are
     # blank-back or full-form.
     is_bl_terms_page = _looks_like_bl_terms_page(glm_text)
+
+    # ── Normalize pharma regulatory forms ──
+    # Pakistani pharma LCs reference documents by their Drug Act form
+    # number (Form 3, Form 7) but the VLM / Step 3 may classify them by
+    # their descriptive title. Normalize here so that downstream matching
+    # finds them regardless of which name the LC clause used.
+    _dt_check = (document_type or '').upper()
+    _pharma_norm = {
+        # Form 7 = Batch Certificate (Drug Act Rule 14(d)(i))
+        'BATCH CERTIFICATE': 'Form 7 (Batch Certificate)',
+        'BATCH CERTIFICATION': 'Form 7 (Batch Certificate)',
+        # Form 3 = Form of Undertaking / Drug Import Certificate
+        'FORM OF UNDERTAKING': 'Form 3 (Form of Undertaking)',
+        'DRUG REGISTRATION CERTIFICATE': 'Form 3 (Form of Undertaking)',
+        'IMPORT CERTIFICATE': 'Form 3 (Form of Undertaking)',
+        'DRUG IMPORT CERTIFICATE': 'Form 3 (Form of Undertaking)',
+    }
+    for _pn_key, _pn_val in _pharma_norm.items():
+        if _pn_key in _dt_check:
+            document_type = _pn_val
+            break
+    # Also catch "FORM 7" / "FORM 3" directly from VLM
+    if re.match(r'^FORM\s*7\b', _dt_check):
+        document_type = 'Form 7 (Batch Certificate)'
+    elif re.match(r'^FORM\s*3\b', _dt_check):
+        document_type = 'Form 3 (Form of Undertaking)'
 
     # ── Canonicalise document_type ──
     # The VLM returns inconsistent casing for the same logical document

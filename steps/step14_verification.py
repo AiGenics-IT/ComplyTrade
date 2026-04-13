@@ -150,13 +150,21 @@ DOC_TYPE_ALIASES = {
         "form 3", "form3", "form no 3", "form no. 3",
         "drug registration certificate", "import certificate",
         "form 3 certificate", "drug import certificate",
-        "form of undertaking",
+        "form of undertaking", "form 3 (form of undertaking)",
+    ],
+    "form 3 (form of undertaking)": [
+        "form 3 (form of undertaking)", "form 3", "form3",
+        "form of undertaking", "drug registration certificate",
+        "import certificate", "drug import certificate",
+        "form no 3", "form no. 3",
     ],
     # P90: Certificate of Analysis
     "certificate of analysis": [
         "certificate of analysis", "analysis certificate",
         "analytical certificate", "coa", "analysis report",
         "test report", "test certificate",
+        "laboratory certificate", "lab report", "lab certificate",
+        "quality analysis certificate",
     ],
     "shipping advice": [
         "shipping advice", "shipment advice", "beneficiary shipment advice",
@@ -308,6 +316,33 @@ def _find_matching_docs(doc_to_check: str, packets: list) -> list:
                 specific_overlap = _specific_keywords & pkt_words
                 if specific_overlap:
                     matches.append(pkt if isinstance(pkt, dict) else asdict(pkt))
+
+    if matches:
+        return matches
+
+    # Tier 4: Text content fallback — search actual page text for the
+    # target document name or its aliases.  This catches cases where
+    # the VLM classifier assigns a generic/unexpected document_type
+    # (e.g. "Certificate" instead of "Batch Certificate") but the
+    # page text clearly contains "FORM 7" or "CERTIFICATE OF ANALYSIS".
+    _text_search_terms = set(target_aliases)
+    # Also add the original target with common variations
+    _text_search_terms.add(target)
+    for pkt in packets:
+        if not pkt:
+            continue
+        pkt_type = _get_pkt_type(pkt)
+        if pkt_type and ("lc" == pkt_type or "letter of credit" in pkt_type):
+            continue
+        pkt_text = _pkt_text(pkt if isinstance(pkt, dict) else asdict(pkt)).lower()
+        if not pkt_text or len(pkt_text) < 20:
+            continue
+        # Search the first 2000 chars (header area) for the target name
+        header = pkt_text[:2000]
+        for term in _text_search_terms:
+            if len(term) >= 4 and term in header:
+                matches.append(pkt if isinstance(pkt, dict) else asdict(pkt))
+                break
 
     return matches
 
@@ -1279,13 +1314,18 @@ def _deduplicate_packets(packets: list) -> tuple:
     This prevents checking the same content 8 times.
     """
     type_groups = {}  # doc_type_lower -> list of packets
+    _untyped_idx = 0
     for pkt in packets:
         if not pkt:
             continue
         pt = (pkt.get("document_type", "") or pkt.get("doc_type", "")
               or pkt.get("classification", "") or "").lower().strip()
         if not pt:
-            continue
+            # Don't discard untyped packets — they may contain documents
+            # that the classifier couldn't name but are still present.
+            # Give each a unique key so they aren't merged together.
+            _untyped_idx += 1
+            pt = f"_untyped_{_untyped_idx}"
         if pt not in type_groups:
             type_groups[pt] = []
         type_groups[pt].append(pkt)
