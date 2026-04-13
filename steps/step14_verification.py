@@ -2054,6 +2054,92 @@ def run(
                     _progress(f"  {row_id}: PASS->FAIL (email {missing_emails} not in doc)")
 
     # ------------------------------------------------------------------ #
+    # 5c. Deterministic text-presence check — override VLM false FAILs
+    # ------------------------------------------------------------------ #
+    # The VLM sometimes marks a condition as FAIL ("partially matches")
+    # even when the required text IS present in the document. This check
+    # extracts quoted text or key address phrases from the condition and
+    # verifies whether they appear in the document or the VLM's own
+    # found_text field. If found, override FAIL → PASS.
+    def _normalise_for_compare(s: str) -> str:
+        """Lowercase, collapse whitespace, strip punctuation for fuzzy compare."""
+        s = s.lower()
+        s = re.sub(r'[,.:;\'\"()\[\]{}]', ' ', s)
+        s = re.sub(r'\s+', ' ', s).strip()
+        return s
+
+    _text_checked_rows = set()
+    for task in vlm_tasks:
+        row = task["row"]
+        row_id = task.get("row_id", "?")
+        compliance = _get(row, "compliance", "").upper()
+        if compliance != "FAIL" or row_id in _text_checked_rows:
+            continue
+
+        cond_text = task.get("condition_text") or ""
+        doc_text = task.get("document_text") or ""
+        found_text = _get(row, "findings", "") or _get(row, "found_text", "") or ""
+
+        # Only check conditions about showing/containing specific text
+        _presence_kw = ['must show', 'must indicate', 'must mention', 'must state',
+                        'must bear', 'must contain', 'must reflect', 'showing',
+                        'indicating', 'marked', 'addressed to', 'endorsed to',
+                        'notify applicant', 'notify party', 'consigned to']
+        if not any(kw in cond_text.lower() for kw in _presence_kw):
+            continue
+
+        # Strategy 1: Extract quoted text from condition  ('...' or "...")
+        quoted = re.findall(r"['\"]([^'\"]{8,})['\"]", cond_text)
+
+        # Strategy 2: Extract address-like text after "address" keyword
+        addr_match = re.search(
+            r'(?:address|addressed?\s+to)\s+[\'"]?(.{15,}?)(?:[\'"]\.?\s*$|$)',
+            cond_text, re.IGNORECASE
+        )
+        if addr_match:
+            quoted.append(addr_match.group(1).strip().rstrip('.'))
+
+        if not quoted:
+            continue
+
+        _text_checked_rows.add(row_id)
+        # Check if the quoted/extracted text appears in doc text OR found_text
+        search_pool = _normalise_for_compare(doc_text + ' ' + found_text)
+
+        for phrase in quoted:
+            norm_phrase = _normalise_for_compare(phrase)
+            # Split into key segments (at least 3 words each) and check all present
+            words = norm_phrase.split()
+            if len(words) < 3:
+                continue
+
+            # Check the full phrase first
+            if norm_phrase in search_pool:
+                _set(row, "compliance", "PASS")
+                _set(row, "result", f"Text found in document: {phrase[:80]}")
+                _set(row, "verification_notes",
+                     f"Deterministic override: required text '{phrase[:80]}' "
+                     f"found in document — VLM false FAIL corrected")
+                _progress(f"  {row_id}: FAIL->PASS (text '{phrase[:50]}' found in doc)")
+                break
+
+            # Fallback: check if ALL key address segments are present
+            # Split into chunks of ~3 words
+            segments = []
+            for j in range(0, len(words) - 2, 2):
+                seg = ' '.join(words[j:j+3])
+                if len(seg) >= 8:
+                    segments.append(seg)
+            if segments and all(seg in search_pool for seg in segments):
+                _set(row, "compliance", "PASS")
+                _set(row, "result", f"Address/text verified in document")
+                _set(row, "verification_notes",
+                     f"Deterministic override: all key segments of "
+                     f"'{phrase[:80]}' found in document")
+                _progress(f"  {row_id}: FAIL->PASS (address segments matched)")
+                break
+
+    # ------------------------------------------------------------------ #
     # 6. Build summary statistics
     # ------------------------------------------------------------------ #
     pass_count = sum(1 for r in rows if _get(r, "compliance") == "PASS")
