@@ -590,6 +590,15 @@ information that is not present in these two blocks. If a fact you need is
 not in either block, treat it as "not stated on the document" and decide
 accordingly (usually REVIEW, not FAIL).
 
+ANTI-HALLUCINATION: Your "findings" field MUST contain ONLY text that is
+ACTUALLY PRESENT in the DOCUMENT TEXT above. Do NOT copy words from the
+CONDITION into the findings. For example, if the condition says "must be
+addressed to the Applicant" and the document does NOT mention the applicant
+name, do NOT write "AND to the Applicant" in the findings — that would be
+copying the condition, not reporting what you found. Instead write "Document
+is addressed to [actual addressee found]. Applicant name not found on the
+document." and mark as FAIL.
+
 VERIFY: Does the document satisfy this condition?
 
 CRITICAL RULES (follow strictly):

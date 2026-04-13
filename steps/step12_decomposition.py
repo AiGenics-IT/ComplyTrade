@@ -464,6 +464,51 @@ DOCUMENT IDENTIFICATION:
       - "Document Presentation Schedule" / "Presentation Schedule"
       - "Schedule of Documents" / "Letter of Transmittal"
 
+SHIPMENT ADVICE DECOMPOSITION — CRITICAL:
+When a clause describes a SHIPMENT ADVICE requirement (typically
+under "INSURANCE COVERED BY APPLICANT"), decompose it into SEPARATE
+conditions for each distinct requirement:
+
+  1. TIMELINESS: "within N working days after shipment" →
+     document_to_check = "Shipment Advice"
+     condition = "Beneficiary must send a Shipment Advice within
+                  N working days after shipment."
+
+  2. EACH ADDRESSEE SEPARATELY: If the clause says "TO [Party A]
+     AND TO [Party B]", create TWO separate conditions:
+     a) document_to_check = "Shipment Advice"
+        condition = "Shipment Advice must be addressed to
+                     [Party A full name and address]."
+     b) document_to_check = "Shipment Advice"
+        condition = "Shipment Advice must also be addressed to
+                     the Applicant [ACTUAL APPLICANT NAME from F50]."
+     IMPORTANT: When the clause says "AND TO THE APPLICANT", you
+     MUST replace "THE APPLICANT" with the actual applicant name
+     from the LC context (F50). For example if F50 is "GETZ PHARMA
+     (PVT) LTD", the condition should say "must also be addressed
+     to GETZ PHARMA (PVT) LTD" — NOT just "to the Applicant".
+     This allows the verifier to check the actual name on the
+     Shipment Advice.
+     Do NOT combine them into one row — the VLM will check the
+     first addressee and skip the second.
+
+  3. POLICY/REFERENCE: "referring to their Policy No. XXX" →
+     document_to_check = "Shipment Advice"
+     condition = "Shipment Advice must reference Policy No. XXX"
+
+  4. EACH REQUIRED DETAIL: "giving full details such as L/C No.,
+     Invoice Value, Port of Shipment, Vessel Name, Shipped On Board
+     Date, Expected Arrival Date" → create ONE condition listing
+     ALL required details that must appear on the Shipment Advice.
+
+  5. ACCOMPANIMENT: "a copy must accompany each set of documents" →
+     document_to_check = "Shipment Advice"
+     condition = "A copy of the Shipment Advice must accompany
+                  each set of presented documents."
+
+  6. EMAIL/FAX: If the clause specifies an email address or fax for
+     the notification, create a condition checking the email address.
+
 CLAUSE STRUCTURE — READ CAREFULLY:
   • "INSURANCE COVERED BY APPLICANT, BENEFICIARY SHIPMENT ADVICE QUOTING [items] SHOULD BE SENT TO [address]"
     → This clause is about the SHIPMENT ADVICE, not insurance or BL.
