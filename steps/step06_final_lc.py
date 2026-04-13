@@ -653,9 +653,41 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
             r'(?:TO\s+READ\s+AS|WORD\s+TO\s+READ\s+AS|DELETE\s+WORDING|ADD\s+(?:CLAUSE|LOI|WORDING))',
             new_content, re.IGNORECASE,
         ))
+
+        # P102: Handle "UNDER FIELD XXA, NOW TO BE READ AS, 'new content'"
+        # This is a full replacement where the new content is quoted after
+        # "NOW TO BE READ AS" / "TO BE READ AS" / "TO READ AS".
+        _read_as_m = re.search(
+            r'(?:NOW\s+)?TO\s+(?:BE\s+)?READ\s+AS\s*,?\s*' + Q + r'(.+?)' + Q + r'\s*(?:I/?O\s|$)',
+            new_content, re.IGNORECASE | re.DOTALL,
+        )
+        if not _read_as_m:
+            # Try without closing quote (content runs to end)
+            _read_as_m = re.search(
+                r'(?:NOW\s+)?TO\s+(?:BE\s+)?READ\s+AS\s*,?\s*' + Q + r'(.+)',
+                new_content, re.IGNORECASE | re.DOTALL,
+            )
+        if _read_as_m:
+            _extracted = _read_as_m.group(1).strip().rstrip("'\"")
+            if _extracted:
+                result = _extracted
+
+        # P102: Handle "UNDER FIELD XX ADD <thing> AS 'value'" inside REPALL
+        # This appends the quoted value to the base text.
+        if not _read_as_m:
+            _add_as_m = re.search(
+                r'UNDER\s+FIELD\s+\d{2}[A-Z]?\s+ADD\s+(.+?)\s+AS\s*\n?\s*' + Q + r'(.+?)' + Q,
+                new_content, re.IGNORECASE | re.DOTALL,
+            )
+            if _add_as_m:
+                _add_label = _add_as_m.group(1).strip()
+                _add_value = _add_as_m.group(2).strip()
+                if _add_value and _add_value not in result:
+                    result = result.rstrip() + '\nAND ADD ' + _add_label + ' ' + _add_value
+
         # If it contains PLEASE READ patterns or FIELD instruction patterns,
         # don't do full replace — let patterns handle it below
-        if not re.search(r'PLEASE\s+READ', new_content, re.IGNORECASE) and not _has_field_instructions:
+        elif not re.search(r'PLEASE\s+READ', new_content, re.IGNORECASE) and not _has_field_instructions:
             if new_content:
                 result = new_content
                 # Still process remaining patterns (there might be /ADD/ blocks after)
@@ -944,6 +976,22 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
         if add_text and add_text not in result:
             result = result.rstrip() + '\n' + add_text
 
+    # P102: UNDER FIELD XX ADD <anything> AS "value"
+    # e.g. "UNDER FIELD 45A ADD PROFORMA INVOICE NO. AS 'HN/2026/43 DATED 01-01-2026'"
+    # This appends the quoted value to the existing field text.
+    for m in re.finditer(
+        r'UNDER\s+FIELD\s+\d{2}[A-Z]?(?:-\d+)?\s+ADD\s+(.+?)\s+AS\s*\n?\s*'
+        + Q + r'(.+?)' + Q,
+        amd, re.IGNORECASE | re.DOTALL,
+    ):
+        add_label = m.group(1).strip()  # e.g. "PROFORMA INVOICE NO."
+        add_value = m.group(2).strip()  # e.g. "HN/2026/43 DATED 01-01-2026"
+        if add_value:
+            # Append as "AND ADD <label> <value>" to the existing field
+            append_text = f"AND ADD {add_label} {add_value}"
+            if add_value not in result:
+                result = result.rstrip() + '\n' + append_text
+
     return result
 
 
@@ -1041,6 +1089,17 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
                '', v, flags=re.IGNORECASE).strip()
     v = re.sub(r'-\s*Name\s+and\s+Address\s*-?\s*(?:Name\s+and\s+Address)?:?\s*[\n\r]*',
                '', v, flags=re.IGNORECASE).strip()
+
+    # 3b. Strip amendment instruction wrappers from field values
+    # After _apply_text_amendment, 45A may still contain:
+    #   "UNDER FIELD 45A, NOW TO BE READ AS, '..." and "...'' I/O EXISTING"
+    # Strip these instruction wrappers to get the actual content.
+    v = re.sub(
+        r'^(?:UNDER\s+)?FIELD\s+\d{2}[A-Z]?\s*,?\s*(?:NOW\s+)?TO\s+(?:BE\s+)?READ\s+AS\s*,?\s*[\'"]?\s*',
+        '', v, flags=re.IGNORECASE).strip()
+    # Strip trailing "I/O EXISTING" or "I/O <old text>" (may appear mid-line or at end)
+    v = re.sub(r'[\'"]?\s*I\s*/?\s*O\s+EXISTING\s*', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'[\'"]?\s*I/O\s+[\'"].*?[\'"]', '', v, flags=re.IGNORECASE).strip()
 
     # 4. Currency-name strip (32B)
     if tag == '32B':
@@ -1341,8 +1400,12 @@ def _apply_amendment(
         # 4. Strip "Narrative:" prefixes from each line
         amd_val = re.sub(r'(?:^|\n)\s*Narrative\s*:\s*', '\n', amd_val).strip()
 
-        # Normalize double slashes: //REPALL// -> /REPALL/
-        amd_val = re.sub(r'//', '/', amd_val)
+        # Normalize double slashes around SWIFT keywords: //REPALL// -> /REPALL/
+        # P102: Only normalize slashes around known operation keywords, NOT ''
+        # (two single quotes used as SWIFT double-quote delimiter).
+        amd_val = re.sub(r'//(REPALL|ADD|DEL|DELETE)//', r'/\1/', amd_val, flags=re.IGNORECASE)
+        amd_val = re.sub(r'//(REPALL|ADD|DEL|DELETE)/', r'/\1/', amd_val, flags=re.IGNORECASE)
+        amd_val = re.sub(r'/(REPALL|ADD|DEL|DELETE)//', r'/\1/', amd_val, flags=re.IGNORECASE)
         # ALSO trigger the operation path for the bare "TO READ AS 'X' INSTEAD
         # OF 'Y'" form that the MT799 free-format parser produces. Without
         # this, an MT799 amendment would fall into the wholesale-replace
@@ -1354,7 +1417,8 @@ def _apply_amendment(
         ))
         if (re.search(r'/ADD/|/DEL/|/DELETE/|/REPALL/|PLEASE\s+READ', amd_val, re.IGNORECASE)
                 or re.search(r'(?:^|\n)\+?\s*\)', amd_val)
-                or _is_to_read_as):
+                or _is_to_read_as
+                or re.search(r'UNDER\s+FIELD\s+\d{2}[A-Z]?\s+ADD\b', amd_val, re.IGNORECASE)):
             # This is an amendment instruction — apply operations to base value
             new_val = _apply_text_amendment(old_val, amd_val)
             base_fields[actual_tag] = new_val
