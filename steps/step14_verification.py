@@ -596,6 +596,22 @@ CRITICAL RULES (follow strictly):
    • The invoice amount can be LESS than the LC amount (partial/short shipment, allowed under UCP 600 Art 30 tolerance) — that is PASS.
    • Only when invoice Total > LC amount × (1 + tolerance%) is it a FAIL. Verify your arithmetic: 97,216 is NOT greater than 97,216. 95,000 is LESS than 97,216 (PASS, not FAIL).
 8. THIRD PARTY: If F47A says "THIRD PARTY DOCUMENTS ACCEPTABLE", third party documents = PASS.
+
+8a. BENEFICIARY-ISSUED DOCUMENTS: When the condition asks for a document
+    to be "issued by the beneficiary" or "not a third party document",
+    check the LC PARTIES section above for the BENEFICIARY's name, then
+    check if the document is issued by / signed by / "for and on behalf
+    of" that same entity. Apply the SAME party-name matching rules as
+    rule 22 (OCR tolerance, abbreviations, company suffixes). If the
+    issuing party on the document matches the BENEFICIARY name from the
+    LC PARTIES → PASS. Do NOT fail just because the exact wording
+    differs slightly (e.g. "Viterra B.V." on doc vs "VITERRA B.V."
+    in LC — these are the same entity, case-insensitive). Also check
+    the document LETTERHEAD and SIGNATURE block, not just a single
+    "Issued By" field. Common patterns:
+      • "For and on behalf of [BENEFICIARY NAME]" → issued by beneficiary
+      • Letterhead shows beneficiary's company name → issued by beneficiary
+      • Signed by an employee of the beneficiary → issued by beneficiary
 9. CERTIFICATION: If the condition asks for origin certification and the document says "We certify the goods are of [COUNTRY] origin" or similar statement, that IS a valid certification = PASS. Do not fail just because the exact word "CERTIFICATE" is not used — any statement certifying origin, quality, weight, etc. is a certification.
 10. DOCUMENT VERIFICATION: If the document text does NOT look like the expected document type (e.g., the condition checks a "Phytosanitary Certificate" but the document text looks like a quality certificate or inspection report), mark as REVIEW with "Document type may be misclassified".
 11. PASS / FAIL / REVIEW — DECISION RULES (CRITICAL — read this twice):
@@ -646,6 +662,24 @@ CRITICAL RULES (follow strictly):
        EXAMPLE: LC says "QTY 9025 KGS", F43P = "ALLOWED", invoice shows 10000 KGS → FAIL (exceeds LC quantity).
     c) UCP 600 Art 30(b): Unless the LC prohibits partial shipment, a tolerance of 5% more or less in quantity is allowed, provided the total amount does not exceed the LC amount. So even without explicit tolerance, 5% variation is acceptable if partial shipment is not prohibited.
 13. BILL OF LADING LIMITATIONS: BLs do NOT show dollar amounts or unit prices — never fail a BL for "amount not mentioned". BLs do NOT typically show LC/credit numbers unless F47A specifically requires it on BL.
+
+13z. STALE BL CHECK ON DOCUMENTARY REMITTANCE (CRITICAL):
+    When the condition says "BL must not be stale" and the
+    document_to_check is "Documentary Remittance" (or "Covering
+    Schedule" / "Cover Schedule"), you are NOT looking for a Bill
+    of Lading inside the Documentary Remittance. You are looking
+    for the PRESENTATION DATE on the Documentary Remittance.
+    "Stale" means the BL was presented more than the allowed
+    number of days after the BL date. The formula is:
+      presentation_date (from DR) - shipment_date (from BL/F44C)
+    You may not have the BL date in the DR text — in that case,
+    check if the DR shows a presentation date or "date" field,
+    and compare it against the LC's latest shipment date (F44C)
+    or the F48 presentation period. If you cannot determine
+    whether the document is stale from the DR text alone, mark
+    as REVIEW (not FAIL). Do NOT mark FAIL with "NO BILL OF
+    LADING FOUND" — that is wrong. The DR is not supposed to
+    contain a BL; it's supposed to contain a date.
 
 13a. DATE LABEL ABBREVIATIONS (CRITICAL — do NOT miss these):
     Documents (especially invoices, batch certificates, packing lists)
