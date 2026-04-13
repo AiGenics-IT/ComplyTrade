@@ -1463,6 +1463,31 @@ def _build_tasks(
                 })
                 continue
 
+        # P92: Auto-PASS quantity conditions when partial shipment is allowed.
+        # Same logic as the amount auto-PASS above — the VLM doesn't
+        # reliably check F43P when comparing quantities. If the condition
+        # says "Quantity must be X" and F43P=ALLOWED, the invoice can
+        # show less quantity (partial shipment). Only EXCEEDING is a fail.
+        if re.search(r'(?:QUANTITY|QTY)\s+(?:MUST\s+BE|SHOULD\s+BE|OF)\s+[\d,.]', _cond_upper):
+            _f43p = _get_lc_field_value(step06_result, '43P')
+            _partial_allowed = bool(re.search(
+                r'ALLOWED|PERMITTED|PERMISSIBLE|YES',
+                (_f43p or '').upper(),
+            ))
+            if _partial_allowed:
+                _set(row, "compliance", "PASS")
+                _set(row, "result",
+                     "Quantity check — partial shipment allowed per F43P. Invoice may show less quantity.")
+                _set(row, "findings",
+                     f"F43P: {_f43p}. Partial shipment is ALLOWED — lesser quantity is acceptable.")
+                _set(row, "confidence", 1.0)
+                tasks.append({
+                    "row": row,
+                    "skip": True,
+                    "reason": "quantity_partial_shipment_pass",
+                })
+                continue
+
         condition_text = _get(row, "condition_text", "")
         clause_ref = _get(row, "clause_ref", "")
         field_tag = _get(row, "field_tag", "")
