@@ -175,7 +175,7 @@ def startup():
 @app.get("/version")
 def version():
     """Return server version and build tag for health checks."""
-    return {"build_tag": BUILD_TAG, "version": "2.0.0",
+    return {"build_tag": BUILD_TAG, "version": "2.1.0",
             "startup_time": datetime.now().isoformat()}
 
 
