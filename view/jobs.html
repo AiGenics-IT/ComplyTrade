@@ -55,6 +55,13 @@
     .search-bar input{flex:1;padding:10px 16px;border:1.5px solid var(--border);border-radius:8px;font-size:.9em;outline:none;transition:.2s}
     .search-bar input:focus{border-color:var(--primary)}
 
+    .filter-row th{padding:4px 6px;background:var(--secondary)}
+    .col-filter{width:100%;padding:4px 8px;border:1px solid rgba(255,255,255,.3);border-radius:5px;font-size:.75em;background:rgba(255,255,255,.15);color:#fff;outline:none}
+    .col-filter::placeholder{color:rgba(255,255,255,.5)}
+    .col-filter:focus{background:rgba(255,255,255,.25);border-color:rgba(255,255,255,.6)}
+    select.col-filter{cursor:pointer}
+    select.col-filter option{color:#333;background:#fff}
+
     .step-info{font-size:.75em;color:var(--muted)}
     .pages-info{font-size:.8em;color:var(--muted)}
 
@@ -272,9 +279,24 @@ function renderJobs(jobs) {
     }
 
     let html = `<table class="job-table">
-        <thead><tr>
+        <thead>
+        <tr>
             <th>#</th><th>Job ID</th><th>LC Number</th><th>Filename</th><th>Pages</th><th>Created</th><th>Time</th><th>Step</th><th>Status</th><th>Notes</th><th>Actions</th>
-        </tr></thead><tbody>`;
+        </tr>
+        <tr class="filter-row">
+            <th></th>
+            <th></th>
+            <th><input class="col-filter" data-col="lc" placeholder="Filter LC..." oninput="applyColumnFilters()"></th>
+            <th><input class="col-filter" data-col="filename" placeholder="Filter file..." oninput="applyColumnFilters()"></th>
+            <th></th>
+            <th></th>
+            <th></th>
+            <th></th>
+            <th><select class="col-filter" data-col="status" onchange="applyColumnFilters()"><option value="">All</option><option value="completed">Completed</option><option value="processing">Processing</option><option value="failed">Failed</option><option value="uploaded">Uploaded</option></select></th>
+            <th><input class="col-filter" data-col="notes" placeholder="Filter notes..." oninput="applyColumnFilters()"></th>
+            <th></th>
+        </tr>
+        </thead><tbody>`;
 
     jobs.forEach((j, i) => {
         const lcs = j.lc_numbers || [];
@@ -330,6 +352,24 @@ function filterJobs() {
         (j.filename || '').toLowerCase().includes(q) ||
         (j.lc_numbers || []).some(lc => lc.toLowerCase().includes(q))
     );
+    renderJobs(filtered);
+}
+
+function applyColumnFilters() {
+    const filters = {};
+    document.querySelectorAll('.col-filter').forEach(el => {
+        const col = el.dataset.col;
+        const val = (el.value || '').toLowerCase().trim();
+        if (val) filters[col] = val;
+    });
+    if (Object.keys(filters).length === 0) { renderJobs(allJobs); return; }
+    const filtered = allJobs.filter(j => {
+        if (filters.lc && !(j.lc_numbers || []).some(lc => lc.toLowerCase().includes(filters.lc))) return false;
+        if (filters.filename && !(j.filename || '').toLowerCase().includes(filters.filename)) return false;
+        if (filters.status && (j.status || 'uploaded') !== filters.status) return false;
+        if (filters.notes && !(j.notes || '').toLowerCase().includes(filters.notes)) return false;
+        return true;
+    });
     renderJobs(filtered);
 }
 

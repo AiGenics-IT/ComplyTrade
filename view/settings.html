@@ -344,7 +344,7 @@ async function loadSettings() {
   document.getElementById('auth_user').value = auth.username || 'admin';
   try {
     const v = await (await fetch('/version')).json();
-    document.getElementById('version-tag').textContent = 'Build: ' + (v.build || v.version || '');
+    document.getElementById('version-tag').textContent = 'Build: ' + (v.build_tag || v.build || v.version || '');
   } catch(e) {}
 }
 
