@@ -276,9 +276,14 @@ def _find_matching_docs(doc_to_check: str, packets: list) -> list:
 
     def _get_pkt_type(pkt):
         if isinstance(pkt, dict):
-            return (pkt.get("document_type", "") or pkt.get("doc_type", "")
-                    or pkt.get("classification", "") or "").lower()
-        return (getattr(pkt, "document_type", "") or "").lower()
+            raw = (pkt.get("document_type", "") or pkt.get("doc_type", "")
+                   or pkt.get("classification", "") or "").lower().strip()
+        else:
+            raw = (getattr(pkt, "document_type", "") or "").lower().strip()
+        # Strip OCR-concatenated copy/original suffixes:
+        # "beneficiary's certificateoriginal" → "beneficiary's certificate"
+        raw = re.sub(r'(original|copy|duplicate|triplicate|quadruplicate)$', '', raw).strip()
+        return raw
 
     # Tier 1+2: Alias + substring match
     for pkt in packets:
