@@ -282,7 +282,9 @@ def _find_matching_docs(doc_to_check: str, packets: list) -> list:
     # Only match if the DISTINGUISHING keywords overlap (not just generic words
     # like "certificate", "document", "list", "report").
     _GENERIC_WORDS = {'certificate', 'document', 'list', 'report', 'note', 'letter',
-                      'advice', 'receipt', 'bill', 'policy', 'schedule', 'declaration'}
+                      'advice', 'receipt', 'bill', 'policy', 'schedule', 'declaration',
+                      'form', 'certification', 'statement',  # P90: prevent Form 3 matching Form 7
+                      }
     if target_keywords:
         _specific_keywords = target_keywords - _GENERIC_WORDS
         if _specific_keywords:

@@ -488,12 +488,20 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
     # Match: (sentence-end punctuation + space(s)) + (digit(s)) + (clause delimiter)
     # e.g. "EXPIRY. 7.THE" → "EXPIRY.\n7.THE"
     # e.g. "SEPARATELY. 10. SOME" → "SEPARATELY.\n10. SOME"
+    # P90: Added (?!\d) after the delimiter to exclude dates like
+    # "DATED: 07-01-2025" where "07-" looks like a clause number
+    # but is actually a date. A real clause number is followed by
+    # a letter (the clause text), not another digit.
     _normalized = re.sub(
         r'(?<=[.;:!?])\s*(\d{1,2})\s*([.\-)])\s*(?=[A-Z])',
         r'\n\1\2 ',
         _normalized,
     )
-    numbered = re.split(r'\n\s*(\d+)\s*[-.)]\s*', '\n' + _normalized)
+    # P90: The split regex must NOT match dates like "07-01-2025" or
+    # "01.2025" that start a line after a colon ("DATED:\n07-01-2025").
+    # A clause number is followed by text content, not by more digits.
+    # Use a negative lookahead (?!\d) to exclude digit-after-delimiter.
+    numbered = re.split(r'\n\s*(\d+)\s*[-.)]\s*(?!\d)', '\n' + _normalized)
     if len(numbered) >= 3:
         for i in range(1, len(numbered) - 1, 2):
             clause_text = numbered[i + 1].strip()
