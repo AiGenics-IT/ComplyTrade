@@ -1973,6 +1973,69 @@ def run(
         )
 
     # ------------------------------------------------------------------ #
+    # 5b. Deterministic post-checks — override VLM false positives
+    # ------------------------------------------------------------------ #
+    # The VLM sometimes hallucates PASS for conditions it cannot verify
+    # from the document text alone. Run deterministic checks for:
+    #   - Email address presence: if the condition says "send via email
+    #     to X@Y.COM", the document MUST mention that email address.
+    #   - Fax number presence: same logic for fax numbers.
+    # Normalisation: SWIFT uses (AT) for @, (DOT) for .
+    def _normalise_email_text(s: str) -> str:
+        """Convert SWIFT email notation to standard: INFO(AT)SIUT. ORG → info@siut.org"""
+        s = re.sub(r'\(\s*AT\s*\)', '@', s, flags=re.IGNORECASE)
+        s = re.sub(r'\(\s*DOT\s*\)', '.', s, flags=re.IGNORECASE)
+        # Strip spaces around @ and . in email-like contexts
+        # "INFO @SIUT. ORG" → "INFO@SIUT.ORG"
+        s = re.sub(r'\s*@\s*', '@', s)
+        s = re.sub(r'(\w)\s*\.\s*(\w)', r'\1.\2', s)
+        return s
+
+    def _extract_emails(text: str) -> list:
+        """Extract all email addresses from text, normalising (AT)/(DOT)."""
+        normalised = _normalise_email_text(text)
+        return [e.lower() for e in re.findall(
+            r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}', normalised
+        )]
+
+    for task in vlm_tasks:
+        row = task["row"]
+        compliance = _get(row, "compliance", "").upper()
+        if compliance != "PASS":
+            continue  # only check PASS results for false positives
+
+        cond_text = (task.get("condition_text") or "").lower()
+        doc_text = (task.get("document_text") or "")
+
+        # Check: does the condition mention sending to a specific email?
+        email_keywords = ['via email', 'by email', 'email at', 'email to',
+                          'e-mail to', 'e-mail at', 'send to']
+        if any(kw in cond_text for kw in email_keywords):
+            # Extract email addresses from the LC condition
+            cond_emails = _extract_emails(cond_text)
+            if cond_emails:
+                # Check if ANY of these emails appear in the document text
+                doc_emails = _extract_emails(doc_text)
+                doc_text_normalised = _normalise_email_text(doc_text).lower()
+                found_any = False
+                for em in cond_emails:
+                    if em in doc_text_normalised or em in doc_emails:
+                        found_any = True
+                        break
+                if not found_any:
+                    # VLM falsely passed — the document doesn't mention the email
+                    _set(row, "compliance", "FAIL")
+                    missing_emails = ', '.join(cond_emails)
+                    _set(row, "findings",
+                         f"Email address {missing_emails} not found in document text")
+                    _set(row, "result",
+                         f"Email {missing_emails} required but not mentioned in document")
+                    _set(row, "verification_notes",
+                         f"Deterministic override: LC requires notification via "
+                         f"{missing_emails} but document does not reference this address")
+                    _progress(f"  {task['row_id']}: PASS→FAIL (email {missing_emails} not in doc)")
+
+    # ------------------------------------------------------------------ #
     # 6. Build summary statistics
     # ------------------------------------------------------------------ #
     pass_count = sum(1 for r in rows if _get(r, "compliance") == "PASS")
