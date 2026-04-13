@@ -863,6 +863,19 @@ Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 
         name, street/block, city, country, postal code) — match
         exactly AND the remaining differences are explainable by
         the OCR-confusable swaps in the table above → PASS.
+      • OCR FULL-WORD NEAR-MATCH: When a company name on the document
+        differs from the LC by only 1-2 characters in a single word
+        (letter substitution, transposition, or insertion/deletion),
+        AND the rest of the name + address matches, treat it as an
+        OCR error → PASS. Examples:
+          "Visetra B.V." vs "Viterra B.V." — 2 chars differ (s↔t, e↔r
+          transposition), same company → PASS
+          "ARCHOMA" vs "ARCHROMA" — 1 char missing (R), same → PASS
+          "HAEMONTICS" vs "HAEMONETICS" — 1 char substitution → PASS
+        This is different from the initial-cluster rule above — this
+        applies to FULL WORDS where the overall shape is clearly the
+        same entity. Use your judgement: if the word looks like the
+        same company with a minor OCR glitch, it IS the same company.
       • Only if the differences are SUBSTANTIVE (a clearly different
         company name, a clearly different city, a clearly different
         country, a clearly different street address) → FAIL.

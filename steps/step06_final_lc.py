@@ -1087,6 +1087,13 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
     v = re.sub(r'The image appears to be blank[.\s]*',
                '', v, flags=re.IGNORECASE).strip()
 
+    # 11b. P88: Line-ending hyphen continuation join.
+    # SWIFT/OCR text sometimes breaks a word or reference number across
+    # lines with a hyphen: "PL-0725-\n201501-M05-002828". Join these
+    # so the full reference stays on one line. Only join when the hyphen
+    # is at the very end of a line (not mid-line hyphens like "MAI-KOLACHI").
+    v = re.sub(r'-\s*\n\s*', '-', v)
+
     # 12. Inline sub-labels: "Date:", "Place:", "Currency:", "Amount:", etc.
     v = re.sub(r'\bDate:?\s*', '', v).strip()
     v = re.sub(r'\bPlace:?\s*', '', v).strip()
