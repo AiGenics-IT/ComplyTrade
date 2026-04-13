@@ -97,7 +97,9 @@ DOC_TYPE_ALIASES = {
         "weight list", "weight note",
     ],
     "beneficiary certificate": [
-        "beneficiary certificate", "beneficiary statement",
+        "beneficiary certificate", "beneficiary's certificate",
+        "beneficiarys certificate", "beneficiary statement",
+        "beneficiary's statement", "beneficiary declaration",
     ],
     "documentary remittance": [
         "documentary remittance", "covering letter", "remittance letter",
@@ -1509,6 +1511,15 @@ def _build_tasks(
             'forwarding letter',
             'remittance letter', 'export letter',
             'fax', 'email',
+            # P92: structural / non-content page types
+            'header page', 'blank page', 'endorsement page',
+            'back page', 'terms and conditions',
+            'unknown', 'unidentified', 'supporting document',
+            # Agent's certificate is a specific doc, should be checked
+            # separately — but NOT for HS codes / NTN fan-outs.
+            # However we keep it in the fan-out for now since the LC
+            # says "ALL DOCUMENTS". If it causes false fails, add it
+            # to the exclude list.
         )
 
         def _is_excluded_from_alldoc_fanout(pt: str) -> bool:

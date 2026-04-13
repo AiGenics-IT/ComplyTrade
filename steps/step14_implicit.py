@@ -1492,6 +1492,77 @@ def run(
                     'cover_vs_invoice', 'Cover Schedule',
                 )
 
+    # ── P91: BL Originals Check ──
+    # If LC requires original BL ("FULL SET", "ORIGINAL", or just "BILL OF
+    # LADING" without "COPY") and ALL submitted BLs are marked NON-NEGOTIABLE
+    # or COPY, flag as a hard discrepancy.
+    if config.get('doc_originals_copies', {}).get('enabled', True):
+        bl_packets = _get_docs_by_type(packets, 'bill of lading')
+        if bl_packets:
+            # Check if any BL is an original
+            has_original_bl = False
+            all_bl_copy_statuses = []
+            for bl in bl_packets:
+                copy_status = str(bl.get('copy_status', bl.get('copy_label', ''))).upper()
+                doc_type_upper = str(bl.get('document_type', '')).upper()
+                text_upper = str(bl.get('refined_text', bl.get('cleaned_text', bl.get('text', '')))).upper()[:500]
+
+                all_bl_copy_statuses.append(copy_status or doc_type_upper)
+
+                # Check if this BL is an original
+                is_non_negotiable = ('NON-NEGOTIABLE' in copy_status or 'NON NEGOTIABLE' in copy_status or
+                                     'NON-NEGOTIABLE' in doc_type_upper or 'NON NEGOTIABLE' in doc_type_upper or
+                                     'NON-NEGOTIABLE' in text_upper or 'COPY NON-NEGOTIABLE' in text_upper or
+                                     'COPY NOT NEGOTIABLE' in text_upper)
+                is_copy = ('COPY' in copy_status and 'ORIGINAL' not in copy_status)
+
+                if not is_non_negotiable and not is_copy:
+                    has_original_bl = True
+
+                # Also check if it's explicitly marked ORIGINAL
+                if 'ORIGINAL' in copy_status and 'NON' not in copy_status:
+                    has_original_bl = True
+
+            # Check if LC requires originals (almost always does for BL)
+            f46a = str(lc_fields.get('46A', lc_fields.get('F46A', ''))).upper()
+            lc_requires_original = ('FULL SET' in f46a or 'ORIGINAL' in f46a or
+                                    'BILL OF LADING' in f46a)
+            # "COPY OF B/L" or "COPY OF BILL OF LADING" means copy is acceptable
+            copy_acceptable = bool(re.search(r'COPY\s+OF\s+(?:B/?L|BILL\s+OF\s+LADING)', f46a))
+
+            # Find the specific F46A clause number that mentions BL
+            _bl_clause_ref = 'F46A'
+            _f46a_clauses = str(lc_fields.get('46A', lc_fields.get('F46A', ''))).split('\n')
+            for _ci, _cl in enumerate(_f46a_clauses, 1):
+                if 'BILL OF LADING' in _cl.upper() or 'B/L' in _cl.upper():
+                    _bl_clause_ref = f'46A-{_ci}'
+                    break
+
+            if not has_original_bl and lc_requires_original and not copy_acceptable:
+                all_results.append(CheckResult(
+                    check_id='doc_originals_copies',
+                    clause_ref=_bl_clause_ref,
+                    condition='Full set of original Bill of Lading must be presented',
+                    document_checked='Bill of Lading',
+                    findings=f"All BLs are NON-NEGOTIABLE copies: {', '.join(all_bl_copy_statuses[:3])}",
+                    result='BL IS COPY NON-NEGOTIABLE. No original Bill of Lading presented. LC requires original Bill of Lading.',
+                    compliance='FAIL',
+                    severity='hard',
+                ))
+                progress_fn(f"  [doc_originals_copies] FAIL - No original BL found ({len(bl_packets)} copies)")
+            elif has_original_bl:
+                all_results.append(CheckResult(
+                    check_id='doc_originals_copies',
+                    clause_ref=_bl_clause_ref,
+                    condition='Original Bill of Lading must be presented',
+                    document_checked='Bill of Lading',
+                    findings=f"Original BL found in submission ({len(bl_packets)} BL packets)",
+                    result='Original BL present',
+                    compliance='PASS',
+                    severity='hard',
+                ))
+                progress_fn(f"  [doc_originals_copies] PASS - Original BL found")
+
     # ── Build VLM-only tasks for remaining checks ──
     all_tasks = []
     _VLM_ONLY_CHECKS = [c for c in _ENABLED_CHECK_IDS if c not in _HYBRID_CHECKS]
