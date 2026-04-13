@@ -497,7 +497,7 @@ def _build_executive_summary(
         _cf_rows = [_cf_hdr]
         for i, cf in enumerate(critical_findings[:30], 1):
             finding = _esc(_safe_str(
-                cf.get('result', '') or cf.get('condition', '') or cf.get('findings', ''), 150))
+                cf.get('result', '') or cf.get('condition', '') or cf.get('findings', ''), 500))
             _cf_clause_ref = cf.get("clause_ref", "")
             _cf_anchor = _clause_anchor(_cf_clause_ref)
             # Wrap the clause reference in a hyperlink that jumps to the
@@ -576,7 +576,7 @@ def _build_executive_summary(
             _rv_rows = [_rv_hdr]
             for i, ri in enumerate(_review_display, 1):
                 detail = _esc(_safe_str(
-                    ri.get('condition', '') or ri.get('result', '') or ri.get('findings', ''), 150))
+                    ri.get('condition', '') or ri.get('result', '') or ri.get('findings', ''), 500))
                 _rv_clause_ref = ri.get("clause_ref", "")
                 _rv_anchor = _clause_anchor(_rv_clause_ref)
                 if _rv_anchor:
@@ -767,7 +767,7 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
                 _tbl_data.append([
                     Paragraph(f'<font size="7.5">{_esc(_safe_str(_cond_text, 500))}</font>',
                               styles['CellTextSmall']),
-                    Paragraph(f'<font size="7"><i>{_esc(_safe_str(_find_text, 300))}</i></font>',
+                    Paragraph(f'<font size="7"><i>{_esc(_safe_str(_find_text, 600))}</i></font>',
                               styles['CellTextSmall']),
                     Paragraph(f'<font size="7">{_esc(_safe_str(row.get("document_checked", ""), 120))}</font>',
                               styles['CellTextSmall']),
