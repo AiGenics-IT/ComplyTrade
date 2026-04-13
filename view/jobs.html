@@ -55,12 +55,23 @@
     .search-bar input{flex:1;padding:10px 16px;border:1.5px solid var(--border);border-radius:8px;font-size:.9em;outline:none;transition:.2s}
     .search-bar input:focus{border-color:var(--primary)}
 
-    .filter-row th{padding:4px 6px;background:var(--secondary)}
-    .col-filter{width:100%;padding:4px 8px;border:1px solid rgba(255,255,255,.3);border-radius:5px;font-size:.75em;background:rgba(255,255,255,.15);color:#fff;outline:none}
-    .col-filter::placeholder{color:rgba(255,255,255,.5)}
-    .col-filter:focus{background:rgba(255,255,255,.25);border-color:rgba(255,255,255,.6)}
-    select.col-filter{cursor:pointer}
-    select.col-filter option{color:#333;background:#fff}
+    .th-wrap{display:flex;align-items:center;gap:4px;justify-content:space-between;position:relative}
+    .th-label{flex:1}
+    .th-btn{background:none;border:none;color:rgba(255,255,255,.6);cursor:pointer;font-size:14px;padding:2px 4px;border-radius:4px;line-height:1;transition:.2s}
+    .th-btn:hover{color:#fff;background:rgba(255,255,255,.15)}
+    .th-btn.active{color:#fbbf24}
+    .col-menu{display:none;position:absolute;top:100%;right:0;background:#fff;border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.25);min-width:200px;z-index:200;padding:8px 0;margin-top:6px;color:var(--text);font-weight:400}
+    .col-menu.open{display:block}
+    .col-menu .menu-section{padding:4px 12px;font-size:.68em;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+    .col-menu .menu-item{padding:7px 14px;font-size:.82em;cursor:pointer;display:flex;align-items:center;gap:8px;transition:.15s}
+    .col-menu .menu-item:hover{background:#f0f4ff}
+    .col-menu .menu-item.active-sort{color:var(--primary);font-weight:600}
+    .col-menu .menu-divider{height:1px;background:var(--border);margin:4px 0}
+    .col-menu .menu-filter{padding:6px 12px}
+    .col-menu .menu-filter input,.col-menu .menu-filter select{width:100%;padding:6px 10px;border:1.5px solid var(--border);border-radius:6px;font-size:.85em;outline:none;color:var(--text)}
+    .col-menu .menu-filter input:focus,.col-menu .menu-filter select:focus{border-color:var(--primary)}
+    .col-menu .menu-clear{padding:6px 14px;font-size:.78em;color:var(--danger);cursor:pointer;text-align:center;transition:.15s}
+    .col-menu .menu-clear:hover{background:#fef2f2}
 
     .step-info{font-size:.75em;color:var(--muted)}
     .pages-info{font-size:.8em;color:var(--muted)}
@@ -278,25 +289,46 @@ function renderJobs(jobs) {
         return;
     }
 
+    const _colDef = [
+        {key:'#',         sortable:false},
+        {key:'job_id',    label:'Job ID',    sortable:true,  filterType:'text'},
+        {key:'lc',        label:'LC Number', sortable:true,  filterType:'text'},
+        {key:'filename',  label:'Filename',  sortable:true,  filterType:'text'},
+        {key:'pages',     label:'Pages',     sortable:true},
+        {key:'created',   label:'Created',   sortable:true},
+        {key:'time',      label:'Time',      sortable:true},
+        {key:'step',      label:'Step',      sortable:true},
+        {key:'status',    label:'Status',    sortable:true,  filterType:'select', options:['completed','processing','failed','uploaded']},
+        {key:'notes',     label:'Notes',     sortable:false, filterType:'text'},
+        {key:'actions',   label:'Actions',   sortable:false},
+    ];
+    let thHtml = _colDef.map(c => {
+        if (!c.sortable && !c.filterType) return `<th>${c.label||c.key}</th>`;
+        let menu = '<div class="col-menu" id="menu-'+c.key+'">';
+        if (c.sortable) {
+            menu += '<div class="menu-section">Sort</div>';
+            menu += `<div class="menu-item" onclick="doSort('${c.key}','asc')"><span>&#9650;</span> Ascending</div>`;
+            menu += `<div class="menu-item" onclick="doSort('${c.key}','desc')"><span>&#9660;</span> Descending</div>`;
+        }
+        if (c.filterType) {
+            if (c.sortable) menu += '<div class="menu-divider"></div>';
+            menu += '<div class="menu-section">Filter</div>';
+            if (c.filterType === 'select') {
+                menu += '<div class="menu-filter"><select onchange="doFilter(\''+c.key+'\',this.value)"><option value="">All</option>';
+                (c.options||[]).forEach(o => { menu += `<option value="${o}">${o.charAt(0).toUpperCase()+o.slice(1)}</option>`; });
+                menu += '</select></div>';
+            } else {
+                menu += `<div class="menu-filter"><input placeholder="Type to filter..." oninput="doFilter('${c.key}',this.value)"></div>`;
+            }
+            menu += `<div class="menu-divider"></div><div class="menu-clear" onclick="doFilter('${c.key}','')">Clear Filter</div>`;
+        }
+        menu += '</div>';
+        const activeClass = (_colFilters[c.key] || _colSort.key===c.key) ? ' active' : '';
+        return `<th><div class="th-wrap"><span class="th-label">${c.label||c.key}</span><button class="th-btn${activeClass}" onclick="toggleMenu(event,'${c.key}')">&#9662;</button>${menu}</div></th>`;
+    }).join('');
+
     let html = `<table class="job-table">
-        <thead>
-        <tr>
-            <th>#</th><th>Job ID</th><th>LC Number</th><th>Filename</th><th>Pages</th><th>Created</th><th>Time</th><th>Step</th><th>Status</th><th>Notes</th><th>Actions</th>
-        </tr>
-        <tr class="filter-row">
-            <th></th>
-            <th></th>
-            <th><input class="col-filter" data-col="lc" placeholder="Filter LC..." oninput="applyColumnFilters()"></th>
-            <th><input class="col-filter" data-col="filename" placeholder="Filter file..." oninput="applyColumnFilters()"></th>
-            <th></th>
-            <th></th>
-            <th></th>
-            <th></th>
-            <th><select class="col-filter" data-col="status" onchange="applyColumnFilters()"><option value="">All</option><option value="completed">Completed</option><option value="processing">Processing</option><option value="failed">Failed</option><option value="uploaded">Uploaded</option></select></th>
-            <th><input class="col-filter" data-col="notes" placeholder="Filter notes..." oninput="applyColumnFilters()"></th>
-            <th></th>
-        </tr>
-        </thead><tbody>`;
+        <thead><tr>${thHtml}</tr></thead><tbody>`;
 
     jobs.forEach((j, i) => {
         const lcs = j.lc_numbers || [];
@@ -355,22 +387,71 @@ function filterJobs() {
     renderJobs(filtered);
 }
 
-function applyColumnFilters() {
-    const filters = {};
-    document.querySelectorAll('.col-filter').forEach(el => {
-        const col = el.dataset.col;
-        const val = (el.value || '').toLowerCase().trim();
-        if (val) filters[col] = val;
+// ── Column filter + sort state ──
+const _colFilters = {};
+const _colSort = {key:'created', dir:'desc'};
+
+function _getJobVal(j, key) {
+    if (key === 'lc') return (j.lc_numbers || []).join(' ');
+    if (key === 'job_id') return j.job_id || '';
+    if (key === 'filename') return j.filename || '';
+    if (key === 'pages') return j.total_pages || 0;
+    if (key === 'created') return j.created_at || '';
+    if (key === 'time') return j.elapsed_seconds || 0;
+    if (key === 'step') return j.current_step || 0;
+    if (key === 'status') return j.status || 'uploaded';
+    if (key === 'notes') return j.notes || '';
+    return '';
+}
+
+function toggleMenu(e, col) {
+    e.stopPropagation();
+    document.querySelectorAll('.col-menu').forEach(m => {
+        if (m.id !== 'menu-'+col) m.classList.remove('open');
     });
-    if (Object.keys(filters).length === 0) { renderJobs(allJobs); return; }
-    const filtered = allJobs.filter(j => {
-        if (filters.lc && !(j.lc_numbers || []).some(lc => lc.toLowerCase().includes(filters.lc))) return false;
-        if (filters.filename && !(j.filename || '').toLowerCase().includes(filters.filename)) return false;
-        if (filters.status && (j.status || 'uploaded') !== filters.status) return false;
-        if (filters.notes && !(j.notes || '').toLowerCase().includes(filters.notes)) return false;
-        return true;
-    });
-    renderJobs(filtered);
+    const menu = document.getElementById('menu-'+col);
+    if (menu) menu.classList.toggle('open');
+}
+
+document.addEventListener('click', () => {
+    document.querySelectorAll('.col-menu').forEach(m => m.classList.remove('open'));
+});
+
+function doSort(key, dir) {
+    _colSort.key = key;
+    _colSort.dir = dir;
+    document.querySelectorAll('.col-menu').forEach(m => m.classList.remove('open'));
+    applyAll();
+}
+
+function doFilter(key, val) {
+    val = (val || '').trim().toLowerCase();
+    if (val) _colFilters[key] = val; else delete _colFilters[key];
+    applyAll();
+}
+
+function applyAll() {
+    let result = allJobs.slice();
+    // Apply filters
+    for (const [key, val] of Object.entries(_colFilters)) {
+        result = result.filter(j => {
+            const jv = String(_getJobVal(j, key)).toLowerCase();
+            return jv.includes(val) || val === jv;
+        });
+    }
+    // Apply sort
+    if (_colSort.key) {
+        result.sort((a, b) => {
+            let va = _getJobVal(a, _colSort.key);
+            let vb = _getJobVal(b, _colSort.key);
+            if (typeof va === 'number' && typeof vb === 'number') return _colSort.dir === 'asc' ? va - vb : vb - va;
+            va = String(va).toLowerCase(); vb = String(vb).toLowerCase();
+            if (va < vb) return _colSort.dir === 'asc' ? -1 : 1;
+            if (va > vb) return _colSort.dir === 'asc' ? 1 : -1;
+            return 0;
+        });
+    }
+    renderJobs(result);
 }
 
 let _clearJobId = null;
