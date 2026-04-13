@@ -353,6 +353,18 @@ _DOC_INDICATORS = {
     "Form 3": [
         r'FORM\s+3\b', r'DRUG\s+REGISTRATION\s+CERTIFICATE',
         r'IMPORT\s+CERTIFICATE\s+FOR\s+DRUG',
+        r'FORM\s+OF\s+UNDERTAKING',
+    ],
+    # P90: Certificate of Analysis — pharmaceutical / chemical analysis reports
+    "Certificate of Analysis": [
+        r'CERTIFICATE\s+OF\s+ANALYSIS',
+        r'ANALYTICAL?\s+CERTIFICATE',
+        r'COA\b',
+        r'ANALYSIS\s+REPORT',
+        r'ANALYSIS\s+CERTIFICATE',
+        r'TEST\s+REPORT',
+        r'ASSAY\s+RESULT',
+        r'SPECIFICATION\s+AND\s+(?:TEST|ANALYSIS)\s+RESULT',
     ],
     "Notice of Readiness": [
         r'NOTICE\s+OF\s+READINESS', r'NOR\s+(?:RE-?)?TENDER', r'VESSEL\s+HAS\s+OFFICIALLY\s+ARRIVED',

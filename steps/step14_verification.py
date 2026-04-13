@@ -148,6 +148,13 @@ DOC_TYPE_ALIASES = {
         "form 3", "form3", "form no 3", "form no. 3",
         "drug registration certificate", "import certificate",
         "form 3 certificate", "drug import certificate",
+        "form of undertaking",
+    ],
+    # P90: Certificate of Analysis
+    "certificate of analysis": [
+        "certificate of analysis", "analysis certificate",
+        "analytical certificate", "coa", "analysis report",
+        "test report", "test certificate",
     ],
     "shipping advice": [
         "shipping advice", "shipment advice", "beneficiary shipment advice",
