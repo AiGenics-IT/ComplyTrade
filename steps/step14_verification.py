@@ -2003,8 +2003,10 @@ def run(
             r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}', normalised
         )]
 
+    _email_checked_rows = set()
     for task in vlm_tasks:
         row = task["row"]
+        row_id = task.get("row_id", "?")
         compliance = _get(row, "compliance", "").upper()
         if compliance != "PASS":
             continue  # only check PASS results for false positives
@@ -2015,10 +2017,17 @@ def run(
         # Check: does the condition mention sending to a specific email?
         email_keywords = ['via email', 'by email', 'email at', 'email to',
                           'e-mail to', 'e-mail at', 'send to']
-        if any(kw in cond_text for kw in email_keywords):
+        has_email_kw = any(kw in cond_text for kw in email_keywords)
+
+        if has_email_kw:
             # Extract email addresses from the LC condition
             cond_emails = _extract_emails(cond_text)
-            if cond_emails:
+            _progress(
+                f"  [email-check] {row_id}: kw=True, "
+                f"cond_emails={cond_emails}, doc_len={len(doc_text)}"
+            )
+            if cond_emails and row_id not in _email_checked_rows:
+                _email_checked_rows.add(row_id)
                 # Check if ANY of these emails appear in the document text
                 doc_emails = _extract_emails(doc_text)
                 doc_text_normalised = _normalise_email_text(doc_text).lower()
@@ -2027,6 +2036,10 @@ def run(
                     if em in doc_text_normalised or em in doc_emails:
                         found_any = True
                         break
+                _progress(
+                    f"  [email-check] {row_id}: doc_emails={doc_emails}, "
+                    f"found_any={found_any}"
+                )
                 if not found_any:
                     # VLM falsely passed — the document doesn't mention the email
                     _set(row, "compliance", "FAIL")
@@ -2038,7 +2051,7 @@ def run(
                     _set(row, "verification_notes",
                          f"Deterministic override: LC requires notification via "
                          f"{missing_emails} but document does not reference this address")
-                    _progress(f"  {task['row_id']}: PASS→FAIL (email {missing_emails} not in doc)")
+                    _progress(f"  {row_id}: PASS->FAIL (email {missing_emails} not in doc)")
 
     # ------------------------------------------------------------------ #
     # 6. Build summary statistics
