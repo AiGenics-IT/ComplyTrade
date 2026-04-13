@@ -621,10 +621,25 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
         # Clean Narrative: prefixes from Alliance format
         new_content = re.sub(r'(?:Narrative\d?:\s*)+', '', new_content).strip()
         new_content = re.sub(r'\n\s*Narrative\d?:\s*', '\n', new_content).strip()
-        new_content = re.sub(r'^Lines?\d*(?:to\d+)?:\s*', '', new_content, flags=re.MULTILINE).strip()
+        new_content = re.sub(r'^Lines?\s*\d*(?:\s*-\s*\d+)?(?:\s*to\s*\d+)?\s*:?\s*$', '', new_content, flags=re.MULTILINE).strip()
+        new_content = re.sub(r'^\s*Line\s+\d+\s*$', '', new_content, flags=re.MULTILINE).strip()
+        new_content = re.sub(r'^\s*Code\s*[-:]?\s*(?:/REPALL/)?\s*$', '', new_content, flags=re.MULTILINE).strip()
         new_content = re.sub(r'^\s*Code\s*-\s*Narrative\s*$', '', new_content, flags=re.MULTILINE).strip()
-        # If it contains PLEASE READ patterns, don't do full replace — let patterns handle it
-        if not re.search(r'PLEASE\s+READ', new_content, re.IGNORECASE):
+        # P87: Detect structured amendment instructions inside /REPALL/ blocks.
+        # Alliance MT707 often puts instructions like:
+        #   "FIELD 47A-1 TO READ AS ..."
+        #   "FIELD 47A-2 DELETE WORDING AS ..."
+        #   "UNDER FIELD 47A ADD CLAUSE AS ..."
+        # inside a /REPALL/ block. These are NOT replacement text — they're
+        # operations that modify the existing base field.
+        _has_field_instructions = bool(re.search(
+            r'(?:^|\n)\s*(?:UNDER\s+)?FIELD\s+\d{2}[A-Z]?(?:-\d+)?\s+'
+            r'(?:TO\s+READ\s+AS|WORD\s+TO\s+READ\s+AS|DELETE\s+WORDING|ADD\s+(?:CLAUSE|LOI|WORDING))',
+            new_content, re.IGNORECASE,
+        ))
+        # If it contains PLEASE READ patterns or FIELD instruction patterns,
+        # don't do full replace — let patterns handle it below
+        if not re.search(r'PLEASE\s+READ', new_content, re.IGNORECASE) and not _has_field_instructions:
             if new_content:
                 result = new_content
                 # Still process remaining patterns (there might be /ADD/ blocks after)
@@ -848,6 +863,71 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
         if new_val:
             result = new_val
 
+    # ── P87: ALLIANCE FIELD-INSTRUCTION FORMAT ──
+    # These appear inside /REPALL/ blocks as structured operations:
+    #
+    #   "FIELD 47A-1 TO READ AS\n<quoted or unquoted new clause text>"
+    #   "FIELD 47A-2 DELETE WORDING AS\n<quoted text to delete>"
+    #   "UNDER FIELD 47A ADD CLAUSE AS\n<quoted text for new clause(s)>"
+    #   "UNDER FIELD 46A ADD LOI CLAUSE AS\n<text>"
+    #   "UNDER FIELD 46A-2 WORD TO READ AS\n<quoted new> I/O <quoted old>"
+
+    Q = r"""['"]+"""  # re-define for this section
+
+    # I1: FIELD XX-N TO READ AS "new clause text"
+    # Replaces clause N entirely with the new text.
+    for m in re.finditer(
+        r'FIELD\s+\d{2}[A-Z]?-(\d+)\s+(?:NOW\s+)?TO\s+READ\s+AS\s*\n?\s*' + Q + r'(.+?)' + Q,
+        amd, re.IGNORECASE | re.DOTALL,
+    ):
+        clause_num = int(m.group(1))
+        new_text = m.group(2).strip()
+        # Find and replace clause N in the result
+        clause_pat = re.compile(
+            r'(' + str(clause_num) + r'[\).:\s])\s*(.+?)(?=\n\s*(?:\d+[\).:])\s|\Z)',
+            re.DOTALL,
+        )
+        cm = clause_pat.search(result)
+        if cm:
+            result = result[:cm.start(2)] + ' ' + new_text + result[cm.end(2):]
+
+    # I2: FIELD XX-N DELETE WORDING AS "text to delete"
+    # Deletes the quoted text from the field.
+    for m in re.finditer(
+        r'FIELD\s+\d{2}[A-Z]?-?(\d*)\s+DELETE\s+WORDING\s+AS\s*\n?\s*' + Q + r'(.+?)' + Q,
+        amd, re.IGNORECASE | re.DOTALL,
+    ):
+        del_text = m.group(2).strip()
+        if del_text and del_text in result:
+            result = result.replace(del_text, '')
+            result = re.sub(r'  +', ' ', result)
+            result = re.sub(r'\n\s*\n\s*\n', '\n\n', result)
+
+    # I2b: [UNDER] FIELD XX-N WORD TO READ AS "new" I/O "old"
+    for m in re.finditer(
+        r'(?:UNDER\s+)?FIELD\s+\d{2}[A-Z]?-?(\d*)\s+WORD\s+TO\s+READ\s+AS\s*\n?\s*'
+        + Q + r'(.+?)' + Q + r'\s+I/O\s+' + Q + r'(.+?)' + Q,
+        amd, re.IGNORECASE | re.DOTALL,
+    ):
+        new_text = m.group(2).strip()
+        old_text = m.group(3).strip()
+        if old_text in result:
+            result = result.replace(old_text, new_text)
+
+    # I3: UNDER FIELD XX ADD CLAUSE AS "new clause text"
+    # or  UNDER FIELD XX ADD LOI CLAUSE AS "text"
+    # Appends new clause(s) to the field.
+    for m in re.finditer(
+        r'UNDER\s+FIELD\s+\d{2}[A-Z]?(?:-\d+)?\s+ADD\s+(?:LOI\s+)?(?:CLAUSE|WORDING)\s+AS\s*\n?\s*'
+        + Q + r'?(.+?)(?=' + Q + r'?\s*$|\n\s*(?:FIELD|UNDER)\s+\d{2}[A-Z])',
+        amd, re.IGNORECASE | re.DOTALL,
+    ):
+        add_text = m.group(1).strip()
+        # Strip trailing quotes
+        add_text = re.sub(r'["\']$', '', add_text).strip()
+        if add_text and add_text not in result:
+            result = result.rstrip() + '\n' + add_text
+
     return result
 
 
@@ -964,9 +1044,16 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
     # Payment Confirmation" section that bleeds into the LAST tag on the
     # message — typically F44C, F47A, F78). Strip everything from "Other"
     # to end of value.
+    # P87: Also match when "Other" is missing and the footer starts directly
+    # with "Delivery overdue" or when individual footer lines appear.
     v = re.sub(
         r'\n\s*Other\s*\n\s*(?:Delivery\s+overdue|Network\s+delivery|Payment\s+Confirmation).*$',
         '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    # Catch individual footer lines that may appear without "Other" header
+    v = re.sub(r'\n\s*Delivery\s+overdue\s+warning\s+request\s*:?\s*\w*\s*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(r'\n\s*Network\s+delivery\s+notif\.?\s+request\s*:?\s*\w*\s*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(r'\n\s*Payment\s+Confirmation\s+Status\s*:?\s*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(r'\n\s*Confirmed\s+(?:Currency|Amount|Date)\s*:?\s*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
 
     # 7. PDF / report footer that follows the SWIFT footer ("Report Footer
     # / Number of Entities / End of Report"). Sometimes the SWIFT footer
@@ -982,9 +1069,9 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
         r'\n\s*End\s+of\s+Report\b.*$',
         '', v, flags=re.IGNORECASE | re.DOTALL).strip()
 
-    # 8. (CONT FROM FIELD ...) cross-references
-    v = re.sub(r'\(CONT\s+FROM\s+FIELD\s+\w+\)', '', v, flags=re.IGNORECASE).strip()
-    v = re.sub(r'/\(CONT\s+FROM\s+FIELD\s+\w+\)', '', v, flags=re.IGNORECASE).strip()
+    # 8. (CONT FROM/IN FIELD ...) cross-references — P87: also match "IN"
+    v = re.sub(r'\(CONT\.?\s*(?:FROM|IN)\s+FIELD\s+\w+\)', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'/\(CONT\.?\s*(?:FROM|IN)\s+FIELD\s+\w+\)', '', v, flags=re.IGNORECASE).strip()
 
     # 9. Truncate at next F-tag if it merged in
     _ftag_merge = re.search(r'F\d{2}[A-Z]?\s*:', v)
@@ -1144,13 +1231,46 @@ def _apply_amendment(
             new_val = re.sub(r'(?i)^(?:Increase\s+of\s+Documentary\s+Credit\s+Amount|'
                              r'Currency\s+Code,?\s*Amount)\s*[\n\r]*', '', new_val).strip()
             if _is_increase and old_val:
-                # Parse and add amounts
-                _old_amt = re.search(r'([\d,]+[.,]\d+)', old_val.replace(' ', ''))
-                _new_amt = re.search(r'([\d,]+[.,]\d+)', new_val.replace(' ', ''))
+                # P87: Robust amount parsing for increase calculation.
+                # Alliance exports amounts in multiple formats:
+                #   "761452,56"  (European, comma decimal)
+                #   "#761,452.56#"  (US format with # delimiters)
+                #   "761,452.56"  (plain US)
+                # We need to extract a float from each, using a priority:
+                # 1. #-delimited US format: #761,452.56#
+                # 2. US format with commas: 761,452.56
+                # 3. European format: 761452,56
+                # 4. Plain number: 761452.56
+                def _parse_amt_str(s):
+                    if not s:
+                        return None
+                    s = s.replace(' ', '')
+                    # Try #-delimited first
+                    m = re.search(r'#([\d,]+\.\d+)#?', s)
+                    if m:
+                        return float(m.group(1).replace(',', ''))
+                    # US format with thousands
+                    m = re.search(r'(\d{1,3}(?:,\d{3})+\.\d+)', s)
+                    if m:
+                        return float(m.group(1).replace(',', ''))
+                    # European format with comma decimal
+                    m = re.search(r'(\d+,\d{2})\b', s)
+                    if m:
+                        return float(m.group(1).replace(',', '.'))
+                    # Plain decimal
+                    m = re.search(r'(\d+\.\d+)', s)
+                    if m:
+                        return float(m.group(1))
+                    # Bare integer
+                    m = re.search(r'(\d{3,})', s)
+                    if m:
+                        return float(m.group(1))
+                    return None
+
                 _ccy = re.search(r'\b([A-Z]{3})\b', old_val) or re.search(r'\b([A-Z]{3})\b', new_val)
-                if _old_amt and _new_amt and _ccy:
-                    _o = float(_old_amt.group(1).replace(',', ''))
-                    _n = float(_new_amt.group(1).replace(',', '').replace('.', '.'))
+                _o = _parse_amt_str(old_val)
+                _n = _parse_amt_str(new_val)
+                if _o and _n and _ccy:
                     _total = _o + _n
                     new_val = f"{_ccy.group(1)} {_total:,.2f}"
             base_fields['32B'] = new_val
@@ -1621,9 +1741,9 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 r'\n\s*Other\s*\n\s*(?:Delivery\s+overdue|Network\s+delivery|Payment\s+Confirmation).*$',
                 '', sf.value, flags=re.IGNORECASE | re.DOTALL).strip()
 
-            # Strip "(CONT FROM FIELD ...)" cross-references
-            sf.value = re.sub(r'\(CONT\s+FROM\s+FIELD\s+\w+\)', '', sf.value, flags=re.IGNORECASE).strip()
-            sf.value = re.sub(r'/\(CONT\s+FROM\s+FIELD\s+\w+\)', '', sf.value, flags=re.IGNORECASE).strip()
+            # Strip "(CONT FROM/IN FIELD ...)" cross-references — P87
+            sf.value = re.sub(r'\(CONT\.?\s*(?:FROM|IN)\s+FIELD\s+\w+\)', '', sf.value, flags=re.IGNORECASE).strip()
+            sf.value = re.sub(r'/\(CONT\.?\s*(?:FROM|IN)\s+FIELD\s+\w+\)', '', sf.value, flags=re.IGNORECASE).strip()
 
             # Truncate if another F-tag got merged in (e.g. "...F41D: Available With...")
             _ftag_merge = re.search(r'F\d{2}[A-Z]?\s*:', sf.value)
@@ -1853,9 +1973,11 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
     #   • a blank line followed by a tag-like prefix
     #   • a numbered clause start ("1.", "2)" etc.) at column 0
     #   • end of value
+    # P87: Match both "(CONT FROM FIELD XX)" and "(CONT. IN FIELD XX)"
+    # and "(CONT IN FIELD XX)" — Alliance uses "IN" while Fusion uses "FROM"
     _cont_marker_re = re.compile(
         r'[/\\]?\s*'
-        r'\(\s*CONT(?:INUED|INUATION)?\s+FROM\s+FIELD\s+(?P<src>\d{2}[A-Z]?)\s*\)\s*'
+        r'\(\s*CONT\.?\s*(?:INUED|INUATION)?\s+(?:FROM|IN)\s+FIELD\s+(?P<src>\d{2}[A-Z]?)\s*\)\s*'
         r'(?P<rest>(?:(?!\n\s*\d+\s*[.\-\)]\s)(?!\n\s*F?\d{2}[A-Z]?\s*:).)*)',
         re.IGNORECASE | re.DOTALL,
     )
@@ -1896,7 +2018,7 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
         # back-reference left in the target so we don't have a marker
         # next to the merged content.
         _existing = re.sub(
-            r'(?:^|\n)\s*[/\\]?\s*\(\s*CONT(?:INUED|INUATION)?\s+FROM\s+FIELD\s+\d{2}[A-Z]?\s*\)\s*',
+            r'(?:^|\n)\s*[/\\]?\s*\(\s*CONT\.?\s*(?:INUED|INUATION)?\s+(?:FROM|IN)\s+FIELD\s+\d{2}[A-Z]?\s*\)\s*',
             '\n', _existing, flags=re.IGNORECASE,
         ).strip()
         _merged_chunks = '\n'.join(_chunks).strip()
