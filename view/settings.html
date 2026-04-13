@@ -178,7 +178,7 @@
           </div>
           <div class="config-row">
             <span class="config-label">Username</span>
-            <input type="text" class="config-input" id="auth_user" style="width:150px" value="admin" disabled>
+            <input type="text" class="config-input" id="auth_user" style="width:150px" value="admin">
           </div>
           <div class="config-row">
             <span class="config-label">Password</span>
@@ -406,6 +406,7 @@ async function saveSettings() {
       },
       auth: {
         enabled: document.getElementById('auth_enabled').checked,
+        username: document.getElementById('auth_user').value || undefined,
         password: document.getElementById('auth_pass').value || undefined,
       },
     })

@@ -49,7 +49,7 @@ else:
 # ── Server ──
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8082
-BUILD_TAG = "2026-04-13-P100"
+BUILD_TAG = "2026-04-13-P101"
 
 # ── Processing ──
 MAX_CONCURRENT_OCR = 8
@@ -67,8 +67,8 @@ DB_PASS = "123"
 
 # ── Authentication ──
 AUTH_ENABLED = True
-AUTH_USERNAME = "admin"
-AUTH_PASSWORD = "complytrade2026"
+AUTH_USERNAME = "complyTradeAdmin"
+AUTH_PASSWORD = "K9p2R7vX4mQ1wT8n"
 
 # ── Branding ──
 LOGO_PATH = "view/logo.png"

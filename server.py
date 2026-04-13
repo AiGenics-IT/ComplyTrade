@@ -2861,6 +2861,8 @@ async def update_settings(request: Request):
         a = body['auth']
         if 'enabled' in a:
             _auth_enabled = bool(a['enabled'])
+        if 'username' in a and a['username']:
+            _cfg.AUTH_USERNAME = a['username']
         if 'password' in a and a['password']:
             _cfg.AUTH_PASSWORD = a['password']
 
