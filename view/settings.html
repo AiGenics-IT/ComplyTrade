@@ -7,7 +7,7 @@
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#1554ca 0%,#0d3b8a 100%);min-height:100vh;padding:16px}
-  .container{max-width:1200px;margin:0 auto}
+  .container{max-width:1600px;margin:0 auto}
   .header{display:flex;align-items:center;justify-content:space-between;color:#fff;margin-bottom:16px}
   .header h1{font-size:1.6em;text-shadow:1px 1px 3px rgba(0,0,0,.2)}
   .nav{display:flex;gap:8px;flex-wrap:wrap}
@@ -117,13 +117,23 @@
       </div>
 
       <div class="card">
-        <div class="card-header">&#129302; Model Selection</div>
+        <div class="card-header">&#128065; GLM — OCR Engine</div>
         <div class="card-body">
           <div class="config-row">
-            <span class="config-label">VLM Model</span>
+            <span class="config-label">GLM OCR URL</span>
+            <input type="text" class="config-input" id="ocr_url" style="width:280px;text-align:left;font-size:.78em" value="">
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#129302; VLM — Vision Language Model</div>
+        <div class="card-body">
+          <div class="config-row">
+            <span class="config-label">Preset</span>
             <select class="config-input" id="vlm_preset" style="width:180px;text-align:left" onchange="applyModelPreset(this.value)">
-              <option value="72b">Qwen 72B (Remote)</option>
-              <option value="7b">Qwen 7B (Local)</option>
+              <option value="72b">Qwen 72B VL (Remote)</option>
+              <option value="7b">Qwen 7B VL (Local)</option>
               <option value="custom">Custom</option>
             </select>
           </div>
@@ -132,12 +142,22 @@
             <input type="text" class="config-input" id="vlm_url" style="width:280px;text-align:left;font-size:.78em" value="">
           </div>
           <div class="config-row">
-            <span class="config-label">VLM Model Path</span>
+            <span class="config-label">VLM Model</span>
             <input type="text" class="config-input" id="vlm_model" style="width:280px;text-align:left;font-size:.78em" value="">
           </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#129504; LLM — Text Language Model</div>
+        <div class="card-body">
           <div class="config-row">
-            <span class="config-label">GLM OCR URL</span>
-            <input type="text" class="config-input" id="ocr_url" style="width:280px;text-align:left;font-size:.78em" value="">
+            <span class="config-label">LLM URL</span>
+            <input type="text" class="config-input" id="llm_url" style="width:280px;text-align:left;font-size:.78em" value="">
+          </div>
+          <div class="config-row">
+            <span class="config-label">LLM Model</span>
+            <input type="text" class="config-input" id="llm_model" style="width:280px;text-align:left;font-size:.78em" value="">
           </div>
         </div>
         <div class="actions">
@@ -331,6 +351,8 @@ async function loadSettings() {
   document.getElementById('vlm_url').value = m.qwen_vlm_url || '';
   document.getElementById('vlm_model').value = m.qwen_vlm_model || '';
   document.getElementById('ocr_url').value = m.glm_ocr_url || '';
+  document.getElementById('llm_url').value = m.text_llm_url || '';
+  document.getElementById('llm_model').value = m.text_llm_model || '';
   // Detect preset
   if ((m.qwen_vlm_model||'').includes('72B')) document.getElementById('vlm_preset').value = '72b';
   else if ((m.qwen_vlm_model||'').includes('7B')) document.getElementById('vlm_preset').value = '7b';
@@ -399,6 +421,8 @@ async function saveSettings() {
         qwen_vlm_url: document.getElementById('vlm_url').value,
         qwen_vlm_model: document.getElementById('vlm_model').value,
         glm_ocr_url: document.getElementById('ocr_url').value,
+        text_llm_url: document.getElementById('llm_url').value,
+        text_llm_model: document.getElementById('llm_model').value,
       },
       timeouts: {
         ocr_timeout: parseInt(document.getElementById('ocr_timeout').value),

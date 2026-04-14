@@ -30,6 +30,11 @@ QWEN_7B_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-7B-Instruct"
 QWEN_72B_URL = "http://10.20.10.2:8085/v1/chat/completions"
 QWEN_72B_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-72B-Instruct-AWQ"
 
+# Text-only LLM (Qwen2.5-72B, no vision — for text processing tasks like
+# amendment application, clause analysis, etc.)
+QWEN_TEXT_LLM_URL = "http://34.61.17.191/vllm/v1/chat/completions"
+QWEN_TEXT_LLM_MODEL = "Qwen2.5-72B-Instruct"
+
 # ── Active VLM selection ──
 # Single source of truth for the entire pipeline (Steps 2–14).
 # Switch the whole system between 7B and 72B by changing this one value
@@ -49,7 +54,7 @@ else:
 # ── Server ──
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8082
-BUILD_TAG = "2026-04-14-P104"
+BUILD_TAG = "2026-04-14-P105"
 
 # ── Processing ──
 MAX_CONCURRENT_OCR = 8

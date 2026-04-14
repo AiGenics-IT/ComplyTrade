@@ -118,6 +118,10 @@ DOC_TYPE_ALIASES = {
         # the covering schedule / documentary remittance.
         "l/c bills schedule", "lc bills schedule", "bills schedule",
     ],
+    "letter of indemnity": [
+        "letter of indemnity", "loi", "indemnity letter",
+        "letter of indemnification", "indemnity bond",
+    ],
     "inspection certificate": [
         "inspection certificate", "survey report", "inspection report",
     ],
@@ -588,7 +592,14 @@ def _get_lc_field_value(step06_result: dict, field_tag: str) -> str:
     if isinstance(val, dict):
         val = val.get("value", str(val))
     if val:
-        return _sanitize_lc_field_value(field_tag, str(val))
+        val = str(val)
+        # F48 normalization: extract days number + optional narrative
+        # Handles: "Days: 21\nNarrative:\nDAYS FROM...", "21\nDAYS FROM...", "21"
+        if field_tag == '48':
+            val = re.sub(r'(?i)^Period\s+for\s+Presentation.*?Days\s*[\n\r]*', '', val).strip()
+            val = re.sub(r'(?i)^Days:?\s*', '', val).strip()
+            val = re.sub(r'(?i)\nNarrative:?\s*/?\s*\n?', '\n', val).strip()
+        return _sanitize_lc_field_value(field_tag, val)
 
     # Try with 'F' prefix
     val = fields.get(f"F{field_tag}", "")
@@ -1777,6 +1788,42 @@ def run(
     _lc_parties = f"APPLICANT: {_cf.get('50', _cf.get('F50', 'N/A'))}\nBENEFICIARY: {_cf.get('59', _cf.get('F59', 'N/A'))}\nISSUING BANK: {_cf.get('52A', _cf.get('F52A', _cf.get('51A', _cf.get('F51A', _cf.get('51D', _cf.get('F51D', 'N/A'))))))}"
     _progress(f"LC parties context built: {len(_lc_parties)} chars")
 
+    # ── LOI (Letter of Indemnity) detection ──
+    # If the LC contains an LOI clause (added by amendment), the presentation
+    # is under LOI terms. In LOI presentations:
+    #   - Original BL is NOT available (replaced by BL copy + LOI)
+    #   - Late presentation / late shipment / LC expiry checks are SUPPRESSED
+    #     (LOI explicitly allows presentation without original docs)
+    #   - Only check conditions that are in the Final LC clauses
+    _is_loi_presentation = False
+    _loi_clause_text = ''
+    # Check 46A clauses for LOI indicators
+    _f46a = _cf.get('46A', _cf.get('F46A', ''))
+    if isinstance(_f46a, list):
+        _f46a = '\n'.join(str(c.get('text', c) if isinstance(c, dict) else c) for c in _f46a)
+    _f46a_upper = str(_f46a).upper()
+    if any(kw in _f46a_upper for kw in [
+        'LETTER OF INDEMNITY', 'LOI CLAUSE',
+        'IN THE EVENT THAT ABOVE ORIGINAL DOCUMENTS ARE NOT AVAILABLE',
+        'ORIGINAL DOCUMENTS ARE NOT AVAILABLE',
+        'PAYMENT WILL BE EFFECTED AGAINST',
+    ]):
+        # Also check if LOI document is actually present in the submission
+        _loi_found = any(
+            'indemnity' in (_pkt_type(pkt) or '').lower()
+            for pkt in packets
+        )
+        if _loi_found:
+            _is_loi_presentation = True
+            # Extract LOI clause text for verification
+            for _line in str(_f46a).split('\n'):
+                if any(kw in _line.upper() for kw in ['LETTER OF INDEMNITY', 'LOI', 'INDEMNITY']):
+                    _loi_clause_text = _line.strip()
+                    break
+            _progress(f"LOI presentation detected — timing checks will be suppressed")
+        else:
+            _progress(f"LOI clause found in LC but no LOI document in submission — normal verification")
+
     # ------------------------------------------------------------------ #
     # 2. Build verification tasks
     # ------------------------------------------------------------------ #
@@ -2142,6 +2189,46 @@ def run(
                      f"'{phrase[:80]}' found in document")
                 _progress(f"  {row_id}: FAIL->PASS (address segments matched)")
                 break
+
+    # ------------------------------------------------------------------ #
+    # 5d. LOI presentation — suppress timing checks
+    # ------------------------------------------------------------------ #
+    # When LOI is presented, late presentation / late shipment / LC expiry
+    # checks are not applicable. The LOI clause explicitly allows
+    # presentation without original documents, which implies relaxed timing.
+    if _is_loi_presentation:
+        _loi_suppress_types = {'lc_expiry', 'late_shipment', 'late_presentation'}
+        _loi_suppress_keywords = [
+            'presentation date must not exceed',
+            'shipment date must not exceed',
+            'late shipment', 'late presentation',
+            'stale', 'presentation period',
+            'documents presented within',
+            'bill of lading date',
+        ]
+        _suppressed = 0
+        for row in rows:
+            compliance = _get(row, "compliance", "").upper()
+            if compliance not in ("FAIL", "REVIEW"):
+                continue
+            # Check implicit_type
+            _imp_type = _get(row, "implicit_type", "")
+            _cond = _get(row, "condition_text", "").lower()
+            should_suppress = False
+            if _imp_type in _loi_suppress_types:
+                should_suppress = True
+            elif any(kw in _cond for kw in _loi_suppress_keywords):
+                should_suppress = True
+            if should_suppress:
+                _set(row, "compliance", "N/A")
+                _set(row, "result", f"Not applicable — LOI presentation")
+                _set(row, "verification_notes",
+                     f"LOI clause in LC allows presentation without original documents. "
+                     f"Timing checks (late shipment, late presentation, LC expiry) "
+                     f"are suppressed under LOI terms.")
+                _suppressed += 1
+        if _suppressed:
+            _progress(f"  LOI: Suppressed {_suppressed} timing check(s)")
 
     # ------------------------------------------------------------------ #
     # 6. Build summary statistics

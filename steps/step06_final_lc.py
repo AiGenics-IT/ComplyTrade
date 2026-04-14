@@ -48,6 +48,11 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import QWEN_VLM_URL, QWEN_VLM_MODEL, MAX_CONCURRENT_VLM, VLM_TIMEOUT
+try:
+    from config.settings import QWEN_TEXT_LLM_URL, QWEN_TEXT_LLM_MODEL
+except ImportError:
+    QWEN_TEXT_LLM_URL = None
+    QWEN_TEXT_LLM_MODEL = None
 
 
 # == Dataclasses ==============================================================
@@ -1033,7 +1038,7 @@ _FIELD_LABEL_STRIP = {
     '51D': r'^(?:Applicant\s+Bank|Bank)\s*-?\s*(?:Party)?.*?(?:Name\s+and\s+Address)?:?\s*[\n\r]*',
     '52A': r'^(?:Issuing\s+Bank|Applicant\s+Bank).*?(?:Identifier\s+Code)?\s*[\n\r]*',
     '53A': r'^Reimbursing\s+Bank.*?(?:Identifier\s+Code)?\s*[\n\r]*',
-    '57A': r'^[\'"]?Advise\s+Through[\'"]?\s+Bank.*?(?:Identifier\s+Code)?\s*[\n\r]*',
+    '57A': r'^[\'"]?Advise\s+Through[\'"]?\s+Bank.*?(?:Identifier\s+Code\s*:?\s*)?\s*[\n\r]*',
     '59':  r'^Beneficiary\s*[\n\r]*(?:Name\s+and\s+Address:?\s*[\n\r]*)?',
     '71D': r'^Charges\s*[\n\r]*',
     '78':  r'^Instructions\s+to\s+the\s+Paying.*?Bank\s*[\n\r]*',
@@ -1079,6 +1084,11 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
     if _strip_pat:
         v = re.sub(_strip_pat, '', v, flags=re.IGNORECASE).strip()
 
+    # 1b. Strip "Days:" and "Narrative:" sub-labels (common in F48, F47A)
+    if tag in ('48', '47A', '46A', '45A', '78', '72'):
+        v = re.sub(r'(?:^|\n)\s*Days:?\s*', '\n', v).strip()
+        v = re.sub(r'(?:^|\n)\s*Narrative:?\s*/?\s*', '\n', v).strip()
+
     # 2. Sub-label chains: "- Party Identifier - Identifier Code\nIdentifier Code:\n..."
     v = re.sub(r'-?\s*Party\s+Identifier\s*-?\s*Identifier\s*(?:Code)?\s*\n?', '', v, flags=re.IGNORECASE).strip()
     v = re.sub(r'^-\s+', '', v).strip()
@@ -1118,20 +1128,19 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
     v = re.sub(r'^[\'"]?Advise\s+Through[\'"]?\s+Bank\s*-?\s*Party.*?Code\s*\n?',
                '', v, flags=re.IGNORECASE).strip()
 
-    # 6. SWIFT message footer ("Other\nDelivery overdue / Network delivery /
-    # Payment Confirmation" section that bleeds into the LAST tag on the
-    # message — typically F44C, F47A, F78). Strip everything from "Other"
-    # to end of value.
-    # P87: Also match when "Other" is missing and the footer starts directly
-    # with "Delivery overdue" or when individual footer lines appear.
-    v = re.sub(
-        r'\n\s*Other\s*\n\s*(?:Delivery\s+overdue|Network\s+delivery|Payment\s+Confirmation).*$',
-        '', v, flags=re.IGNORECASE | re.DOTALL).strip()
-    # Catch individual footer lines that may appear without "Other" header
-    v = re.sub(r'\n\s*Delivery\s+overdue\s+warning\s+request\s*:?\s*\w*\s*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
-    v = re.sub(r'\n\s*Network\s+delivery\s+notif\.?\s+request\s*:?\s*\w*\s*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
-    v = re.sub(r'\n\s*Payment\s+Confirmation\s+Status\s*:?\s*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
-    v = re.sub(r'\n\s*Confirmed\s+(?:Currency|Amount|Date)\s*:?\s*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    # 6. SWIFT message footer — strip aggressively.
+    # "Other\nDelivery overdue..." appears at end of last field on a page.
+    # Also catches: "OtherDelivery..." (no newline), "Confirmed Confirmed...",
+    # "Page X of Y", "Report Footer", "Message Details #N", etc.
+    v = re.sub(r'\s*Other\s*\n?\s*Delivery\s+overdue.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(r'\s*Delivery\s+overdue\s+warning.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(r'\s*Network\s+delivery\s+notif.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(r'\s*Payment\s+Confirmation\s+Status.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(r'\s*Confirmed\s+(?:Currency|Amount|Date)\s*:?\s*\n?.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    # "Confirmed Confirmed Confirmed" (repeated word without label)
+    v = re.sub(r'\s*(?:Confirmed\s+){2,}.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    # Page pagination: "Page N of M"
+    v = re.sub(r'\s*Page\s+\d+\s+of\s+\d+\s*', ' ', v).strip()
 
     # 7. PDF / report footer that follows the SWIFT footer ("Report Footer
     # / Number of Entities / End of Report"). Sometimes the SWIFT footer
@@ -1146,6 +1155,29 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
     v = re.sub(
         r'\n\s*End\s+of\s+Report\b.*$',
         '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+
+    # 7b. Report structure headers that leak into field values
+    v = re.sub(r'\s*Report\s+Content\b.*?(?=\n[A-Z]|\Z)', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(r'\s*Message\s+Details\s+#\s*\d+\b.*?(?=\n[A-Z]|\Z)', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(r'\s*Message\s+Text\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'\s*Block\s+[45]\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'\s*Message\s+Preparation\s+Application.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(r'\s*Unique\s+Message\s+Identifier.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(r'\s*Message\s+(?:Header|Identifier)\s*\n?', '', v, flags=re.IGNORECASE).strip()
+    v = re.sub(r'\s*Applic\.?\s+Interface\b.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(r'\s*SWIFT\s+Interface\b.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+    v = re.sub(r'\{CHK:[A-F0-9]+\}', '', v).strip()
+
+    # 7c. For 47A: strip F48 presentation period text at the end.
+    # Even if the LLM removed the "(CONT FROM FIELD 48)" marker, the
+    # continuation text may remain. Strip known patterns.
+    if tag == '47A':
+        v = re.sub(
+            r'\n\s*DOCUMENTS\s+PRESENTED\s+\d+\s+DAYS\s+AFTER\s+BILL\s+OF\s+LADING.*$',
+            '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+        v = re.sub(
+            r'\n\s*\d+\s+DAYS\s+FROM\s+SHIPMENT\s+DATE\s+BUT\s+WITHIN.*$',
+            '', v, flags=re.IGNORECASE | re.DOTALL).strip()
 
     # 8. (CONT FROM/IN FIELD ...) cross-references — P87: also match "IN"
     # P101: Strip the marker AND any trailing continuation text that belongs
@@ -1456,6 +1488,311 @@ def _apply_amendment(
                 record.change_details[actual_tag] = {'old': old_val, 'new': base_fields[actual_tag]}
 
     return record
+
+
+# == VLM-based amendment application ===========================================
+
+_VLM_AMENDMENT_PROMPT = """You are an expert SWIFT MT707 amendment processor for Letters of Credit.
+
+I have a base Letter of Credit with the following field values, and an MT707 amendment that modifies some fields.
+
+BASE LC FIELDS (current values before this amendment):
+{base_fields_text}
+
+AMENDMENT TEXT (MT707 message):
+{amendment_text}
+
+YOUR TASK: Apply the amendment instructions to produce the UPDATED field values.
+
+AMENDMENT INSTRUCTION TYPES:
+- "/REPALL/" followed by "UNDER FIELD XXA, NOW TO BE READ AS 'new text'" = Replace the ENTIRE field with the new quoted text
+- "FIELD XXA-N TO READ AS 'new text'" = Replace clause N of field XXA with the new text
+- "FIELD XXA-N WORD TO READ AS 'X' I/O 'Y'" = In clause N, replace word Y with word X
+- "FIELD XXA-N DELETE WORDING AS 'text'" = Delete that text from clause N
+- "UNDER FIELD XXA ADD CLAUSE AS 'text1' 'text2'" = Add new clauses to the end of field XXA
+- "UNDER FIELD XXA ADD <something> AS 'value'" = Add the value to the field
+- F32B with "Increase of Documentary Credit Amount" = ADD the new amount to the existing 32B amount
+- F34B = New total amount (replaces 32B)
+- F45B replaces/modifies F45A, F46B replaces/modifies F46A, F47B replaces/modifies F47A
+- F31D = New expiry date/place (replaces existing 31D)
+- F44C = New latest shipment date (replaces existing 44C)
+- F44E = New port of loading (replaces existing 44E)
+
+IMPORTANT RULES:
+1. Only return fields that CHANGED. Do NOT return unchanged fields.
+2. For F32B increases: calculate old_amount + increase_amount = new_amount. Return the new total as "CCY new_amount" (e.g. "USD 777,059.70")
+3. For clause fields (46A, 47A, 45A) with WORD CHANGES or CLAUSE REPLACEMENTS:
+   Return the COMPLETE field text with ALL clauses (existing + modified).
+4. For ADD operations ("ADD CLAUSE AS", "ADD LOI CLAUSE AS"):
+   Use the special key format "46A_ADD" (or "47A_ADD") and return ONLY the new text to append.
+   I will merge it with the existing field programmatically.
+   Include the FULL text verbatim — do NOT summarize or truncate.
+5. Strip "Narrative:" prefixes, "Line N", "Code:", "Lines N-M" formatting.
+6. Strip SWIFT footer text ("Other", "Delivery overdue", "Payment Confirmation", "Page X of Y").
+7. Strip "{CHK:...}" checksum blocks.
+8. Do NOT include amendment metadata fields (26E, 27, 30, 22A, 23, 21).
+9. For quoted text ('text' or ''text''), extract the content between quotes.
+10. CROSS-FIELD CONTINUATION: "(CONT FROM FIELD XX)" means the text after belongs to field XX. Remove it from the current field and output field XX with the continuation appended.
+11. F48: If it has "/(CONT IN FIELD 47A)", combine the continuation text into F48.
+
+Example for ADD: If amendment says "UNDER FIELD 47A ADD CLAUSE AS 'CHARTER PARTY B/L ACCEPTABLE'",
+return: {{"47A_ADD": "CHARTER PARTY B/L ACCEPTABLE"}}
+
+Example for word change: If amendment says "FIELD 46A-2 WORD TO READ AS 'CLEAN ON BOARD' I/O 'CLEAN ON BOARD'",
+return the full 46A with the word changed in clause 2.
+
+Return ONLY valid JSON with the changed field tags as keys and their new values.
+Example: {{"45A": "MOGAS 92 RON\\nQUANTITY: 10,347...", "32B": "USD 777,059.70"}}
+"""
+
+
+def _apply_amendment_vlm(
+    base_fields: dict,
+    amendment_text: str,
+    amendment_number: int,
+    source_packet_id: str,
+    _progress=None,
+) -> AmendmentRecord:
+    """
+    Use VLM to apply an MT707 amendment to base LC fields.
+    Falls back to regex-based _apply_amendment if VLM fails.
+    """
+    record = AmendmentRecord(
+        amendment_number=amendment_number,
+        source_packet_id=source_packet_id,
+        amendment_date='',
+    )
+
+    # Extract amendment metadata before sending to VLM
+    _amd_num_m = re.search(r'(?:F?26E|Number\s+of\s+Amendment)\s*:?\s*(\d+)', amendment_text, re.IGNORECASE)
+    if _amd_num_m:
+        record.amendment_number = int(_amd_num_m.group(1))
+    _date_m = re.search(r'(?:F?30|Date\s+of\s+Amendment)\s*:?\s*(\d{6})\s+(\d{4}\s+\w+\s+\d+)?', amendment_text, re.IGNORECASE)
+    if _date_m:
+        record.amendment_date = _date_m.group(0).strip()
+
+    # Build base fields text for prompt — only send fields that the amendment
+    # is likely to touch, plus a few key reference fields. This keeps the
+    # prompt small enough for 16K context models.
+    # Detect which fields the amendment mentions
+    _amd_upper = amendment_text.upper()
+    _touched_tags = set()
+    for _t in ['45A', '45B', '46A', '46B', '47A', '47B', '32B', '34B',
+               '31D', '44C', '44E', '44F', '48', '50', '59', '71D', '78']:
+        if _t in _amd_upper or f'F{_t}' in _amd_upper or f'FIELD {_t}' in _amd_upper:
+            # Map B-suffix to A-suffix
+            actual = _t[:-1] + 'A' if _t.endswith('B') and _t not in ('32B', '34B', '71B') else _t
+            if actual == '34B':
+                actual = '32B'
+            _touched_tags.add(actual)
+    # Always include a few reference fields
+    _touched_tags.update(['20', '32B'])
+
+    base_text_parts = []
+    for tag in sorted(_touched_tags):
+        val = base_fields.get(tag, '')
+        if val:
+            # Full text for clause fields, truncate others
+            max_len = 2500 if tag in ('46A', '47A', '45A', '78') else 300
+            val_preview = str(val)[:max_len]
+            base_text_parts.append(f"F{tag}: {val_preview}")
+    base_fields_text = '\n\n'.join(base_text_parts)
+
+    # Detect ADD-heavy amendments (LOI clauses etc.) and use a focused
+    # LLM call that only extracts the ADD text, not the full field.
+    _amd_upper_check = amendment_text.upper()
+    # Only trigger focused ADD extraction if the amendment has "ADD ... CLAUSE AS"
+    # or "ADD LOI CLAUSE AS" — NOT just any mention of "ADD" (which could be
+    # in other contexts like field names or addresses)
+    _has_add_clause = bool(re.search(
+        r'ADD\s+(?:LOI\s+)?CLAUSE\s+AS\b', _amd_upper_check
+    ))
+    _has_other_ops = any(kw in _amd_upper_check for kw in [
+        'WORD TO READ AS', 'DELETE WORDING', 'I/O', 'INCREASE OF DOCUMENTARY',
+        'TO READ AS', 'REPALL',
+    ])
+
+    if _has_add_clause and not _has_other_ops:
+        # Use focused LLM call for ADD extraction
+        _add_prompt = """Extract the text being ADDED to the LC from this MT707 amendment message.
+
+AMENDMENT TEXT:
+{amd_text}
+
+The amendment contains an instruction like "UNDER FIELD XXA ADD [LOI] CLAUSE AS '...'".
+Extract ONLY the quoted text being added. Include the COMPLETE text verbatim — every word, every line.
+Strip "Narrative:" prefixes, "Line N", "Code:" labels, "Page X of Y", and SWIFT footer garbage.
+
+Return JSON: {{"field_tag": "46A", "add_text": "the complete extracted text..."}}
+If there are also other changes (word changes, amount increases, field replacements), include those too as separate keys.
+"""
+        _add_clean = re.sub(r'(?:^|\n)\s*Narrative\s*:\s*', '\n', amendment_text).strip()
+        _add_clean = re.sub(r'(?:^|\n)\s*(?:Lines?\s+\d+|Code\s*:)\s*(?:\n|$)', '\n', _add_clean).strip()
+        _add_clean = re.sub(r'\s*Other\s*\n?\s*Delivery\s+overdue.*$', '', _add_clean, flags=re.IGNORECASE | re.DOTALL).strip()
+        _add_clean = re.sub(r'\s*Page\s+\d+\s+of\s+\d+\s*', ' ', _add_clean).strip()
+        _add_clean = re.sub(r'\{CHK:[A-F0-9]+\}', '', _add_clean).strip()
+        _add_clean = re.sub(r'Block\s+5\s*', '', _add_clean).strip()
+        _add_clean = re.sub(r'Report\s+(?:Header|Footer|Content).*?(?=\n[A-Z]|\Z)', '', _add_clean, flags=re.IGNORECASE | re.DOTALL).strip()
+        _add_clean = re.sub(r'(?:Delivery\s+overdue|Network\s+delivery|Payment\s+Confirmation|Confirmed\s+(?:Currency|Amount|Date)).*$', '', _add_clean, flags=re.IGNORECASE | re.DOTALL).strip()
+
+        _filled_prompt = _add_prompt.replace('{amd_text}', _add_clean[:10000])
+        _llm_url = QWEN_TEXT_LLM_URL or QWEN_VLM_URL
+        _llm_model = QWEN_TEXT_LLM_MODEL or QWEN_VLM_MODEL
+        try:
+            if _progress:
+                _progress(f"      LLM ADD extraction: {_llm_url}")
+            _resp = requests.post(_llm_url, json={
+                "model": _llm_model,
+                "messages": [{"role": "user", "content": _filled_prompt}],
+                "max_tokens": 8000, "temperature": 0.1,
+            }, timeout=VLM_TIMEOUT)
+            if _resp.status_code == 200:
+                _content = _resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                if _progress:
+                    _progress(f"      LLM ADD response: {len(_content)} chars")
+                    _progress(f"      LLM ADD raw (first 300): {_content[:300]}")
+                _jm = re.search(r'\{.*\}', _content, re.DOTALL)
+                if _jm:
+                    _raw_json = _jm.group(0)
+                    try:
+                        _add_result = json.loads(_raw_json)
+                    except json.JSONDecodeError:
+                        # Try fixing common issues: trailing comma, extra text
+                        # Find matching braces manually
+                        _depth = 0
+                        _end = 0
+                        for _ci, _ch in enumerate(_raw_json):
+                            if _ch == '{': _depth += 1
+                            elif _ch == '}':
+                                _depth -= 1
+                                if _depth == 0:
+                                    _end = _ci + 1
+                                    break
+                        if _end:
+                            try:
+                                _add_result = json.loads(_raw_json[:_end])
+                            except json.JSONDecodeError:
+                                if _progress:
+                                    _progress(f"      LLM ADD JSON parse failed, raw: {_raw_json[:200]}")
+                                _add_result = {}
+                        else:
+                            _add_result = {}
+                    _add_tag = re.sub(r'^F', '', _add_result.get('field_tag', ''))
+                    _add_text = _add_result.get('add_text', '')
+                    if _add_tag and _add_text:
+                        old_val = base_fields.get(_add_tag, '')
+                        _existing_nums = re.findall(r'^(\d+)[\.\)]\s', old_val, re.MULTILINE)
+                        _next_num = max([int(n) for n in _existing_nums] + [0]) + 1
+                        new_val = old_val.rstrip() + f'\n{_next_num}. ' + _add_text
+                        base_fields[_add_tag] = new_val
+                        record.fields_changed.append(_add_tag)
+                        record.change_details[_add_tag] = {
+                            'old': old_val[:200], 'new': new_val[:200],
+                            'operation': 'llm_add_clause',
+                        }
+                        if _progress:
+                            _progress(f"      ADD clause to {_add_tag}: {len(_add_text)} chars via LLM")
+                    # Also check for other field changes in the response
+                    for _k, _v in _add_result.items():
+                        if _k in ('field_tag', 'add_text'):
+                            continue
+                        _norm_k = re.sub(r'^F', '', _k)
+                        if _norm_k in ('26E', '27', '30', '22A', '23', '21'):
+                            continue
+                        _v = str(_v).strip()
+                        if _v:
+                            _old = base_fields.get(_norm_k, '')
+                            base_fields[_norm_k] = _v
+                            if _old != _v:
+                                record.fields_changed.append(_norm_k)
+                                record.change_details[_norm_k] = {
+                                    'old': _old[:200], 'new': _v[:200],
+                                    'operation': 'llm_amendment',
+                                }
+
+                    if not _has_other_ops or record.fields_changed:
+                        return record
+        except Exception as e:
+            if _progress:
+                _progress(f"      LLM ADD extraction failed: {e}")
+
+    # Clean amendment text
+    clean_amd = amendment_text
+    clean_amd = re.sub(r'(?:^|\n)\s*Narrative\s*:\s*', '\n', clean_amd).strip()
+    clean_amd = re.sub(r'(?:^|\n)\s*Lines?\s+\d+(?:\s*[-–]\s*\d+)?\s*(?:\n|$)', '\n', clean_amd).strip()
+    clean_amd = re.sub(r'(?:^|\n)\s*Code\s*:\s*', '\n', clean_amd).strip()
+    clean_amd = re.sub(r'\s*Other\s*\n?\s*Delivery\s+overdue.*$', '', clean_amd, flags=re.IGNORECASE | re.DOTALL).strip()
+    clean_amd = re.sub(r'\s*Page\s+\d+\s+of\s+\d+\s*', ' ', clean_amd).strip()
+    clean_amd = re.sub(r'\{CHK:[A-F0-9]+\}', '', clean_amd).strip()
+    clean_amd = re.sub(r'Block\s+5\s*', '', clean_amd).strip()
+    # Remove report headers/footers
+    clean_amd = re.sub(r'Report\s+(?:Header|Footer|Content).*?(?=\n[A-Z]|\Z)', '', clean_amd, flags=re.IGNORECASE | re.DOTALL).strip()
+    clean_amd = re.sub(r'Message\s+(?:Header|Identifier|Details).*?(?=\n[A-Z]|\Z)', '', clean_amd, flags=re.IGNORECASE | re.DOTALL).strip()
+    clean_amd = re.sub(r'(?:Delivery\s+overdue|Network\s+delivery|Payment\s+Confirmation|Confirmed\s+(?:Currency|Amount|Date)).*$', '', clean_amd, flags=re.IGNORECASE | re.DOTALL).strip()
+
+    # Use string concatenation instead of .format() to avoid {CHK:...} issues
+    prompt = _VLM_AMENDMENT_PROMPT.replace('{base_fields_text}', base_fields_text).replace('{amendment_text}', clean_amd[:12000])
+
+    # Prefer text-only LLM for amendments (faster, no image overhead)
+    _llm_url = QWEN_TEXT_LLM_URL or QWEN_VLM_URL
+    _llm_model = QWEN_TEXT_LLM_MODEL or QWEN_VLM_MODEL
+
+    try:
+        payload = {
+            "model": _llm_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 8000,
+            "temperature": 0.1,
+        }
+        resp = requests.post(_llm_url, json=payload, timeout=VLM_TIMEOUT)
+        if _progress:
+            _progress(f"      LLM request: {_llm_url} model={_llm_model} prompt={len(prompt)} chars")
+        if resp.status_code == 200:
+            content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            if _progress:
+                _progress(f"      LLM response: {len(content)} chars")
+            # Extract JSON from response
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                changes = json.loads(json_match.group(0))
+                if isinstance(changes, dict) and changes:
+                    for raw_tag, new_val in changes.items():
+                        # Normalize tag: strip F-prefix (VLM may return "F32B" vs "32B")
+                        tag = re.sub(r'^F', '', raw_tag)
+                        # Handle _ADD suffix: append to existing field
+                        is_add = tag.endswith('_ADD')
+                        if is_add:
+                            tag = tag[:-4]  # "46A_ADD" -> "46A"
+                        # Skip amendment metadata
+                        if tag in ('26E', '27', '30', '22A', '23', '21'):
+                            continue
+                        new_val = str(new_val).strip()
+                        if not new_val:
+                            continue
+                        old_val = base_fields.get(tag, '')
+                        if is_add and old_val:
+                            # Append: add new text after existing
+                            new_val = old_val.rstrip() + '\n' + new_val
+                        base_fields[tag] = new_val
+                        if old_val != new_val:
+                            record.fields_changed.append(tag)
+                            record.change_details[tag] = {
+                                'old': old_val[:200],
+                                'new': new_val[:200],
+                                'operation': 'vlm_amendment',
+                            }
+                    if _progress:
+                        _progress(f"      VLM amendment applied: {record.fields_changed}")
+                    return record
+        if _progress:
+            _err_body = resp.text[:300] if resp.text else ''
+            _progress(f"      LLM amendment failed (status {resp.status_code}): {_err_body}, falling back to regex")
+    except Exception as e:
+        if _progress:
+            _progress(f"      VLM amendment error: {e}, falling back to regex")
+
+    # Fallback: return empty record (regex will be tried by caller)
+    return None
 
 
 def _parse_amendment_number(value: str) -> Optional[int]:
@@ -1823,7 +2160,7 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             '51D': r'^(?:Applicant\s+Bank|Bank)\s*-?\s*(?:Party)?.*?(?:Name\s+and\s+Address)?:?\s*[\n\r]*',
             '52A': r'^(?:Issuing\s+Bank|Applicant\s+Bank).*?(?:Identifier\s+Code)?\s*[\n\r]*',
             '53A': r'^Reimbursing\s+Bank.*?(?:Identifier\s+Code)?\s*[\n\r]*',
-            '57A': r'^[\'"]?Advise\s+Through[\'"]?\s+Bank.*?(?:Identifier\s+Code)?\s*[\n\r]*',
+            '57A': r'^[\'"]?Advise\s+Through[\'"]?\s+Bank.*?(?:Identifier\s+Code\s*:?\s*)?\s*[\n\r]*',
             '59': r'^Beneficiary\s*[\n\r]*(?:Name\s+and\s+Address:?\s*[\n\r]*)?',
             '71D': r'^Charges\s*[\n\r]*',
             '78': r'^Instructions\s+to\s+the\s+Paying.*?Bank\s*[\n\r]*',
@@ -2016,12 +2353,26 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                         pass
                 _progress(f"    Amendment {i + 1}: {len(amd_fields)} fields from packet {pkt_id}")
 
-            record = _apply_amendment(
+            # Try VLM-based amendment first (more accurate for complex instructions)
+            vlm_record = _apply_amendment_vlm(
                 final_lc.consolidated_fields,
-                amd_fields,
+                amd_text,
                 amendment_number=i + 1,
                 source_packet_id=pkt_id,
+                _progress=_progress,
             )
+            if vlm_record and vlm_record.fields_changed:
+                record = vlm_record
+                _progress(f"      Applied via VLM: {record.fields_changed}")
+            else:
+                # Fallback to regex-based amendment
+                record = _apply_amendment(
+                    final_lc.consolidated_fields,
+                    amd_fields,
+                    amendment_number=i + 1,
+                    source_packet_id=pkt_id,
+                )
+                _progress(f"      Applied via regex: {record.fields_changed}")
             final_lc.amendment_log.append(record)
             final_lc.source_packets.append(pkt_id)
 
@@ -2229,6 +2580,23 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                         _progress(f"  F{_tag}: resolved ref from F{_ref_tag} clause #{_clause_num} → {_resolved[:60]}")
                         break
 
+    # 2a-bis. Remove junk fields that shouldn't be in the consolidated LC
+    # F21 "NONREF" is a filler value — remove it
+    if _cf.get('21', '').strip().upper() in ('NONREF', 'NON-REF', 'NONE', 'N/A', ''):
+        _cf.pop('21', None)
+    # F23 often captures report structure text — remove if it's garbage
+    _f23 = _cf.get('23', '')
+    if _f23 and (re.search(r'Message\s+Text|Block\s+\d|Report\s+Content', _f23, re.IGNORECASE)
+                 or len(_f23) > 100):
+        _cf.pop('23', None)
+    # F30 is amendment date — only valid in amendment context, not in consolidated LC
+    # If it contains garbage (report headers), remove
+    _f30 = _cf.get('30', '')
+    if _f30 and re.search(r'Report\s+Content|Message\s+Details|Applic', _f30, re.IGNORECASE):
+        _cf.pop('30', None)
+    # F30 should not be in the final LC (it's amendment metadata)
+    _cf.pop('30', None)
+
     # 2b. Special handling for F48 (Presentation Period) — extract days + resolve reference
     _f48 = _cf.get('48', '')
     if _f48:
@@ -2236,6 +2604,16 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
         if _days_m:
             _cf['48'] = _days_m.group(1)
             _progress(f"  F48: extracted {_days_m.group(1)} days from presentation period")
+
+    # 2c. Run full cleanup on ALL consolidated fields (not just amended ones)
+    for _tag in list(_cf.keys()):
+        if _tag.startswith('_'):
+            continue
+        _val = _cf[_tag]
+        if isinstance(_val, str):
+            _cleaned = _clean_consolidated_field_value(_tag, _val)
+            if _cleaned != _val:
+                _cf[_tag] = _cleaned
 
     # 3. Clean junk: URLs, pagination, "Select 'Print' to output..."
     for _tag in list(_cf.keys()):

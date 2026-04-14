@@ -368,6 +368,15 @@ _DOC_INDICATORS = {
         r'ASSAY\s+RESULT',
         r'SPECIFICATION\s+AND\s+(?:TEST|ANALYSIS)\s+RESULT',
     ],
+    "Letter of Indemnity": [
+        r'LETTER\s+OF\s+INDEMNITY',
+        r'\bLOI\b',
+        r'INDEMNITY\s+LETTER',
+        r'WE\s+HEREBY\s+EXPRESSLY\s+WARRANT',
+        r'INDEMNIFY\s+AND\s+HOLD.*?HARMLESS',
+        r'LOCATE\s+AND\s+SURRENDER.*?BILLS?\s+OF\s+LADING',
+        r'UNABLE\s+TO\s+PROVIDE.*?BILLS?\s+OF\s+LADING',
+    ],
     "Notice of Readiness": [
         r'NOTICE\s+OF\s+READINESS', r'NOR\s+(?:RE-?)?TENDER', r'VESSEL\s+HAS\s+OFFICIALLY\s+ARRIVED',
     ],

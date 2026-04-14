@@ -1449,6 +1449,209 @@ def get_final_lc(job_id: str):
     raise HTTPException(404, "Final LC not yet generated")
 
 
+import queue as _queue_mod
+_regen_logs = {}  # job_id -> queue.Queue of log messages
+
+@app.get("/api/regenerate-logs/{job_id}")
+async def regenerate_logs_sse(job_id: str):
+    """SSE endpoint for streaming regeneration logs."""
+    from starlette.responses import StreamingResponse
+    import asyncio
+
+    async def _stream():
+        # Wait for queue to appear (POST creates it)
+        _waited = 0
+        while job_id not in _regen_logs and _waited < 30:
+            await asyncio.sleep(0.5)
+            _waited += 1
+        q = _regen_logs.get(job_id)
+        if not q:
+            yield f"data: {json.dumps({'log': 'Waiting for server...'})}\n\n"
+            return
+
+        _idle = 0
+        while _idle < 600:  # 10 min max
+            try:
+                msg = q.get_nowait()
+                _idle = 0
+                if msg == '__DONE__':
+                    yield f"data: {json.dumps({'done': True})}\n\n"
+                    return
+                yield f"data: {json.dumps({'log': msg})}\n\n"
+            except Exception:
+                _idle += 1
+                await asyncio.sleep(0.3)
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
+
+
+_regen_results = {}  # job_id -> result dict or None (in progress)
+
+@app.post("/api/regenerate-final-lc/{job_id}")
+def regenerate_final_lc(job_id: str):
+    """
+    Start Final LC regeneration in background. Returns immediately.
+    Frontend watches /api/regenerate-logs/{job_id} SSE for progress,
+    then polls /api/regenerate-result/{job_id} for the final result.
+    """
+    results_dir = os.path.join(RESULTS_DIR, job_id)
+    if not os.path.isdir(results_dir):
+        raise HTTPException(404, "Job results not found")
+
+    s2_path = os.path.join(results_dir, 'step02', 'step02_result.json')
+    s3_path = os.path.join(results_dir, 'step03', 'step03_result.json')
+    if not os.path.exists(s2_path) or not os.path.exists(s3_path):
+        raise HTTPException(400, "Steps 1-3 must be completed first")
+
+    # Start in background thread
+    import threading
+    _regen_results[job_id] = None  # Mark as in-progress
+    threading.Thread(target=_do_regenerate, args=(job_id,), daemon=True).start()
+    return {"status": "started", "message": "Regeneration started. Watch logs via SSE."}
+
+
+@app.get("/api/regenerate-result/{job_id}")
+def get_regenerate_result(job_id: str):
+    """Poll for regeneration result."""
+    if job_id not in _regen_results:
+        return {"status": "not_found"}
+    result = _regen_results.get(job_id)
+    if result is None:
+        return {"status": "in_progress"}
+    _regen_results.pop(job_id, None)
+    return result
+
+
+def _do_regenerate(job_id: str):
+    """Background thread for FLC regeneration."""
+    results_dir = os.path.join(RESULTS_DIR, job_id)
+    s2_path = os.path.join(results_dir, 'step02', 'step02_result.json')
+    s3_path = os.path.join(results_dir, 'step03', 'step03_result.json')
+
+    with open(s2_path, 'r', encoding='utf-8') as f:
+        s2 = json.load(f)
+    with open(s3_path, 'r', encoding='utf-8') as f:
+        s3 = json.load(f)
+
+    # Build Step 4/5 input (same logic as pipeline)
+    mt_packets = []
+    shipping_packets = []
+    for pkt in s3.get('packets', []):
+        pkt_copy = dict(pkt)
+        dt = (pkt.get('document_type', '') or '').lower()
+        if any(x in dt for x in ['lc', 'letter of credit', 'amendment', 'mt7']):
+            pkt_copy['mt_type'] = 'MT707' if 'amend' in dt else 'MT700'
+            mt_packets.append(pkt_copy)
+        else:
+            pkt_copy['mt_type'] = 'shipping'
+            shipping_packets.append(pkt_copy)
+
+    s5_input = {'packets': mt_packets + shipping_packets, 'page_texts': {}}
+    for p in s2.get('pages', []):
+        pn = p.get('page_number', 0)
+        text = p.get('cleaned_text', p.get('raw_text', ''))
+        if pn and text:
+            s5_input['page_texts'][pn] = text
+
+    # Delete old step06 result
+    s6_dir = os.path.join(results_dir, 'step06')
+    if os.path.isdir(s6_dir):
+        import shutil
+        shutil.rmtree(s6_dir)
+    os.makedirs(s6_dir, exist_ok=True)
+
+    _regen_logs[job_id] = _queue_mod.Queue()
+    def _log(msg):
+        print(f"[Regenerate] {msg}")
+        try:
+            _regen_logs[job_id].put(msg)
+        except Exception:
+            pass
+
+    # Clear steps 6-20
+    import shutil as _shutil
+    for _sn in ['step06', 'step07', 'step08', 'step09', 'step12', 'step13',
+                'step14', 'step14b', 'step15', 'step16', 'step17',
+                'step18', 'step19', 'step20']:
+        _sp = os.path.join(results_dir, _sn)
+        if os.path.isdir(_sp):
+            _shutil.rmtree(_sp, ignore_errors=True)
+        if job_id in _jobs:
+            _jobs[job_id].get('step_results', {}).pop(_sn, None)
+
+    # Re-run Step 6 (Final LC)
+    try:
+        os.makedirs(s6_dir, exist_ok=True)
+        s6 = _to_dict(step06_final_lc.run(s5_input, s6_dir, _log))
+    except Exception as e:
+        raise HTTPException(500, f"Step 6 failed: {str(e)}")
+    if job_id in _jobs:
+        _jobs[job_id]['step_results']['step06'] = s6
+
+    # Re-run Step 7 (Clause Extraction)
+    try:
+        s7_dir = os.path.join(results_dir, 'step07')
+        os.makedirs(s7_dir, exist_ok=True)
+        s7 = _to_dict(step07_clause_extraction.run(s6, s7_dir, _log))
+        if job_id in _jobs:
+            _jobs[job_id]['step_results']['step07'] = s7
+    except Exception as e:
+        _log(f"Step 7 failed: {e}")
+        s7 = {}
+
+    # Re-run Step 8 (Shipping Classification) — needs step03 packets + step07 required docs
+    try:
+        s8_dir = os.path.join(results_dir, 'step08')
+        os.makedirs(s8_dir, exist_ok=True)
+        # Build shipping packets from step03
+        _ship_pkts = [dict(p) for p in s3.get('packets', [])
+                      if (p.get('document_type', '') or '').lower() not in
+                      ('lc', 'letter of credit', 'amendment', 'mt799', 'mt999',
+                       'mt754', 'mt940', 'mt730', 'mt740', 'mt747')]
+        s8 = _to_dict(step08_shipping_classification.run(
+            {'packets': _ship_pkts}, s7, s8_dir, _log))
+        if job_id in _jobs:
+            _jobs[job_id]['step_results']['step08'] = s8
+    except Exception as e:
+        _log(f"Step 8 failed: {e}")
+        s8 = {}
+
+    # Re-run Step 9 (Shipping Reconciliation)
+    try:
+        s9_dir = os.path.join(results_dir, 'step09')
+        os.makedirs(s9_dir, exist_ok=True)
+        s9 = _to_dict(step09_shipping_reconciliation.run(s8, s7, s9_dir, _log))
+        if job_id in _jobs:
+            _jobs[job_id]['step_results']['step09'] = s9
+    except Exception as e:
+        _log(f"Step 9 failed: {e}")
+
+    # Read back from saved file for accurate data
+    _s6_saved = {}
+    _s6_file = os.path.join(s6_dir, 'step06_result.json')
+    if os.path.exists(_s6_file):
+        with open(_s6_file, 'r', encoding='utf-8') as f:
+            _s6_saved = json.load(f)
+    cf = _s6_saved.get('consolidated_fields', s6.get('consolidated_fields', {}))
+
+    result = {
+        "status": "ok",
+        "dc_number": _s6_saved.get('dc_number', s6.get('dc_number', '')),
+        "total_fields": _s6_saved.get('total_fields', len(cf)),
+        "amendment_count": _s6_saved.get('amendment_count', 0),
+        "message": "Final LC regenerated. Steps 6-9 complete. Ready for verification.",
+    }
+    _regen_results[job_id] = result
+
+    # Signal completion to SSE
+    _log('Regeneration complete!')
+    try:
+        _regen_logs[job_id].put('__DONE__')
+    except Exception:
+        pass
+    _regen_logs.pop(job_id, None)
+
+
 @app.put("/api/final-lc/{job_id}")
 async def save_final_lc(job_id: str, request: Request):
     """Save edited Final LC fields back to disk and memory."""
@@ -2880,6 +3083,8 @@ def get_settings():
             "glm_ocr_url": _cfg.GLM_OCR_URL,
             "qwen_vlm_url": _cfg.QWEN_VLM_URL,
             "qwen_vlm_model": _cfg.QWEN_VLM_MODEL,
+            "text_llm_url": getattr(_cfg, 'QWEN_TEXT_LLM_URL', '') or '',
+            "text_llm_model": getattr(_cfg, 'QWEN_TEXT_LLM_MODEL', '') or '',
         },
         "timeouts": {
             "ocr_timeout": _cfg.OCR_TIMEOUT,
@@ -2928,6 +3133,10 @@ async def update_settings(request: Request):
             _cfg.QWEN_VLM_MODEL = m['qwen_vlm_model']
         if 'glm_ocr_url' in m:
             _cfg.GLM_OCR_URL = m['glm_ocr_url']
+        if 'text_llm_url' in m:
+            _cfg.QWEN_TEXT_LLM_URL = m['text_llm_url']
+        if 'text_llm_model' in m:
+            _cfg.QWEN_TEXT_LLM_MODEL = m['text_llm_model']
 
     # Update timeouts
     if 'timeouts' in body:

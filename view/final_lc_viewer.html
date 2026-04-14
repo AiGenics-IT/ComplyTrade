@@ -45,6 +45,28 @@
         .status-bar { position: fixed; bottom: 0; left: 0; right: 0; background: #1e293b; color: white; padding: 10px 30px; display: flex; justify-content: space-between; align-items: center; font-size: 0.85em; z-index: 100; }
         .status-bar .changes { color: #fbbf24; }
         .loading { text-align: center; padding: 40px; color: #64748b; }
+
+        /* Styled modal system */
+        .modal-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,.5); z-index:500; align-items:center; justify-content:center; }
+        .modal-overlay.active { display:flex; }
+        .modal-box { background:#fff; border-radius:12px; box-shadow:0 20px 60px rgba(0,0,0,.3); max-width:480px; width:90%; overflow:hidden; animation:modalIn .2s ease; }
+        @keyframes modalIn { from{transform:scale(.95);opacity:0} to{transform:scale(1);opacity:1} }
+        .modal-hdr { background:linear-gradient(135deg,#1554ca,#0d3b8a); color:#fff; padding:16px 20px; font-size:1.05em; font-weight:600; display:flex; align-items:center; gap:10px; }
+        .modal-hdr.warn { background:linear-gradient(135deg,#d97706,#b45309); }
+        .modal-hdr.error { background:linear-gradient(135deg,#dc2626,#b91c1c); }
+        .modal-hdr.success { background:linear-gradient(135deg,#16a34a,#15803d); }
+        .modal-hdr svg { width:22px; height:22px; flex-shrink:0; }
+        .modal-body { padding:20px; font-size:.92em; color:#334155; line-height:1.6; }
+        .modal-body .detail { margin-top:10px; padding:10px 14px; background:#f1f5f9; border-radius:6px; font-size:.85em; color:#475569; }
+        .modal-footer { padding:12px 20px; border-top:1px solid #e2e8f0; display:flex; justify-content:flex-end; gap:10px; background:#f8fafc; }
+        .modal-btn { padding:8px 20px; border:none; border-radius:6px; font-size:.88em; font-weight:600; cursor:pointer; transition:.15s; }
+        .modal-btn-cancel { background:#e2e8f0; color:#475569; }
+        .modal-btn-cancel:hover { background:#cbd5e1; }
+        .modal-btn-primary { background:linear-gradient(135deg,#1554ca,#0d3b8a); color:#fff; box-shadow:0 2px 6px rgba(21,84,202,.3); }
+        .modal-btn-primary:hover { transform:translateY(-1px); box-shadow:0 4px 10px rgba(21,84,202,.4); }
+        .modal-btn-danger { background:linear-gradient(135deg,#dc2626,#b91c1c); color:#fff; }
+        .modal-spinner { display:inline-block; width:18px; height:18px; border:2px solid rgba(255,255,255,.3); border-top-color:#fff; border-radius:50%; animation:spin .6s linear infinite; margin-right:8px; vertical-align:middle; }
+        @keyframes spin { to{transform:rotate(360deg)} }
     </style>
 </head>
 <body>
@@ -55,6 +77,7 @@
             <div class="dc-num" id="dcNum"></div>
         </div>
         <div class="actions">
+            <button class="btn-reset" onclick="regenerateLC()" title="Re-extract Final LC from SWIFT messages and amendments" style="background:#7c3aed;color:white">Regenerate FLC</button>
             <button class="btn-reset" onclick="resetAll()">Reset Changes</button>
             <button class="btn-save" onclick="saveChanges()">Save Changes</button>
             <button class="btn-download" onclick="downloadPDF()">Download PDF</button>
@@ -62,6 +85,15 @@
     </div>
     <div class="container" id="content">
         <div class="loading">Loading Final LC...</div>
+    </div>
+
+    <!-- Styled modal -->
+    <div class="modal-overlay" id="modal-overlay">
+        <div class="modal-box">
+            <div class="modal-hdr" id="modal-hdr"><svg fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/></svg><span id="modal-title">Title</span></div>
+            <div class="modal-body" id="modal-body"></div>
+            <div class="modal-footer" id="modal-footer"></div>
+        </div>
     </div>
     <div class="status-bar">
         <span>ComplyTrade | AiGenics</span>
@@ -73,6 +105,31 @@ const params = new URLSearchParams(window.location.search);
 const jobId = params.get('job_id');
 const lcNumber = params.get('lc');
 const API = window.location.origin;
+
+// ── Styled modal system ──
+function showModal(title, body, buttons, type) {
+    const overlay = document.getElementById('modal-overlay');
+    const hdr = document.getElementById('modal-hdr');
+    const icons = {
+        info: '<svg fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/></svg>',
+        warn: '<svg fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>',
+        error: '<svg fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/></svg>',
+        success: '<svg fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>',
+    };
+    hdr.className = 'modal-hdr' + (type && type !== 'info' ? ' ' + type : '');
+    hdr.innerHTML = (icons[type] || icons.info) + '<span>' + title + '</span>';
+    document.getElementById('modal-body').innerHTML = body;
+    let footerHtml = '';
+    for (const btn of buttons) {
+        footerHtml += `<button class="modal-btn ${btn.cls || 'modal-btn-primary'}" onclick="${btn.onclick}">${btn.label}</button>`;
+    }
+    document.getElementById('modal-footer').innerHTML = footerHtml;
+    overlay.classList.add('active');
+}
+function closeModal() { document.getElementById('modal-overlay').classList.remove('active'); }
+function showSuccess(title, msg) { showModal(title, msg, [{label:'OK', onclick:'closeModal()', cls:'modal-btn-primary'}], 'success'); }
+function showError(title, msg) { showModal(title, msg, [{label:'OK', onclick:'closeModal()', cls:'modal-btn-cancel'}], 'error'); }
+function showLoading(title, msg) { showModal(title, '<div style="text-align:center"><span class="modal-spinner"></span>' + msg + '</div>', [], 'info'); }
 let originalData = {};
 let modifiedFields = {};
 let changeCount = 0;
@@ -255,15 +312,104 @@ function markModified(elemId, tag, clauseIdx) {
 }
 
 function resetAll() {
-    if (!confirm('Reset all changes?')) return;
+    showModal('Reset Changes', 'Discard all unsaved edits and reload the original data?',
+        [
+            {label: 'Cancel', onclick: 'closeModal()', cls: 'modal-btn-cancel'},
+            {label: 'Reset', onclick: 'doReset()', cls: 'modal-btn-danger'},
+        ], 'warn');
+}
+function doReset() {
+    closeModal();
     loadData();
     modifiedFields = {};
     changeCount = 0;
     document.getElementById('changeCount').textContent = 'No changes';
 }
 
+function regenerateLC() {
+    showModal('Regenerate Final LC',
+        'This will re-extract all fields from the LC and amendments using the AI model, overwriting any manual edits.' +
+        '<div class="detail">Steps 6-9 will be re-run. Steps 1-3 (OCR) are preserved.</div>',
+        [
+            {label: 'Cancel', onclick: 'closeModal()', cls: 'modal-btn-cancel'},
+            {label: 'Regenerate', onclick: 'doRegenerate()', cls: 'modal-btn-primary'},
+        ], 'warn');
+}
+async function doRegenerate() {
+    // Show loading modal with log window
+    showModal('Regenerating Final LC',
+        '<div style="text-align:center;margin-bottom:12px"><span class="modal-spinner"></span> Applying amendments via AI model...</div>' +
+        '<div id="regen-log" style="background:#0f172a;color:#94a3b8;font-family:Cascadia Code,Fira Code,monospace;font-size:.75em;padding:10px 12px;border-radius:6px;max-height:250px;overflow-y:auto;line-height:1.6;white-space:pre-wrap"></div>',
+        [], 'info');
+    const logEl = document.getElementById('regen-log');
+    function addLog(msg) { if(logEl) { logEl.textContent += msg + '\n'; logEl.scrollTop = logEl.scrollHeight; } }
+    addLog('Starting regeneration...');
+
+    const jobId = new URLSearchParams(location.search).get('job_id');
+    const startTime = Date.now();
+
+    // Start SSE log stream
+    const evtSource = new EventSource(`/api/regenerate-logs/${jobId}`);
+    evtSource.onmessage = (e) => {
+        try {
+            const d = JSON.parse(e.data);
+            if (d.log) addLog(d.log);
+            if (d.done) evtSource.close();
+        } catch(ex) {}
+    };
+    evtSource.onerror = () => { evtSource.close(); };
+
+    try {
+        addLog('Sending request to server...');
+        const startResp = await fetch(`/api/regenerate-final-lc/${jobId}`, {method: 'POST'});
+        const startData = await startResp.json();
+        if (startData.status !== 'started') {
+            evtSource.close();
+            showError('Regeneration Failed', startData.error || startData.detail || 'Could not start');
+            return;
+        }
+        addLog('Server processing started...');
+
+        // Poll for result
+        const pollResult = async () => {
+            while (true) {
+                await new Promise(r => setTimeout(r, 2000));
+                try {
+                    const r = await fetch(`/api/regenerate-result/${jobId}`);
+                    const d = await r.json();
+                    if (d.status === 'ok') {
+                        evtSource.close();
+                        addLog(`Completed in ${Math.round((Date.now() - startTime) / 1000)}s`);
+                        modifiedFields = {};
+                        changeCount = 0;
+                        loadData();
+                        showSuccess('Regeneration Complete',
+                            `Final LC has been regenerated successfully.` +
+                            `<div class="detail">DC Number: <b>${d.dc_number || '—'}</b><br>` +
+                            `Fields: <b>${d.total_fields || '—'}</b><br>` +
+                            `Amendments Applied: <b>${d.amendment_count || '0'}</b></div>`);
+                        return;
+                    } else if (d.status === 'in_progress') {
+                        continue;
+                    } else {
+                        evtSource.close();
+                        loadData();
+                        showError('Regeneration Failed', d.error || d.message || 'Unknown error');
+                        return;
+                    }
+                } catch(e) { continue; }
+            }
+        };
+        await pollResult();
+    } catch (err) {
+        evtSource.close();
+        loadData();
+        showError('Regeneration Failed', 'Could not connect to the server.<div class="detail">' + err.message + '</div>');
+    }
+}
+
 async function saveChanges() {
-    if (changeCount === 0) { alert('No changes to save.'); return; }
+    if (changeCount === 0) { showModal('No Changes', 'There are no unsaved changes to save.', [{label:'OK', onclick:'closeModal()', cls:'modal-btn-primary'}], 'info'); return; }
     try {
         const r = await fetch(`${API}/api/final-lc/${jobId}`, {
             method: 'PUT',
@@ -276,9 +422,9 @@ async function saveChanges() {
         modifiedFields = {};
         changeCount = 0;
         document.getElementById('changeCount').textContent = `${d.changes_applied} change(s) saved`;
-        alert(`Changes saved successfully (${d.changes_applied} field(s) updated).`);
+        showSuccess('Changes Saved', `<b>${d.changes_applied}</b> field(s) updated successfully.`);
     } catch (e) {
-        alert('Failed to save: ' + e.message);
+        showError('Save Failed', e.message);
     }
 }
 
