@@ -262,28 +262,54 @@ def get_extracted_text(job_id: str):
             with open(_s3_file, 'r', encoding='utf-8') as _f:
                 s3 = json.load(_f)
 
-    # Load Step 6 for document summaries (page -> summary lookup)
-    s6 = sr.get('step06', {})
-    if not s6.get('identified_objects'):
-        _s6_file = os.path.join(_results_dir, 'step06', 'step06_result.json')
-        if os.path.exists(_s6_file):
+    # Load Step 8 for document summaries (page -> summary lookup)
+    # Step 8 classification produces document_type, document_summary,
+    # document_number, document_date, document_amount, issued_by, etc.
+    _s8 = sr.get('step08', {})
+    if not _s8.get('classified_packets'):
+        _s8_file = os.path.join(_results_dir, 'step08', 'step08_result.json')
+        if os.path.exists(_s8_file):
             try:
-                with open(_s6_file, 'r', encoding='utf-8') as _f:
-                    s6 = json.load(_f)
+                with open(_s8_file, 'r', encoding='utf-8') as _f:
+                    _s8 = json.load(_f)
             except Exception:
-                s6 = {}
+                _s8 = {}
     _page_summary = {}
     _page_vlm_summary = {}
-    for _obj in s6.get('identified_objects', []):
-        if isinstance(_obj, dict):
-            _data = _obj.get('data', {})
-            _doc_summary = _data.get('document_summary', '')
-            _vlm_sum = _data.get('_vlm_summary', {})
-            for _pn in _obj.get('pages', []):
-                if _doc_summary:
-                    _page_summary[_pn] = _doc_summary
-                if _vlm_sum:
-                    _page_vlm_summary[_pn] = _vlm_sum
+    for _cpkt in _s8.get('classified_packets', []):
+        if not isinstance(_cpkt, dict):
+            continue
+        _doc_type = _cpkt.get('document_type', '')
+        _doc_summary = _cpkt.get('document_summary', '')
+        _vlm_sum = {
+            'document_type': _doc_type,
+            'document_number': _cpkt.get('document_number', ''),
+            'document_date': _cpkt.get('document_date', ''),
+            'document_amount': _cpkt.get('document_amount', ''),
+            'issued_by': _cpkt.get('issued_by', ''),
+            'copy_status': _cpkt.get('copy_status', ''),
+            'lc_reference': _cpkt.get('lc_reference', ''),
+            'match_confidence': _cpkt.get('match_confidence', ''),
+        }
+        # Remove empty values
+        _vlm_sum = {k: v for k, v in _vlm_sum.items() if v}
+        _pkt_pages = _cpkt.get('page_numbers',
+                               [p.get('page_number', 0) for p in _cpkt.get('original_pages', [])
+                                if isinstance(p, dict)])
+        if not _pkt_pages and _cpkt.get('page_image_paths'):
+            # Try to extract page numbers from image paths
+            import re as _re_pg
+            for _ip in _cpkt.get('page_image_paths', []):
+                _pm = _re_pg.search(r'page_(\d+)', str(_ip))
+                if _pm:
+                    _pkt_pages.append(int(_pm.group(1)))
+        for _pn in _pkt_pages:
+            _summary_text = f"{_doc_type}"
+            if _doc_summary:
+                _summary_text += f" | {_doc_summary}"
+            _page_summary[_pn] = _summary_text
+            if _vlm_sum:
+                _page_vlm_summary[_pn] = _vlm_sum
 
     # Build page type lookup from Step 3
     _page_types = {}
