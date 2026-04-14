@@ -93,6 +93,23 @@
         mark { background: #fbbf24; padding: 0 1px; border-radius: 2px; }
         mark.cur { background: #f97316; color: #fff; }
         .no-sel { display: flex; align-items: center; justify-content: center; height: 100%; color: #94a3b8; flex-direction: column; gap: 6px; font-size: 0.9em; }
+
+        /* Summary tooltip panel */
+        .summary-btn { background: linear-gradient(135deg, #1554ca, #0d3b8a); color: #fff; border: none; padding: 4px 10px; border-radius: 4px; font-size: 0.74em; cursor: pointer; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+        .summary-btn:hover { background: linear-gradient(135deg, #1a66e0, #0f4aa0); }
+        .summary-btn svg { width: 13px; height: 13px; fill: currentColor; }
+        .summary-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 999; }
+        .summary-panel { position: fixed; z-index: 1000; background: #fff; border-radius: 10px; box-shadow: 0 8px 32px rgba(21,84,202,0.18), 0 2px 8px rgba(0,0,0,0.10); max-width: 480px; min-width: 320px; max-height: 70vh; overflow-y: auto; border: 1.5px solid #c7d6f5; }
+        .summary-panel-hdr { background: linear-gradient(135deg, #1554ca 0%, #0d3b8a 100%); color: #fff; padding: 10px 16px; border-radius: 8px 8px 0 0; display: flex; align-items: center; justify-content: space-between; }
+        .summary-panel-hdr h3 { font-size: 0.88em; margin: 0; font-weight: 700; }
+        .summary-panel-close { background: none; border: none; color: rgba(255,255,255,0.8); font-size: 1.1em; cursor: pointer; padding: 0 4px; line-height: 1; }
+        .summary-panel-close:hover { color: #fff; }
+        .summary-panel-body { padding: 12px 16px; }
+        .summary-row { display: flex; padding: 5px 0; border-bottom: 1px solid #f1f5f9; gap: 8px; }
+        .summary-row:last-child { border-bottom: none; }
+        .summary-key { font-size: 0.76em; font-weight: 700; color: #1554ca; min-width: 100px; flex-shrink: 0; }
+        .summary-val { font-size: 0.76em; color: #334155; word-break: break-word; }
+        .summary-empty { font-size: 0.82em; color: #94a3b8; padding: 16px; text-align: center; }
     </style>
 </head>
 <body>
@@ -188,6 +205,7 @@ function sel(i){
         <span class="pg-info">Page ${p.page_number}</span>
         <span class="pg-type-lbl" id="pg-type-display">${e(p.document_type||'')}</span>${cs}${vb}
         <button class="btn" onclick="toggleEditClass()" style="padding:2px 8px;font-size:.72em;background:#fef3c7;color:#92400e;border:1px solid #fde68a" title="Change classification">Edit</button>
+        <button class="summary-btn" onclick="toggleSummary(event)" title="Show document summary"><svg viewBox="0 0 20 20"><path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"/><path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"/></svg>Summary</button>
         <span class="spacer"></span>
         <div class="srch"><input id="sin" placeholder="Search in text..." oninput="doS()" onkeydown="if(event.key==='Enter'){event.shiftKey?pH():nH()}"><span class="si" id="sif"></span><button class="btn" onclick="pH()" title="Prev">&#9650;</button><button class="btn" onclick="nH()" title="Next">&#9660;</button></div>
         <button class="btn" onclick="cpT(this)">Copy</button>
@@ -316,6 +334,86 @@ function toggleEditClass() {
     document.body.appendChild(form);
     document.getElementById('ec-type').focus();
     document.getElementById('ec-type').select();
+}
+
+// ── Summary Tooltip ──
+function toggleSummary(evt) {
+    // Close if already open
+    const existing = document.getElementById('summary-panel');
+    if (existing) { closeSummary(); return; }
+    const p = pages[si];
+    if (!p) return;
+
+    // Create overlay to catch outside clicks
+    const overlay = document.createElement('div');
+    overlay.className = 'summary-overlay';
+    overlay.id = 'summary-overlay';
+    overlay.onclick = closeSummary;
+    document.body.appendChild(overlay);
+
+    // Create panel
+    const panel = document.createElement('div');
+    panel.className = 'summary-panel';
+    panel.id = 'summary-panel';
+
+    // Header
+    let html = `<div class="summary-panel-hdr"><h3>Document Summary — Page ${p.page_number}</h3><button class="summary-panel-close" onclick="closeSummary()">&#10005;</button></div>`;
+
+    // Body — parse the pipe-separated summary string or use vlm_summary dict
+    html += '<div class="summary-panel-body">';
+    const summaryStr = p.document_summary || '';
+    const vlmSum = p.vlm_summary || {};
+    let hasContent = false;
+
+    if (Object.keys(vlmSum).length > 0) {
+        // Structured summary from _vlm_summary
+        for (const [key, val] of Object.entries(vlmSum)) {
+            if (!val || String(val).trim() === '' || ['none','n/a','unknown','nil'].includes(String(val).trim().toLowerCase())) continue;
+            const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            html += `<div class="summary-row"><span class="summary-key">${e(label)}</span><span class="summary-val">${e(String(val))}</span></div>`;
+            hasContent = true;
+        }
+    } else if (summaryStr) {
+        // Pipe-separated format: "Key: Value | Key: Value"
+        const parts = summaryStr.split(' | ');
+        for (const part of parts) {
+            const colonIdx = part.indexOf(': ');
+            if (colonIdx > 0) {
+                const key = part.substring(0, colonIdx).trim();
+                const val = part.substring(colonIdx + 2).trim();
+                if (val && !['none','n/a','unknown','nil'].includes(val.toLowerCase())) {
+                    html += `<div class="summary-row"><span class="summary-key">${e(key)}</span><span class="summary-val">${e(val)}</span></div>`;
+                    hasContent = true;
+                }
+            }
+        }
+    }
+
+    if (!hasContent) {
+        html += '<div class="summary-empty">No summary available for this page.<br>Summary is generated during classification (Step 6).</div>';
+    }
+    html += '</div>';
+    panel.innerHTML = html;
+
+    // Position near the button
+    document.body.appendChild(panel);
+    const btnRect = evt.target.closest('.summary-btn').getBoundingClientRect();
+    let top = btnRect.bottom + 6;
+    let left = btnRect.left;
+    // Keep within viewport
+    const panelRect = panel.getBoundingClientRect();
+    if (left + panelRect.width > window.innerWidth - 12) left = window.innerWidth - panelRect.width - 12;
+    if (left < 12) left = 12;
+    if (top + panelRect.height > window.innerHeight - 12) top = btnRect.top - panelRect.height - 6;
+    panel.style.top = top + 'px';
+    panel.style.left = left + 'px';
+}
+
+function closeSummary() {
+    const panel = document.getElementById('summary-panel');
+    const overlay = document.getElementById('summary-overlay');
+    if (panel) panel.remove();
+    if (overlay) overlay.remove();
 }
 
 async function saveClassOverride() {
