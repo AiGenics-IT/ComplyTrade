@@ -206,6 +206,7 @@ function sel(i){
         <span class="pg-type-lbl" id="pg-type-display">${e(p.document_type||'')}</span>${cs}${vb}
         <button class="btn" onclick="toggleEditClass()" style="padding:2px 8px;font-size:.72em;background:#fef3c7;color:#92400e;border:1px solid #fde68a" title="Change classification">Edit</button>
         <button class="summary-btn" onclick="toggleSummary(event)" title="Show document summary"><svg viewBox="0 0 20 20"><path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"/><path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"/></svg>Summary</button>
+        <button class="summary-btn" onclick="toggleStamps(event)" title="Show stamps &amp; signatures" style="background:linear-gradient(135deg,#7c3aed,#5b21b6)"><svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14"><path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z"/><path fill-rule="evenodd" d="M2 6a2 2 0 012-2h4a1 1 0 010 2H4v10h10v-4a1 1 0 112 0v4a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd"/></svg>Stamps</button>
         <span class="spacer"></span>
         <div class="srch"><input id="sin" placeholder="Search in text..." oninput="doS()" onkeydown="if(event.key==='Enter'){event.shiftKey?pH():nH()}"><span class="si" id="sif"></span><button class="btn" onclick="pH()" title="Prev">&#9650;</button><button class="btn" onclick="nH()" title="Next">&#9660;</button></div>
         <button class="btn" onclick="cpT(this)">Copy</button>
@@ -419,6 +420,93 @@ function toggleSummary(evt) {
 function closeSummary() {
     const panel = document.getElementById('summary-panel');
     const overlay = document.getElementById('summary-overlay');
+    if (panel) panel.remove();
+    if (overlay) overlay.remove();
+}
+
+function toggleStamps(evt) {
+    const existing = document.getElementById('stamps-panel');
+    if (existing) { closeStamps(); return; }
+    const p = pages[si];
+    if (!p) return;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'summary-overlay';
+    overlay.id = 'stamps-overlay';
+    overlay.onclick = closeStamps;
+    document.body.appendChild(overlay);
+
+    const panel = document.createElement('div');
+    panel.className = 'summary-panel';
+    panel.id = 'stamps-panel';
+
+    let html = `<div class="summary-panel-hdr" style="background:linear-gradient(135deg,#7c3aed,#5b21b6)"><h3>Stamps & Signatures — Page ${p.page_number}</h3><button class="summary-panel-close" onclick="closeStamps()">&#10005;</button></div>`;
+    html += '<div class="summary-panel-body">';
+
+    const info = p.stamps_info || {};
+    const stamps = info.stamps || [];
+    const signatures = info.signatures || [];
+    const seals = info.seals || [];
+    const logos = info.logos || [];
+    let hasContent = false;
+
+    if (stamps.length > 0) {
+        html += '<div style="padding:6px 12px;font-size:.72em;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #f3f4f6">Stamps</div>';
+        for (const s of stamps) {
+            const text = (typeof s === 'string') ? s : (s.text || s.description || JSON.stringify(s));
+            const type = (typeof s === 'object' && s.type) ? s.type : '';
+            html += `<div class="summary-row"><span class="summary-key">${e(type || 'Stamp')}</span><span class="summary-val">${e(text)}</span></div>`;
+            hasContent = true;
+        }
+    }
+
+    if (signatures.length > 0) {
+        html += '<div style="padding:6px 12px;font-size:.72em;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #f3f4f6">Signatures</div>';
+        for (const s of signatures) {
+            const desc = (typeof s === 'string') ? s : (s.description || s.text || JSON.stringify(s));
+            const type = (typeof s === 'object' && s.type) ? s.type : '';
+            html += `<div class="summary-row"><span class="summary-key">${e(type || 'Signature')}</span><span class="summary-val">${e(desc)}</span></div>`;
+            hasContent = true;
+        }
+    }
+
+    if (seals.length > 0) {
+        html += '<div style="padding:6px 12px;font-size:.72em;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #f3f4f6">Seals</div>';
+        for (const s of seals) {
+            const desc = (typeof s === 'string') ? s : (s.description || JSON.stringify(s));
+            html += `<div class="summary-row"><span class="summary-key">Seal</span><span class="summary-val">${e(desc)}</span></div>`;
+            hasContent = true;
+        }
+    }
+
+    if (logos.length > 0) {
+        html += '<div style="padding:6px 12px;font-size:.72em;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #f3f4f6">Logos</div>';
+        for (const s of logos) {
+            const name = (typeof s === 'string') ? s : (s.company_name || s.description || JSON.stringify(s));
+            html += `<div class="summary-row"><span class="summary-key">Logo</span><span class="summary-val">${e(name)}</span></div>`;
+            hasContent = true;
+        }
+    }
+
+    if (!hasContent) {
+        html += '<div class="summary-empty">No stamps or signatures detected on this page.<br>Visual elements are extracted during classification (Step 8).</div>';
+    }
+    html += '</div>';
+    panel.innerHTML = html;
+
+    document.body.appendChild(panel);
+    const rect = evt.target.closest('button').getBoundingClientRect();
+    let left = rect.left;
+    let top = rect.bottom + 6;
+    if (left + 280 > window.innerWidth) left = window.innerWidth - 290;
+    if (top + 300 > window.innerHeight) top = rect.top - 306;
+    panel.style.left = left + 'px';
+    panel.style.top = top + 'px';
+}
+
+function closeStamps() {
+    const panel = document.getElementById('stamps-panel');
+    const overlay = document.getElementById('stamps-overlay');
     if (panel) panel.remove();
     if (overlay) overlay.remove();
 }

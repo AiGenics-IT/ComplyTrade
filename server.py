@@ -276,6 +276,7 @@ def get_extracted_text(job_id: str):
                 _s8 = {}
     _page_summary = {}
     _page_vlm_summary = {}
+    _page_stamps = {}  # page_number -> {stamps, signatures, seals, logos}
     for _cpkt in _s8.get('classified_packets', []):
         if not isinstance(_cpkt, dict):
             continue
@@ -304,6 +305,18 @@ def get_extracted_text(job_id: str):
                 _pm = _re_pg.search(r'page_(\d+)', str(_ip))
                 if _pm:
                     _pkt_pages.append(int(_pm.group(1)))
+        # Build stamps/signatures lookup per page
+        _stamps = _cpkt.get('stamps', [])
+        _signatures = _cpkt.get('signatures', [])
+        _seals = _cpkt.get('seals', [])
+        _logos = _cpkt.get('logos', [])
+        # Also check original_pages for step3-level stamps
+        for _op in _cpkt.get('original_pages', []):
+            if isinstance(_op, dict):
+                _stamps.extend(_op.get('stamps', []))
+                _signatures.extend(_op.get('signatures', []))
+                _seals.extend(_op.get('seals', []))
+
         for _pn in _pkt_pages:
             _summary_text = f"{_doc_type}"
             if _doc_summary:
@@ -311,6 +324,13 @@ def get_extracted_text(job_id: str):
             _page_summary[_pn] = _summary_text
             if _vlm_sum:
                 _page_vlm_summary[_pn] = _vlm_sum
+            if _stamps or _signatures or _seals or _logos:
+                _page_stamps[_pn] = {
+                    'stamps': _stamps,
+                    'signatures': _signatures,
+                    'seals': _seals,
+                    'logos': _logos,
+                }
 
     # Build page type lookup from Step 3
     _page_types = {}
@@ -370,6 +390,7 @@ def get_extracted_text(job_id: str):
                 'final_chars': len(str(final)),
                 'document_summary': _page_summary.get(pn, ''),
                 'vlm_summary': _page_vlm_summary.get(pn, {}),
+                'stamps_info': _page_stamps.get(pn, {}),
             })
 
     return {
