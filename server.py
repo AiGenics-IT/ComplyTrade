@@ -290,6 +290,7 @@ def get_extracted_text(job_id: str):
             'copy_status': _cpkt.get('copy_status', ''),
             'lc_reference': _cpkt.get('lc_reference', ''),
             'match_confidence': _cpkt.get('match_confidence', ''),
+            'description': _cpkt.get('document_summary', ''),
         }
         # Remove empty values
         _vlm_sum = {k: v for k, v in _vlm_sum.items() if v}

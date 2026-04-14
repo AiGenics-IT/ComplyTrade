@@ -367,7 +367,14 @@ function toggleSummary(evt) {
 
     if (Object.keys(vlmSum).length > 0) {
         // Structured summary from _vlm_summary
+        // Show description paragraph first if available
+        const desc = vlmSum.description || '';
+        if (desc && desc.length > 5) {
+            html += `<div style="padding:8px 12px;font-size:.82em;color:#333;line-height:1.5;border-bottom:1px solid #e5e7eb;background:#f8fafc">${e(desc)}</div>`;
+            hasContent = true;
+        }
         for (const [key, val] of Object.entries(vlmSum)) {
+            if (key === 'description') continue;  // already shown above
             if (!val || String(val).trim() === '' || ['none','n/a','unknown','nil'].includes(String(val).trim().toLowerCase())) continue;
             const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
             html += `<div class="summary-row"><span class="summary-key">${e(label)}</span><span class="summary-val">${e(String(val))}</span></div>`;
