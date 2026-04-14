@@ -262,6 +262,29 @@ def get_extracted_text(job_id: str):
             with open(_s3_file, 'r', encoding='utf-8') as _f:
                 s3 = json.load(_f)
 
+    # Load Step 6 for document summaries (page -> summary lookup)
+    s6 = sr.get('step06', {})
+    if not s6.get('identified_objects'):
+        _s6_file = os.path.join(_results_dir, 'step06', 'step06_result.json')
+        if os.path.exists(_s6_file):
+            try:
+                with open(_s6_file, 'r', encoding='utf-8') as _f:
+                    s6 = json.load(_f)
+            except Exception:
+                s6 = {}
+    _page_summary = {}
+    _page_vlm_summary = {}
+    for _obj in s6.get('identified_objects', []):
+        if isinstance(_obj, dict):
+            _data = _obj.get('data', {})
+            _doc_summary = _data.get('document_summary', '')
+            _vlm_sum = _data.get('_vlm_summary', {})
+            for _pn in _obj.get('pages', []):
+                if _doc_summary:
+                    _page_summary[_pn] = _doc_summary
+                if _vlm_sum:
+                    _page_vlm_summary[_pn] = _vlm_sum
+
     # Build page type lookup from Step 3
     _page_types = {}
     _page_copy = {}
@@ -318,6 +341,8 @@ def get_extracted_text(job_id: str):
                 'vlm_added': bool(vlm_added),
                 'final_text': str(final),
                 'final_chars': len(str(final)),
+                'document_summary': _page_summary.get(pn, ''),
+                'vlm_summary': _page_vlm_summary.get(pn, {}),
             })
 
     return {
@@ -2350,6 +2375,15 @@ def _process_pipeline(job_id: str):
                     _pkt_copy['mt_type'] = 'MT707' if 'amend' in _dt else 'MT700'
                     _mt_packets.append(_pkt_copy)
                     _prev_packet = _pkt_copy
+                # P103: BAHL informational MT types — not LC, not shipping
+                elif _dt.upper().startswith('MT') and _dt.upper() in (
+                    'MT754', 'MT940', 'MT730', 'MT740', 'MT742',
+                    'MT734', 'MT750', 'MT752', 'MT747',
+                ):
+                    _pkt_copy['mt_type'] = _dt.upper()
+                    _mt_packets.append(_pkt_copy)
+                    _prev_packet = _pkt_copy
+                    _p(f"  pkt {_pkt.get('packet_id','?')} pages={_pkt.get('page_numbers',[])} → {_dt.upper()} (informational)")
                 else:
                     _pkt_copy['mt_type'] = 'shipping'
                     _shipping_packets.append(_pkt_copy)

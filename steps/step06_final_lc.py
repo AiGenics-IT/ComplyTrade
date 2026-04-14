@@ -102,6 +102,7 @@ class FinalLC:
 
 SWIFT_FIELD_LABELS = {
     '20': 'Documentary Credit Number',
+    '21': 'Related Reference',
     '23': 'Reference to Pre-Advice',
     '26E': 'Number of Amendment',
     '27': 'Sequence of Total',
@@ -159,7 +160,7 @@ CLAUSE_TAGS = {'45A', '45B', '46A', '46B', '47A', '47B', '78', '79', '72'}
 
 # Tags to extract -- ordered by typical SWIFT message appearance
 EXTRACTION_TAGS = [
-    '20', '23', '26E', '27', '30', '31C', '31D', '32B', '33B', '34B',
+    '20', '21', '23', '26E', '27', '30', '31C', '31D', '32B', '33B', '34B',
     '39A', '39B', '39C', '40A', '40E', '41A', '41D', '42A', '42C', '42D',
     '42M', '42P', '43P', '43T', '44A', '44B', '44C', '44D', '44E', '44F',
     '45A', '45B', '46A', '46B', '47A', '47B', '48', '49', '50', '51A',
@@ -1001,7 +1002,8 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
 # Each entry strips the leading label that the SWIFT regex captured along
 # with the actual value (e.g. "Latest Date of Shipment\n251030 Oct 30").
 _FIELD_LABEL_STRIP = {
-    '20':  r'^(?:Documentary\s+Credit\s+Number|Sender\'?s?\s+Reference)\s*[\n\r]*',
+    '20':  r'^(?:Documentary\s+Credit\s+Number|Sender\'?s?\s+Reference|Transaction\s+Reference\s+Number)\s*[\n\r]*',
+    '21':  r'^(?:Related\s+Reference|Receiver\'?s?\s+Reference|Reimbursing\s+Bank\'?s?\s+Reference)\s*[\n\r]*',
     '27':  r'^Sequence\s+of\s+Total\s*[\n\r]*',
     '31C': r'^Date\s+of\s+Issue\s*[\n\r]*',
     '31D': r'^Date\s+and\s+Place\s+of\s+Expiry\s*[\n\r]*',
@@ -1931,9 +1933,21 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
 
         # Set DC number — strip any remaining label text
         _raw_dc = final_lc.consolidated_fields.get('20', '')
-        _raw_dc = re.sub(r"(?i)^(?:Sender'?s?\s+Reference|Documentary\s+Credit\s+Number)\s*[\n\r]*", '', _raw_dc).strip()
+        _raw_dc = re.sub(r"(?i)^(?:Sender'?s?\s+Reference|Documentary\s+Credit\s+Number|Transaction\s+Reference\s+Number)\s*[\n\r]*", '', _raw_dc).strip()
         final_lc.dc_number = _raw_dc
         final_lc.consolidated_fields['20'] = _raw_dc
+
+        # BAHL fallback: If F20 is an internal reference (no LC pattern) but F21
+        # (Related Reference) contains an LC number, use F21 as the DC number.
+        # BAHL uses Transaction Reference in F20 and LC number in F21.
+        _raw_f21 = final_lc.consolidated_fields.get('21', '')
+        if _raw_f21:
+            _raw_f21 = re.sub(r"(?i)^(?:Related\s+Reference|Receiver'?s?\s+Reference)\s*[\n\r]*", '', _raw_f21).strip()
+            if _raw_f21 and not re.search(r'(?:LC|ILC|ALS|DLC)', final_lc.dc_number, re.IGNORECASE) \
+               and re.search(r'(?:LC|ILC|ALS|DLC)', _raw_f21, re.IGNORECASE):
+                _progress(f"  DC number: using Related Reference (F21) '{_raw_f21}' over Transaction Reference (F20) '{final_lc.dc_number}'")
+                final_lc.dc_number = _raw_f21
+                final_lc.consolidated_fields['20'] = _raw_f21
         final_lc.source_packets.append(_get_packet_field(base_pkt, 'packet_id', 0))
 
         # If multiple MT700 packets, extract from subsequent ones too

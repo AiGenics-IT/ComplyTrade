@@ -537,11 +537,105 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         if m:
             _page_of_total[pg_num] = (int(m.group(1)), int(m.group(2)))
 
+    # ── Step 0a-bis: BAHL multi-message report detection ──
+    # BAHL (Bank Al Habib) PDFs bundle multiple SWIFT messages (MT700, MT707,
+    # MT799, MT999, MT754, MT940, MT730, MT747, MT740) into a single PDF with
+    # "Page X of 43" report pagination. Each message is separated by
+    # "Message Details #N" headers with its own "Identifier: fin.XXX".
+    # If we detect this format, we split by message boundary instead of
+    # "Page X of Y" grouping (which would lump all 43 pages as one MT799).
+    _BAHL_MSG_DETAIL_RE = re.compile(r'Message\s+Details\s+#\s*(\d+)', re.IGNORECASE)
+    _BAHL_IDENTIFIER_RE = re.compile(r'Identifier\s*:\s*fin\.(\d{3})', re.IGNORECASE)
+    _BAHL_FIN_TO_MT = {
+        '700': 'LC', '701': 'LC', '705': 'LC',
+        '707': 'Amendment', '708': 'Amendment',
+        '747': 'Amendment',  # Amendment to Auth to Reimburse
+        '799': 'MT799', '999': 'MT999',
+        '754': 'MT754', '940': 'MT940', '730': 'MT730',
+        '740': 'MT740', '742': 'MT742',
+        '734': 'MT734', '750': 'MT750', '752': 'MT752',
+    }
+
+    _is_bahl = False
+    _bahl_messages = {}  # msg_number -> {'pages': [int], 'mt_type': str, 'fin': str}
+
+    # Scan for "Message Details #N" on each page
+    _msg_detail_pages = {}  # page_number -> [msg_numbers found on this page]
+    for pg_num, _, text in all_page_data:
+        if not text:
+            continue
+        for m in _BAHL_MSG_DETAIL_RE.finditer(text):
+            msg_num = int(m.group(1))
+            if pg_num not in _msg_detail_pages:
+                _msg_detail_pages[pg_num] = []
+            _msg_detail_pages[pg_num].append(msg_num)
+
+    # If 3+ pages have "Message Details #N", this is a BAHL multi-message report
+    if len(_msg_detail_pages) >= 3:
+        _is_bahl = True
+        _progress(f"  BAHL multi-message report detected: {len(_msg_detail_pages)} message headers found")
+
+        # Build message boundaries: assign each page to a message
+        # Sort pages, then assign: page belongs to the most recent Message Details #N
+        sorted_pages_list = sorted(all_page_data, key=lambda x: x[0])
+        current_msg_num = None
+        for pg_num, _, text in sorted_pages_list:
+            # Check if this page starts a new message
+            if pg_num in _msg_detail_pages:
+                # Multiple messages can start on the same page (rare but possible)
+                # Use the LAST message number found on this page
+                new_msgs = sorted(_msg_detail_pages[pg_num])
+                for nm in new_msgs:
+                    if nm not in _bahl_messages:
+                        _bahl_messages[nm] = {'pages': [], 'mt_type': '', 'fin': ''}
+                current_msg_num = new_msgs[-1]
+
+            if current_msg_num is not None:
+                if current_msg_num in _bahl_messages:
+                    _bahl_messages[current_msg_num]['pages'].append(pg_num)
+
+        # Extract fin.XXX identifier for each message
+        for msg_num, msg_info in _bahl_messages.items():
+            for pg_num in msg_info['pages']:
+                text = next((t for pn, _, t in all_page_data if pn == pg_num), '')
+                if text:
+                    m = _BAHL_IDENTIFIER_RE.search(text)
+                    if m:
+                        fin_num = m.group(1)
+                        msg_info['fin'] = fin_num
+                        msg_info['mt_type'] = _BAHL_FIN_TO_MT.get(fin_num, f'MT{fin_num}')
+                        break
+
+        # Log BAHL messages
+        for msg_num in sorted(_bahl_messages.keys()):
+            mi = _bahl_messages[msg_num]
+            _progress(f"    Message #{msg_num}: fin.{mi['fin'] or '?'} = {mi['mt_type'] or '?'}, pages {mi['pages']}")
+
+        # SUPPRESS normal "Page X of Y" grouping for BAHL pages
+        # The report-level "Page X of 43" would incorrectly group everything
+        _bahl_page_set = set()
+        for mi in _bahl_messages.values():
+            _bahl_page_set.update(mi['pages'])
+        _page_of_total = {pg: xy for pg, xy in _page_of_total.items()
+                          if pg not in _bahl_page_set}
+
     # ── Step 0b: First pass — detect SWIFT message starts and Fusion headers ──
     _page_swift_type = {}  # page_number -> 'LC'|'Amendment'|'MT799'|'MT999'|'fusion_header'
 
+    # If BAHL detected, pre-populate _page_swift_type from message boundaries
+    if _is_bahl:
+        for msg_num, mi in _bahl_messages.items():
+            mt = mi['mt_type']
+            if mt:
+                for i, pg in enumerate(mi['pages']):
+                    _page_swift_type[pg] = mt
+
     for pg_num, _, text in all_page_data:
         if not text:
+            continue
+
+        # Skip pages already classified by BAHL multi-message splitter
+        if _is_bahl and pg_num in _page_swift_type:
             continue
 
         is_amendment = any(re.search(p, text, re.IGNORECASE) for p in _SWIFT_AMEND_PATTERNS)
