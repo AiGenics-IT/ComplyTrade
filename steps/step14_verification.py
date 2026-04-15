@@ -2231,119 +2231,299 @@ def run(
             _progress(f"  LOI: Suppressed {_suppressed} timing check(s)")
 
     # ------------------------------------------------------------------ #
-    # 5e. Payment terms verification — Draft vs LC F42C
+    # 5e. Payment terms verification — Drafts + Invoices vs LC F42C
     # ------------------------------------------------------------------ #
-    # If the LC specifies payment terms (F42C), verify that:
-    #   - Draft tenor matches LC terms (sight, X days, usance)
-    #   - For installment LCs, check number of drafts vs installments
-    #   - Draft amounts match installment percentages
+    # Parse F42C to understand payment structure, then verify:
+    #   1. Draft tenor matches LC terms (sight, X days from BL date)
+    #   2. Installment count: number of drafts == number of installments
+    #   3. Each draft amount == installment % × LC amount
+    #   4. Total drafts == LC amount
+    #   5. Total invoices <= LC amount (with tolerance)
+    #
+    # Example F42C:
+    #   100 PCT BY IRREVOCABLE L/C WITH 4 INSTALLMENTS
+    #   A) 25 PCT ... WITHIN 90 DAYS FROM THE B/L ISSUING DATE.
+    #   B) 25 PCT ... WITHIN 180 DAYS FROM THE B/L ISSUING DATE.
+    #   C) 25 PCT ... WITHIN 270 DAYS FROM THE B/L ISSUING DATE.
+    #   D) 25 PCT ... WITHIN 360 DAYS FROM THE B/L ISSUING DATE.
+
+    def _parse_amount(s: str) -> float:
+        """Extract numeric amount from string like 'USD 500,000.00'."""
+        if not s:
+            return 0.0
+        # Remove currency codes and whitespace
+        cleaned = re.sub(r'[A-Z]{2,}\s*', '', s.upper()).strip()
+        # Find the number
+        m = re.search(r'[\d,]+(?:\.\d{1,2})?', cleaned)
+        if m:
+            return float(m.group(0).replace(',', ''))
+        return 0.0
+
     _f42c_val = _get_lc_field_value(step06_result, '42C')
     if _f42c_val:
         _f42c_upper = _f42c_val.upper()
-        _progress(f"  [payment-terms] F42C = {_f42c_upper[:100]}")
+        _progress(f"  [payment-terms] F42C = {_f42c_upper[:120]}")
 
-        # Parse payment terms from F42C
+        # ── Parse payment structure ──
         _is_sight = bool(re.search(r'\bAT\s+SIGHT\b', _f42c_upper))
-        _is_usance = bool(re.search(r'\b(\d+)\s*DAYS?\b', _f42c_upper))
 
-        # Extract tenor days
-        _tenor_days = []
-        for _dm in re.finditer(r'(\d+)\s*DAYS?\b', _f42c_upper):
-            _tenor_days.append(int(_dm.group(1)))
-
-        # Detect installments
+        # Detect installments: "4 INSTALLMENTS" or "FOUR INSTALLMENTS"
         _installment_m = re.search(r'(\d+)\s*INSTALL?MENTS?', _f42c_upper)
         _num_installments = int(_installment_m.group(1)) if _installment_m else 0
 
-        # Extract installment percentages
-        _installment_pcts = []
-        for _pm in re.finditer(r'(\d+)\s*(?:PCT|PERCENT|%)', _f42c_upper):
-            _installment_pcts.append(int(_pm.group(1)))
+        # Parse individual installment lines: "A) 25 PCT ... WITHIN 90 DAYS FROM ..."
+        # Each installment has: percentage, days, and reference (BL date, sight, etc.)
+        _installments = []  # list of {pct: int, days: int, ref: str}
+        _inst_pattern = re.compile(
+            r'[A-Z]\)\s*(\d+)\s*(?:PCT|PERCENT|%)\s+.*?'
+            r'(?:WITHIN|AFTER)\s+(\d+)\s*DAYS?\s+'
+            r'(?:FROM|AFTER|OF)\s+(.*?)(?:\.|$)',
+            re.IGNORECASE
+        )
+        for _im in _inst_pattern.finditer(_f42c_upper):
+            _installments.append({
+                'pct': int(_im.group(1)),
+                'days': int(_im.group(2)),
+                'ref': _im.group(3).strip(),
+            })
 
-        _progress(f"  [payment-terms] sight={_is_sight}, usance={_is_usance}, "
-                  f"tenor_days={_tenor_days}, installments={_num_installments}, "
-                  f"pcts={_installment_pcts}")
+        # If no structured installments found, try simpler tenor extraction
+        _tenor_days = [inst['days'] for inst in _installments]
+        if not _tenor_days:
+            for _dm in re.finditer(r'(\d+)\s*DAYS?\b', _f42c_upper):
+                _d = int(_dm.group(1))
+                if _d >= 7:  # Filter out garbage small numbers
+                    _tenor_days.append(_d)
 
-        # Find all draft packets
+        _progress(f"  [payment-terms] sight={_is_sight}, installments={_num_installments}, "
+                  f"parsed={_installments}, tenor_days={_tenor_days}")
+
+        # ── Get LC amount and tolerance ──
+        _lc_amount_str = _get_lc_field_value(step06_result, '32B')
+        _lc_amount = _parse_amount(_lc_amount_str)
+        _lc_ccy_m = re.search(r'(USD|EUR|GBP|JPY|CNY|PKR|AED|SAR|INR|BDT|LKR)',
+                              _lc_amount_str.upper())
+        _lc_ccy = _lc_ccy_m.group(1) if _lc_ccy_m else ''
+
+        # Tolerance from F39A (plus/minus percentage) or F39B (max credit amount)
+        # UCP 600 Art 30(b): if no tolerance stated, default is 5% plus/minus
+        _tol_plus = 5.0   # default per UCP 600
+        _tol_minus = 5.0  # default per UCP 600
+        _tol_39a = _get_lc_field_value(step06_result, '39A')
+        _tol_39b = _get_lc_field_value(step06_result, '39B')
+        if _tol_39a:
+            # F39A format: "13/10" means +13%/-10% or "5/5" means ±5%
+            _tol_parts = re.findall(r'(\d+(?:\.\d+)?)', _tol_39a)
+            if len(_tol_parts) >= 2:
+                _tol_plus = float(_tol_parts[0])
+                _tol_minus = float(_tol_parts[1])
+            elif len(_tol_parts) == 1:
+                _tol_plus = _tol_minus = float(_tol_parts[0])
+        elif _tol_39b:
+            # F39B: "NOT EXCEEDING" — no tolerance allowed
+            if re.search(r'NOT\s+EXCEED', _tol_39b, re.IGNORECASE):
+                _tol_plus = 0.0
+                _tol_minus = 0.0
+
+        _progress(f"  [payment-terms] LC amount={_lc_ccy} {_lc_amount}, tolerance=+{_tol_plus}%/-{_tol_minus}%")
+
+        # ── Find draft and invoice packets ──
         _draft_packets = []
+        _invoice_packets = []
         for pkt in deduped_packets:
             _pt = (_pkt_type(pkt) or '').lower()
             if any(k in _pt for k in ('draft', 'bill of exchange', 'boe')):
                 _draft_packets.append(pkt)
+            elif 'invoice' in _pt and 'proforma' not in _pt:
+                _invoice_packets.append(pkt)
 
-        if _draft_packets:
-            _progress(f"  [payment-terms] Found {len(_draft_packets)} draft packet(s)")
+        _progress(f"  [payment-terms] {len(_draft_packets)} draft(s), {len(_invoice_packets)} invoice(s)")
 
-            # Check 1: Installment count vs number of drafts
-            if _num_installments > 0 and len(_draft_packets) != _num_installments:
-                # Find the F42C row to add a note
-                _pt_row_added = False
-                for row in rows:
-                    _ft = _get(row, "field_tag", "")
-                    if _ft == '42C':
-                        _existing = _get(row, "verification_notes", "")
-                        _note = (f"LC requires {_num_installments} installment(s) but "
-                                 f"{len(_draft_packets)} draft(s) presented")
-                        if _existing:
-                            _set(row, "verification_notes", f"{_existing}; {_note}")
-                        else:
-                            _set(row, "verification_notes", _note)
-                        if _get(row, "compliance", "").upper() == "PASS":
-                            _set(row, "compliance", "REVIEW")
-                            _set(row, "result", _note)
-                        _pt_row_added = True
-                        _progress(f"  [payment-terms] Installment mismatch: "
-                                  f"{_num_installments} required vs {len(_draft_packets)} presented")
-                        break
+        # Helper: add/update a payment-terms row in the results
+        def _add_pt_finding(check_name, compliance, result, details):
+            """Add a payment terms finding as a new row or update existing."""
+            _new_row = {
+                "field_tag": "42C",
+                "field_description": f"Payment Terms — {check_name}",
+                "lc_field_value": _f42c_upper[:200],
+                "condition_text": check_name,
+                "compliance": compliance,
+                "result": result,
+                "findings": details,
+                "verification_notes": f"Deterministic payment terms check",
+                "document_checked": "Cross-document",
+                "implicit_type": "payment_terms",
+            }
+            rows.append(_new_row)
+            _progress(f"  [payment-terms] {check_name}: {compliance} — {result}")
 
-            # Check 2: Tenor matching on each draft
-            for _dp in _draft_packets:
+        # ── Check 1: Installment count vs drafts ──
+        if _num_installments > 0:
+            if len(_draft_packets) == _num_installments:
+                _add_pt_finding(
+                    "Installment Count",
+                    "PASS",
+                    f"{len(_draft_packets)} draft(s) presented for {_num_installments} installment(s)",
+                    f"LC requires {_num_installments} installments, {len(_draft_packets)} drafts found"
+                )
+            elif len(_draft_packets) > 0:
+                _add_pt_finding(
+                    "Installment Count",
+                    "FAIL",
+                    f"{len(_draft_packets)} draft(s) presented but LC requires {_num_installments} installment(s)",
+                    f"Mismatch: {len(_draft_packets)} drafts vs {_num_installments} required"
+                )
+
+        # ── Check 2: Tenor matching per draft ──
+        if _tenor_days and _draft_packets:
+            for _di, _dp in enumerate(_draft_packets):
                 _draft_text = (_pkt_text(_dp) or '').upper()
+                _dpg = _dp.get('page_numbers', ['?'])
 
-                # Extract tenor from draft document
+                # Extract tenor from draft
                 _draft_is_sight = bool(re.search(r'\bAT\s+SIGHT\b', _draft_text))
-                _draft_days_m = re.search(r'(\d+)\s*DAYS?\s*(?:AFTER|FROM|OF)\s*(?:SIGHT|B/?L|BILL\s+OF\s+LADING|SHIPMENT|DATE)', _draft_text)
+                _draft_days_m = re.search(
+                    r'(\d+)\s*DAYS?\s*(?:AFTER|FROM|OF)\s*'
+                    r'(?:SIGHT|B/?L|BILL\s+OF\s+LADING|SHIPMENT|DATE|BL\s+ISSUING)',
+                    _draft_text)
                 _draft_days = int(_draft_days_m.group(1)) if _draft_days_m else None
 
-                if _is_sight and not _draft_is_sight and not _draft_days:
-                    # LC says sight but draft doesn't mention sight
-                    # Check if draft text mentions sight in any form
-                    if not re.search(r'\bSIGHT\b', _draft_text):
-                        _progress(f"  [payment-terms] Draft on pg {_dp.get('page_numbers', ['?'])} "
-                                  f"does not mention 'AT SIGHT' (LC requires sight)")
+                if _is_sight:
+                    if _draft_is_sight:
+                        _add_pt_finding(
+                            f"Draft Tenor (pg {_dpg})",
+                            "PASS",
+                            "Draft is 'AT SIGHT' matching LC terms",
+                            f"Draft on page {_dpg}: AT SIGHT"
+                        )
+                    elif not re.search(r'\bSIGHT\b', _draft_text):
+                        _add_pt_finding(
+                            f"Draft Tenor (pg {_dpg})",
+                            "FAIL",
+                            f"Draft does not state 'AT SIGHT' — LC requires sight payment",
+                            f"Draft on page {_dpg}: no SIGHT reference found"
+                        )
+                elif _draft_days is not None:
+                    if _draft_days in _tenor_days:
+                        _add_pt_finding(
+                            f"Draft Tenor (pg {_dpg})",
+                            "PASS",
+                            f"Draft tenor {_draft_days} days matches LC terms",
+                            f"Draft on page {_dpg}: {_draft_days} days (LC tenors: {_tenor_days})"
+                        )
+                    else:
+                        _add_pt_finding(
+                            f"Draft Tenor (pg {_dpg})",
+                            "FAIL",
+                            f"Draft tenor {_draft_days} days does not match LC terms {_tenor_days}",
+                            f"Draft on page {_dpg}: {_draft_days} days not in {_tenor_days}"
+                        )
 
-                elif _tenor_days and _draft_days:
-                    # Usance: check if draft days matches any LC tenor
-                    if _draft_days not in _tenor_days:
-                        _progress(f"  [payment-terms] Draft tenor {_draft_days} days "
-                                  f"not in LC tenors {_tenor_days}")
+        # ── Check 3: Draft amounts vs installment percentages ──
+        if _lc_amount > 0 and _installments and _draft_packets:
+            _total_draft_amount = 0.0
+            for _di, _dp in enumerate(_draft_packets):
+                _draft_text = (_pkt_text(_dp) or '').upper()
+                _dpg = _dp.get('page_numbers', ['?'])
 
-            # Check 3: Draft amount vs LC amount for installments
-            if _installment_pcts and _num_installments > 0:
-                _lc_amount_str = _get_lc_field_value(step06_result, '32B')
-                _lc_amount_m = re.search(r'[\d,]+(?:\.\d{2})?', _lc_amount_str.replace(',', ''))
-                if _lc_amount_m:
-                    try:
-                        _lc_amount = float(_lc_amount_m.group(0).replace(',', ''))
-                        for _di, _dp in enumerate(_draft_packets):
-                            _draft_text = (_pkt_text(_dp) or '').upper()
-                            # Extract amount from draft
-                            _draft_amt_m = re.search(
-                                r'(?:USD|EUR|GBP|JPY|CNY|PKR)\s*[\d,]+(?:\.\d{2})?',
-                                _draft_text)
-                            if _draft_amt_m:
-                                _draft_amt = float(
-                                    re.sub(r'[A-Z\s]', '', _draft_amt_m.group(0)).replace(',', ''))
-                                # Check against expected installment amount
-                                if _di < len(_installment_pcts):
-                                    _expected = _lc_amount * _installment_pcts[_di] / 100.0
-                                    if abs(_draft_amt - _expected) > 1.0:
-                                        _progress(
-                                            f"  [payment-terms] Draft {_di+1} amount "
-                                            f"{_draft_amt} != expected {_expected} "
-                                            f"({_installment_pcts[_di]}% of {_lc_amount})")
-                    except (ValueError, IndexError):
-                        pass
+                # Extract amount from draft
+                _draft_amt_m = re.search(
+                    r'(?:USD|EUR|GBP|JPY|CNY|PKR|AED|SAR)\s*[\d,]+(?:\.\d{2})?',
+                    _draft_text)
+                if _draft_amt_m:
+                    _draft_amt = _parse_amount(_draft_amt_m.group(0))
+                    _total_draft_amount += _draft_amt
+
+                    # Check against expected installment amount
+                    if _di < len(_installments):
+                        _expected = _lc_amount * _installments[_di]['pct'] / 100.0
+                        _tolerance = _expected * 0.01  # 1% tolerance for rounding
+                        if abs(_draft_amt - _expected) <= _tolerance:
+                            _add_pt_finding(
+                                f"Draft Amount (pg {_dpg})",
+                                "PASS",
+                                f"Draft amount {_lc_ccy} {_draft_amt:,.2f} = "
+                                f"{_installments[_di]['pct']}% of LC amount",
+                                f"Expected: {_expected:,.2f}, Actual: {_draft_amt:,.2f}"
+                            )
+                        else:
+                            _add_pt_finding(
+                                f"Draft Amount (pg {_dpg})",
+                                "FAIL",
+                                f"Draft amount {_lc_ccy} {_draft_amt:,.2f} != "
+                                f"{_installments[_di]['pct']}% of LC ({_expected:,.2f})",
+                                f"Expected: {_expected:,.2f}, Actual: {_draft_amt:,.2f}, "
+                                f"Diff: {abs(_draft_amt - _expected):,.2f}"
+                            )
+
+            # Total drafts vs LC amount (within +/- tolerance)
+            if _total_draft_amount > 0:
+                _max_allowed = _lc_amount * (1 + _tol_plus / 100.0)
+                _min_allowed = _lc_amount * (1 - _tol_minus / 100.0)
+                if _min_allowed <= _total_draft_amount <= _max_allowed:
+                    _add_pt_finding(
+                        "Total Draft Amount",
+                        "PASS",
+                        f"Total drafts {_lc_ccy} {_total_draft_amount:,.2f} within "
+                        f"LC amount {_lc_ccy} {_lc_amount:,.2f} "
+                        f"(+{_tol_plus}%/-{_tol_minus}%)",
+                        f"Range: {_min_allowed:,.2f} to {_max_allowed:,.2f}"
+                    )
+                elif _total_draft_amount > _max_allowed:
+                    _add_pt_finding(
+                        "Total Draft Amount",
+                        "FAIL",
+                        f"Total drafts {_lc_ccy} {_total_draft_amount:,.2f} exceeds "
+                        f"LC amount {_lc_ccy} {_lc_amount:,.2f} (+{_tol_plus}%)",
+                        f"Max allowed: {_max_allowed:,.2f}, over by {_total_draft_amount - _max_allowed:,.2f}"
+                    )
+                else:
+                    _add_pt_finding(
+                        "Total Draft Amount",
+                        "FAIL",
+                        f"Total drafts {_lc_ccy} {_total_draft_amount:,.2f} below "
+                        f"LC amount {_lc_ccy} {_lc_amount:,.2f} (-{_tol_minus}%)",
+                        f"Min allowed: {_min_allowed:,.2f}, short by {_min_allowed - _total_draft_amount:,.2f}"
+                    )
+
+        # ── Check 4: Total invoices vs LC amount (with tolerance) ──
+        if _lc_amount > 0 and _invoice_packets:
+            _total_inv_amount = 0.0
+            for _ip in _invoice_packets:
+                _inv_text = (_pkt_text(_ip) or '').upper()
+                # Look for total/grand total amount
+                _inv_total_m = re.search(
+                    r'(?:GRAND\s+)?TOTAL\s*:?\s*(?:USD|EUR|GBP|JPY|CNY|PKR|AED|SAR)?\s*'
+                    r'([\d,]+(?:\.\d{2})?)',
+                    _inv_text)
+                if _inv_total_m:
+                    _total_inv_amount += float(_inv_total_m.group(1).replace(',', ''))
+                else:
+                    # Fallback: look for any currency amount
+                    _inv_amt_m = re.search(
+                        r'(?:USD|EUR|GBP|JPY|CNY|PKR|AED|SAR)\s*([\d,]+(?:\.\d{2})?)',
+                        _inv_text)
+                    if _inv_amt_m:
+                        _total_inv_amount += float(_inv_amt_m.group(1).replace(',', ''))
+
+            if _total_inv_amount > 0:
+                _inv_max = _lc_amount * (1 + _tol_plus / 100.0)
+                if _total_inv_amount <= _inv_max:
+                    _add_pt_finding(
+                        "Total Invoice Amount",
+                        "PASS",
+                        f"Total invoices {_lc_ccy} {_total_inv_amount:,.2f} within "
+                        f"LC amount {_lc_ccy} {_lc_amount:,.2f} (+{_tol_plus}% tolerance)",
+                        f"Max allowed: {_inv_max:,.2f}"
+                    )
+                else:
+                    _add_pt_finding(
+                        "Total Invoice Amount",
+                        "FAIL",
+                        f"Total invoices {_lc_ccy} {_total_inv_amount:,.2f} exceeds "
+                        f"LC amount {_lc_ccy} {_lc_amount:,.2f} (+{_tol_plus}% = {_inv_max:,.2f})",
+                        f"Invoice overdrawn by {_total_inv_amount - _inv_max:,.2f}"
+                    )
 
     # ------------------------------------------------------------------ #
     # 6. Build summary statistics
