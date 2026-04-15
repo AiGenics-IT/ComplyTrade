@@ -1251,14 +1251,25 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
 
     # 13. SWIFT date conversion (31C, 31D, 44C)
     if tag in ('31C', '31D', '44C'):
+        # Format 1: "250103 2025 Jan 03" (Fusion long format) → "2025-01-03"
         _dm = re.search(r'(\d{6})\s+(\d{4})\s+(\w{3})\s+(\d{1,2})', v)
         if _dm:
             _months = {'Jan':'01','Feb':'02','Mar':'03','Apr':'04','May':'05','Jun':'06',
                        'Jul':'07','Aug':'08','Sep':'09','Oct':'10','Nov':'11','Dec':'12'}
             _date_str = f"{_dm.group(2)}-{_months.get(_dm.group(3),'01')}-{int(_dm.group(4)):02d}"
             v = (v[:_dm.start()] + _date_str + v[_dm.end():]).strip()
-        # Remove leftover raw 6-digit SWIFT date codes
-        v = re.sub(r'\b\d{6}\b\s*', '', v).strip()
+            # Only strip leftover 6-digit codes AFTER successful conversion
+            # (the converted date is now YYYY-MM-DD, remove any duplicate raw code)
+            v = re.sub(r'\b\d{6}\b\s*', '', v).strip()
+        else:
+            # Format 2: "250103" alone (Alliance raw date) → convert to "2025-01-03"
+            _raw_date = re.search(r'\b(\d{2})(\d{2})(\d{2})\b', v)
+            if _raw_date:
+                _yy, _mm, _dd = _raw_date.group(1), _raw_date.group(2), _raw_date.group(3)
+                _year = f"20{_yy}" if int(_yy) < 80 else f"19{_yy}"
+                _date_str = f"{_year}-{_mm}-{_dd}"
+                v = v[:_raw_date.start()] + _date_str + v[_raw_date.end():]
+                v = v.strip()
 
     # 14a. Strip a leading punctuation-only line (e.g. '.\nALLOWED' →
     # 'ALLOWED'). This catches the residue when the SWIFT label was
