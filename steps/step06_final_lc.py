@@ -233,6 +233,29 @@ def _extract_swift_fields(text: str, source_page: int = 0, source_mt: str = '') 
     # Also for Alliance colon-format: "...valueF:32B:" → "...value\n:32B:"
     text = re.sub(r'([^\n])(:\d{2}[A-Z]?:)', r'\1\n\2', text)
 
+    # P107: Fix OCR-truncated tags where leading digits are lost.
+    # e.g. "D: Date and Place of Expiry" → "31D: Date and Place of Expiry"
+    # Only fix known SWIFT field label patterns to avoid false positives.
+    _TRUNCATED_TAG_FIXES = [
+        (r'(?<=\n)\s*D:\s*(?=Date\s+and\s+Place\s+of\s+Expiry)',   '31D: '),
+        (r'(?<=\n)\s*C:\s*(?=Date\s+of\s+Issue)',                   '31C: '),
+        (r'(?<=\n)\s*B:\s*(?=Currency\s+Code)',                     '32B: '),
+        (r'(?<=\n)\s*A:\s*(?=Form\s+of\s+Documentary\s+Credit)',    '40A: '),
+        (r'(?<=\n)\s*A:\s*(?=Available\s+With)',                    '41A: '),
+        (r'(?<=\n)\s*D:\s*(?=Available\s+With)',                    '41D: '),
+        (r'(?<=\n)\s*C:\s*(?=Drafts\s+at)',                         '42C: '),
+        (r'(?<=\n)\s*D:\s*(?=Drawee)',                              '42D: '),
+        (r'(?<=\n)\s*P:\s*(?=Partial\s+Shipment)',                  '43P: '),
+        (r'(?<=\n)\s*T:\s*(?=Transship)',                           '43T: '),
+        (r'(?<=\n)\s*A:\s*(?=(?:Place|Port)\s+of\s+(?:Loading|Taking))', '44A: '),
+        (r'(?<=\n)\s*E:\s*(?=Port\s+of\s+(?:Loading|Discharge))',  '44E: '),
+        (r'(?<=\n)\s*F:\s*(?=Port\s+of\s+Discharge)',              '44F: '),
+        (r'(?<=\n)\s*B:\s*(?=Place\s+of\s+Final\s+Destination)',   '44B: '),
+        (r'(?<=\n)\s*D:\s*(?=Charges)',                             '71D: '),
+    ]
+    for _pat, _repl in _TRUNCATED_TAG_FIXES:
+        text = re.sub(_pat, _repl, text, count=1, flags=re.IGNORECASE)
+
     fields = []
     found_tags = set()
 
@@ -2564,7 +2587,29 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                         break
             continue
 
-        # Pattern C: "SEE FIELD YY" / "AS PER FIELD YY" / "REFER TO FIELD YY" (no clause number)
+        # Pattern C1: "REFER TO FIELD 47A(10)" — clause number in parentheses
+        _paren_ref_m = re.search(
+            r'(?:SEE|REFER\s+(?:TO)?|AS\s+PER)\s+FIELD\s+(\d{2}[A-Z]?)\s*\(\s*(\d+)\s*\)',
+            _val, re.IGNORECASE)
+        if _paren_ref_m:
+            _ref_tag = _paren_ref_m.group(1)
+            _clause_num = int(_paren_ref_m.group(2))
+            _ref_val = _cf.get(_ref_tag, '')
+            if _ref_val:
+                _ref_clauses = _split_into_clauses(_ref_tag, _ref_val)
+                for _rc in _ref_clauses:
+                    if _rc.clause_number == _clause_num:
+                        _resolved = _rc.text.strip()
+                        _cf[_tag] = f"{_val.strip()}\n[Resolved: {_resolved}]"
+                        _progress(f"  F{_tag}: resolved ref from F{_ref_tag} clause ({_clause_num}) → {_resolved[:60]}")
+                        break
+                else:
+                    # Clause number not found — try matching by content keyword
+                    # e.g., clause 10 might be labelled differently
+                    _progress(f"  F{_tag}: clause ({_clause_num}) not found in F{_ref_tag} ({len(_ref_clauses)} clauses)")
+            continue
+
+        # Pattern C2: "SEE FIELD YY" / "AS PER FIELD YY" / "REFER TO FIELD YY" (no clause number)
         _simple_ref_m = re.search(
             r'(?:SEE|REFER\s+(?:TO)?|AS\s+PER)\s+FIELD\s+(\d{2}[A-Z]?)',
             _val, re.IGNORECASE)
