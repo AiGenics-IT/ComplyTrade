@@ -266,7 +266,11 @@ def _classify_page_vlm(page_num: int, image_path: str, glm_text: str, _max_retri
                 'error': 'Image not found'}
 
     img_b64 = base64.b64encode(open(image_path, 'rb').read()).decode()
-    prompt = CLASSIFY_PROMPT.format(glm_text=glm_text)
+    # Truncate long OCR text to avoid exceeding model's context window (16K)
+    # The classification prompt + image tokens use ~2-8K, leaving ~8K for text
+    _max_text = 4000
+    _truncated_text = glm_text[:_max_text] if len(glm_text) > _max_text else glm_text
+    prompt = CLASSIFY_PROMPT.format(glm_text=_truncated_text)
     _current_img_b64 = img_b64  # May be replaced with resized version on retry
     payload = {
         "model": QWEN_VLM_MODEL,
@@ -578,12 +582,23 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         # Build message boundaries: assign each page to a message
         # Sort pages, then assign: page belongs to the most recent Message Details #N
         sorted_pages_list = sorted(all_page_data, key=lambda x: x[0])
+        # Find the max page number that has a "Page X of Y" matching the
+        # BAHL report pagination. Pages beyond this are shipping docs.
+        _bahl_max_page = 0
+        for pg_num in sorted(_msg_detail_pages.keys()):
+            if pg_num in _page_of_total:
+                _x, _y = _page_of_total[pg_num]
+                # The report total (e.g., "Page 1 of 7") tells us the last page
+                _bahl_max_page = max(_bahl_max_page, pg_num + (_y - _x))
+
         current_msg_num = None
         for pg_num, _, text in sorted_pages_list:
+            # Stop assigning to BAHL messages once we pass the report boundary
+            if _bahl_max_page > 0 and pg_num > _bahl_max_page:
+                break
+
             # Check if this page starts a new message
             if pg_num in _msg_detail_pages:
-                # Multiple messages can start on the same page (rare but possible)
-                # Use the LAST message number found on this page
                 new_msgs = sorted(_msg_detail_pages[pg_num])
                 for nm in new_msgs:
                     if nm not in _bahl_messages:

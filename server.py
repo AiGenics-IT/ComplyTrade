@@ -1716,7 +1716,7 @@ async def save_final_lc(job_id: str, request: Request):
 # ── Compatibility endpoints (for old views) ──
 # These endpoints maintain backward compatibility with earlier UI versions.
 
-@app.get("/api/final-lc-pdf/{job_id}/{lc_number}")
+@app.get("/api/final-lc-pdf/{job_id}/{lc_number:path}")
 def get_final_lc_pdf(job_id: str, lc_number: str):
     """Generate/return Final LC PDF (compatibility endpoint)."""
     if job_id not in _jobs:
@@ -2043,7 +2043,7 @@ def select_lc(job_id: str):
     return {"lcs": [dc_num] if dc_num else [], "selected": dc_num}
 
 
-@app.post("/api/verify/{job_id}/{lc_number}")
+@app.post("/api/verify/{job_id}/{lc_number:path}")
 def start_verification(job_id: str, lc_number: str, background_tasks: BackgroundTasks):
     """
     Start verification (Steps 12-20) for a specific LC.
@@ -2234,7 +2234,7 @@ def verify_result(verification_id: str):
     raise HTTPException(404, "Verification not found")
 
 
-@app.get("/api/verify/history/{job_id}/{lc_number}")
+@app.get("/api/verify/history/{job_id}/{lc_number:path}")
 def verify_history(job_id: str, lc_number: str):
     """Get verification history for a job/LC."""
     if job_id in _jobs:
@@ -2320,7 +2320,7 @@ async def verify_update(verification_id: str, request: Request):
     return {"status": "ok", "saved": len(merged), "path": overrides_path}
 
 
-@app.get("/api/report/{job_id}/{lc_number}")
+@app.get("/api/report/{job_id}/{lc_number:path}")
 def get_report_by_lc(job_id: str, lc_number: str):
     """Get compliance report for a specific LC number. Returns the most recent report."""
     results_dir = os.path.join(RESULTS_DIR, job_id)

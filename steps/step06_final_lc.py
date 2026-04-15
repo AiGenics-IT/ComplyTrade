@@ -1201,6 +1201,12 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
     v = re.sub(r'The image appears to be blank[.\s]*',
                '', v, flags=re.IGNORECASE).strip()
 
+    # 11a. Common SWIFT/OCR abbreviation corrections
+    v = re.sub(r'\bFRM\b', 'FROM', v)
+    v = re.sub(r'\bWTHN\b', 'WITHIN', v)
+    v = re.sub(r'\bSHPMNT\b', 'SHIPMENT', v)
+    v = re.sub(r'\bDOCS?\b(?=\s+(?:PRESENTED|REQUIRED|MUST))', 'DOCUMENTS', v)
+
     # 11b. P88: Line-ending hyphen continuation join.
     # SWIFT/OCR text sometimes breaks a word or reference number across
     # lines with a hyphen: "PL-0725-\n201501-M05-002828". Join these
