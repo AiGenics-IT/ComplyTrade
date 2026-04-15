@@ -1019,7 +1019,7 @@ _FIELD_LABEL_STRIP = {
     '41A': r'^(?:Available\s+With.*?(?:By\.{0,3})?|\.{2,}\s*By\s*\.{2,}.*?(?:Name\s+and\s+Address)?:?)\s*[\n\r]*',
     '41D': r'^(?:Available\s+With.*?(?:Code|By\.{0,3})?|\.{2,}\s*By\s*\.{2,}.*?(?:Name\s+and\s+Address)?:?)\s*[\n\r]*',
     '42A': r'^(?:Drawee|Issuing\s+Bank).*?(?:Identifier\s+Code)?\s*[\n\r]*',
-    '42D': r'^(?:Drawee.*?(?:Name\s+and\s+Address|Party\s+Identifier).*?|Name\s+and\s+Address\s*:?\s*)\s*[\n\r]*',
+    '42D': r'^Drawee[\s\S]*?(?:Name\s+and\s+Address\s*:?\s*[\n\r]*)',
     '42C': r'^Drafts\s+at\s*\.{0,3}\s*[\n\r]*',
     '42P': r'^(?:Negotiation/)?Deferred\s+Payment\s+Details\s*[\n\r]*',
     '43P': r'^Partial\s+Shipments?[\.,;:]?\s*[\n\r]*',
@@ -2299,11 +2299,19 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             extra_text = _get_packet_refined_text(extra_pkt)
             extra_page = _get_packet_first_page(extra_pkt)
             extra_fields = _extract_swift_fields(extra_text, source_page=extra_page, source_mt='MT700')
+            _clause_tags = {'46A', '47A', '45A', '78', '72', '79'}
             for sf in extra_fields:
                 if sf.tag not in final_lc.consolidated_fields:
                     final_lc.consolidated_fields[sf.tag] = sf.value
                     final_lc.original_fields[sf.tag] = sf.value
                     _progress(f"    F{sf.tag} (from extra MT700): {sf.value[:60]}...")
+                elif sf.tag in _clause_tags and sf.value:
+                    # Append continuation text for multi-page clause fields
+                    existing = final_lc.consolidated_fields[sf.tag]
+                    if sf.value not in existing:
+                        final_lc.consolidated_fields[sf.tag] = existing.rstrip() + '\n' + sf.value
+                        final_lc.original_fields[sf.tag] = final_lc.consolidated_fields[sf.tag]
+                        _progress(f"    F{sf.tag} (appended from extra MT700 page): +{len(sf.value)} chars")
             final_lc.source_packets.append(_get_packet_field(extra_pkt, 'packet_id', 0))
 
     # -- Apply amendments (MT707) in sequence --
@@ -2728,14 +2736,22 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 final_lc.clauses[tag] = clause_list
                 _progress(f"  F{tag} ({SWIFT_FIELD_LABELS.get(tag, '')}): {len(clause_list)} clauses")
 
-    # -- Extract MT799 narrative --
+    # -- Extract MT799 narrative (only if it contains amendment instructions) --
     for pkt in mt799_packets:
         text = _get_packet_refined_text(pkt)
         pkt_id = _get_packet_field(pkt, 'packet_id', 0)
-        final_lc.source_packets.append(pkt_id)
-        idx = len([k for k in final_lc.consolidated_fields if k.startswith('799_')])
-        final_lc.consolidated_fields[f'799_{idx + 1}'] = text
-        _progress(f"  MT799 packet {pkt_id}: stored as 799_{idx + 1}")
+        # Only store MT799s that reference LC fields or contain amendment instructions
+        _has_amendment_content = bool(re.search(
+            r'FIELD\s+\d{2}[A-Z]|UNDER\s+FIELD|TO\s+READ\s+AS|I/O\s+EXISTING|PLEASE\s+AMEND',
+            text, re.IGNORECASE
+        ))
+        if _has_amendment_content:
+            final_lc.source_packets.append(pkt_id)
+            idx = len([k for k in final_lc.consolidated_fields if k.startswith('799_')])
+            final_lc.consolidated_fields[f'799_{idx + 1}'] = text
+            _progress(f"  MT799 packet {pkt_id}: stored as 799_{idx + 1} (has amendment content)")
+        else:
+            _progress(f"  MT799 packet {pkt_id}: skipped (no amendment content)")
 
     final_lc.warnings = warnings
 

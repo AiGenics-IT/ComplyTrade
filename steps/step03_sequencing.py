@@ -125,6 +125,8 @@ DOCUMENT TYPES — Use the EXACT document title/heading visible on the page. Com
   Products Quantity Certificate, Loading Inspection Report,
   Survey Report, Ullage Report, Cargo Manifest, Mate Receipt,
   Debit Note, Credit Note, Proforma Invoice, Health Certificate,
+  Full Loading Survey Report, Quality / Analysis, Weight / Quality Certificate,
+  BL Conditions of Carriage, Letter of Indemnity,
   Endorsement Page, Blank Page, Covering Letter, Header Page
 
   Air Waybill, Railway Bill, CMR Consignment Note, Inland Waterway Bill,
@@ -247,6 +249,32 @@ IMPORTANT — DO NOT CONFUSE REFERENCES WITH DOCUMENT TYPE:
 - A Bill of Lading cargo description page may MENTION "Commercial Invoice No." or "L/C Number" — these are REFERENCES, not the document type.
 - If the page has "H.B/L No." or "B/L No." or "Marks & Nos." or "Description of Goods" column headers, it is a BILL OF LADING — even if it mentions invoice numbers in the cargo text.
 - Look at the PAGE HEADER and STRUCTURE (column headers, form fields) to determine document type — NOT keywords in the body text.
+
+━━━ BL CONDITIONS OF CARRIAGE (CRITICAL — DO NOT CONFUSE WITH BILL OF LADING) ━━━
+A page titled "Conditions of carriage" or "Conditions of Contract" or "Terms and Conditions"
+that contains ONLY legal clauses (Hague Rules, Paramount clause, BIMCO, General Average,
+Arbitration, Jason Clause, Liberty and Deviation) is a "BL Conditions of Carriage" — it is
+the reverse/back side of a Bill of Lading, NOT a Bill of Lading itself.
+Key signals: numbered legal clauses (1. Paramount clause, 2. Both-to-Blame, 3. New Jason, etc.),
+no shipper/consignee/vessel/port fields, no "SHIPPED ON BOARD" clause.
+ALWAYS classify as "BL Conditions of Carriage", NEVER as "Bill of Lading".
+
+━━━ WEIGHT/QUALITY CERTIFICATE vs QUALITY/ANALYSIS vs FULL LOADING SURVEY REPORT ━━━
+These are DIFFERENT documents issued by the same surveyor (e.g. Alfred H Knight):
+- "WEIGHT / QUALITY CERTIFICATE": Has BOTH weight establishment data AND quality test results
+  (specification table with TESTED RESULTS). Title says "WEIGHT / QUALITY CERTIFICATE".
+- "QUALITY / ANALYSIS": Has ONLY quality test results (specification table). Title says
+  "QUALITY / ANALYSIS" or just "QUALITY". This is NOT an "Inspection Certificate".
+- "HEALTH CERTIFICATE": Certifies goods are fit for human consumption, free from haram elements.
+  Title says "HEALTH CERTIFICATE".
+- "FULL LOADING SURVEY REPORT": Has loading timeline (vessel arrived, cargo hose connected, etc.),
+  fitness/cleanliness of tanks, last 3 cargoes table. Title says "FULL LOADING SURVEY REPORT".
+USE THE EXACT TITLE from the document. Do NOT rename "QUALITY / ANALYSIS" to "Inspection Certificate".
+
+━━━ L/C BILLS SCHEDULE / COVERING SCHEDULE ━━━
+A page from a negotiating bank (e.g. Standard Chartered) showing "L/C BILLS SCHEDULE" or
+"COVERING SCHEDULE" with document list, CBC number, amount, maturity, and instructions is
+a "Documentary Remittance" (also known as Covering Schedule or L/C Bills Schedule).
 
 ATTACHED SHEETS:
 - If a Bill of Lading says "Details As Per Attached Sheet(s)" or "See Attached" or "As Per Rider", the NEXT page(s) are continuation sheets of that BL — they should be classified as "Bill of Lading" with is_continuation=true, even if they have their own header.
@@ -374,8 +402,21 @@ def _group_into_packets(classifications: List[dict]) -> List[DocumentPacket]:
         # Continuation: only merge if document type AND copy status match
         # (prevents different BL copies from being merged into one packet)
         _copy_status = cls.get('copy_status', 'unknown')
-        _type_matches = (current_packet and
-                         doc_type.lower().strip() == current_packet.document_type.lower().strip())
+        # Type matching: exact match OR both types are survey report aliases
+        _SURVEY_TYPE_ALIASES = {
+            'quality / analysis', 'quality/analysis', 'quality analysis',
+            'quality certificate', 'products quality certificate',
+            'loading inspection report', 'full loading survey report',
+            'survey report', 'inspection report', 'inspection certificate',
+            'pre-shipment inspection report', 'draught survey report',
+            'loading report', 'discharge report',
+        }
+        _curr_lower = doc_type.lower().strip()
+        _pkt_lower = current_packet.document_type.lower().strip() if current_packet else ''
+        _type_matches = (current_packet and (
+            _curr_lower == _pkt_lower or
+            (_curr_lower in _SURVEY_TYPE_ALIASES and _pkt_lower in _SURVEY_TYPE_ALIASES)
+        ))
         _copy_matches = (current_packet and
                          (_copy_status == current_packet.copy_status or
                           _copy_status in ('unknown', '') or
@@ -783,6 +824,17 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             }
             prev_swift_type = 'MT999'
             _progress(f"  Page {pg_num}: PRE-CLASSIFIED as MT999")
+        elif st.startswith('MT') and st not in ('MT799', 'MT999'):
+            # BAHL informational MT types: MT730, MT754, MT940, MT740, MT747, etc.
+            _swift_preclassified[pg_num] = {
+                'page_number': pg_num, 'document_type': st,
+                'is_continuation': False, 'confidence': 0.99,
+                'stamps': [], 'signatures': [], 'seals': [], 'logos': [],
+                'copy_status': 'original', 'copy_label': '', 'marking_status': 'unsigned',
+                'doc_hint': f'SWIFT {st} (BAHL multi-message)',
+            }
+            prev_swift_type = st
+            _progress(f"  Page {pg_num}: PRE-CLASSIFIED as {st}")
         elif st == '_swift_continuation' and prev_swift_type:
             _swift_preclassified[pg_num] = {
                 'page_number': pg_num, 'document_type': prev_swift_type,
@@ -948,11 +1000,133 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             curr['copy_status'] = prev.get('copy_status', curr.get('copy_status', ''))
             _progress(f"  Page {curr.get('page_number', '?')}: CONTINUATION of page {prev.get('page_number', '?')} (similarity={similarity:.0%})")
 
+    # ── Phase 1c: Continuation type inheritance ──
+    # Handles THREE scenarios:
+    #
+    # A) NORMAL SEQUENCING (adjacent pages, no Page X of Y):
+    #    Page 19 = "Quality / Analysis", page 20 = continuation "Inspection Cert"
+    #    → page 20 inherits "Quality / Analysis" from page 19
+    #
+    # B) REVERSE SEQUENCING (pages have "Page X of Y" out of PDF order):
+    #    Page 19 = "Page 3 of 3", page 20 = "Page 2 of 3", page 22 = "Page 1 of 3"
+    #    → DON'T inherit here — let multi-page grouping (Rule 3) handle via
+    #      type normalization + "Page X of Y" matching
+    #
+    # C) SINGLE-PAGE documents between multi-page reports:
+    #    Page 18 = COO, page 19 = report "Page 2 of 3" (continuation)
+    #    → DON'T inherit COO into the report page
+    #
+    # RULE: Only inherit previous type when the continuation page does NOT have
+    #        its own "Page X of Y" marker. Pages with "Page X of Y" are handled
+    #        by the multi-page grouping in Rule 3 below.
+
+    # Build type-normalization aliases for similarity checking
+    _SURVEY_ALIASES = {
+        'quality / analysis', 'quality/analysis', 'quality analysis',
+        'quality certificate', 'products quality certificate',
+        'loading inspection report', 'full loading survey report',
+        'survey report', 'inspection report', 'inspection certificate',
+        'pre-shipment inspection report', 'pre-shipment inspection certificate',
+        'draught survey report', 'loading report', 'discharge report',
+    }
+
+    _prev_type = None
+    for cls in classifications:
+        pg_num = cls.get('page_number', 0)
+        doc_type = (cls.get('document_type', '') or '').strip()
+        doc_type_lower = doc_type.lower()
+        is_cont = cls.get('is_continuation', False)
+
+        # Skip blank pages — don't let them break the chain
+        if doc_type_lower in ('blank page', 'blank_page', ''):
+            continue
+
+        # Skip SWIFT pre-classified pages — those are already correct
+        if pg_num in _swift_preclassified:
+            _prev_type = doc_type
+            continue
+
+        if is_cont and _prev_type:
+            # Check if this page has its own "Page X of Y" marker
+            _has_page_xy = pg_num in _page_of_total
+
+            if _has_page_xy:
+                # This page has "Page X of Y" — let multi-page grouping handle it.
+                # DON'T inherit from previous PDF page (could be a different document).
+                # But DO update _prev_type so NEXT continuation pages can inherit.
+                _prev_type = doc_type
+                _progress(f"  Page {pg_num}: has Page {_page_of_total[pg_num][0]} of {_page_of_total[pg_num][1]} — skipping inheritance, will use multi-page grouping")
+            else:
+                # No "Page X of Y" — safe to inherit previous page's type
+                if doc_type_lower != _prev_type.lower():
+                    _progress(f"  Page {pg_num}: CONTINUATION type fix: '{doc_type}' → '{_prev_type}' (inherits from previous page)")
+                    cls['document_type'] = _prev_type
+                # Keep _prev_type unchanged (the inherited type)
+        else:
+            # Not a continuation — this becomes the new "previous type"
+            _prev_type = doc_type
+
     # ── Phase 2: Group pages into document packets ──
     _progress("Grouping pages into document packets...")
     packets = _group_into_packets(classifications)
 
-    # Add text data to packets
+    # ── Smart Document Merging ──
+    # After initial packet building, merge related documents that are on
+    # different (non-adjacent) pages:
+    # 1. BL + BL Conditions of Carriage → merge T&C into nearest BL packet
+    # 2. Multi-page reports (Page X of Y) → group by issuer + report type
+    # 3. Bill of Exchange front + endorsement back → merge
+    # 4. Any document split across pages with same issuer/BL number
+
+    _bl_types = {'bill of lading'}
+    _bl_tc_types = {'bl conditions of carriage', 'conditions of carriage', 'bl terms and conditions'}
+    _boe_types = {'draft bill of exchange', 'bill of exchange'}
+    _boe_back_types = {'endorsement page'}
+    _skip_merge = {'blank page', 'blank_page', 'header page'}
+
+    merged_packets = []
+    _consumed = set()  # packet indices that were merged into another
+
+    for i, pkt in enumerate(packets):
+        if i in _consumed:
+            continue
+        dt = pkt.document_type.lower().strip()
+
+        # Rule 1: BL — absorb nearby BL T&C pages
+        if dt in _bl_types:
+            for j, other in enumerate(packets):
+                if j in _consumed or j == i:
+                    continue
+                odt = other.document_type.lower().strip()
+                if odt in _bl_tc_types:
+                    # Merge T&C into this BL packet
+                    pkt.page_numbers.extend(other.page_numbers)
+                    pkt.pages.extend(other.pages)
+                    pkt.stamps.extend(other.stamps)
+                    pkt.signatures.extend(other.signatures)
+                    pkt.seals.extend(other.seals)
+                    _consumed.add(j)
+                    _progress(f"  Merged {other.packet_id} (BL T&C pg {other.page_numbers}) into {pkt.packet_id} (BL pg {pkt.page_numbers[:2]})")
+                    break  # Only merge ONE T&C per BL
+
+        # Rule 2: Bill of Exchange — absorb endorsement pages
+        elif dt in _boe_types:
+            for j, other in enumerate(packets):
+                if j in _consumed or j == i:
+                    continue
+                odt = other.document_type.lower().strip()
+                if odt in _boe_back_types:
+                    pkt.page_numbers.extend(other.page_numbers)
+                    pkt.pages.extend(other.pages)
+                    pkt.stamps.extend(other.stamps)
+                    pkt.signatures.extend(other.signatures)
+                    _consumed.add(j)
+                    _progress(f"  Merged {other.packet_id} (Endorsement pg {other.page_numbers}) into {pkt.packet_id} (BoE pg {pkt.page_numbers[:2]})")
+                    break
+
+        merged_packets.append(pkt)
+
+    # Build page_text_map for Rule 3 (needed for "Page X of Y" detection)
     page_text_map = {}
     for page in pages:
         if hasattr(page, 'page_number'):
@@ -967,6 +1141,207 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                 'cleaned_text': page.get('cleaned_text', ''),
                 'page_image_path': page.get('page_image_path', ''),
             }
+
+    # Rule 3: Group multi-page reports by "Page X of Y" within their text
+    # Documents like Alfred H Knight reports have "Page 1 of 3", "Page 2 of 3"
+    # in their footer. Group packets from the same report type + same issuer.
+    _report_groups = {}  # key: (doc_type_normalized, issuer) -> list of packet indices
+    for i, pkt in enumerate(merged_packets):
+        dt = pkt.document_type.lower().strip()
+        if dt in _skip_merge or dt in _bl_types or dt in _bl_tc_types:
+            continue
+        # Check if any page has "Page X of Y" with Y > 1
+        for pg_cls in pkt.pages:
+            hint = pg_cls.get('doc_hint', '') if isinstance(pg_cls, dict) else ''
+            # Look for multi-page indicator in the page text
+            pg_num = pg_cls.get('page_number', 0) if isinstance(pg_cls, dict) else 0
+            pg_text = page_text_map.get(pg_num, {}).get('cleaned_text', '') if pg_num else ''
+            _pxy = re.search(r'Page\s+(\d+)\s+of\s+(\d+)', pg_text, re.IGNORECASE)
+            if _pxy and int(_pxy.group(2)) > 1:
+                _page_x = int(_pxy.group(1))
+                _page_y = int(_pxy.group(2))
+
+                # Skip if this is a BAHL report pagination (large Y like "Page 1 of 7"
+                # or "Page 1 of 43") AND the document is a SWIFT type — those are
+                # report-level pagination, not document-level.
+                if _page_y > 5 and dt in ('lc', 'amendment', 'mt799', 'mt999', 'mt730',
+                                            'mt754', 'mt940', 'mt740', 'mt747'):
+                    break  # Don't use report-level pagination for SWIFT merging
+
+                # Extract issuer from first 500 chars (covers letterhead + subheading)
+                _issuer = ''
+                _header = pg_text[:500].upper()
+                if 'ALFRED H KNIGHT' in _header or 'AHK' in _header:
+                    _issuer = 'AHK'
+                elif 'INTERTEK' in _header:
+                    _issuer = 'INTERTEK'
+                elif 'SGS' in _header:
+                    _issuer = 'SGS'
+                elif 'BUREAU VERITAS' in _header:
+                    _issuer = 'BV'
+                elif 'COTECNA' in _header:
+                    _issuer = 'COTECNA'
+                elif 'CALEB BRETT' in _header:
+                    _issuer = 'CB'
+                elif 'SAYBOLT' in _header:
+                    _issuer = 'SAYBOLT'
+                elif 'OLAM' in _header:
+                    _issuer = 'OLAM'
+                elif 'NATIONAL CHEMICAL' in _header or 'NCC' in _header:
+                    _issuer = 'NCC'
+                elif 'STANDARD CHARTERED' in _header:
+                    _issuer = 'SCB'
+                elif 'VITOL' in _header:
+                    _issuer = 'VITOL'
+                elif 'TRAFIGURA' in _header:
+                    _issuer = 'TRAFIGURA'
+                elif 'PETRONAS' in _header:
+                    _issuer = 'PETRONAS'
+                elif 'GUNVOR' in _header:
+                    _issuer = 'GUNVOR'
+                else:
+                    # Fallback: use first 4+ letter word as issuer identifier
+                    _words = re.findall(r'[A-Z]{4,}', _header)
+                    _issuer = _words[0] if _words else 'UNK'
+
+                _norm_type = re.sub(r'\s*\(.*?\)', '', dt).strip()
+
+                # Normalize surveyor report variants to a common type
+                # VLM may classify different pages of the same report with
+                # different names (e.g., "Quality / Analysis" vs "Loading
+                # Inspection Report" vs "Full Loading Survey Report" — all
+                # from Alfred H Knight). Group them by normalized type.
+                _SURVEYOR_REPORT_ALIASES = {
+                    'quality / analysis': 'survey_report',
+                    'quality/analysis': 'survey_report',
+                    'quality analysis': 'survey_report',
+                    'quality certificate': 'survey_report',
+                    'products quality certificate': 'survey_report',
+                    'loading inspection report': 'survey_report',
+                    'full loading survey report': 'survey_report',
+                    'survey report': 'survey_report',
+                    'inspection report': 'survey_report',
+                    'inspection certificate': 'survey_report',
+                    'pre-shipment inspection report': 'survey_report',
+                    'pre-shipment inspection certificate': 'survey_report',
+                    'draught survey report': 'survey_report',
+                    'loading report': 'survey_report',
+                    'discharge report': 'survey_report',
+                    'quantity certificate': 'quantity_report',
+                    'products quantity certificate': 'quantity_report',
+                    'certificate of quantity': 'quantity_report',
+                    'certificate of receipted quantity': 'quantity_report',
+                    'weight certificate': 'weight_report',
+                    'weight / quality certificate': 'weight_report',
+                    'weight/quality certificate': 'weight_report',
+                }
+                _norm_type = _SURVEYOR_REPORT_ALIASES.get(_norm_type, _norm_type)
+
+                _key = (_norm_type, _issuer, str(_page_y))
+
+                if _key not in _report_groups:
+                    _report_groups[_key] = []
+                # Store (packet_index, page_x, first_page_number) for ordering
+                _report_groups[_key].append((i, _page_x, pkt.page_numbers[0]))
+                break
+
+    # Merge multi-page report groups
+    for _key, pkt_entries in _report_groups.items():
+        if len(pkt_entries) <= 1:
+            continue
+
+        # Check: number of packets should match or be close to total pages
+        _total_y = int(_key[2])
+        # Detect multiple copies: if any page_x appears more than once,
+        # we have separate copies (e.g., two packets both claiming "Page 1 of 3")
+        _page_x_values = [e[1] for e in pkt_entries]
+        _has_duplicate_pages = len(_page_x_values) != len(set(_page_x_values))
+        if len(pkt_entries) > _total_y or _has_duplicate_pages:
+            # More packets than total pages — likely multiple copies of same report
+            # Group by proximity: packets within a small window are one copy
+            # Use total_pages * 2 as the max gap (e.g., 3-page report → max 6 page gap)
+            # Group by matching Page X numbers — each complete set (1,2,3) is one copy.
+            # Build groups greedily: for each "Page 1", find the nearest "Page 2", "Page 3" etc.
+            _sorted = sorted(pkt_entries, key=lambda x: x[2])  # sort by first page number
+            _used = set()
+            _groups = []
+            for _entry in _sorted:
+                if id(_entry) in _used:
+                    continue
+                if _entry[1] != 1:
+                    continue  # Start groups from "Page 1"
+                _group = [_entry]
+                _used.add(id(_entry))
+                _last_pg = _entry[2]
+                # Find Page 2, Page 3, etc. — nearest unused match
+                for _need_x in range(2, _total_y + 1):
+                    _best = None
+                    _best_dist = 999
+                    for _cand in _sorted:
+                        if id(_cand) in _used:
+                            continue
+                        if _cand[1] == _need_x:
+                            _dist = abs(_cand[2] - _last_pg)
+                            if _dist < _best_dist:
+                                _best = _cand
+                                _best_dist = _dist
+                    if _best and _best_dist <= _total_y * 3:
+                        _group.append(_best)
+                        _used.add(id(_best))
+                        _last_pg = _best[2]
+                if len(_group) > 1:
+                    _groups.append(_group)
+            # Also group orphan pages (Page 2 or 3 without a Page 1 nearby)
+            _remaining = [e for e in _sorted if id(e) not in _used]
+            if _remaining:
+                _groups.append(_remaining)
+
+            # Merge each proximity group
+            for _group in _groups:
+                if len(_group) <= 1:
+                    continue
+                _sorted_group = sorted(_group, key=lambda x: x[1])  # sort by page_x
+                primary_idx = _sorted_group[0][0]
+                primary = merged_packets[primary_idx]
+                for _entry in _sorted_group[1:]:
+                    other_idx = _entry[0]
+                    other = merged_packets[other_idx]
+                    if other_idx not in _consumed:
+                        primary.page_numbers.extend(other.page_numbers)
+                        primary.pages.extend(other.pages)
+                        primary.stamps.extend(other.stamps)
+                        primary.signatures.extend(other.signatures)
+                        primary.seals.extend(other.seals)
+                        _consumed.add(other_idx)
+                        _progress(f"  Merged {other.packet_id} (pg {other.page_numbers}) into {primary.packet_id} ({_key[0]}, copy group)")
+        else:
+            # Exact match — merge all into one
+            _sorted = sorted(pkt_entries, key=lambda x: x[1])  # sort by page_x
+            primary_idx = _sorted[0][0]
+            primary = merged_packets[primary_idx]
+            for _entry in _sorted[1:]:
+                other_idx = _entry[0]
+                other = merged_packets[other_idx]
+                if other_idx not in _consumed:
+                    primary.page_numbers.extend(other.page_numbers)
+                    primary.pages.extend(other.pages)
+                    primary.stamps.extend(other.stamps)
+                    primary.signatures.extend(other.signatures)
+                    primary.seals.extend(other.seals)
+                    _consumed.add(other_idx)
+                    _progress(f"  Merged {other.packet_id} (pg {other.page_numbers}) into {primary.packet_id} ({_key[0]}, {_key[1]}, {_key[2]} pages)")
+
+    # Remove consumed packets
+    final_packets = [p for i, p in enumerate(merged_packets) if i not in _consumed]
+
+    # Sort page_numbers within each packet
+    for pkt in final_packets:
+        pkt.page_numbers.sort()
+
+    if len(packets) != len(final_packets):
+        _progress(f"  Smart merging: {len(packets)} → {len(final_packets)} packets ({len(packets) - len(final_packets)} merged)")
+
+    packets = final_packets
 
     for pkt in packets:
         # Concatenate text from all pages in packet

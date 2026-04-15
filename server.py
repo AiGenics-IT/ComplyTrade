@@ -1118,6 +1118,7 @@ def get_result(job_id: str):
     # LC/MT docs from Step 3, shipping docs from Step 8 (has VLM-extracted fields)
     identified_objects = []
     _lc_types = {'lc', 'amendment', 'mt700', 'mt707'}
+    _swift_info_types = {'mt799', 'mt999', 'mt730', 'mt754', 'mt940', 'mt740', 'mt747', 'mt734'}
     _skip_types = {'blank page', 'blank_page', 'endorsement page'}
 
     # 1. Add LC/MT packets from Step 3 (no VLM field extraction needed)
@@ -1125,7 +1126,7 @@ def get_result(job_id: str):
         if not isinstance(pkt, dict): continue
         doc_type = (pkt.get('document_type', '') or '').lower()
         if doc_type in _skip_types: continue
-        if doc_type not in _lc_types: continue  # shipping handled below
+        if doc_type not in _lc_types and doc_type not in _swift_info_types: continue  # shipping handled below
         pg_nums = pkt.get('page_numbers', [])
         pg_ref = f"{pg_nums[0]}-{pg_nums[-1]}" if len(pg_nums) > 1 else str(pg_nums[0]) if pg_nums else '?'
         text = '\n'.join(s2_page_texts.get(pn, '') for pn in pg_nums)
@@ -1135,13 +1136,18 @@ def get_result(job_id: str):
         _ot = pkt.get('document_type', 'LC').lower()
         if _ot == 'amendment': _ot = 'amendment'
         elif _ot in ('lc', 'mt700'): _ot = 'lc'
+        elif _ot in _swift_info_types: _ot = _ot  # keep type name, category set below
+        # Set category for UI tab placement
+        _cat = _ot
+        if _ot in _swift_info_types:
+            _cat = 'swift'  # SWIFT messages go in SWIFT tab, not supporting
         identified_objects.append({
             'object_type': _ot,
-            'category': _ot,  # 'lc' or 'amendment' — for UI tab placement
+            'category': _cat,
             'page_reference': pg_ref, 'pages': pg_nums,
             'data': {
                 'document_type': _ot.upper(),
-                'document_category': _ot,
+                'document_category': _cat,
                 'classification_confidence': pkt.get('boundary_confidence', 0.95),
                 'text_preview': text,
                 'copy_status': pkt.get('copy_status', 'original'),
@@ -2712,7 +2718,9 @@ def _process_pipeline(job_id: str):
             if not isinstance(_spkt, dict):
                 continue
             _dt = (_spkt.get('document_type', '') or '').lower()
-            if _dt in ('lc', 'amendment', 'blank page', 'blank_page', 'endorsement page'):
+            if _dt in ('lc', 'amendment', 'blank page', 'blank_page', 'endorsement page',
+                       'mt799', 'mt999', 'mt730', 'mt754', 'mt940', 'mt740', 'mt747', 'mt734',
+                       'header page'):
                 continue
             _spkt_copy = dict(_spkt)
             # Add image paths
