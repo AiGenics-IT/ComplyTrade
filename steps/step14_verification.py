@@ -2231,6 +2231,121 @@ def run(
             _progress(f"  LOI: Suppressed {_suppressed} timing check(s)")
 
     # ------------------------------------------------------------------ #
+    # 5e. Payment terms verification — Draft vs LC F42C
+    # ------------------------------------------------------------------ #
+    # If the LC specifies payment terms (F42C), verify that:
+    #   - Draft tenor matches LC terms (sight, X days, usance)
+    #   - For installment LCs, check number of drafts vs installments
+    #   - Draft amounts match installment percentages
+    _f42c_val = _get_lc_field_value(step06_result, '42C')
+    if _f42c_val:
+        _f42c_upper = _f42c_val.upper()
+        _progress(f"  [payment-terms] F42C = {_f42c_upper[:100]}")
+
+        # Parse payment terms from F42C
+        _is_sight = bool(re.search(r'\bAT\s+SIGHT\b', _f42c_upper))
+        _is_usance = bool(re.search(r'\b(\d+)\s*DAYS?\b', _f42c_upper))
+
+        # Extract tenor days
+        _tenor_days = []
+        for _dm in re.finditer(r'(\d+)\s*DAYS?\b', _f42c_upper):
+            _tenor_days.append(int(_dm.group(1)))
+
+        # Detect installments
+        _installment_m = re.search(r'(\d+)\s*INSTALL?MENTS?', _f42c_upper)
+        _num_installments = int(_installment_m.group(1)) if _installment_m else 0
+
+        # Extract installment percentages
+        _installment_pcts = []
+        for _pm in re.finditer(r'(\d+)\s*(?:PCT|PERCENT|%)', _f42c_upper):
+            _installment_pcts.append(int(_pm.group(1)))
+
+        _progress(f"  [payment-terms] sight={_is_sight}, usance={_is_usance}, "
+                  f"tenor_days={_tenor_days}, installments={_num_installments}, "
+                  f"pcts={_installment_pcts}")
+
+        # Find all draft packets
+        _draft_packets = []
+        for pkt in deduped_packets:
+            _pt = (_pkt_type(pkt) or '').lower()
+            if any(k in _pt for k in ('draft', 'bill of exchange', 'boe')):
+                _draft_packets.append(pkt)
+
+        if _draft_packets:
+            _progress(f"  [payment-terms] Found {len(_draft_packets)} draft packet(s)")
+
+            # Check 1: Installment count vs number of drafts
+            if _num_installments > 0 and len(_draft_packets) != _num_installments:
+                # Find the F42C row to add a note
+                _pt_row_added = False
+                for row in rows:
+                    _ft = _get(row, "field_tag", "")
+                    if _ft == '42C':
+                        _existing = _get(row, "verification_notes", "")
+                        _note = (f"LC requires {_num_installments} installment(s) but "
+                                 f"{len(_draft_packets)} draft(s) presented")
+                        if _existing:
+                            _set(row, "verification_notes", f"{_existing}; {_note}")
+                        else:
+                            _set(row, "verification_notes", _note)
+                        if _get(row, "compliance", "").upper() == "PASS":
+                            _set(row, "compliance", "REVIEW")
+                            _set(row, "result", _note)
+                        _pt_row_added = True
+                        _progress(f"  [payment-terms] Installment mismatch: "
+                                  f"{_num_installments} required vs {len(_draft_packets)} presented")
+                        break
+
+            # Check 2: Tenor matching on each draft
+            for _dp in _draft_packets:
+                _draft_text = (_pkt_text(_dp) or '').upper()
+
+                # Extract tenor from draft document
+                _draft_is_sight = bool(re.search(r'\bAT\s+SIGHT\b', _draft_text))
+                _draft_days_m = re.search(r'(\d+)\s*DAYS?\s*(?:AFTER|FROM|OF)\s*(?:SIGHT|B/?L|BILL\s+OF\s+LADING|SHIPMENT|DATE)', _draft_text)
+                _draft_days = int(_draft_days_m.group(1)) if _draft_days_m else None
+
+                if _is_sight and not _draft_is_sight and not _draft_days:
+                    # LC says sight but draft doesn't mention sight
+                    # Check if draft text mentions sight in any form
+                    if not re.search(r'\bSIGHT\b', _draft_text):
+                        _progress(f"  [payment-terms] Draft on pg {_dp.get('page_numbers', ['?'])} "
+                                  f"does not mention 'AT SIGHT' (LC requires sight)")
+
+                elif _tenor_days and _draft_days:
+                    # Usance: check if draft days matches any LC tenor
+                    if _draft_days not in _tenor_days:
+                        _progress(f"  [payment-terms] Draft tenor {_draft_days} days "
+                                  f"not in LC tenors {_tenor_days}")
+
+            # Check 3: Draft amount vs LC amount for installments
+            if _installment_pcts and _num_installments > 0:
+                _lc_amount_str = _get_lc_field_value(step06_result, '32B')
+                _lc_amount_m = re.search(r'[\d,]+(?:\.\d{2})?', _lc_amount_str.replace(',', ''))
+                if _lc_amount_m:
+                    try:
+                        _lc_amount = float(_lc_amount_m.group(0).replace(',', ''))
+                        for _di, _dp in enumerate(_draft_packets):
+                            _draft_text = (_pkt_text(_dp) or '').upper()
+                            # Extract amount from draft
+                            _draft_amt_m = re.search(
+                                r'(?:USD|EUR|GBP|JPY|CNY|PKR)\s*[\d,]+(?:\.\d{2})?',
+                                _draft_text)
+                            if _draft_amt_m:
+                                _draft_amt = float(
+                                    re.sub(r'[A-Z\s]', '', _draft_amt_m.group(0)).replace(',', ''))
+                                # Check against expected installment amount
+                                if _di < len(_installment_pcts):
+                                    _expected = _lc_amount * _installment_pcts[_di] / 100.0
+                                    if abs(_draft_amt - _expected) > 1.0:
+                                        _progress(
+                                            f"  [payment-terms] Draft {_di+1} amount "
+                                            f"{_draft_amt} != expected {_expected} "
+                                            f"({_installment_pcts[_di]}% of {_lc_amount})")
+                    except (ValueError, IndexError):
+                        pass
+
+    # ------------------------------------------------------------------ #
     # 6. Build summary statistics
     # ------------------------------------------------------------------ #
     pass_count = sum(1 for r in rows if _get(r, "compliance") == "PASS")
