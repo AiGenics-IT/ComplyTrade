@@ -101,6 +101,20 @@ DOC_TYPE_ALIASES = {
         "beneficiarys certificate", "beneficiary statement",
         "beneficiary's statement", "beneficiary declaration",
     ],
+    "courier receipt": [
+        "courier receipt", "courier waybill", "courier service receipt",
+        "express waybill", "express delivery receipt", "express courier",
+        "dhl", "fedex", "fed ex", "ups", "tnt", "aramex",
+        "air waybill", "airway bill", "awb",
+    ],
+    "email evidence": [
+        "email evidence", "email screenshot", "email confirmation",
+        "email copy", "covering email", "transmission record",
+    ],
+    "fax confirmation": [
+        "fax confirmation", "fax report", "fax transmission",
+        "fax receipt", "fax copy",
+    ],
     "documentary remittance": [
         "documentary remittance", "covering letter", "remittance letter",
         "schedule of documents", "letter of transmittal", "covering schedule",

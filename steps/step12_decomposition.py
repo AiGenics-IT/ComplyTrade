@@ -384,10 +384,25 @@ When a clause contains "INSURANCE COVERED BY APPLICANT" together with
 instructions to ADVISE / NOTIFY / SEND DETAILS to the insurer or
 applicant within N days of shipment, the SUBJECT of the clause is the
 SHIPMENT ADVICE the beneficiary must produce — NOT an insurance
-document. Use document_to_check = "Shipment Advice" for every
-condition derived from such a clause. The cover note number, the email
-address of the insurer, the list of details (L/C no, vessel, BL date,
-etc.) — these are all things that must appear on the SHIPMENT ADVICE.
+document. Use document_to_check = "Shipment Advice" for CONTENT
+conditions (address, policy number, shipment details, timing).
+
+RULE I-3b: PROOF OF DISPATCH (CRITICAL)
+When the clause specifies HOW the shipment advice must be sent:
+  • "BY COURIER" → create a separate row with
+    document_to_check = "Courier Receipt" to verify that a courier
+    receipt/airway bill exists proving the dispatch.
+  • "VIA EMAIL" / "BY EMAIL" → create a separate row with
+    document_to_check = "Email Evidence" to verify email screenshot
+    or transmission record exists.
+  • "BY FAX" → create a separate row with
+    document_to_check = "Fax Confirmation" to verify fax transmission
+    report exists.
+The Shipment Advice itself does NOT prove how it was sent — only
+the courier receipt / email screenshot / fax report proves that.
+Always create BOTH:
+  - Content checks against "Shipment Advice" (what does it say?)
+  - Dispatch proof against "Courier Receipt" / "Email Evidence" (was it sent?)
 
 RULE I-4 ("ALL DOCUMENTS" fan-out):
 When a clause says "L/C NUMBER MUST APPEAR ON ALL DOCUMENTS" (or any
@@ -398,7 +413,40 @@ this submission. NEVER include "Insurance Policy/Certificate" in such
 a fan-out unless RULE I-1 and RULE I-2 both confirm that insurance is
 required from the beneficiary in this LC.
 
-WORKED COUNTER-EXAMPLE — STUDY THIS:
+WORKED EXAMPLE A — "BY COURIER" (STUDY THIS):
+Clause: "INSURANCE COVERED BY THE APPLICANT. ALL SHIPMENT UNDER
+THIS CREDIT MUST BE ADVISED BY THE BENEFICIARY WITHIN FOUR
+WORKING DAYS AFTER SHIPMENT DIRECT TO UBL INSURERS LIMITED,
+OFFICE NO.501, 5TH FLOOR, SIDIQUE TRADE CENTRE, MAIN BOULEVARD
+GULBERG-II, LAHORE PAKISTAN AND TO THE APPLICANT
+BY COURIER REFERRING TO THEIR OPEN POLICY NO.
+2023008MIPDO00453
+MENTIONING THE DETAIL OF SHIPMENT AND VALUE OF INVOICE
+COPIES OF SUCH SHIPMENT ADVICES
+MUST ACCOMPANY THE ORIGINAL DOCUMENTS."
+
+CORRECT decomposition:
+  1. document_to_check="Shipment Advice", condition="Shipment Advice
+     must be dated within 4 working days after shipment date"
+  2. document_to_check="Shipment Advice", condition="Shipment Advice
+     must be addressed to UBL Insurers Limited, Office No.501, 5th
+     Floor, Sidique Trade Centre, Main Boulevard Gulberg-II, Lahore
+     Pakistan"
+  3. document_to_check="Shipment Advice", condition="Shipment Advice
+     must also be addressed to the Applicant"
+  4. document_to_check="Shipment Advice", condition="Shipment Advice
+     must reference Open Policy No. 2023008MIPDO00453"
+  5. document_to_check="Shipment Advice", condition="Shipment Advice
+     must mention details of shipment (vessel, port, BL date)"
+  6. document_to_check="Shipment Advice", condition="Shipment Advice
+     must mention value of invoice"
+  7. document_to_check="Courier Receipt", condition="Courier receipt
+     must exist proving shipment advice was dispatched by courier
+     to UBL Insurers Limited and to the Applicant"
+  8. document_to_check="Shipment Advice", condition="Copies of the
+     Shipment Advice must accompany the original documents"
+
+WORKED EXAMPLE B — "VIA EMAIL":
 Clause: "INSURANCE COVERED BY APPLICANT. ALL SHIPMENT(S) UNDER THIS
 CREDIT MUST BE ADVISED BY THE BENEFICIARY WITHIN THREE WORKING DAYS
 AFTER SHIPMENT TO M/S. SINDH INSURANCE, KARACHI, PAKISTAN AND TO THE
@@ -408,8 +456,7 @@ DETAILS OF SHIPMENT, SUCH AS L/C NO., INVOICE VALUE, PORT OF SHIPMENT,
 VESSEL NAME, SHIPPED ON BOARD DATE. A COPY OF THIS SHIPMENT ADVICE TO
 ACCOMPANY EACH SET OF DOCUMENT(S)"
 
-CORRECT decomposition (every condition uses Shipment Advice — never
-Insurance Policy/Certificate):
+CORRECT decomposition:
   1. document_to_check="Shipment Advice", condition="Beneficiary must
      send a Shipment Advice within 3 working days after shipment"
   2. document_to_check="Shipment Advice", condition="Shipment Advice
@@ -418,8 +465,9 @@ Insurance Policy/Certificate):
   3. document_to_check="Shipment Advice", condition="Shipment Advice
      must reference Cover Note No. SIL/D/T001/0000001192/0925/001
      dated 04-09-2025"
-  4. document_to_check="Shipment Advice", condition="Shipment Advice
-     must be sent via email to info(at)siut.org"
+  4. document_to_check="Email Evidence", condition="Email evidence must
+     exist showing shipment advice was sent via email to
+     info(at)siut.org"
   5. document_to_check="Shipment Advice", condition="Shipment Advice
      must show L/C number"
   6. document_to_check="Shipment Advice", condition="Shipment Advice
@@ -437,6 +485,8 @@ INCORRECT decomposition (DO NOT DO THIS):
   ❌ document_to_check="Insurance Policy/Certificate", condition="..."
   ❌ Any row asking the verifier to find anything on an Insurance
      Policy or Insurance Certificate.
+  ❌ Checking "Shipment Advice" for courier/email dispatch proof —
+     the Shipment Advice does NOT prove how it was sent.
 The reason is simple: there IS no insurance document in this
 presentation — the applicant arranged the cover separately. Creating
 an Insurance row guarantees a false "REQUIRED DOCUMENT MISSING"
