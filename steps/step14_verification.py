@@ -1235,6 +1235,76 @@ def _call_vlm(
             if len(_line_qtys) > 2:
                 _sum = sum(int(q) for q in _line_qtys)
                 _doc_summary += f"SUM OF LINE QUANTITIES: {_sum} (from {len(_line_qtys)} items)\n"
+
+        # P113: Parse invoice table line items for multi-item invoices
+        # Detects patterns like:
+        #   MEYER RICE COLOR SORTER 10 CHUTES\n5SETS\n28500\n142500
+        #   MEYER SESAME SEEDS COLOR SORTER\n1SET\n28500\n28500\n10CHUTES
+        # Also: structured tables with PRODUCT | QTY | UNIT PRICE | TOTAL
+        if 'invoice' in document_type.lower():
+            _inv_items = []
+            _i = 0
+            while _i < len(_lines):
+                _ls = _lines[_i].strip()
+                # Skip empty lines, headers, footers
+                if not _ls or len(_ls) < 5:
+                    _i += 1
+                    continue
+                # Detect a product name line (starts with letters, >15 chars,
+                # not a header/label like "NAME OF ITEM" or "TOTAL")
+                _is_product = (
+                    len(_ls) > 10 and
+                    _re_sum.search(r'[A-Z]{3,}', _ls) and
+                    not _re_sum.match(r'^(?:NAME|QUANTITY|UNIT|TOTAL|DATE|INVOICE|COMMERCIAL|TO:|FROM:|H\.?S|N\.?T\.?N|CFR|CIF|FOB|ALL\s+OTHER|PAYMENT|PACKING|MERCHANDISE|HEFEI|NO[.,])', _ls, _re_sum.IGNORECASE) and
+                    not _re_sum.match(r'^(?:SAY\s|TOTAL\s*PRICE|PRICE)', _ls, _re_sum.IGNORECASE) and
+                    not _re_sum.search(r'BANK|CERTIFICATE|PROFORMA|INCOTERM', _ls, _re_sum.IGNORECASE)
+                )
+                if _is_product:
+                    _prod_name = _ls
+                    _qty_str = ''
+                    _price_str = ''
+                    _total_str = ''
+                    # Look ahead up to 5 lines for qty/price/total
+                    for _j in range(1, min(6, len(_lines) - _i)):
+                        _next = _lines[_i + _j].strip()
+                        if not _next:
+                            continue
+                        # Quantity: "5SETS", "1SET", "25.50 M.TONS", "736 Ea"
+                        _qm = _re_sum.match(r'^(\d+(?:\.\d+)?)\s*(?:SETS?|PCS|EA|M\.?TONS?|KGS?|UNITS?|ROLLS?|DRUMS?|BAGS?|CARTONS?|BOXES?|CTNS?)', _next, _re_sum.IGNORECASE)
+                        if _qm and not _qty_str:
+                            _qty_str = _next
+                            continue
+                        # Price or total: just a number (28500, 142500)
+                        _nm = _re_sum.match(r'^([\d,]+(?:\.\d{0,2})?)\s*$', _next)
+                        if _nm:
+                            if not _price_str:
+                                _price_str = _next
+                            elif not _total_str:
+                                _total_str = _next
+                            continue
+                        # If we hit another product name, stop
+                        if len(_next) > 10 and _re_sum.search(r'[A-Z]{3,}', _next):
+                            break
+                    if _qty_str or _price_str:
+                        _inv_items.append({
+                            'product': _prod_name,
+                            'qty': _qty_str,
+                            'unit_price': _price_str,
+                            'total': _total_str,
+                        })
+                _i += 1
+
+            if _inv_items:
+                _doc_summary += f"INVOICE LINE ITEMS ({len(_inv_items)} items):\n"
+                for _idx, _item in enumerate(_inv_items, 1):
+                    _doc_summary += (
+                        f"  Item {_idx}: {_item['product']}"
+                        f" | Qty: {_item['qty'] or '?'}"
+                        f" | Unit Price: {_item['unit_price'] or '?'}"
+                        f" | Total: {_item['total'] or '?'}\n"
+                    )
+                _doc_summary += "USE THESE LINE ITEMS to match goods description, quantity, and unit price.\n"
+                _doc_summary += "Match the SPECIFIC item from the LC condition, not the invoice total.\n"
     if _doc_summary:
         document_text = f"[SYSTEM PRE-CALCULATED SUMMARY]\n{_doc_summary}[END SUMMARY]\n\n{document_text}"
 
