@@ -2365,7 +2365,7 @@ def run(
         # ── Find draft and invoice packets ──
         _draft_packets = []
         _invoice_packets = []
-        for pkt in deduped_packets:
+        for pkt in packets:
             _pt = (_pkt_type(pkt) or '').lower()
             if any(k in _pt for k in ('draft', 'bill of exchange', 'boe')):
                 _draft_packets.append(pkt)
