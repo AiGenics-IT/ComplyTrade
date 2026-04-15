@@ -1569,6 +1569,14 @@ def _build_tasks(
         # Get the LC field value for context
         lc_field_value = look_for or _get_lc_field_value(step06_result, field_tag)
 
+        # For 45A sub-conditions (goods/quantity/price), include the FULL
+        # clause text so the VLM knows which product to match on multi-item
+        # invoices. The clause_ref tells us which 45A clause this row is from.
+        if field_tag == '45A' and clause_ref:
+            _full_45a = _get_lc_field_value(step06_result, '45A')
+            if _full_45a and len(lc_field_value) < len(_full_45a):
+                lc_field_value = _full_45a
+
         # Determine which document types to check
         # For key-term fields that check multiple doc types, expand
         doc_types_to_check = []
