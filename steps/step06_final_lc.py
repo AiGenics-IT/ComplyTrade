@@ -2582,7 +2582,7 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 for _rc in _ref_clauses:
                     if _rc.clause_number == _clause_num:
                         _resolved = _rc.text.strip()
-                        _cf[_tag] = f"{_val.strip()}\n[Resolved: {_resolved}]"
+                        _cf[_tag] = _resolved
                         _progress(f"  F{_tag}: resolved clause #{_clause_num} from F{_ref_tag} → {_resolved[:60]}")
                         break
             continue
@@ -2600,7 +2600,7 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 for _rc in _ref_clauses:
                     if _rc.clause_number == _clause_num:
                         _resolved = _rc.text.strip()
-                        _cf[_tag] = f"{_val.strip()}\n[Resolved: {_resolved}]"
+                        _cf[_tag] = _resolved
                         _progress(f"  F{_tag}: resolved ref from F{_ref_tag} clause ({_clause_num}) → {_resolved[:60]}")
                         break
                 else:
@@ -2635,7 +2635,7 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 for _rc in _ref_clauses:
                     if _rc.clause_number == _clause_num:
                         _resolved = _rc.text.strip()
-                        _cf[_tag] = f"{_val.strip()}\n[Resolved: {_resolved}]"
+                        _cf[_tag] = _resolved
                         _progress(f"  F{_tag}: resolved ref from F{_ref_tag} clause #{_clause_num} → {_resolved[:60]}")
                         break
 
