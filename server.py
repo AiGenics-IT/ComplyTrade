@@ -1115,6 +1115,27 @@ def get_result(job_id: str):
     _amendments = flc.get('amendment_count', 0)
 
     # ── Build identified_objects ──
+    # Helper: format page numbers smartly
+    # Continuous ranges use dash (12-14), non-continuous use comma (12, 10)
+    def _format_page_ref(pg_nums: list) -> str:
+        if not pg_nums:
+            return '?'
+        if len(pg_nums) == 1:
+            return str(pg_nums[0])
+        pgs = sorted(pg_nums)
+        # Build ranges: [12,13,14] → "12-14", [10,12,14] → "10, 12, 14"
+        ranges = []
+        start = pgs[0]
+        prev = pgs[0]
+        for p in pgs[1:]:
+            if p == prev + 1:
+                prev = p
+            else:
+                ranges.append(f"{start}-{prev}" if prev > start else str(start))
+                start = prev = p
+        ranges.append(f"{start}-{prev}" if prev > start else str(start))
+        return ', '.join(ranges)
+
     # LC/MT docs from Step 3, shipping docs from Step 8 (has VLM-extracted fields)
     identified_objects = []
     _lc_types = {'lc', 'amendment', 'mt700', 'mt707'}
@@ -1128,7 +1149,7 @@ def get_result(job_id: str):
         if doc_type in _skip_types: continue
         if doc_type not in _lc_types and doc_type not in _swift_info_types: continue  # shipping handled below
         pg_nums = pkt.get('page_numbers', [])
-        pg_ref = f"{pg_nums[0]}-{pg_nums[-1]}" if len(pg_nums) > 1 else str(pg_nums[0]) if pg_nums else '?'
+        pg_ref = _format_page_ref(pg_nums)
         text = '\n'.join(s2_page_texts.get(pn, '') for pn in pg_nums)
         stamps = pkt.get('stamps', [])
         signatures = pkt.get('signatures', [])
@@ -1140,7 +1161,7 @@ def get_result(job_id: str):
         # Set category for UI tab placement
         _cat = _ot
         if _ot in _swift_info_types:
-            _cat = 'swift'  # SWIFT messages go in SWIFT tab, not supporting
+            _cat = 'swift_messages'  # Must match JS cats key in web_interface.html
         identified_objects.append({
             'object_type': _ot,
             'category': _cat,
@@ -1180,7 +1201,7 @@ def get_result(job_id: str):
         identified_objects.append({
             'object_type': 'final_lc',
             'category': 'final_lc',
-            'page_reference': f"{_lc_pages[0]}-{_lc_pages[-1]}" if _lc_pages else '?',
+            'page_reference': _format_page_ref(_lc_pages),
             'pages': _lc_pages,
             'data': {
                 'document_type': 'FINAL_LC',
@@ -1227,7 +1248,7 @@ def get_result(job_id: str):
             if isinstance(_pg, dict): pg_nums.append(_pg.get('page_number', 0))
             elif isinstance(_pg, int): pg_nums.append(_pg)
         if not pg_nums: pg_nums = pkt.get('page_numbers', [])
-        pg_ref = f"{pg_nums[0]}-{pg_nums[-1]}" if len(pg_nums) > 1 else str(pg_nums[0]) if pg_nums else '?'
+        pg_ref = _format_page_ref(pg_nums)
         # Get text from Step 2
         text = '\n'.join(s2_page_texts.get(pn, '') for pn in pg_nums)
         if not text: text = pkt.get('raw_text', pkt.get('cleaned_text', ''))
