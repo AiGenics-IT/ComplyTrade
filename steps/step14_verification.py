@@ -890,6 +890,15 @@ CRITICAL RULES (follow strictly):
     match, the row is PASS — period.
 21. QUANTITY MATCHING: LC may say "QTY 736" and invoice may show individual line items that SUM to 736. Check the SYSTEM PRE-CALCULATED SUMMARY at the top of the document text — it shows per-product totals. Use these totals instead of counting line items yourself.
 Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 981E" = "LN981E". Ignore spaces in product codes when matching.
+21a. MULTI-ITEM INVOICE MATCHING (CRITICAL):
+    When the LC's 45A has MULTIPLE goods (e.g., "MEYER RICE COLOR SORTER 10 CHUTES QTY 5 SETS" AND "MEYER SESAME SEEDS COLOR SORTER 10 CHUTES QTY 1 SET"), each item becomes a separate verification row. For each row:
+    - SEARCH the invoice for THAT SPECIFIC item by its product name/description
+    - Extract quantity and unit price for THAT specific line item, NOT the invoice total
+    - An invoice may have a TABLE with columns (Name, Qty, Unit Price, Total). Read the CORRECT ROW matching the product.
+    - "MEYER SESAME SEEDS COLOR SORTER 10CHUTES 1SET 28500" is EXACTLY the same as "MEYER SESAME SEEDS COLOR SORTER 10 CHUTES QUANTITY 1 SET AT THE RATE OF USD 28,500"
+    - OCR may glue digits to words: "10CHUTES" = "10 CHUTES", "1SET" = "1 SET", "5SETS" = "5 SETS"
+    - Do NOT confuse one product's data with another's. If checking "SESAME SEEDS", read the SESAME SEEDS row, not the RICE row.
+    - The TOTAL at the bottom covers ALL items — do NOT use the invoice TOTAL as the quantity or unit price for a single item.
 22. PARTY REFERENCES: When the condition says "NOTIFY APPLICANT" or "TO ORDER OF ISSUING BANK", look at the LC PARTIES section above to find the actual name. Then check if that name appears on the document. "NOTIFY APPLICANT" means the notify party field must show the APPLICANT's name (given above). Do NOT look for the literal words "NOTIFY APPLICANT" — look for the applicant's ACTUAL NAME. Check the TOTAL quantity, not individual lines. Also "Ea" (each) is a valid unit — 736 Ea = 736 pieces. If LC says "QTY 736 AT THE RATE OF USD 98.00" and invoice shows 736 units × $98.00 = correct.
 
     PARTY-NAME OCR TOLERANCE (ISBP 821 paragraph A1 & UCP 600 Art 14(d/e)):
@@ -2193,97 +2202,6 @@ def run(
                      f"'{phrase[:80]}' found in document")
                 _progress(f"  {row_id}: FAIL->PASS (address segments matched)")
                 break
-
-    # ------------------------------------------------------------------ #
-    # 5c2. Invoice goods/quantity/price deterministic check
-    # ------------------------------------------------------------------ #
-    # VLM often hallucinates wrong quantity/price from invoice tables.
-    # This post-check extracts values directly from invoice OCR text
-    # and compares against the LC condition deterministically.
-    for task in vlm_tasks:
-        row = task["row"]
-        row_id = task.get("row_id", "?")
-        compliance = _get(row, "compliance", "").upper()
-        if compliance != "FAIL":
-            continue
-
-        cond_text = (task.get("condition_text") or "")
-        doc_text = (task.get("document_text") or "")
-        doc_type = (task.get("document_type") or "").lower()
-
-        # Only check invoice-related failures
-        if "invoice" not in doc_type:
-            continue
-
-        cond_lower = cond_text.lower()
-        doc_norm = _normalise_for_compare(doc_text)
-
-        # Check A: Goods description match
-        # Condition: "Goods description must show 'XXXXX' on the Commercial Invoice"
-        if "goods description" in cond_lower or "description of goods" in cond_lower:
-            # Extract the quoted goods description from condition
-            _gd_quoted = re.findall(r"['\"]([^'\"]{5,})['\"]", cond_text)
-            if _gd_quoted:
-                for _gd in _gd_quoted:
-                    _gd_norm = _normalise_for_compare(_gd)
-                    # Split into key words (3+ chars) for flexible matching
-                    _gd_words = [w for w in _gd_norm.split() if len(w) >= 3]
-                    if not _gd_words:
-                        continue
-                    # Check if most key words appear in the document
-                    _found_count = sum(1 for w in _gd_words if w in doc_norm)
-                    _match_pct = _found_count / len(_gd_words) if _gd_words else 0
-                    if _match_pct >= 0.75:  # 75% of key words found
-                        _set(row, "compliance", "PASS")
-                        _set(row, "result", f"Goods description found in invoice")
-                        _set(row, "findings", f"'{_gd[:60]}' — {_found_count}/{len(_gd_words)} key words matched")
-                        _set(row, "verification_notes",
-                             f"Deterministic override: {_match_pct:.0%} of goods description "
-                             f"words found in invoice text")
-                        _progress(f"  {row_id}: FAIL->PASS (goods desc {_match_pct:.0%} match)")
-                        break
-
-        # Check B: Quantity match
-        # Condition: "Quantity must be '1 SET' on the Commercial Invoice"
-        elif "quantity" in cond_lower and "must" in cond_lower:
-            _qty_quoted = re.findall(r"['\"]([^'\"]{2,})['\"]", cond_text)
-            if _qty_quoted:
-                _qty_str = _qty_quoted[0]
-                _qty_norm = _normalise_for_compare(_qty_str)
-                if _qty_norm in doc_norm:
-                    _set(row, "compliance", "PASS")
-                    _set(row, "result", f"Quantity '{_qty_str}' found in invoice")
-                    _set(row, "findings", f"Quantity '{_qty_str}' verified in document text")
-                    _set(row, "verification_notes", "Deterministic override: quantity text found in invoice")
-                    _progress(f"  {row_id}: FAIL->PASS (quantity '{_qty_str}' found)")
-            else:
-                # Try to extract quantity from condition without quotes
-                _qty_m = re.search(r"quantity\s+must\s+be\s+['\"]?(\d+\s*\w+)", cond_lower)
-                if _qty_m:
-                    _qty_norm = _normalise_for_compare(_qty_m.group(1))
-                    if _qty_norm in doc_norm:
-                        _set(row, "compliance", "PASS")
-                        _set(row, "result", f"Quantity '{_qty_m.group(1)}' found in invoice")
-                        _set(row, "verification_notes", "Deterministic override: quantity found")
-                        _progress(f"  {row_id}: FAIL->PASS (quantity found)")
-
-        # Check C: Unit price match
-        # Condition: "Unit price must be 'USD 28,500/- PER SET'"
-        elif "unit price" in cond_lower and "must" in cond_lower:
-            _price_quoted = re.findall(r"['\"]([^'\"]{3,})['\"]", cond_text)
-            if _price_quoted:
-                _price_str = _price_quoted[0]
-                # Extract just the numeric part for comparison
-                _price_num_m = re.search(r'([\d,]+(?:\.\d+)?)', _price_str)
-                if _price_num_m:
-                    _price_num = _price_num_m.group(1).replace(',', '')
-                    # Search for this number in the document
-                    if _price_num in doc_text.replace(',', '').replace(' ', ''):
-                        _set(row, "compliance", "PASS")
-                        _set(row, "result", f"Unit price {_price_str} found in invoice")
-                        _set(row, "findings", f"Price amount {_price_num} verified in document")
-                        _set(row, "verification_notes", "Deterministic override: price amount found in invoice")
-                        _progress(f"  {row_id}: FAIL->PASS (price {_price_num} found)")
 
     # ------------------------------------------------------------------ #
     # 5d. LOI presentation — suppress timing checks
