@@ -1271,12 +1271,14 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
 
     # 14b. F32B amount cleanup
     if tag == '32B':
-        _ccy = re.search(r'\b([A-Z]{3})\b', v)
+        _ccy = re.search(r'([A-Z]{3})(?=\s|\d|$)', v)
         _ccy_str = _ccy.group(1) if _ccy else 'USD'
+        # Format 1: #123,456.78# (hash-wrapped)
         _am = re.search(r'#([\d,]+\.\d+)#?', v)
         if _am:
             v = f"{_ccy_str} {_am.group(1)}"
         else:
+            # Format 2: European 123.456,78
             _am2 = re.search(r'(\d[\d.]*,\d{2})\b', v)
             if _am2:
                 _amt = _am2.group(1).replace('.', '').replace(',', '.')
@@ -1284,6 +1286,21 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
                     v = f"{_ccy_str} {float(_amt):,.2f}"
                 except ValueError:
                     pass
+            else:
+                # Format 3: USD59415, or USD 59415 (no decimals, trailing comma/period)
+                # Also handles: USD1,234,567 or USD 1234567.00
+                _am3 = re.search(r'([A-Z]{3})\s*([\d,]+(?:\.\d{0,2})?)[,.\s]*$', v)
+                if _am3:
+                    _raw = _am3.group(2).rstrip(',.')
+                    try:
+                        # If it has dots as decimal (USD59415.00)
+                        if '.' in _raw:
+                            _val = float(_raw.replace(',', ''))
+                        else:
+                            _val = float(_raw.replace(',', ''))
+                        v = f"{_am3.group(1)} {_val:,.2f}"
+                    except ValueError:
+                        pass
 
     return v.strip()
 
