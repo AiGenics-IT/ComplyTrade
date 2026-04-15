@@ -2309,9 +2309,16 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                     if _am2:
                         _amt = _am2.group(1).replace('.', '').replace(',', '.')
                         sf.value = f"{_ccy_str} {float(_amt):,.2f}"
-            # Remove raw SWIFT date codes like "260131" if already converted
+            # Convert raw SWIFT date codes: "250103" → "2025-01-03"
+            # Only strip AFTER converting — the old code stripped unconditionally
+            # which wiped Alliance dates that are just 6 digits with no long form.
             if sf.tag in ('31C', '31D', '44C'):
-                sf.value = re.sub(r'\b\d{6}\b\s*', '', sf.value).strip()
+                _raw_dm = re.search(r'\b(\d{2})(\d{2})(\d{2})\b', sf.value)
+                if _raw_dm and not re.search(r'\d{4}-\d{2}-\d{2}', sf.value):
+                    _yy, _mm, _dd = _raw_dm.group(1), _raw_dm.group(2), _raw_dm.group(3)
+                    _year = f"20{_yy}" if int(_yy) < 80 else f"19{_yy}"
+                    sf.value = sf.value[:_raw_dm.start()] + f"{_year}-{_mm}-{_dd}" + sf.value[_raw_dm.end():]
+                    sf.value = sf.value.strip()
 
             # Strip a leading punctuation-only line (e.g. ".\nALLOWED" →
             # "ALLOWED"). The label-strip regex doesn't consume a stray
