@@ -1691,19 +1691,29 @@ def _build_tasks(
             continue
 
         # Auto-PASS copy/duplicate conditions — system counts copies, not VLM
+        # BUT only if the document actually exists in the submission
         condition_text = _get(row, "condition_text", "")
         _cond_upper = condition_text.upper()
         if re.search(r'\b(DUPLICATE|TRIPLICATE|QUADRUPLICATE|OCTUPLICATE|COPIES|FULL\s+SET|IN\s+\d+\s+ORIG)', _cond_upper):
-            _set(row, "compliance", "PASS")
-            _set(row, "result", "Copy requirement verified by system (document count checked)")
-            _set(row, "findings", f"System detected correct number of copies")
-            _set(row, "confidence", 1.0)
-            tasks.append({
-                "row": row,
-                "skip": True,
-                "reason": "copy_count_auto_pass",
-            })
-            continue
+            # Check if the document type mentioned in the condition exists
+            doc_checked = _get(row, "document_checked", "")
+            _doc_exists = False
+            if doc_checked:
+                _matched = _find_matching_docs(doc_checked, deduped_packets)
+                _doc_exists = bool(_matched)
+            if _doc_exists:
+                _set(row, "compliance", "PASS")
+                _set(row, "result", "Copy requirement verified by system (document count checked)")
+                _set(row, "findings", f"System detected correct number of copies")
+                _set(row, "confidence", 1.0)
+                tasks.append({
+                    "row": row,
+                    "skip": True,
+                    "reason": "copy_count_auto_pass",
+                })
+                continue
+            # Document not found — don't auto-pass, let it fall through
+            # to the missing document check below
 
         # P76: Auto-PASS physical packing instructions —
         # "COPY OF X SHOULD BE PLACED INSIDE/IN ANY OF THE CARTON/DRUM/CASE/BOX",
