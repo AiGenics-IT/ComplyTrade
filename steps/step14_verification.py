@@ -1620,8 +1620,16 @@ def _deduplicate_packets(packets: list) -> tuple:
 
         # Check if documents in this group are ACTUAL copies (same content)
         # or DIFFERENT documents with the same type name.
-        # Two documents are copies if their text overlap is > 60%.
-        # If they're different documents, keep ALL of them.
+        # Common document types (invoice, BL, packing list, COO) are almost
+        # always copies — use a lower threshold (40%) to dedup them.
+        # Certificates and other types might be genuinely different documents
+        # with the same type name — use a higher threshold (60%).
+        _ALWAYS_COPY_TYPES = {
+            'commercial invoice', 'invoice', 'packing list', 'packing note',
+            'bill of lading', 'draft bill of exchange', 'bill of exchange',
+            'certificate of origin', 'air waybill', 'airway bill',
+        }
+        _overlap_threshold = 0.40 if doc_type in _ALWAYS_COPY_TYPES else 0.60
         _distinct = []
         for pkt in group:
             _pkt_words = set(_pkt_text(pkt).upper().split())
@@ -1631,7 +1639,7 @@ def _deduplicate_packets(packets: list) -> tuple:
                 if _pkt_words and _ex_words:
                     _overlap = len(_pkt_words & _ex_words)
                     _total = max(len(_pkt_words), len(_ex_words))
-                    if _total > 0 and _overlap / _total > 0.60:
+                    if _total > 0 and _overlap / _total > _overlap_threshold:
                         _is_copy = True
                         break
             if not _is_copy:
