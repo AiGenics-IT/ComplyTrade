@@ -684,6 +684,17 @@ CRITICAL RULES (follow strictly):
    • For a multi-page invoice, the Total line on the LAST page is the figure for the whole invoice — do not add per-page subtotals on top of it.
    • The invoice amount can be LESS than the LC amount (partial/short shipment, allowed under UCP 600 Art 30 tolerance) — that is PASS.
    • Only when invoice Total > LC amount × (1 + tolerance%) is it a FAIL. Verify your arithmetic: 97,216 is NOT greater than 97,216. 95,000 is LESS than 97,216 (PASS, not FAIL).
+   • AMOUNT IN WORDS vs AMOUNT IN FIGURES: Invoices often show
+     "TOTAL PRICE: SAY USD ONE HUNDRED AND SEVENTY-ONE THOUSAND ONLY"
+     (amount in words). This is NOT the amount to compare — always use
+     the NUMERIC amount (e.g., 171,000 or 171000). The words line is
+     just a confirmation. If the SYSTEM PRE-CALCULATED SUMMARY shows
+     an "INVOICE PRINTED TOTAL AMOUNT", use THAT number.
+   • OCR may glue words together: "SAYUSDONEHUNDREDANDSEVENTY-ONETHOUSANDONLY"
+     This is "SAY USD ONE HUNDRED AND SEVENTY-ONE THOUSAND ONLY" = 171,000.
+     Do NOT treat this garbled text as the invoice amount — find the
+     actual numeric total in the invoice table (usually the last number
+     before the words-in-words line).
 8. THIRD PARTY: If F47A says "THIRD PARTY DOCUMENTS ACCEPTABLE", third party documents = PASS.
 
 8a. BENEFICIARY-ISSUED DOCUMENTS: When the condition asks for a document
