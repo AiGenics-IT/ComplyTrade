@@ -670,6 +670,16 @@ document." and mark as FAIL.
 
 VERIFY: Does the document satisfy this condition?
 
+ANTI-HALLUCINATION WARNING:
+DO NOT copy text from the CONDITION into the findings. The findings
+must contain text that ACTUALLY appears in the DOCUMENT TEXT below.
+If the condition says "must mention Import Permit No. IP-LHR-656E13/2025"
+and you cannot find "IP-LHR-656E13" or "Import Permit" anywhere in the
+DOCUMENT TEXT section, the answer is FAIL — the permit is NOT mentioned.
+Search the DOCUMENT TEXT carefully. If a specific reference number,
+permit number, or certificate number from the condition does NOT appear
+in the document text, it is FAIL — do NOT assume it is there.
+
 CRITICAL RULES (follow strictly):
 1. CHECK F47A FIRST: Before marking anything as FAIL, read ALL F47A conditions above carefully. If ANY F47A clause says something is "ACCEPTABLE", "ALLOWED", or "PERMITTED" that relates to this condition, it OVERRIDES the main requirement.
 2. CONDITIONAL ACCEPTANCE: If F47A allows something WITH conditions (e.g., "LATE SHIPMENT ALLOWED PROVIDED penalty deduction"), mark as REVIEW (not FAIL) and explain the condition that needs manual verification.
