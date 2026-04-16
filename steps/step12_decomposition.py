@@ -56,7 +56,7 @@ from pathlib import Path
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config.settings import QWEN_VLM_URL, QWEN_VLM_MODEL, MAX_CONCURRENT_VLM, VLM_TIMEOUT
+from config.settings import QWEN_TEXT_LLM_URL, QWEN_TEXT_LLM_MODEL, MAX_CONCURRENT_VLM, VLM_TIMEOUT
 
 
 # ── Data Models ──────────────────────────────────────────────────────────
@@ -925,7 +925,7 @@ def _call_vlm_decompose(clause_ref: str, field_tag: str, clause_number: int,
         )
 
         payload = {
-            "model": QWEN_VLM_MODEL,
+            "model": QWEN_TEXT_LLM_MODEL,
             "messages": [
                 {"role": "system", "content": DECOMPOSITION_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
@@ -934,7 +934,7 @@ def _call_vlm_decompose(clause_ref: str, field_tag: str, clause_number: int,
             "max_tokens": 2048,
         }
 
-        resp = requests.post(QWEN_VLM_URL, json=payload, timeout=VLM_TIMEOUT)
+        resp = requests.post(QWEN_TEXT_LLM_URL, json=payload, timeout=VLM_TIMEOUT)
         elapsed = time.time() - start
 
         if resp.status_code != 200:

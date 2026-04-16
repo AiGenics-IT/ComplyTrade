@@ -48,7 +48,7 @@ from pathlib import Path
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config.settings import QWEN_VLM_URL, QWEN_VLM_MODEL, MAX_CONCURRENT_VLM, VLM_TIMEOUT
+from config.settings import QWEN_TEXT_LLM_URL, QWEN_TEXT_LLM_MODEL, MAX_CONCURRENT_VLM, VLM_TIMEOUT
 
 
 # ---------------------------------------------------------------------------
@@ -1325,20 +1325,18 @@ def _call_vlm(
     )
 
     # P63: text-only verification. document_text + visual_metadata already
-    # carry every fact the image would provide (see docstring above).
-    content_parts = [{"type": "text", "text": prompt_text}]
-
+    # Text-only LLM — no images needed for verification.
     payload = {
-        "model": QWEN_VLM_MODEL,
+        "model": QWEN_TEXT_LLM_MODEL,
         "messages": [
-            {"role": "user", "content": content_parts},
+            {"role": "user", "content": prompt_text},
         ],
         "max_tokens": 500,
         "temperature": 0.1,
     }
 
     try:
-        resp = requests.post(QWEN_VLM_URL, json=payload, timeout=VLM_TIMEOUT)
+        resp = requests.post(QWEN_TEXT_LLM_URL, json=payload, timeout=VLM_TIMEOUT)
         elapsed = time.time() - start
 
         if resp.status_code != 200:
