@@ -775,6 +775,20 @@ CRITICAL RULES (follow strictly):
       LC amount. Individual installment amounts should each equal
       their percentage of the total.
 
+13d. DATE TYPES — DO NOT CONFUSE DIFFERENT DATES:
+    Documents contain multiple dates with different meanings:
+      • "DATE: AUG.30.2025" on a certificate = ISSUANCE DATE of the certificate
+      • "DATE OF ISSUE: 250818" = LC ISSUE DATE (reference only)
+      • "DATE OF SHIPMENT" / "SHIPPED ON BOARD" = SHIPMENT DATE
+      • "ETA" / "APPROXIMATE ARRIVAL" / "EXPECTED ARRIVAL" = ARRIVAL DATE
+      • "BL DATE" = Bill of Lading date
+    When a condition asks for "date of arrival at port of destination",
+    do NOT use the certificate issuance date or the LC issue date.
+    Look specifically for ETA, arrival date, or expected arrival.
+    If the document does not mention any arrival/ETA date, the correct
+    finding is "arrival date not found" — NOT "date found: AUG.30.2025"
+    (that would be the wrong date type).
+
 13z. STALE BL CHECK ON DOCUMENTARY REMITTANCE (CRITICAL):
     When the condition says "BL must not be stale" and the
     document_to_check is "Documentary Remittance" (or "Covering
