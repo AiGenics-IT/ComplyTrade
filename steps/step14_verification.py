@@ -2006,6 +2006,10 @@ def _build_tasks(
                 })
                 continue
 
+            # multi_doc = True when checking multiple doc types OR multiple
+            # packets of the same type (e.g., 2 different Shipping Company
+            # Certificates). This ensures "ANY PASS = overall PASS" aggregation.
+            _is_multi = len(doc_types_to_check) > 1 or len(matched_pkts) > 1
             for pkt in matched_pkts:
                 images = _pkt_images(pkt)
                 tasks.append({
@@ -2020,7 +2024,7 @@ def _build_tasks(
                     "document_text": _pkt_text(pkt),
                     "visual_metadata": _pkt_visual_metadata(pkt),
                     "image_path": images[0] if images else None,
-                    "multi_doc": len(doc_types_to_check) > 1,
+                    "multi_doc": _is_multi,
                 })
 
     return tasks

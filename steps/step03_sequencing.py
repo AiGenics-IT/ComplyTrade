@@ -294,8 +294,26 @@ def _classify_page_vlm(page_num: int, image_path: str, glm_text: str, _max_retri
         return {'page_number': page_num, 'document_type': 'unknown', 'confidence': 0.0,
                 'error': 'Image not found'}
 
-    img_b64 = base64.b64encode(open(image_path, 'rb').read()).decode()
-    # Truncate long OCR text to avoid exceeding model's context window
+    # Resize image to max 1280px to fit within 16K context window.
+    # Full-res scans (2560x3600) use 8-10K tokens for the image alone,
+    # leaving no room for text+prompt. 1280px is enough for classification.
+    try:
+        from PIL import Image
+        import io
+        img = Image.open(image_path)
+        _max_dim = 1280
+        if img.width > _max_dim or img.height > _max_dim:
+            _scale = min(_max_dim / img.width, _max_dim / img.height)
+            _new_size = (int(img.width * _scale), int(img.height * _scale))
+            img = img.resize(_new_size, Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            img_b64 = base64.b64encode(buf.getvalue()).decode()
+        else:
+            img_b64 = base64.b64encode(open(image_path, 'rb').read()).decode()
+    except Exception:
+        img_b64 = base64.b64encode(open(image_path, 'rb').read()).decode()
+    # Keep ALL OCR text — never truncate below 4000
     _max_text = 4000
     _truncated_text = glm_text[:_max_text] if len(glm_text) > _max_text else glm_text
     prompt = CLASSIFY_PROMPT.format(glm_text=_truncated_text)
