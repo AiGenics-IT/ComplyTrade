@@ -261,7 +261,10 @@ def run(pdf_path: str, output_dir: str = None, progress_callback=None) -> dict:
                 'pages': '',
                 'prompt': GLM_OCR_PROMPT,
             }
-            resp = requests.post(GLM_OCR_URL, files=files, data=data, timeout=max(600, OCR_TIMEOUT * total_pages))
+            # Cap full-PDF timeout at 10 minutes — if GLM can't process
+            # the whole PDF in 10 min, fall back to page-by-page batches
+            _full_pdf_timeout = min(600, 60 * total_pages)  # ~1 min/page, max 10 min
+            resp = requests.post(GLM_OCR_URL, files=files, data=data, timeout=_full_pdf_timeout)
         ocr_elapsed = time.time() - ocr_start
 
         if resp.status_code == 200:
