@@ -820,12 +820,16 @@ CRITICAL RULES (follow strictly):
       • "DATE OF SHIPMENT" / "SHIPPED ON BOARD" = SHIPMENT DATE
       • "ETA" / "APPROXIMATE ARRIVAL" / "EXPECTED ARRIVAL" = ARRIVAL DATE
       • "BL DATE" = Bill of Lading date
-    When a condition asks for "date of arrival at port of destination",
-    do NOT use the certificate issuance date or the LC issue date.
-    Look specifically for ETA, arrival date, or expected arrival.
-    If the document does not mention any arrival/ETA date, the correct
-    finding is "arrival date not found" — NOT "date found: AUG.30.2025"
-    (that would be the wrong date type).
+    When a condition asks for "date of arrival at port of destination"
+    or "approximate date of arrival", look for ANY of these:
+      • "ETA:" or "ETA :" — Estimated Time of Arrival = approximate arrival date
+      • "APPROXIMATE DATE OF ARRIVAL"
+      • "EXPECTED ARRIVAL" / "EXPECTED DATE OF ARRIVAL"
+      • "TENTATIVE DATE OF ARRIVAL"
+      • "ARRIVAL DATE" / "DATE OF ARRIVAL"
+    "ETA:SEP.20.2025" means the vessel is expected to arrive on Sep 20, 2025.
+    This IS the "approximate date of arrival" the LC is asking for → PASS.
+    Do NOT use the certificate issuance date or the LC issue date for this.
 
 13z. STALE BL CHECK ON DOCUMENTARY REMITTANCE (CRITICAL):
     When the condition says "BL must not be stale" and the
@@ -1566,12 +1570,41 @@ def _deduplicate_packets(packets: list) -> tuple:
     doc_counts = {}
     for doc_type, group in type_groups.items():
         doc_counts[doc_type] = len(group)
-        # Pick the representative: prefer the one with most text content
-        best = max(group, key=lambda p: len(_pkt_text(p)))
-        # Store count metadata on the representative
-        if isinstance(best, dict):
-            best['_copy_count'] = len(group)
-        deduped.append(best)
+        if len(group) == 1:
+            deduped.append(group[0])
+            continue
+
+        # Check if documents in this group are ACTUAL copies (same content)
+        # or DIFFERENT documents with the same type name.
+        # Two documents are copies if their text overlap is > 60%.
+        # If they're different documents, keep ALL of them.
+        _distinct = []
+        for pkt in group:
+            _pkt_words = set(_pkt_text(pkt).upper().split())
+            _is_copy = False
+            for _existing in _distinct:
+                _ex_words = set(_pkt_text(_existing).upper().split())
+                if _pkt_words and _ex_words:
+                    _overlap = len(_pkt_words & _ex_words)
+                    _total = max(len(_pkt_words), len(_ex_words))
+                    if _total > 0 and _overlap / _total > 0.60:
+                        _is_copy = True
+                        break
+            if not _is_copy:
+                _distinct.append(pkt)
+
+        if len(_distinct) == 1:
+            # All copies of the same document — pick the one with most text
+            best = max(group, key=lambda p: len(_pkt_text(p)))
+            if isinstance(best, dict):
+                best['_copy_count'] = len(group)
+            deduped.append(best)
+        else:
+            # Different documents with same type — keep all
+            for d in _distinct:
+                if isinstance(d, dict):
+                    d['_copy_count'] = 1
+                deduped.append(d)
 
     return deduped, doc_counts
 
