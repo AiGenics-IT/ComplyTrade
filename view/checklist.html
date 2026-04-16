@@ -1588,7 +1588,7 @@ async function runV(){
 
 async function poll(id,el){
     let a=0,lastLogCount=0,stalledTicks=0;
-    while(a<900){
+    while(true){  // No timeout — verification can take as long as needed
         if(_pollCancelled)return;
         await slp(1000);a++;
         try{
@@ -1615,9 +1615,6 @@ async function poll(id,el){
             }
         }catch(_){}
     }
-    el.innerHTML+='<div style="color:var(--warning)">Polling timed out after 15 minutes. Refreshing page to check results...</div>';
-    el.scrollTop=el.scrollHeight;
-    setTimeout(()=>location.reload(),3000);
 }
 
 // ─── Editor ───
