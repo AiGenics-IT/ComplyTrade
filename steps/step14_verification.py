@@ -1652,12 +1652,49 @@ def _build_tasks(
         lc_field_value = look_for or _get_lc_field_value(step06_result, field_tag)
 
         # For 45A sub-conditions (goods/quantity/price), include the FULL
-        # clause text so the VLM knows which product to match on multi-item
-        # invoices. The clause_ref tells us which 45A clause this row is from.
+        # clause text AND prepend the specific product context to the
+        # condition text so the LLM knows which line item to match on
+        # multi-item invoices.
         if field_tag == '45A' and clause_ref:
             _full_45a = _get_lc_field_value(step06_result, '45A')
-            if _full_45a and len(lc_field_value) < len(_full_45a):
+            if _full_45a:
                 lc_field_value = _full_45a
+                # Check if the condition mentions quantity/price but not the
+                # product name — inject the clause text as context
+                _cond_lower_45a = condition_text.lower()
+                if any(k in _cond_lower_45a for k in ['quantity', 'unit price', 'rate of', 'goods description']):
+                    # Find the specific clause this row was decomposed from
+                    # Split 45A into individual goods items
+                    # Common separators: "\n.\n", "\n\n", or "." on its own line
+                    if '\n.\n' in _full_45a:
+                        _clauses_45a = [c.strip() for c in _full_45a.split('\n.\n') if c.strip()]
+                    elif '\n\n' in _full_45a:
+                        _clauses_45a = [c.strip() for c in _full_45a.split('\n\n') if c.strip()]
+                    else:
+                        _clauses_45a = [_full_45a]
+                    # Try to match the clause by quoted text in the condition
+                    _quoted = re.findall(r"['\"]([^'\"]{5,})['\"]", condition_text)
+                    _matched_clause = None
+                    for _q in _quoted:
+                        for _cl in _clauses_45a:
+                            if _q.upper() in _cl.upper():
+                                _matched_clause = _cl.strip()
+                                break
+                        if _matched_clause:
+                            break
+                    if not _matched_clause and len(_clauses_45a) > 1:
+                        # No quoted match — try matching by condition keywords
+                        for _cl in _clauses_45a:
+                            _cl_words = set(re.findall(r'[A-Z]{3,}', _cl.upper()))
+                            _cond_words = set(re.findall(r'[A-Z]{3,}', condition_text.upper()))
+                            if len(_cl_words & _cond_words) >= 2:
+                                _matched_clause = _cl.strip()
+                                break
+                    if _matched_clause:
+                        condition_text = (
+                            f"[LC GOODS CLAUSE: {_matched_clause}]\n"
+                            f"{condition_text}"
+                        )
 
         # Determine which document types to check
         # For key-term fields that check multiple doc types, expand
