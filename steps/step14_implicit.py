@@ -863,12 +863,20 @@ LC Expiry Date and Place: {expiry}
 Document Type: {cover.get('document_type', 'Covering Schedule')}
 
 RULES:
-- Find the PRESENTATION DATE or DATE on the covering schedule / remittance letter
-- The covering schedule confirms when documents were sent to the bank
+- The PRESENTATION DATE is when the ISSUING BANK RECEIVED the documents,
+  NOT when the negotiating bank sent them.
+- PRIORITY ORDER for finding the presentation date:
+  1. RECEIVED stamp (e.g., "RECEIVED 19 SEP 2025") — this is the BEST
+     evidence of when the issuing bank received the documents. USE THIS.
+  2. "Presented on:", "Date of Presentation:", "Received Date:" fields
+  3. "DATE:" on the covering schedule — this is the SENDING date (when
+     the negotiating bank dispatched), NOT the receiving date. Only use
+     this as FALLBACK if no RECEIVED stamp exists.
+- Check the STAMPS section in the visual metadata for RECEIVED stamps.
 - The presentation date must be ON or BEFORE the LC expiry date
 - If presented AFTER the expiry date, it is a FAIL
 - If FAIL, the detail MUST say "LC EXPIRED - presented [date found] after expiry [expiry date]"
-- Extract the exact date you find on the document""",
+- Extract the exact date you find (preferably from RECEIVED stamp)""",
                 "doc_text": _get_doc_text(cover),
                 "image_path": (cover.get('page_image_paths', [None]) or [None])[0],
                 "clause_ref": "F31D", "condition": f"Documents must be presented before LC expiry ({expiry})",
@@ -1306,13 +1314,16 @@ TWO DOCUMENTS ARE PROVIDED BELOW:
 2. BILL OF LADING — find the SHIPMENT DATE (shipped on board date or BL issue date)
 
 RULES:
-1. The PRESENTATION DATE is on the Covering Schedule (look for "Presented on:", "Date:", or the date on the letter)
+1. The PRESENTATION DATE is when the ISSUING BANK RECEIVED the documents:
+   - BEST: Look for RECEIVED stamp (e.g., "RECEIVED 19 SEP 2025") in stamps metadata
+   - FALLBACK: "Presented on:", "Date of Presentation:", "Received Date:" fields
+   - LAST RESORT: "DATE:" on covering schedule (this is SENDING date, not receiving)
 2. The SHIPMENT DATE is on the Bill of Lading (look for "SHIPPED ON BOARD" date, or "Date of Issue" at bottom of BL)
 3. Calculate: Presentation_Date must be <= (Shipment_Date + {period_days} days)
 4. If documents were presented MORE than {period_days} days after shipment → "LATE PRESENTATION" → FAIL
 5. If F48 is blank, UCP 600 defaults to 21 days
 6. IMPORTANT: Do NOT say "shipment date missing" if the BL text below shows a date. Look carefully for dates like "30/01/2026", "JANUARY 30, 2026", "SHIPPED ON BOARD 30/01/2026" etc.
-7. Extract: presentation date from cover, shipment date from BL, and the day count""",
+7. Extract: presentation date from cover (preferably RECEIVED stamp), shipment date from BL, and the day count""",
                 "doc_text": combined_text,
                 "image_path": (cover.get('page_image_paths', [None]) or [None])[0],
                 "clause_ref": "F48", "condition": f"Documents within {period_days} days of shipment",
