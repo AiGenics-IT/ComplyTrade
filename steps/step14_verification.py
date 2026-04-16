@@ -2442,7 +2442,11 @@ def run(
 
     # ------------------------------------------------------------------ #
     # 5e. Payment terms verification — Drafts + Invoices vs LC F42C
+    #      DISABLED: cross-document checks create a separate table in the
+    #      report that is not part of the LC verification scope yet.
+    #      To re-enable: change `_ENABLE_PAYMENT_TERMS_CHECK` to True
     # ------------------------------------------------------------------ #
+    _ENABLE_PAYMENT_TERMS_CHECK = False
     # Parse F42C to understand payment structure, then verify:
     #   1. Draft tenor matches LC terms (sight, X days from BL date)
     #   2. Installment count: number of drafts == number of installments
@@ -2469,8 +2473,8 @@ def run(
             return float(m.group(0).replace(',', ''))
         return 0.0
 
-    _f42c_val = _get_lc_field_value(step06_result, '42C')
-    if _f42c_val:
+    _f42c_val = _get_lc_field_value(step06_result, '42C') if _ENABLE_PAYMENT_TERMS_CHECK else ''
+    if _f42c_val and _ENABLE_PAYMENT_TERMS_CHECK:
         _f42c_upper = _f42c_val.upper()
         _progress(f"  [payment-terms] F42C = {_f42c_upper[:120]}")
 
