@@ -1018,18 +1018,15 @@ CRITICAL RULES (follow strictly):
 Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 981E" = "LN981E". Ignore spaces in product codes when matching.
 21z. PROFORMA INVOICE REFERENCE:
     When the LC says "SPECIFICATIONS AND FURTHER DETAILS ARE AS PER
-    BENEFICIARY'S PROFORMA INVOICE NO. XXX DATED YYY", and the
-    commercial invoice says "Details as per Contract No. (LC NO-ZZZZ)"
-    or just references the LC number instead of the proforma number:
-    - This is ACCEPTABLE (PASS) as long as the goods description,
-      quantity, unit price, and trade terms on the invoice match the
-      LC description. The proforma invoice was the basis for opening
-      the LC — once the LC is issued, the LC number supersedes the
-      proforma reference.
-    - Do NOT fail just because the invoice references the LC number
-      instead of the proforma invoice number.
-    - Only FAIL if the goods/qty/price on the invoice contradict
-      what the LC specifies.
+    BENEFICIARY'S PROFORMA INVOICE NO. XXX DATED YYY", the commercial
+    invoice MUST reference that exact proforma invoice number (XXX).
+    - If the invoice mentions proforma invoice No. XXX → PASS
+    - If the invoice ONLY references the LC number but NOT the
+      proforma invoice number → FAIL. The LC explicitly requires
+      the proforma reference. Referencing the LC number is NOT a
+      substitute for the proforma invoice number.
+    - This is a documentary credit requirement — the bank checker
+      must see the exact proforma invoice number on the document.
 
 21a. MULTI-ITEM INVOICE MATCHING (CRITICAL):
     When the LC's 45A has MULTIPLE goods (e.g., "MEYER RICE COLOR SORTER 10 CHUTES QTY 5 SETS" AND "MEYER SESAME SEEDS COLOR SORTER 10 CHUTES QTY 1 SET"), each item becomes a separate verification row. For each row:
