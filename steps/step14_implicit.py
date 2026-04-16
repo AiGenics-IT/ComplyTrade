@@ -382,6 +382,24 @@ def _parse_date(date_str: str) -> Optional[datetime]:
     s = raw
     # Strip enclosing punctuation: "(2026-01-20)" -> "2026-01-20"
     s = s.strip("()[]{}<>'\"")
+    # Fix OCR-misread month abbreviations (common stamp/rubber stamp errors)
+    _OCR_MONTH_FIXES = {
+        'SFP': 'SEP', 'SBP': 'SEP', 'SEF': 'SEP', 'S3P': 'SEP',
+        'OCI': 'OCT', 'OCL': 'OCT', 'OC1': 'OCT', 'QCT': 'OCT',
+        'NOV': 'NOV', 'N0V': 'NOV',
+        'DFC': 'DEC', 'DBC': 'DEC', 'D3C': 'DEC',
+        'JAN': 'JAN', 'J4N': 'JAN',
+        'FEB': 'FEB', 'FFB': 'FEB', 'F3B': 'FEB',
+        'MAR': 'MAR', 'M4R': 'MAR',
+        'APR': 'APR', 'A9R': 'APR', 'AFR': 'APR',
+        'MAY': 'MAY', 'M4Y': 'MAY',
+        'JUN': 'JUN', 'JUH': 'JUN',
+        'JUL': 'JUL', 'JU1': 'JUL',
+        'AUG': 'AUG', 'AUC': 'AUG', 'AU6': 'AUG',
+    }
+    for _ocr_bad, _correct in _OCR_MONTH_FIXES.items():
+        if _ocr_bad != _correct:
+            s = re.sub(r'\b' + _ocr_bad + r'\b', _correct, s, flags=re.IGNORECASE)
     # Strip noise prefixes that often sit in front of the date in OCR text
     s = re.sub(
         r'^(?:Date|Dated|Issued\s+on|Issue\s+date|Issuance\s+date|'
@@ -856,11 +874,17 @@ RULES:
             return tasks
         covers = _get_docs_by_type(packets, 'remittance', 'covering', 'cover letter', 'schedule')
         for cover in covers:
+            _cover_stamps_exp = cover.get('stamps', [])
+            _stamp_info = ''
+            if _cover_stamps_exp:
+                _stamp_info = '\nSTAMPS ON DOCUMENT: ' + ', '.join(
+                    s.get('text', '') for s in _cover_stamps_exp if s.get('text')
+                )
             tasks.append({
                 "prompt": f"""You are a trade finance document examiner. Check if the documents were presented BEFORE the LC expiry date.
 
 LC Expiry Date and Place: {expiry}
-Document Type: {cover.get('document_type', 'Covering Schedule')}
+Document Type: {cover.get('document_type', 'Covering Schedule')}{_stamp_info}
 
 RULES:
 - The PRESENTATION DATE is when the ISSUING BANK RECEIVED the documents,
@@ -1301,8 +1325,15 @@ RULES:
             bl_full_text = bl_t[:3000] if bl_t else ''
 
         for cover in covers:
-            # Combine cover + BL text so VLM can find both dates
-            combined_text = f"=== COVERING SCHEDULE / PRESENTATION DOCUMENT ===\n{_get_doc_text(cover)}\n\n=== BILL OF LADING (for shipment date) ===\n{bl_full_text}"
+            # Include stamp data — RECEIVED stamps show the actual presentation date
+            _cover_stamps = cover.get('stamps', [])
+            _stamp_text = ''
+            if _cover_stamps:
+                _stamp_text = '\n[STAMPS ON THIS DOCUMENT: ' + ', '.join(
+                    s.get('text', '') for s in _cover_stamps if s.get('text')
+                ) + ']'
+            # Combine cover + stamps + BL text so LLM can find both dates
+            combined_text = f"=== COVERING SCHEDULE / PRESENTATION DOCUMENT ===\n{_get_doc_text(cover)}{_stamp_text}\n\n=== BILL OF LADING (for shipment date) ===\n{bl_full_text}"
             tasks.append({
                 "prompt": f"""You are a trade finance document examiner. Check if documents were presented within the required period after shipment.
 
