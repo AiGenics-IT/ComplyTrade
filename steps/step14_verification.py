@@ -684,6 +684,11 @@ CRITICAL RULES (follow strictly):
    • For a multi-page invoice, the Total line on the LAST page is the figure for the whole invoice — do not add per-page subtotals on top of it.
    • The invoice amount can be LESS than the LC amount (partial/short shipment, allowed under UCP 600 Art 30 tolerance) — that is PASS.
    • Only when invoice Total > LC amount × (1 + tolerance%) is it a FAIL. Verify your arithmetic: 97,216 is NOT greater than 97,216. 95,000 is LESS than 97,216 (PASS, not FAIL).
+   • EQUAL AMOUNTS: If the invoice amount EQUALS the LC amount exactly
+     (e.g., both are USD 30,080.00), this is PASS — NOT a discrepancy.
+     "Must not exceed" means the invoice amount must be <= LC amount.
+     Equal (=) is NOT exceeding. Only strictly greater than (>) is FAIL.
+     Double-check your arithmetic before marking FAIL.
    • AMOUNT IN WORDS vs AMOUNT IN FIGURES: Invoices often show
      "TOTAL PRICE: SAY USD ONE HUNDRED AND SEVENTY-ONE THOUSAND ONLY"
      (amount in words). This is NOT the amount to compare — always use
@@ -984,6 +989,21 @@ CRITICAL RULES (follow strictly):
     match, the row is PASS — period.
 21. QUANTITY MATCHING: LC may say "QTY 736" and invoice may show individual line items that SUM to 736. Check the SYSTEM PRE-CALCULATED SUMMARY at the top of the document text — it shows per-product totals. Use these totals instead of counting line items yourself.
 Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 981E" = "LN981E". Ignore spaces in product codes when matching.
+21z. PROFORMA INVOICE REFERENCE:
+    When the LC says "SPECIFICATIONS AND FURTHER DETAILS ARE AS PER
+    BENEFICIARY'S PROFORMA INVOICE NO. XXX DATED YYY", and the
+    commercial invoice says "Details as per Contract No. (LC NO-ZZZZ)"
+    or just references the LC number instead of the proforma number:
+    - This is ACCEPTABLE (PASS) as long as the goods description,
+      quantity, unit price, and trade terms on the invoice match the
+      LC description. The proforma invoice was the basis for opening
+      the LC — once the LC is issued, the LC number supersedes the
+      proforma reference.
+    - Do NOT fail just because the invoice references the LC number
+      instead of the proforma invoice number.
+    - Only FAIL if the goods/qty/price on the invoice contradict
+      what the LC specifies.
+
 21a. MULTI-ITEM INVOICE MATCHING (CRITICAL):
     When the LC's 45A has MULTIPLE goods (e.g., "MEYER RICE COLOR SORTER 10 CHUTES QTY 5 SETS" AND "MEYER SESAME SEEDS COLOR SORTER 10 CHUTES QTY 1 SET"), each item becomes a separate verification row. For each row:
     - SEARCH the invoice for THAT SPECIFIC item by its product name/description
