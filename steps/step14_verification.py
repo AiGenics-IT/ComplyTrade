@@ -2362,28 +2362,20 @@ def run(
         else:
             agg_compliance = "FAIL"
 
-        # Build combined findings
-        findings_parts = []
-        result_parts = []
+        # Pick the BEST result — show only one, not all copies
+        # Priority: PASS > REVIEW > FAIL
+        _best = None
         for r in results:
-            doc_label = r.get("document_type", "?")
-            findings_parts.append(
-                f"[{doc_label}] {r.get('findings', 'Nil')}"
-            )
-            result_parts.append(
-                f"[{doc_label}] {r.get('result', '')} ({r.get('compliance', '?')})"
-            )
+            if r.get("compliance") == agg_compliance:
+                _best = r
+                break
+        if not _best:
+            _best = results[0]
 
-        combined_findings = " | ".join(findings_parts)
-        combined_result = "; ".join(result_parts)
+        combined_findings = _best.get("findings", "Nil")
+        combined_result = _best.get("result", "")
 
-        # Truncate if too long
-        if len(combined_findings) > 800:
-            combined_findings = combined_findings[:797] + "..."
-        if len(combined_result) > 200:
-            combined_result = combined_result[:197] + "..."
-
-        avg_conf = sum(r.get("confidence", 0) for r in results) / max(len(results), 1)
+        avg_conf = _best.get("confidence", 0.0)
 
         _set(row, "findings", combined_findings)
         _set(row, "found_text", combined_findings)
