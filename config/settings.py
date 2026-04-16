@@ -1,58 +1,50 @@
 """
 ComplyTrade Pilot V2 — Configuration
+
+All model endpoints are configurable via .env file in the project root.
+Copy .env.example to .env and adjust URLs as needed.
+Restart the server after changing .env values.
 """
 
 import os as _os
+from pathlib import Path as _Path
 
-# ── Model Endpoints ──
-#
-# Pipeline overview:
-#   • Step 1 (Raw OCR)        → ALWAYS uses GLM-OCR (specialised OCR model)
-#   • Steps 2–14 (everything  → Use Qwen VLM, switchable between 7B and 72B
-#     that needs vision/      via VLM_MODEL_SIZE below
-#     reasoning)
-#
-# Three physical inference hosts on the internal LAN:
-#   • 10.20.10.2:8001  → GLM-OCR (always used by Step 1)
-#   • 10.20.10.2:8085  → Qwen 2.5-VL-72B-Instruct-AWQ
-#   • 10.20.10.3:8000  → Qwen 2.5-VL-7B-Instruct
+# ── Load .env file ──
+_env_path = _Path(__file__).parent.parent / '.env'
+if _env_path.exists():
+    with open(_env_path, 'r') as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if not _line or _line.startswith('#') or '=' not in _line:
+                continue
+            _key, _val = _line.split('=', 1)
+            _key = _key.strip()
+            _val = _val.strip()
+            # Only set if not already in environment (env vars take precedence)
+            if _key not in _os.environ:
+                _os.environ[_key] = _val
 
-# Step 1: GLM-OCR — always used regardless of VLM_MODEL_SIZE
-GLM_OCR_URL = "http://10.20.10.3:8001/api/ocr"
-GLM_OCR_MODEL = "glm-ocr"
+# ── Model Endpoints (all from .env or environment variables) ──
 
-# Static endpoint constants for each Qwen model.
-# Steps 2–14 do not import these directly — they import the resolved
-# QWEN_VLM_URL / QWEN_VLM_MODEL below, which switch on VLM_MODEL_SIZE.
-QWEN_7B_URL = "http://10.20.10.3:8000/v1/chat/completions"
-QWEN_7B_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-7B-Instruct"
+# Step 1: GLM-OCR
+GLM_OCR_URL = _os.environ.get("GLM_OCR_URL", "http://34.171.200.116/api/ocr")
+GLM_OCR_MODEL = _os.environ.get("GLM_OCR_MODEL", "glm-ocr")
 
-QWEN_72B_URL = "http://35.192.15.206/vllm/v1/chat/completions"
-QWEN_72B_MODEL = "Qwen2.5-VL-72B-Instruct-AWQ"
+# Steps 2-9: Qwen VLM (vision)
+QWEN_VLM_URL = _os.environ.get("QWEN_VLM_URL", "http://35.192.15.206/vllm/v1/chat/completions")
+QWEN_VLM_MODEL = _os.environ.get("QWEN_VLM_MODEL", "Qwen2.5-VL-72B-Instruct-AWQ")
 
-# Text-only LLM (Qwen2.5-72B, no vision — for text processing tasks like
-# amendment application, clause analysis, Steps 12+14 decomposition/verification)
-QWEN_TEXT_LLM_URL = "http://34.61.17.191/vllm/v1/chat/completions"
-QWEN_TEXT_LLM_MODEL = "Qwen2.5-72B-Instruct"
+# Steps 6, 12, 14: Qwen Text LLM (text-only, no vision)
+QWEN_TEXT_LLM_URL = _os.environ.get("QWEN_TEXT_LLM_URL", "http://34.61.17.191/vllm/v1/chat/completions")
+QWEN_TEXT_LLM_MODEL = _os.environ.get("QWEN_TEXT_LLM_MODEL", "Qwen2.5-72B-Instruct")
 
-# ── Active VLM selection ──
-# Single source of truth for the pipeline (Steps 2–9 use VLM for vision tasks).
-# Steps 12+14 use QWEN_TEXT_LLM (text-only) — see step imports.
-# Step 1 (GLM-OCR) is unaffected — it always uses GLM regardless.
+# VLM model size toggle (legacy — kept for backward compat)
 VLM_MODEL_SIZE = _os.environ.get("VLM_MODEL_SIZE", "72B").upper()
 
-if VLM_MODEL_SIZE == "7B":
-    QWEN_VLM_URL = QWEN_7B_URL
-    QWEN_VLM_MODEL = QWEN_7B_MODEL
-else:
-    # Default / "72B"
-    VLM_MODEL_SIZE = "72B"
-    QWEN_VLM_URL = QWEN_72B_URL
-    QWEN_VLM_MODEL = QWEN_72B_MODEL
-
 # ── Server ──
-SERVER_HOST = "0.0.0.0"
-SERVER_PORT = 8082
+SERVER_HOST = _os.environ.get("SERVER_HOST", "0.0.0.0")
+SERVER_PORT = int(_os.environ.get("SERVER_PORT", "8082"))
+BUILD_TAG = "2026-04-16-P116"
 BUILD_TAG = "2026-04-16-P115"
 
 # ── Processing ──
