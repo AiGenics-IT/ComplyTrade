@@ -804,6 +804,23 @@ CRITICAL RULES (follow strictly):
     ✓ "The BL is issued by Shanghai League Shipping Co., Ltd and signed
        AS CARRIER. It is a standard liner BL, not a charter party,
        short form, or house BL. No prohibited BL type detected. PASS"
+13f. DRAFT / BILL OF EXCHANGE DATES:
+    A Draft / Bill of Exchange typically has TWO dates:
+      • DRAFT DATE (date of drawing): "Dated September 15, 2025"
+        — this is when the draft was drawn/issued by the beneficiary
+      • LC DATE (date of the credit): "Dated August 18, 2025"
+        — this is the LC issue date, confirming which LC the draft
+        is drawn under
+    These often appear as two separate "Dated ..." lines near the
+    signature block. The SECOND date is usually the LC date.
+    When the condition says "Draft must show the date of the L/C",
+    look for the LC issue date on the draft — it may appear as:
+      • "Dated [LC date]" (second date line)
+      • Near "Drawn under L/C No. XXXXX"
+      • "L/C dated [date]"
+      • "DATE OF ISSUE: YYMMDD"
+    If ANY date on the draft matches the LC issue date → PASS.
+
 13c. DRAFT / BILL OF EXCHANGE INSTALLMENT VERIFICATION:
     When verifying payment terms on a Draft Bill of Exchange:
     - The draft may show ALL installments in a continuous text block,
@@ -2097,7 +2114,7 @@ def run(
 
     _progress(
         f"Verifying {len(rows)} condition rows against "
-        f"{len(packets)} document packets (VLM-only mode)..."
+        f"{len(packets)} document packets (LLM-only mode)..."
     )
 
     # ------------------------------------------------------------------ #
@@ -2233,7 +2250,7 @@ def run(
     multi_doc_results: Dict[str, list] = {}
 
     if vlm_tasks:
-        _progress(f"Sending {len(vlm_tasks)} conditions to Qwen VLM...")
+        _progress(f"Sending {len(vlm_tasks)} conditions to Qwen LLM...")
 
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_VLM) as executor:
             futures = {}
