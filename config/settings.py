@@ -18,7 +18,7 @@ import os as _os
 #   • 10.20.10.3:8000  → Qwen 2.5-VL-7B-Instruct
 
 # Step 1: GLM-OCR — always used regardless of VLM_MODEL_SIZE
-GLM_OCR_URL = "http://10.20.10.2:8001/api/ocr"
+GLM_OCR_URL = "http://10.20.10.3:8001/api/ocr"
 GLM_OCR_MODEL = "glm-ocr"
 
 # Static endpoint constants for each Qwen model.
@@ -27,18 +27,17 @@ GLM_OCR_MODEL = "glm-ocr"
 QWEN_7B_URL = "http://10.20.10.3:8000/v1/chat/completions"
 QWEN_7B_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-7B-Instruct"
 
-QWEN_72B_URL = "http://10.20.10.2:8085/v1/chat/completions"
-QWEN_72B_MODEL = "/home/aigenics/AI_MODELS/Qwen2.5-VL-72B-Instruct-AWQ"
+QWEN_72B_URL = "http://35.192.15.206/vllm/v1/chat/completions"
+QWEN_72B_MODEL = "Qwen2.5-VL-72B-Instruct-AWQ"
 
 # Text-only LLM (Qwen2.5-72B, no vision — for text processing tasks like
-# amendment application, clause analysis, etc.)
+# amendment application, clause analysis, Steps 12+14 decomposition/verification)
 QWEN_TEXT_LLM_URL = "http://34.61.17.191/vllm/v1/chat/completions"
 QWEN_TEXT_LLM_MODEL = "Qwen2.5-72B-Instruct"
 
 # ── Active VLM selection ──
-# Single source of truth for the entire pipeline (Steps 2–14).
-# Switch the whole system between 7B and 72B by changing this one value
-# (or by setting the VLM_MODEL_SIZE environment variable to "7B" / "72B").
+# Single source of truth for the pipeline (Steps 2–9 use VLM for vision tasks).
+# Steps 12+14 use QWEN_TEXT_LLM (text-only) — see step imports.
 # Step 1 (GLM-OCR) is unaffected — it always uses GLM regardless.
 VLM_MODEL_SIZE = _os.environ.get("VLM_MODEL_SIZE", "72B").upper()
 
@@ -54,7 +53,7 @@ else:
 # ── Server ──
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8082
-BUILD_TAG = "2026-04-16-P114"
+BUILD_TAG = "2026-04-16-P115"
 
 # ── Processing ──
 MAX_CONCURRENT_OCR = 8

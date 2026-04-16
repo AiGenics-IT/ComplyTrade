@@ -118,6 +118,7 @@ DOC_TYPE_ALIASES = {
     "documentary remittance": [
         "documentary remittance", "covering letter", "remittance letter",
         "schedule of documents", "letter of transmittal", "covering schedule",
+        "document presentation", "document presentation schedule",
         # P64: "Export DC Document Presentation Schedule" is the same
         # document as Documentary Remittance -- it is the covering schedule
         # the beneficiary's bank sends with the presented documents.
@@ -750,6 +751,29 @@ CRITICAL RULES (follow strictly):
        EXAMPLE: LC says "QTY 9025 KGS", F43P = "ALLOWED", invoice shows 10000 KGS → FAIL (exceeds LC quantity).
     c) UCP 600 Art 30(b): Unless the LC prohibits partial shipment, a tolerance of 5% more or less in quantity is allowed, provided the total amount does not exceed the LC amount. So even without explicit tolerance, 5% variation is acceptable if partial shipment is not prohibited.
 13. BILL OF LADING LIMITATIONS: BLs do NOT show dollar amounts or unit prices — never fail a BL for "amount not mentioned". BLs do NOT typically show LC/credit numbers unless F47A specifically requires it on BL.
+13c. DRAFT / BILL OF EXCHANGE INSTALLMENT VERIFICATION:
+    When verifying payment terms on a Draft Bill of Exchange:
+    - The draft may show ALL installments in a continuous text block,
+      sometimes split by "+++" or "[STAMP]" or "[SIGNATURE]" markers
+      where OCR couldn't read through stamps/signatures.
+    - "+++" means OCR-obscured text — it does NOT mean missing content.
+      Text before and after "+++" is ONE continuous clause.
+    - A draft page may contain TWO copies: "FIRST of Exchange" and
+      "SECOND of Exchange" — these are copies of the SAME draft, not
+      separate installments. Check EITHER copy for the payment terms.
+    - Installment text may wrap like:
+      "A) 25 PCT ... WITHIN 90 DAYS ... B) 25 PCT ... WILL BE +++"
+      "+++PAID WITHIN 180 DAYS ... C) 25 PCT ... WITHIN 270 DAYS..."
+      This is ONE continuous text — ALL installments are present.
+    - Each installment shows: percentage, amount (e.g., USD42750.00),
+      days (90/180/270/360), and reference date (BL ISSUING DATE).
+    - To verify: check that the draft mentions ALL installment
+      percentages and day counts from the LC. If A/B/C/D all appear
+      with correct percentages and days, it is PASS — even if the
+      text has "+++" breaks between them.
+    - The total draft amount (e.g., USD171,000.00) should equal the
+      LC amount. Individual installment amounts should each equal
+      their percentage of the total.
 
 13z. STALE BL CHECK ON DOCUMENTARY REMITTANCE (CRITICAL):
     When the condition says "BL must not be stale" and the
@@ -914,6 +938,23 @@ Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 
     - Do NOT confuse one product's data with another's. If checking "SESAME SEEDS", read the SESAME SEEDS row, not the RICE row.
     - The TOTAL at the bottom covers ALL items — do NOT use the invoice TOTAL as the quantity or unit price for a single item.
 22. PARTY REFERENCES: When the condition says "NOTIFY APPLICANT" or "TO ORDER OF ISSUING BANK", look at the LC PARTIES section above to find the actual name. Then check if that name appears on the document. "NOTIFY APPLICANT" means the notify party field must show the APPLICANT's name (given above). Do NOT look for the literal words "NOTIFY APPLICANT" — look for the applicant's ACTUAL NAME. Check the TOTAL quantity, not individual lines. Also "Ea" (each) is a valid unit — 736 Ea = 736 pieces. If LC says "QTY 736 AT THE RATE OF USD 98.00" and invoice shows 736 units × $98.00 = correct.
+
+23. ADDRESSING / "TO:" PATTERNS ON SHIPMENT ADVICE AND OTHER DOCUMENTS:
+    When a condition says "must be addressed to X" or "must also be
+    addressed to the Applicant", the document may show any of these
+    equivalent addressing patterns — ALL mean the party IS addressed:
+      • "TO: [party name]"
+      • "ALSO TO: [party name]"
+      • "AND TO: [party name]"
+      • "CC: [party name]"
+      • "COPY TO: [party name]"
+      • "ATTENTION: [party name]"
+      • "C/O: [party name]"
+    If the document shows "ALSO TO: AMEEJEE VALLEEJEE AND SONS (PVT) LTD"
+    and the condition says "must be addressed to the Applicant" where the
+    applicant is "AMEEJEE VALLEEJEE AND SONS (PVT) LTD", this is a PASS.
+    "ALSO TO" = "AND TO" = "TO" = addressed. Do NOT fail because the
+    prefix is "ALSO TO" instead of "TO" — they are equivalent.
 
     PARTY-NAME OCR TOLERANCE (ISBP 821 paragraph A1 & UCP 600 Art 14(d/e)):
     Company / party names (Applicant, Beneficiary, Consignee, Notify
@@ -1172,10 +1213,22 @@ def _call_vlm(
         # "Invoice Total" / "Sub Total". Bare "TOTAL" matches table headers
         # and weight totals which contaminated the summary.
         _totals_raw = _re_sum.findall(
-            r'(?:Total\s+Amount|Grand\s+Total|Invoice\s+Total|Sub\s*Total|Net\s+Total|Amount\s+Total)\s*[:\s]*'
+            r'(?:Total\s*(?:Amount|Price)|Grand\s+Total|Invoice\s+Total|Sub\s*Total|Net\s+Total|Amount\s+Total)\s*[:\s]*'
             r'(?:USD|EUR|GBP|JPY|CHF|AUD|CAD|CNY|HKD|SGD|INR|PKR|AED|SAR)?\s*([\d.,]+)',
             document_text, _re_sum.IGNORECASE,
         )
+        # Fallback: find "TOTAL\n[qty line]\n[amount]" pattern in invoice tables
+        if not _totals_raw:
+            _inv_lines = document_text.split('\n')
+            for _li in range(len(_inv_lines)):
+                if _inv_lines[_li].strip().upper() == 'TOTAL':
+                    # Look ahead for the first pure numeric line (skip qty like "6SETS")
+                    for _lj in range(1, min(4, len(_inv_lines) - _li)):
+                        _next_l = _inv_lines[_li + _lj].strip()
+                        if _re_sum.match(r'^[\d,]+(?:\.\d{0,2})?\s*$', _next_l):
+                            _totals_raw.append(_next_l.strip())
+                            break
+                    break
         # P66: Dedupe identical totals — when a multi-copy invoice is merged,
         # the SAME "Total Amount: 97,216.00" line appears N times. Without
         # dedup, the precalc summary becomes "97,216.00, 97,216.00, ..." and
@@ -1265,6 +1318,7 @@ def _call_vlm(
                     _price_str = ''
                     _total_str = ''
                     # Look ahead up to 5 lines for qty/price/total
+                    _extra_desc = []  # Orphan qualifiers to absorb into product name
                     for _j in range(1, min(6, len(_lines) - _i)):
                         _next = _lines[_i + _j].strip()
                         if not _next:
@@ -1282,9 +1336,25 @@ def _call_vlm(
                             elif not _total_str:
                                 _total_str = _next
                             continue
+                        # Orphan qualifier: short text like "10CHUTES", "20KG",
+                        # "GRADE A" that OCR split from the product name.
+                        # Absorb if it's short (<30 chars), has letters, and
+                        # appears AFTER we already got qty/price.
+                        _is_orphan = (
+                            len(_next) < 30 and
+                            _re_sum.search(r'[A-Z]', _next) and
+                            (_qty_str or _price_str) and
+                            not _re_sum.match(r'^(?:TOTAL|GRAND|SUB|NET|SAY)', _next, _re_sum.IGNORECASE)
+                        )
+                        if _is_orphan:
+                            _extra_desc.append(_next)
+                            continue
                         # If we hit another product name, stop
                         if len(_next) > 10 and _re_sum.search(r'[A-Z]{3,}', _next):
                             break
+                    # Absorb orphan qualifiers into product name
+                    if _extra_desc:
+                        _prod_name = _prod_name + ' ' + ' '.join(_extra_desc)
                     if _qty_str or _price_str:
                         _inv_items.append({
                             'product': _prod_name,
@@ -2477,7 +2547,22 @@ def run(
             elif 'invoice' in _pt and 'proforma' not in _pt:
                 _invoice_packets.append(pkt)
 
-        _progress(f"  [payment-terms] {len(_draft_packets)} draft(s), {len(_invoice_packets)} invoice(s)")
+        # Count actual drafts (not packets) — a single page may contain
+        # FIRST and SECOND of Exchange (two copies of the same draft).
+        # For installment LCs, only ONE draft is issued for the full amount
+        # covering all installments — NOT one draft per installment.
+        _actual_draft_count = 0
+        for _dp in _draft_packets:
+            _draft_text = (_pkt_text(_dp) or '').upper()
+            # Count "FIRST OF EXCHANGE" / "SECOND OF EXCHANGE" copies
+            _copies = len(re.findall(
+                r'(?:FIRST|SECOND|THIRD|FOURTH|1ST|2ND|3RD|4TH)\s+(?:OF\s+)?(?:EXCHANGE|BILL)',
+                _draft_text, re.IGNORECASE))
+            _actual_draft_count += max(1, _copies)
+
+        _progress(f"  [payment-terms] {len(_draft_packets)} draft packet(s), "
+                  f"{_actual_draft_count} actual draft(s), "
+                  f"{len(_invoice_packets)} invoice(s)")
 
         # Helper: add/update a payment-terms row in the results
         def _add_pt_finding(check_name, compliance, result, details):
@@ -2498,20 +2583,42 @@ def run(
             _progress(f"  [payment-terms] {check_name}: {compliance} — {result}")
 
         # ── Check 1: Installment count vs drafts ──
-        if _num_installments > 0:
-            if len(_draft_packets) == _num_installments:
+        # For installment LCs, typically ONE draft is issued for the FULL
+        # amount, with all installment payment schedules written on it.
+        # The number of installments ≠ number of drafts.
+        # Instead, verify that the draft TEXT mentions all installment entries.
+        if _num_installments > 0 and _draft_packets:
+            # Check if the draft text contains all installment references
+            _draft_all_text = ' '.join((_pkt_text(dp) or '').upper() for dp in _draft_packets)
+            _found_installments = []
+            for _inst in _installments:
+                # Look for the days value in the draft
+                _days_str = str(_inst['days'])
+                if _days_str in _draft_all_text:
+                    _found_installments.append(_inst)
+            if len(_found_installments) == len(_installments):
                 _add_pt_finding(
-                    "Installment Count",
+                    "Installment Schedule",
                     "PASS",
-                    f"{len(_draft_packets)} draft(s) presented for {_num_installments} installment(s)",
-                    f"LC requires {_num_installments} installments, {len(_draft_packets)} drafts found"
+                    f"Draft contains all {_num_installments} installment entries "
+                    f"({', '.join(str(i['days'])+' days' for i in _installments)})",
+                    f"All installment schedules found in draft text"
                 )
-            elif len(_draft_packets) > 0:
+            elif _found_installments:
+                _missing = [i for i in _installments if i not in _found_installments]
                 _add_pt_finding(
-                    "Installment Count",
+                    "Installment Schedule",
+                    "REVIEW",
+                    f"Draft shows {len(_found_installments)}/{_num_installments} installments. "
+                    f"Missing: {', '.join(str(i['days'])+' days' for i in _missing)}",
+                    f"Some installment entries may be obscured by stamps/signatures"
+                )
+            else:
+                _add_pt_finding(
+                    "Installment Schedule",
                     "FAIL",
-                    f"{len(_draft_packets)} draft(s) presented but LC requires {_num_installments} installment(s)",
-                    f"Mismatch: {len(_draft_packets)} drafts vs {_num_installments} required"
+                    f"Draft does not mention any installment schedule",
+                    f"Expected {_num_installments} installments but none found in draft"
                 )
 
         # ── Check 2: Tenor matching per draft ──
@@ -2559,42 +2666,33 @@ def run(
                             f"Draft on page {_dpg}: {_draft_days} days not in {_tenor_days}"
                         )
 
-        # ── Check 3: Draft amounts vs installment percentages ──
-        if _lc_amount > 0 and _installments and _draft_packets:
+        # ── Check 3: Draft amount vs LC amount ──
+        # For installment LCs, ONE draft is issued for the FULL LC amount.
+        # The installment schedule is written ON the draft but the face
+        # amount is the total. So draft amount should = LC amount.
+        if _lc_amount > 0 and _draft_packets:
             _total_draft_amount = 0.0
-            for _di, _dp in enumerate(_draft_packets):
+            for _dp in _draft_packets:
                 _draft_text = (_pkt_text(_dp) or '').upper()
                 _dpg = _dp.get('page_numbers', ['?'])
 
-                # Extract amount from draft
+                # Extract the FIRST amount (face value) from draft
+                # Look for "Exchange for USD171,000.00" pattern first
                 _draft_amt_m = re.search(
-                    r'(?:USD|EUR|GBP|JPY|CNY|PKR|AED|SAR)\s*[\d,]+(?:\.\d{2})?',
+                    r'(?:EXCHANGE\s+FOR|FOR\s+THE\s+SUM\s+OF|SUM\s+OF)\s*'
+                    r'(?:USD|EUR|GBP|JPY|CNY|PKR|AED|SAR)\s*([\d,]+(?:\.\d{2})?)',
                     _draft_text)
+                if not _draft_amt_m:
+                    # Fallback: first currency+amount pattern
+                    _draft_amt_m = re.search(
+                        r'(?:USD|EUR|GBP|JPY|CNY|PKR|AED|SAR)\s*([\d,]+(?:\.\d{2})?)',
+                        _draft_text)
                 if _draft_amt_m:
-                    _draft_amt = _parse_amount(_draft_amt_m.group(0))
-                    _total_draft_amount += _draft_amt
-
-                    # Check against expected installment amount
-                    if _di < len(_installments):
-                        _expected = _lc_amount * _installments[_di]['pct'] / 100.0
-                        _tolerance = _expected * 0.01  # 1% tolerance for rounding
-                        if abs(_draft_amt - _expected) <= _tolerance:
-                            _add_pt_finding(
-                                f"Draft Amount (pg {_dpg})",
-                                "PASS",
-                                f"Draft amount {_lc_ccy} {_draft_amt:,.2f} = "
-                                f"{_installments[_di]['pct']}% of LC amount",
-                                f"Expected: {_expected:,.2f}, Actual: {_draft_amt:,.2f}"
-                            )
-                        else:
-                            _add_pt_finding(
-                                f"Draft Amount (pg {_dpg})",
-                                "FAIL",
-                                f"Draft amount {_lc_ccy} {_draft_amt:,.2f} != "
-                                f"{_installments[_di]['pct']}% of LC ({_expected:,.2f})",
-                                f"Expected: {_expected:,.2f}, Actual: {_draft_amt:,.2f}, "
-                                f"Diff: {abs(_draft_amt - _expected):,.2f}"
-                            )
+                    _draft_amt = float(_draft_amt_m.group(1).replace(',', ''))
+                    # Avoid counting the same amount from duplicate copies
+                    # (FIRST/SECOND of exchange on same page)
+                    if _total_draft_amount == 0 or abs(_draft_amt - _total_draft_amount) > 1:
+                        _total_draft_amount = _draft_amt  # Use the face value, don't sum copies
 
             # Total drafts vs LC amount (within +/- tolerance)
             if _total_draft_amount > 0:
@@ -2631,20 +2729,46 @@ def run(
             _total_inv_amount = 0.0
             for _ip in _invoice_packets:
                 _inv_text = (_pkt_text(_ip) or '').upper()
-                # Look for total/grand total amount
-                _inv_total_m = re.search(
-                    r'(?:GRAND\s+)?TOTAL\s*:?\s*(?:USD|EUR|GBP|JPY|CNY|PKR|AED|SAR)?\s*'
-                    r'([\d,]+(?:\.\d{2})?)',
-                    _inv_text)
-                if _inv_total_m:
-                    _total_inv_amount += float(_inv_total_m.group(1).replace(',', ''))
-                else:
-                    # Fallback: look for any currency amount
-                    _inv_amt_m = re.search(
+                _inv_lines = _inv_text.split('\n')
+                _inv_amt_found = 0.0
+
+                # Strategy 1: Find "TOTAL" row followed by a pure number line
+                # (skip qty lines like "6SETS")
+                for _li in range(len(_inv_lines)):
+                    _tl = _inv_lines[_li].strip()
+                    if _tl == 'TOTAL' or re.match(r'^(?:GRAND\s+)?TOTAL\s*$', _tl, re.IGNORECASE):
+                        for _lj in range(1, min(4, len(_inv_lines) - _li)):
+                            _next_l = _inv_lines[_li + _lj].strip()
+                            # Skip quantity lines (6SETS, 12PCS, etc.)
+                            if re.match(r'^\d+\s*(?:SETS?|PCS|EA|KGS?|M\.?TONS?|UNITS?)', _next_l, re.IGNORECASE):
+                                continue
+                            # Pure number = amount
+                            if re.match(r'^[\d,]+(?:\.\d{0,2})?\s*$', _next_l):
+                                _inv_amt_found = float(_next_l.replace(',', ''))
+                                break
+                        break
+
+                # Strategy 2: "Total Amount: USD 171,000" or "Invoice Total: 171000"
+                if _inv_amt_found == 0:
+                    _ta_m = re.search(
+                        r'(?:Total\s*(?:Amount|Price)|Grand\s+Total|Invoice\s+Total|Net\s+Total)\s*[:\s]*'
+                        r'(?:USD|EUR|GBP|JPY|CNY|PKR|AED|SAR)?\s*([\d,]+(?:\.\d{2})?)',
+                        _inv_text, re.IGNORECASE)
+                    if _ta_m:
+                        _inv_amt_found = float(_ta_m.group(1).replace(',', ''))
+
+                # Strategy 3: Largest currency amount in the invoice
+                if _inv_amt_found == 0:
+                    _all_amts = re.findall(
                         r'(?:USD|EUR|GBP|JPY|CNY|PKR|AED|SAR)\s*([\d,]+(?:\.\d{2})?)',
                         _inv_text)
-                    if _inv_amt_m:
-                        _total_inv_amount += float(_inv_amt_m.group(1).replace(',', ''))
+                    if _all_amts:
+                        _inv_amt_found = max(float(a.replace(',', '')) for a in _all_amts)
+
+                # Deduplicate: if multiple invoice copies show same amount, count once
+                if _inv_amt_found > 0:
+                    if _total_inv_amount == 0 or abs(_inv_amt_found - _total_inv_amount) > 1:
+                        _total_inv_amount += _inv_amt_found
 
             if _total_inv_amount > 0:
                 _inv_max = _lc_amount * (1 + _tol_plus / 100.0)

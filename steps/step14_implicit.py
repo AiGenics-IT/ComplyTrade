@@ -1155,34 +1155,42 @@ RULES:
         f43p = (lc_fields.get('43P') or lc_fields.get('F43P') or '').upper()  # Partial Shipments
 
         def _expected_mode():
-            # AIR signals — strong
-            if any(k in f44e for k in ('AIRPORT', 'AIR PORT')):
+            # PRIORITY 1: F44E/F44F port names — strongest signal
+            # If port names contain SEAPORT/PORT → SEA
+            # If port names contain AIRPORT → AIR
+            _has_sea_port = any(k in f44e for k in ('SEAPORT', 'SEA PORT', 'PORT')) or \
+                            any(k in f44f for k in ('SEAPORT', 'SEA PORT', 'PORT'))
+            _has_air_port = any(k in f44e for k in ('AIRPORT', 'AIR PORT')) or \
+                            any(k in f44f for k in ('AIRPORT', 'AIR PORT'))
+            if _has_air_port and not _has_sea_port:
                 return 'AIR'
-            if any(k in f44f for k in ('AIRPORT', 'AIR PORT')):
-                return 'AIR'
-            if any(k in f46a_full for k in (
-                'AIR WAYBILL', 'AIRWAY BILL', 'AIRWAYBILL', 'AWB', 'HAWB', 'MAWB',
-                'HOUSE AIR WAYBILL', 'MASTER AIR WAYBILL',
-                'CONSIGNEE AIRPORT', 'AIRPORT OF DEPARTURE', 'AIRPORT OF DESTINATION',
-            )):
-                return 'AIR'
-            # COURIER signals
-            if any(k in f46a_full for k in (
-                'COURIER RECEIPT', 'COURIER WAYBILL', 'COURIER SERVICE',
-                'EXPRESS COURIER', 'EXPRESS DELIVERY',
-            )):
-                return 'COURIER'
-            # SEA signals — strong
-            if any(k in f44e for k in ('SEAPORT', 'SEA PORT', 'PORT OF LOADING')):
+            if _has_sea_port and not _has_air_port:
                 return 'SEA'
-            if any(k in f44f for k in ('SEAPORT', 'SEA PORT', 'PORT OF DISCHARGE')):
-                return 'SEA'
-            if any(k in f46a_full for k in (
+
+            # PRIORITY 2: F46A document requirements — secondary signal
+            # Check what transport document the LC requires
+            _f46a_has_bl = any(k in f46a_full for k in (
                 'BILL OF LADING', 'OCEAN BILL OF LADING', 'MARINE BILL OF LADING',
                 'SHIPPED ON BOARD', 'CHARTER PARTY BILL', 'COMBINED TRANSPORT BILL',
                 'MULTIMODAL TRANSPORT', 'CLEAN ON BOARD',
-            )):
+            ))
+            _f46a_has_awb = any(k in f46a_full for k in (
+                'AIR WAYBILL', 'AIRWAY BILL', 'AIRWAYBILL', 'AWB', 'HAWB', 'MAWB',
+                'HOUSE AIR WAYBILL', 'MASTER AIR WAYBILL',
+            ))
+            # COURIER in F46A is usually about sending documents BY courier
+            # (e.g., "send shipment advice by courier"), NOT about the
+            # transport mode. Only treat as COURIER if NO sea/air signals.
+            _f46a_has_courier = any(k in f46a_full for k in (
+                'COURIER RECEIPT', 'COURIER WAYBILL',
+            )) and not _f46a_has_bl and not _f46a_has_awb
+
+            if _f46a_has_bl:
                 return 'SEA'
+            if _f46a_has_awb:
+                return 'AIR'
+            if _f46a_has_courier:
+                return 'COURIER'
             return 'UNKNOWN'
 
         def _detect_actual_mode_for_packet(p):

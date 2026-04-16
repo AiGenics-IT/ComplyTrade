@@ -271,10 +271,11 @@ These are DIFFERENT documents issued by the same surveyor (e.g. Alfred H Knight)
   fitness/cleanliness of tanks, last 3 cargoes table. Title says "FULL LOADING SURVEY REPORT".
 USE THE EXACT TITLE from the document. Do NOT rename "QUALITY / ANALYSIS" to "Inspection Certificate".
 
-━━━ L/C BILLS SCHEDULE / COVERING SCHEDULE ━━━
+━━━ L/C BILLS SCHEDULE / COVERING SCHEDULE / DOCUMENT PRESENTATION ━━━
 A page from a negotiating bank (e.g. Standard Chartered) showing "L/C BILLS SCHEDULE" or
-"COVERING SCHEDULE" with document list, CBC number, amount, maturity, and instructions is
-a "Documentary Remittance" (also known as Covering Schedule or L/C Bills Schedule).
+"COVERING SCHEDULE" or "DOCUMENT PRESENTATION" or "EXPORT DC DOCUMENT PRESENTATION SCHEDULE"
+with document list, CBC number, amount, maturity, and instructions is
+a "Documentary Remittance" (also known as Covering Schedule, L/C Bills Schedule, or Document Presentation).
 
 ATTACHED SHEETS:
 - If a Bill of Lading says "Details As Per Attached Sheet(s)" or "See Attached" or "As Per Rider", the NEXT page(s) are continuation sheets of that BL — they should be classified as "Bill of Lading" with is_continuation=true, even if they have their own header.
@@ -294,19 +295,18 @@ def _classify_page_vlm(page_num: int, image_path: str, glm_text: str, _max_retri
                 'error': 'Image not found'}
 
     img_b64 = base64.b64encode(open(image_path, 'rb').read()).decode()
-    # Truncate long OCR text to avoid exceeding model's context window (16K)
-    # The classification prompt + image tokens use ~2-8K, leaving ~8K for text
+    # Truncate long OCR text to avoid exceeding model's context window
     _max_text = 4000
     _truncated_text = glm_text[:_max_text] if len(glm_text) > _max_text else glm_text
     prompt = CLASSIFY_PROMPT.format(glm_text=_truncated_text)
-    _current_img_b64 = img_b64  # May be replaced with resized version on retry
+    _current_img_b64 = img_b64  # May be replaced with further resized version on retry
     payload = {
         "model": QWEN_VLM_MODEL,
         "messages": [{"role": "user", "content": [
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_current_img_b64}"}},
             {"type": "text", "text": prompt}
         ]}],
-        "max_tokens": 1000, "temperature": 0.1
+        "max_tokens": 1500, "temperature": 0.1
     }
 
     last_err = None
@@ -318,13 +318,14 @@ def _classify_page_vlm(page_num: int, image_path: str, glm_text: str, _max_retri
                 last_err = f'VLM HTTP {resp.status_code}: {resp.text[:200]}'
                 print(f"[Step 3] Page {page_num} attempt {attempt+1}: HTTP {resp.status_code}: {resp.text[:200]}")
 
-                # If max_tokens error (image too large), resize and retry
-                if 'max_tokens' in resp.text and 'got -' in resp.text:
+                # If context overflow or max_tokens error, resize image only
+                if ('max_tokens' in resp.text or 'context length' in resp.text or
+                    'Input length' in resp.text):
                     try:
                         from PIL import Image
                         import io
                         img = Image.open(image_path)
-                        # Reduce to 50% each retry
+                        # Reduce to 50% on first retry, 30% on second
                         scale = 0.5 if attempt == 0 else 0.3
                         new_size = (int(img.width * scale), int(img.height * scale))
                         img = img.resize(new_size, Image.LANCZOS)
@@ -332,7 +333,7 @@ def _classify_page_vlm(page_num: int, image_path: str, glm_text: str, _max_retri
                         img.save(buf, format='PNG')
                         _current_img_b64 = base64.b64encode(buf.getvalue()).decode()
                         payload['messages'][0]['content'][0]['image_url']['url'] = f"data:image/png;base64,{_current_img_b64}"
-                        print(f"[Step 3] Page {page_num}: Resized image to {new_size[0]}x{new_size[1]} for retry")
+                        print(f"[Step 3] Page {page_num}: Resized image to {new_size[0]}x{new_size[1]} for retry {attempt+1}")
                     except Exception as _resize_err:
                         print(f"[Step 3] Page {page_num}: Resize failed: {_resize_err}")
 
@@ -354,16 +355,54 @@ def _classify_page_vlm(page_num: int, image_path: str, glm_text: str, _max_retri
             json_start = content.find('{')
             json_end = content.rfind('}') + 1
             if json_start >= 0 and json_end > json_start:
-                parsed = json.loads(content[json_start:json_end])
-                parsed['page_number'] = page_num
-                return parsed
+                try:
+                    parsed = json.loads(content[json_start:json_end])
+                    parsed['page_number'] = page_num
+                    return parsed
+                except json.JSONDecodeError:
+                    pass  # Fall through to truncated JSON handler
+
+            # Truncated JSON fallback — VLM response was cut off but
+            # contains valid field values. Extract key fields with regex.
+            _dt_m = re.search(r'"document_type"\s*:\s*"([^"]+)"', content)
+            _cont_m = re.search(r'"is_continuation"\s*:\s*(true|false)', content, re.IGNORECASE)
+            _conf_m = re.search(r'"confidence"\s*:\s*([\d.]+)', content)
+            _copy_m = re.search(r'"copy_status"\s*:\s*"([^"]+)"', content)
+            _copy_lbl_m = re.search(r'"copy_label"\s*:\s*"([^"]*)"', content)
+            _mark_m = re.search(r'"marking_status"\s*:\s*"([^"]+)"', content)
+            if _dt_m:
+                # Extract stamps and signatures arrays if possible
+                _stamps = []
+                _sigs = []
+                try:
+                    _stamps_m = re.search(r'"stamps"\s*:\s*(\[.*?\])', content, re.DOTALL)
+                    if _stamps_m:
+                        _stamps = json.loads(_stamps_m.group(1))
+                except Exception:
+                    pass
+                try:
+                    _sigs_m = re.search(r'"signatures"\s*:\s*(\[.*?\])', content, re.DOTALL)
+                    if _sigs_m:
+                        _sigs = json.loads(_sigs_m.group(1))
+                except Exception:
+                    pass
+                print(f"[Step 3] Page {page_num}: Recovered from truncated JSON: {_dt_m.group(1)}")
+                return {
+                    'page_number': page_num,
+                    'document_type': _dt_m.group(1),
+                    'is_continuation': _cont_m.group(1).lower() == 'true' if _cont_m else False,
+                    'confidence': float(_conf_m.group(1)) if _conf_m else 0.90,
+                    'copy_status': _copy_m.group(1) if _copy_m else 'unknown',
+                    'copy_label': _copy_lbl_m.group(1) if _copy_lbl_m else '',
+                    'marking_status': _mark_m.group(1) if _mark_m else 'unknown',
+                    'stamps': _stamps,
+                    'signatures': _sigs,
+                    'seals': [], 'logos': [],
+                    'doc_hint': content[:300],
+                }
             else:
                 return {'page_number': page_num, 'document_type': 'unknown', 'confidence': 0.3,
                         'doc_hint': content[:500]}
-
-        except json.JSONDecodeError:
-            return {'page_number': page_num, 'document_type': 'unknown', 'confidence': 0.3,
-                    'doc_hint': content[:500] if 'content' in dir() else ''}
         except requests.exceptions.Timeout:
             last_err = 'VLM timeout'
             time.sleep(2 * (attempt + 1))
@@ -1080,6 +1119,8 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
 
     _bl_types = {'bill of lading'}
     _bl_tc_types = {'bl conditions of carriage', 'conditions of carriage', 'bl terms and conditions'}
+    _bl_attach_types = {'attach list', 'attached sheet', 'attached list', 'rider',
+                        'bl attached sheet', 'bl rider', 'attached schedule'}
     _boe_types = {'draft bill of exchange', 'bill of exchange'}
     _boe_back_types = {'endorsement page'}
     _skip_merge = {'blank page', 'blank_page', 'header page'}
@@ -1092,14 +1133,14 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             continue
         dt = pkt.document_type.lower().strip()
 
-        # Rule 1: BL — absorb nearby BL T&C pages
+        # Rule 1: BL — absorb nearby BL T&C and Attach List pages
         if dt in _bl_types:
+            # 1a: Absorb ONE nearest T&C
             for j, other in enumerate(packets):
                 if j in _consumed or j == i:
                     continue
                 odt = other.document_type.lower().strip()
                 if odt in _bl_tc_types:
-                    # Merge T&C into this BL packet
                     pkt.page_numbers.extend(other.page_numbers)
                     pkt.pages.extend(other.pages)
                     pkt.stamps.extend(other.stamps)
@@ -1125,6 +1166,43 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                     break
 
         merged_packets.append(pkt)
+
+    # Rule 1b: Attach List → merge into nearest preceding BL
+    # "Attach List" / "Attached Sheet" is a rider page of a Bill of Lading
+    # containing cargo details that didn't fit on the main BL page.
+    # Merge each Attach List into the nearest BL that comes BEFORE it.
+    for i, pkt in enumerate(merged_packets):
+        if i in _consumed:
+            continue
+        dt = pkt.document_type.lower().strip()
+        if dt not in _bl_attach_types:
+            continue
+        # Find nearest preceding BL by page number
+        _attach_pg = min(pkt.page_numbers) if pkt.page_numbers else 999
+        _best_bl = None
+        _best_dist = 999
+        for j, other in enumerate(merged_packets):
+            if j in _consumed or j == i:
+                continue
+            odt = other.document_type.lower().strip()
+            if odt in _bl_types:
+                _bl_max_pg = max(other.page_numbers) if other.page_numbers else 0
+                _dist = _attach_pg - _bl_max_pg
+                if 0 < _dist < _best_dist:
+                    _best_bl = j
+                    _best_dist = _dist
+        if _best_bl is not None:
+            _bl_pkt = merged_packets[_best_bl]
+            _bl_pkt.page_numbers.extend(pkt.page_numbers)
+            _bl_pkt.pages.extend(pkt.pages)
+            _bl_pkt.stamps.extend(pkt.stamps)
+            _bl_pkt.signatures.extend(pkt.signatures)
+            _consumed.add(i)
+            _progress(f"  Merged {pkt.packet_id} (Attach List pg {pkt.page_numbers}) into {_bl_pkt.packet_id} (BL pg {_bl_pkt.page_numbers[:3]})")
+
+    # Remove consumed packets from merged list
+    merged_packets = [p for i, p in enumerate(merged_packets) if i not in _consumed]
+    _consumed = set()  # Reset for Rule 3
 
     # Build page_text_map for Rule 3 (needed for "Page X of Y" detection)
     page_text_map = {}
