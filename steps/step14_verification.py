@@ -767,33 +767,43 @@ CRITICAL RULES (follow strictly):
        EXAMPLE: LC says "QTY 9025 KGS", F43P = "ALLOWED", invoice shows 10000 KGS → FAIL (exceeds LC quantity).
     c) UCP 600 Art 30(b): Unless the LC prohibits partial shipment, a tolerance of 5% more or less in quantity is allowed, provided the total amount does not exceed the LC amount. So even without explicit tolerance, 5% variation is acceptable if partial shipment is not prohibited.
 13. BILL OF LADING LIMITATIONS: BLs do NOT show dollar amounts or unit prices — never fail a BL for "amount not mentioned". BLs do NOT typically show LC/credit numbers unless F47A specifically requires it on BL.
-13e. BL TYPES — CHARTER PARTY / HOUSE BL / CLAUSED BL:
-    When the LC prohibits certain BL types, verify using these definitions:
-    • CHARTER PARTY BL: A BL that mentions "CHARTER PARTY", "C/P",
-      "AS PER CHARTER PARTY", or "CHARTER PARTY DATED" anywhere on it.
-      A regular liner BL from a shipping line (signed "AS CARRIER")
-      is NOT a charter party BL.
-    • HOUSE BL (HBL): A BL signed by an AGENT, freight forwarder, or
-      NVOCC — NOT by the actual carrier. Look for: signed "AS AGENT",
-      "AS AGENTS", "FREIGHT FORWARDER", "NVOCC", "NON-VESSEL OPERATING".
-      A BL signed "AS CARRIER" or "AS AGENT FOR THE CARRIER" is NOT
-      a house BL — it is a carrier BL.
-    • CLAUSED BL / UNCLEAN BL: A BL that has remarks/exceptions about
-      the cargo condition, e.g. "DAMAGED", "LEAKING", "SHORT SHIPPED",
-      "WET", "RUSTY", "TORN PACKAGING". A CLEAN BL has NO such remarks.
-      "CLEAN ON BOARD" stamp = clean BL (not claused).
-    • SHORT FORM BL: A BL that does NOT print the full terms and
-      conditions on the back (blank back). If a BL has T&C printed on
-      the reverse or references "subject to conditions on reverse",
-      it is NOT a short form.
-    • BLANK BACK BL: Same as short form — no T&C on the back.
-    When LC says "CHARTER PARTY, SHORT FORM, BLANK BACK, FREIGHT
-    FORWARDER'S AND HOUSE B/L NOT ACCEPTABLE", check each type:
-    - Is "CHARTER PARTY" mentioned on the BL? If no → OK
-    - Is the BL signed by a freight forwarder/agent? If no → OK
-    - Does the BL have terms on the back? If yes → OK (not short form)
-    - Is there a "CLEAN ON BOARD" marking? If yes → OK (not claused)
-    If NONE of the prohibited types apply → PASS.
+13e. BL TYPES — PROHIBITION CLAUSES (CRITICAL — READ VERY CAREFULLY):
+    When the CONDITION says "Bill of Lading must not be a Charter Party
+    Bill of Lading" and shows text like "CHARTER PARTY, SHORT FORM,
+    BLANK BACK, FREIGHT FORWARDER'S AND HOUSE B/L NOT ACCEPTABLE":
+
+    THIS IS A PROHIBITION — it lists what the BL must NOT be.
+    The words "CHARTER PARTY" appear in the CONDITION, NOT on the BL.
+    DO NOT confuse the condition text with the document content.
+
+    To verify, check the DOCUMENT TEXT (the Bill of Lading) for:
+    • Does the BL text say "CHARTER PARTY" or "C/P"? → FAIL
+    • Does the BL text say "AS PER CHARTER PARTY"? → FAIL
+    • Is the BL signed "AS AGENT" or "FREIGHT FORWARDER"? → FAIL
+    • Does the BL say "HOUSE BILL OF LADING" or "HBL"? → FAIL
+
+    If NONE of these appear on the BL document, the BL is a regular
+    liner BL → PASS. The condition is SATISFIED (the BL is NOT any
+    of the prohibited types).
+
+    COMMON PASS SCENARIOS:
+    • BL from "SHANGHAI LEAGUE SHIPPING CO., LTD" signed "AS CARRIER"
+      → regular liner BL → PASS
+    • BL from "MAERSK", "MSC", "EVERGREEN", "CMA CGM" signed
+      "AS CARRIER" → regular liner BL → PASS
+    • BL with full terms and conditions on back → not short form → PASS
+    • BL with "SHIPPED on board" and no damage remarks → clean BL → PASS
+
+    WRONG REASONING (DO NOT DO THIS):
+    ❌ "The condition mentions CHARTER PARTY therefore FAIL"
+    ❌ "CHARTER PARTY appears in the text therefore FAIL" (it appears
+       in the CONDITION text, not on the BL document)
+    ❌ "CONDITION EXPLICITLY STATED" as a reason for FAIL
+
+    CORRECT REASONING:
+    ✓ "The BL is issued by Shanghai League Shipping Co., Ltd and signed
+       AS CARRIER. It is a standard liner BL, not a charter party,
+       short form, or house BL. No prohibited BL type detected. PASS"
 13c. DRAFT / BILL OF EXCHANGE INSTALLMENT VERIFICATION:
     When verifying payment terms on a Draft Bill of Exchange:
     - The draft may show ALL installments in a continuous text block,
