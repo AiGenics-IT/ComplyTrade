@@ -1880,6 +1880,40 @@ def _build_tasks(
         doc_checked = _get(row, "document_checked", "")
         look_for = _get(row, "look_for_value", "")
 
+        # BL PROHIBITION: inject signing capacity into the condition text
+        # so the LLM sees it right in the question, not buried in rules.
+        _bl_prohibition_kw = ['charter party', 'short form', 'blank back',
+                              'freight forwarder', 'house b/l', 'house bill']
+        if doc_checked.lower() in ('bill of lading', 'bl') and \
+           any(k in _cond_upper.lower() for k in _bl_prohibition_kw):
+            # Find the BL packet and extract signing info
+            for _bp in packets:
+                _bpt = (_pkt_type(_bp) or '').lower()
+                if 'bill of lading' in _bpt or _bpt == 'bl':
+                    _bl_text = (_pkt_text(_bp) or '').upper()
+                    _signing = ''
+                    if 'AS CARRIER' in _bl_text:
+                        _signing = 'AS CARRIER'
+                    if 'AS AGENT FOR THE CARRIER' in _bl_text:
+                        _signing = 'AS AGENT FOR THE CARRIER'
+                    if 'FREIGHT FORWARDER' in _bl_text:
+                        _signing = 'FREIGHT FORWARDER'
+                    _issuer = ''
+                    for _line in _bl_text.split('\n'):
+                        if 'LINES' in _line or 'SHIPPING' in _line or 'TRANSPORT' in _line:
+                            _issuer = _line.strip()[:60]
+                            break
+                    _has_tc = 'TERMS AND CONDITIONS' in _bl_text or 'HTTPS://' in _bl_text
+                    _has_charter = 'CHARTER PARTY' in _bl_text or 'AS PER CHARTER' in _bl_text
+                    condition_text = (
+                        f"[BL FACTS: Issuer='{_issuer}', Signed='{_signing}', "
+                        f"Has T&C={'yes' if _has_tc else 'no'}, "
+                        f"Charter Party mentioned={'yes' if _has_charter else 'no'}. "
+                        f"This is a PROHIBITION check — if the BL is NOT the prohibited type, answer PASS.]\n"
+                        f"{condition_text}"
+                    )
+                    break
+
         # Get the LC field value for context
         lc_field_value = look_for or _get_lc_field_value(step06_result, field_tag)
 
@@ -2140,7 +2174,10 @@ def run(
     start_time = time.time()
 
     rows = step13_result.get("rows", [])
-    packets = step09_result.get("reconciled_packets", [])
+    packets = (step09_result.get("reconciled_packets")
+               or step09_result.get("packets")
+               or step09_result.get("classified_packets")
+               or [])
 
     _progress(
         f"Verifying {len(rows)} condition rows against "
