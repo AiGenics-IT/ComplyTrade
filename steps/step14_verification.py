@@ -1905,11 +1905,33 @@ def _build_tasks(
                     elif 'AS AGENT' in _bl_text:
                         _signing = 'AS AGENT (check context)'
 
-                    # Determine issuer
+                    # Determine issuer — check against known shipping lines
+                    _KNOWN_CARRIERS = [
+                        'MSC', 'MEDITERRANEAN SHIPPING', 'MAERSK', 'CMA CGM',
+                        'COSCO', 'HAPAG', 'HAPAG-LLOYD', 'ONE', 'OCEAN NETWORK',
+                        'EVERGREEN', 'HMM', 'YANG MING', 'ZIM', 'WAN HAI',
+                        'PIL', 'PACIFIC INTERNATIONAL', 'SEA LEAD', 'X-PRESS',
+                        'SITC', 'UNIFEEDER', 'IRISL', 'KMTC', 'KOREA MARINE',
+                        'SINOKOR', 'GLOBAL FEEDER', 'ZHONGGU', 'TS LINES',
+                        'ANTONG', 'NINGBO OCEAN', 'EMIRATES SHIPPING',
+                        'SWIRE', 'MATSON', 'SM LINE', 'CULINES', 'CHINA UNITED',
+                        'BAL CONTAINER', 'SHANGHAI LEAGUE', 'OOCL', 'HAMBURG SUD',
+                        'APL', 'MOL', 'NYK', 'K LINE', 'HYUNDAI',
+                        'PACIFIC NORTHWEST', 'SAMUDERA', 'RCL', 'REGIONAL CONTAINER',
+                    ]
                     _issuer = ''
+                    _is_known_carrier = False
                     for _line in _bl_text.split('\n'):
-                        if any(k in _line for k in ('LINES', 'SHIPPING', 'TRANSPORT', 'NAVIGATION', 'MARITIME')):
-                            _issuer = _line.strip()[:60]
+                        _line_clean = _line.strip()
+                        if any(k in _line_clean for k in ('LINES', 'SHIPPING', 'TRANSPORT', 'NAVIGATION', 'MARITIME', 'CARRIER')):
+                            _issuer = _line_clean[:60]
+                            break
+                    # Check if any known carrier name appears anywhere in BL
+                    for _kc in _KNOWN_CARRIERS:
+                        if _kc in _bl_text:
+                            _is_known_carrier = True
+                            if not _issuer:
+                                _issuer = _kc
                             break
 
                     # Check for charter party — BUT "TO BE USED WITH CHARTER-PARTIES"
@@ -1925,9 +1947,9 @@ def _build_tasks(
                     _has_tc = bool(re.search(r'TERMS\s+AND\s+CONDITIONS|HTTPS?://|CONDITIONS\s+OF\s+CARRIAGE|SUBJECT\s+TO\s+CONDITIONS', _bl_text))
 
                     # Build context note for the LLM
-                    _bl_type_note = 'STANDARD CARRIER BL'
-                    if _signing in ('AS CARRIER', 'AS AGENT FOR THE CARRIER', 'AS AGENT FOR THE MASTER (carrier signing)'):
-                        _bl_type_note = 'STANDARD CARRIER BL — NOT a house BL, NOT a freight forwarder BL'
+                    _bl_type_note = 'STANDARD CARRIER BL' if _is_known_carrier else 'BL'
+                    if _is_known_carrier or _signing in ('AS CARRIER', 'AS AGENT FOR THE CARRIER', 'AS AGENT FOR THE MASTER (carrier signing)'):
+                        _bl_type_note = f'MASTER BL from known carrier — NOT a house BL, NOT a freight forwarder BL'
                     if _has_tc:
                         _bl_type_note += ', NOT short form (has T&C)'
                     if not _has_charter:
