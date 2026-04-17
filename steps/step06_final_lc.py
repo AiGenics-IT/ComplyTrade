@@ -2188,7 +2188,7 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
         # Regex captures: "Documentary Credit Number\n05251LC082463"
         # We need just: "05251LC082463"
         _LABEL_STRIP = {
-            '20': r'^(?:Documentary\s+Credit\s+Number|Sender\'?s?\s+Reference)\s*[\n\r]*',
+            '20': r'^(?:Documentary\s+Credit\s+Number|Sender\'?s?\s+Reference|Transaction\s+Reference)\s*[\n\r]*',
             '27': r'^Sequence\s+of\s+Total\s*[\n\r]*',
             '31C': r'^Date\s+of\s+Issue\s*[\n\r]*',
             '31D': r'^Date\s+and\s+Place\s+of\s+Expiry\s*[\n\r]*',
@@ -2344,8 +2344,12 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
         _raw_f21 = final_lc.consolidated_fields.get('21', '')
         if _raw_f21:
             _raw_f21 = re.sub(r"(?i)^(?:Related\s+Reference|Receiver'?s?\s+Reference)\s*[\n\r]*", '', _raw_f21).strip()
-            if _raw_f21 and not re.search(r'(?:LC|ILC|ALS|DLC)', final_lc.dc_number, re.IGNORECASE) \
-               and re.search(r'(?:LC|ILC|ALS|DLC)', _raw_f21, re.IGNORECASE):
+            # Check if F20 looks like a bank internal ref (no LC pattern)
+            # and F21 looks like an LC number. Use word boundary \b to avoid
+            # matching "LC" inside words like "ELCT183292".
+            _f20_has_lc = bool(re.search(r'(?<![A-Z])(?:LC|ILC|ALS|DLC)\d', final_lc.dc_number, re.IGNORECASE))
+            _f21_has_lc = bool(re.search(r'(?<![A-Z])(?:LC|ILC|ALS|DLC)\d', _raw_f21, re.IGNORECASE))
+            if _raw_f21 and not _f20_has_lc and _f21_has_lc:
                 _progress(f"  DC number: using Related Reference (F21) '{_raw_f21}' over Transaction Reference (F20) '{final_lc.dc_number}'")
                 final_lc.dc_number = _raw_f21
                 final_lc.consolidated_fields['20'] = _raw_f21
