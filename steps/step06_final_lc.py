@@ -226,6 +226,11 @@ def _extract_swift_fields(text: str, source_page: int = 0, source_mt: str = '') 
     Extract all known SWIFT fields from GLM text using regex.
     First match wins per tag (avoids duplicates when both formats match).
     """
+    # P120g: Normalize full-width colons (U+FF1A) to standard colons.
+    # Some OCR engines (especially for CJK documents) produce F43T：
+    # instead of F43T: — the regex won't match full-width colons.
+    text = text.replace('\uff1a', ':')
+
     # P101: Pre-normalize — insert newline before F-tags that are glued to
     # the previous field's value (OCR artifact).
     # e.g. "#31,674.67F45B: Description..." → "#31,674.67\nF45B: Description..."
