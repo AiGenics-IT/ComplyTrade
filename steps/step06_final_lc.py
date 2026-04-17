@@ -2357,9 +2357,37 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
 
         # If multiple MT700 packets, extract from subsequent ones too
         # (multi-page LCs where each page was a separate packet)
+        #
+        # Page-break continuation: when a field value spans pages, e.g.:
+        #   Page 7: "F43T: Transhipment\nPage 7 of 10"
+        #   Page 8: "ALLOWED\nF44E: Port of Loading..."
+        # The value "ALLOWED" at the start of page 8 belongs to F43T.
+        # Check if the next page starts with a short value (like ALLOWED,
+        # PROHIBITED, WITHOUT) before the first F-tag.
+        _SHORT_ENUM_VALUES = {
+            'ALLOWED', 'PROHIBITED', 'NOT ALLOWED', 'PERMITTED',
+            'WITHOUT', 'CONFIRM', 'MAY ADD', 'IRREVOCABLE',
+        }
         for extra_pkt in mt700_packets[1:]:
             extra_text = _get_packet_refined_text(extra_pkt)
             extra_page = _get_packet_first_page(extra_pkt)
+
+            # Check for page-break continuation: if page starts with a
+            # short enum value before any F-tag, it belongs to the LAST
+            # field from the previous page.
+            _first_line = extra_text.strip().split('\n')[0].strip().upper() if extra_text else ''
+            if _first_line in _SHORT_ENUM_VALUES:
+                # Find the last field that has an empty/label-only value
+                _label_only_fields = {'43T', '43P', '49', '40A'}
+                for _lof_tag in _label_only_fields:
+                    _existing_val = final_lc.consolidated_fields.get(_lof_tag, '')
+                    _cleaned = re.sub(r'(?i)^(?:Trans[sh]?ipment|Partial\s+Shipments?|Confirmation\s+Instructions|Form\s+of\s+Documentary\s+Credit)\s*$', '', _existing_val).strip()
+                    if not _cleaned and _existing_val:
+                        final_lc.consolidated_fields[_lof_tag] = _first_line
+                        final_lc.original_fields[_lof_tag] = _first_line
+                        _progress(f"    F{_lof_tag}: page-break continuation → '{_first_line}'")
+                        break
+
             extra_fields = _extract_swift_fields(extra_text, source_page=extra_page, source_mt='MT700')
             _clause_tags = {'46A', '47A', '45A', '78', '72', '79'}
             for sf in extra_fields:
