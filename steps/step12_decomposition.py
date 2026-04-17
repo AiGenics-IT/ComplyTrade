@@ -948,7 +948,7 @@ def _call_vlm_decompose(clause_ref: str, field_tag: str, clause_number: int,
             "max_tokens": 2048,
         }
 
-        resp = requests.post(QWEN_TEXT_LLM_URL, json=payload, timeout=VLM_TIMEOUT)
+        resp = requests.post(QWEN_TEXT_LLM_URL, json=payload, timeout=None)
         elapsed = time.time() - start
 
         if resp.status_code != 200:

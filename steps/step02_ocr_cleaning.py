@@ -204,7 +204,7 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
                         {"type": "text", "text": _prompt}
                     ]}],
                     "max_tokens": 4000, "temperature": 0.1
-                }, timeout=int(VLM_TIMEOUT))
+                }, timeout=None)
                 if _resp.status_code == 200:
                     _content = _resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
                     if _content and len(_content.strip()) > 10:
@@ -234,7 +234,7 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
                     {"type": "text", "text": _prompt}
                 ]}],
                 "max_tokens": 4000, "temperature": 0.1
-            }, timeout=int(VLM_TIMEOUT))
+            }, timeout=None)
             if _resp.status_code == 200:
                 _content = _resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
                 if _content and len(_content.strip()) > 10:

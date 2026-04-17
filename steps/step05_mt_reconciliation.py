@@ -184,7 +184,7 @@ def _vlm_reconcile_page(
                 "max_tokens": 2000,
                 "temperature": 0.1,
             },
-            timeout=VLM_TIMEOUT,
+            timeout=None,
         )
         if resp.status_code != 200:
             return {'error': f'HTTP {resp.status_code}'}

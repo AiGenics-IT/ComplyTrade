@@ -816,7 +816,7 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
             "messages": [{"role": "user", "content": content_parts}],
             "max_tokens": 2000,
             "temperature": 0.1,
-        }, timeout=VLM_TIMEOUT)
+        }, timeout=None)
 
         if resp.status_code == 200:
             result = resp.json()

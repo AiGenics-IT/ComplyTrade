@@ -1558,7 +1558,7 @@ def _call_vlm(
     }
 
     try:
-        resp = requests.post(QWEN_TEXT_LLM_URL, json=payload, timeout=VLM_TIMEOUT)
+        resp = requests.post(QWEN_TEXT_LLM_URL, json=payload, timeout=None)
         elapsed = time.time() - start
 
         if resp.status_code != 200:

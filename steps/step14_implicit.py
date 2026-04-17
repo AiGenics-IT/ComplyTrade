@@ -598,7 +598,7 @@ IMPORTANT:
 
 
     try:
-        with httpx.Client(timeout=VLM_TIMEOUT) as client:
+        with httpx.Client(timeout=None) as client:
             resp = client.post(QWEN_VLM_URL, json={
                 "model": QWEN_VLM_MODEL,
                 "messages": messages,
@@ -657,7 +657,7 @@ Return ONLY valid JSON with the extracted values. Do not analyze or judge — ju
             pass
     messages[0]["content"].append({"type": "text", "text": extract_prompt})
     try:
-        with httpx.Client(timeout=VLM_TIMEOUT) as client:
+        with httpx.Client(timeout=None) as client:
             resp = client.post(QWEN_VLM_URL, json={
                 "model": QWEN_VLM_MODEL, "messages": messages,
                 "max_tokens": 300, "temperature": 0.1,

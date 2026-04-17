@@ -340,7 +340,7 @@ def _identify_document_from_clause(clause_text: str) -> Optional[str]:
             "model": QWEN_VLM_MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 30, "temperature": 0.1
-        }, timeout=30)
+        }, timeout=None)
         if resp.status_code == 200:
             result = resp.json()
             name = result.get('choices', [{}])[0].get('message', {}).get('content', '').strip()

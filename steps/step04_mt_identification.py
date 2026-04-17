@@ -633,7 +633,7 @@ def _vlm_classify(image_path: str, text: str) -> dict:
                 "max_tokens": 400,
                 "temperature": 0.1,
             },
-            timeout=VLM_TIMEOUT,
+            timeout=None,
         )
         if resp.status_code != 200:
             return {'error': f'HTTP {resp.status_code}'}

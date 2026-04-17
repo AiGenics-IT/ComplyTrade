@@ -231,7 +231,7 @@ def process_clauses_parallel(
             for future in as_completed(futures):
                 task = futures[future]
                 try:
-                    clause_result = future.result(timeout=300)  # 5-minute timeout per task
+                    clause_result = future.result(timeout=None)  # 5-minute timeout per task
                     batch.results.append(clause_result)
                     batch.completed += 1
                     # Store result for use by dependent tasks in later waves

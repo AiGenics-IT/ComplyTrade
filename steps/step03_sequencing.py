@@ -330,7 +330,7 @@ def _classify_page_vlm(page_num: int, image_path: str, glm_text: str, _max_retri
     last_err = None
     for attempt in range(_max_retries):
         try:
-            resp = requests.post(QWEN_VLM_URL, json=payload, timeout=VLM_TIMEOUT)
+            resp = requests.post(QWEN_VLM_URL, json=payload, timeout=None)
 
             if resp.status_code != 200:
                 last_err = f'VLM HTTP {resp.status_code}: {resp.text[:200]}'

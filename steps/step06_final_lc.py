@@ -1702,7 +1702,7 @@ If there are also other changes (word changes, amount increases, field replaceme
                 "model": _llm_model,
                 "messages": [{"role": "user", "content": _filled_prompt}],
                 "max_tokens": 8000, "temperature": 0.1,
-            }, timeout=VLM_TIMEOUT)
+            }, timeout=None)
             if _resp.status_code == 200:
                 _content = _resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
                 if _progress:
@@ -1801,7 +1801,7 @@ If there are also other changes (word changes, amount increases, field replaceme
             "max_tokens": 8000,
             "temperature": 0.1,
         }
-        resp = requests.post(_llm_url, json=payload, timeout=VLM_TIMEOUT)
+        resp = requests.post(_llm_url, json=payload, timeout=None)
         if _progress:
             _progress(f"      LLM request: {_llm_url} model={_llm_model} prompt={len(prompt)} chars")
         if resp.status_code == 200:
@@ -1975,7 +1975,7 @@ def _extract_fields_vlm_page(page_num: int, image_path: str, text: str) -> dict:
         content_parts.append({"type": "text", "text": _VLM_EXTRACT_PROMPT.format(text=text[:6000])})
         payload["messages"][0]["content"] = content_parts
 
-        resp = requests.post(QWEN_VLM_URL, json=payload, timeout=VLM_TIMEOUT)
+        resp = requests.post(QWEN_VLM_URL, json=payload, timeout=None)
         if resp.status_code != 200:
             return {}
         content = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
