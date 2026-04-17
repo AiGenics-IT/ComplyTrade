@@ -1532,7 +1532,7 @@ let _vTimerStart=null,_vTimerInterval=null;
 function _startVTimer(){
     _vTimerStart=Date.now();
     const te=document.getElementById('v-timer');
-    if(te)te.style.display='inline-flex';
+    if(te){te.style.display='inline-flex';te.style.color='white';te.style.background='white'}
     _vTimerInterval=setInterval(()=>{
         const el=Math.floor((Date.now()-_vTimerStart)/1000);
         const m=Math.floor(el/60),s=el%60;
@@ -1542,10 +1542,8 @@ function _startVTimer(){
 }
 function _stopVTimer(){
     if(_vTimerInterval){clearInterval(_vTimerInterval);_vTimerInterval=null}
-    const el=_vTimerStart?Math.floor((Date.now()-_vTimerStart)/1000):0;
-    const m=Math.floor(el/60),s=el%60;
     const te=document.getElementById('v-timer');
-    if(te){te.textContent=`⏱ ${m>0?m+'m ':''}${s}s`;te.style.background='#dcfce7';te.style.color='#16a34a'}
+    if(te){te.style.display='none'}
 }
 
 // ─── Verification ───
@@ -1598,7 +1596,7 @@ async function poll(id,el){
             if(logs.length){
                 el.innerHTML=logs.map(l=>`<div>${l.message}</div>`).join('');
                 if(logs.length>lastLogCount){stalledTicks=0;lastLogCount=logs.length}
-                else{stalledTicks++;if(stalledTicks%15===0)el.innerHTML+=`<div style="color:#888;font-style:italic">Still processing... (${Math.floor(a/60)}m ${a%60}s elapsed)</div>`}
+                else{stalledTicks++;if(stalledTicks%15===0)el.innerHTML+=`<div style="color:#888;font-style:italic">Still processing...</div>`}
                 el.scrollTop=el.scrollHeight;
             }
             if(d.status==='completed'){

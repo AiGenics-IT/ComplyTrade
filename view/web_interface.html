@@ -214,7 +214,7 @@
 
     <div class="card status-card" id="statusCard">
         <h2>Processing Status</h2>
-        <div style="margin:16px 0"><span class="status-badge" id="statusBadge">Pending</span> <span id="elapsedTimer" style="margin-left:12px;font-size:.95em;font-weight:600;color:#1554ca;display:none"></span></div>
+        <div style="margin:16px 0"><span class="status-badge" id="statusBadge">Pending</span> <span id="elapsedTimer" style="margin-left:12px;font-size:.95em;font-weight:600;color:white;display:none;user-select:text"></span></div>
         <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%">0%</div></div>
         <p id="statusMessage" style="margin:12px 0;color:#666"></p>
         <div class="spinner" id="spinner"></div>
@@ -319,12 +319,8 @@ function startTimer() {
 
 function stopTimer() {
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-    if (timerStartTime) {
-        const secs = Math.floor((Date.now() - timerStartTime) / 1000);
-        const m = Math.floor(secs / 60);
-        const s = secs % 60;
-        document.getElementById('elapsedTimer').textContent = m + ':' + String(s).padStart(2, '0') + ' elapsed';
-    }
+    // Hide elapsed timer when job completes
+    document.getElementById('elapsedTimer').style.display = 'none';
 }
 
 function resumeTimer() {
