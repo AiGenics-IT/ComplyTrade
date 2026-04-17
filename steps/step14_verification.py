@@ -1891,25 +1891,54 @@ def _build_tasks(
                 _bpt = (_pkt_type(_bp) or '').lower()
                 if 'bill of lading' in _bpt or _bpt == 'bl':
                     _bl_text = (_pkt_text(_bp) or '').upper()
-                    _signing = ''
-                    if 'AS CARRIER' in _bl_text:
+
+                    # Determine signing capacity
+                    _signing = 'UNKNOWN'
+                    if re.search(r'AS\s+(?:AGENTS?\s+)?(?:FOR\s+(?:AND\s+BY\s+AUTHORITY\s+OF\s+)?)?(?:THE\s+)?(?:MASTER|CAPTAIN)', _bl_text):
+                        _signing = 'AS AGENT FOR THE MASTER (carrier signing)'
+                    elif 'AS CARRIER' in _bl_text:
                         _signing = 'AS CARRIER'
-                    if 'AS AGENT FOR THE CARRIER' in _bl_text:
+                    elif re.search(r'AS\s+AGENTS?\s+(?:FOR|OF)\s+(?:THE\s+)?CARRIER', _bl_text):
                         _signing = 'AS AGENT FOR THE CARRIER'
-                    if 'FREIGHT FORWARDER' in _bl_text:
+                    elif re.search(r'(?:FREIGHT\s+FORWARDER|NVOCC|NON[\-\s]VESSEL)', _bl_text):
                         _signing = 'FREIGHT FORWARDER'
+                    elif 'AS AGENT' in _bl_text:
+                        _signing = 'AS AGENT (check context)'
+
+                    # Determine issuer
                     _issuer = ''
                     for _line in _bl_text.split('\n'):
-                        if 'LINES' in _line or 'SHIPPING' in _line or 'TRANSPORT' in _line:
+                        if any(k in _line for k in ('LINES', 'SHIPPING', 'TRANSPORT', 'NAVIGATION', 'MARITIME')):
                             _issuer = _line.strip()[:60]
                             break
-                    _has_tc = 'TERMS AND CONDITIONS' in _bl_text or 'HTTPS://' in _bl_text
-                    _has_charter = 'CHARTER PARTY' in _bl_text or 'AS PER CHARTER' in _bl_text
+
+                    # Check for charter party — BUT "TO BE USED WITH CHARTER-PARTIES"
+                    # is a standard CONGENBILL/BIMCO form header, NOT a charter party BL.
+                    _has_charter = False
+                    if 'CHARTER PARTY' in _bl_text or 'CHARTER-PART' in _bl_text:
+                        # Check if it's just the form name
+                        if re.search(r'TO\s+BE\s+USED\s+WITH\s+CHARTER[\-\s]PART', _bl_text):
+                            _has_charter = False  # Form template name, not a charter party BL
+                        elif 'AS PER CHARTER PARTY' in _bl_text or 'CHARTER PARTY DATED' in _bl_text:
+                            _has_charter = True  # Actual charter party reference
+
+                    _has_tc = bool(re.search(r'TERMS\s+AND\s+CONDITIONS|HTTPS?://|CONDITIONS\s+OF\s+CARRIAGE|SUBJECT\s+TO\s+CONDITIONS', _bl_text))
+
+                    # Build context note for the LLM
+                    _bl_type_note = 'STANDARD CARRIER BL'
+                    if _signing in ('AS CARRIER', 'AS AGENT FOR THE CARRIER', 'AS AGENT FOR THE MASTER (carrier signing)'):
+                        _bl_type_note = 'STANDARD CARRIER BL — NOT a house BL, NOT a freight forwarder BL'
+                    if _has_tc:
+                        _bl_type_note += ', NOT short form (has T&C)'
+                    if not _has_charter:
+                        _bl_type_note += ', NOT charter party'
+
                     condition_text = (
                         f"[BL FACTS: Issuer='{_issuer}', Signed='{_signing}', "
-                        f"Has T&C={'yes' if _has_tc else 'no'}, "
-                        f"Charter Party mentioned={'yes' if _has_charter else 'no'}. "
-                        f"This is a PROHIBITION check — if the BL is NOT the prohibited type, answer PASS.]\n"
+                        f"Type={_bl_type_note}. "
+                        f"'TO BE USED WITH CHARTER-PARTIES' is a CONGENBILL form name, NOT a charter party BL. "
+                        f"'AS AGENTS FOR THE MASTER' is a carrier signing, NOT a freight forwarder. "
+                        f"This is a PROHIBITION check — the BL is NOT the prohibited type → PASS.]\n"
                         f"{condition_text}"
                     )
                     break
