@@ -1746,15 +1746,21 @@ async def save_final_lc(job_id: str, request: Request):
 @app.get("/api/final-lc-pdf/{job_id}/{lc_number:path}")
 def get_final_lc_pdf(job_id: str, lc_number: str):
     """Generate/return Final LC PDF (compatibility endpoint)."""
-    if job_id not in _jobs:
-        raise HTTPException(404, "Job not found")
     results_dir = os.path.join(RESULTS_DIR, job_id)
+    if not os.path.isdir(results_dir):
+        raise HTTPException(404, "Job not found")
     # Check if already generated
     for f in Path(results_dir).rglob("*final_lc*.pdf"):
         return FileResponse(str(f), media_type="application/pdf", filename=f.name)
-    # Generate on-demand from Step 6 data
-    sr = _jobs[job_id].get('step_results', {})
+    # Generate on-demand from Step 6 data (in-memory or disk)
+    sr = _jobs.get(job_id, {}).get('step_results', {})
     s6 = sr.get('step06', {})
+    if not s6:
+        # Load from disk
+        _s6_path = os.path.join(results_dir, 'step06', 'step06_result.json')
+        if os.path.exists(_s6_path):
+            with open(_s6_path, 'r', encoding='utf-8') as _f:
+                s6 = json.load(_f)
     flc = s6.get('final_lc', s6)
     cf = flc.get('consolidated_fields', {})
     clauses = flc.get('clauses', {})
