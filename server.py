@@ -1779,7 +1779,7 @@ def get_final_lc_pdf(job_id: str, lc_number: str):
 
             dc_num = cf.get('20', flc.get('dc_number', 'unknown'))
             if isinstance(dc_num, dict): dc_num = dc_num.get('value', str(dc_num))
-            dc_num = str(dc_num).replace('\n', ' ').strip()[:30]
+            dc_num = str(dc_num).replace('\n', ' ').replace('/', '_').replace('\\', '_').strip()[:30]
 
             pdf_dir = os.path.join(results_dir, 'final_lc')
             os.makedirs(pdf_dir, exist_ok=True)
