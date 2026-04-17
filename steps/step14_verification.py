@@ -106,10 +106,14 @@ DOC_TYPE_ALIASES = {
         "express waybill", "express delivery receipt", "express courier",
         "dhl", "fedex", "fed ex", "ups", "tnt", "aramex",
         "air waybill", "airway bill", "awb",
+        "shipment advice", "declaration of shipment",
+        "shipping advice",
     ],
     "email evidence": [
         "email evidence", "email screenshot", "email confirmation",
         "email copy", "covering email", "transmission record",
+        "shipment advice", "declaration of shipment",
+        "shipping advice",
     ],
     "fax confirmation": [
         "fax confirmation", "fax report", "fax transmission",
