@@ -142,7 +142,11 @@ TOLERANCE CLAUSES:
 ═══════════════════════════════════════════════════════════════
 RETURN EMPTY ARRAY [] FOR THESE CLAUSE TYPES:
 ═══════════════════════════════════════════════════════════════
-  • Bank-to-bank obligations: "ADVISING BANK MUST..."
+  • Bank-to-bank obligations: "ADVISING BANK MUST...", "NEGOTIATING
+    BANK MUST ADVISE US VIA AUTHENTICATED SWIFT...", "NEGOTIATING
+    BANK MUST SEND/ADVISE/TRANSMIT VIA SWIFT..." — these are
+    instructions between banks, NOT verifiable from shipping documents.
+    Return EMPTY ARRAY [].
     EXCEPTION: "NEGOTIATING BANK MUST CERTIFY ON THEIR DOCUMENTS
     FORWARDING SCHEDULE THAT..." is NOT a bank-to-bank obligation —
     it creates a VERIFIABLE requirement on the Documentary Remittance
