@@ -674,15 +674,36 @@ document." and mark as FAIL.
 
 VERIFY: Does the document satisfy this condition?
 
-ANTI-HALLUCINATION WARNING:
-DO NOT copy text from the CONDITION into the findings. The findings
-must contain text that ACTUALLY appears in the DOCUMENT TEXT below.
-If the condition says "must mention Import Permit No. IP-LHR-656E13/2025"
-and you cannot find "IP-LHR-656E13" or "Import Permit" anywhere in the
-DOCUMENT TEXT section, the answer is FAIL — the permit is NOT mentioned.
-Search the DOCUMENT TEXT carefully. If a specific reference number,
-permit number, or certificate number from the condition does NOT appear
-in the document text, it is FAIL — do NOT assume it is there.
+ANTI-HALLUCINATION WARNING (CRITICAL — READ CAREFULLY):
+Your findings MUST contain ONLY text that ACTUALLY appears in the
+DOCUMENT TEXT section below. NEVER invent, assume, or copy text
+from the CONDITION into findings.
+
+BEFORE marking PASS, verify:
+  1. Can you find the EXACT required text in the DOCUMENT TEXT?
+  2. Can you QUOTE the specific line from the document?
+  3. If the document does NOT contain the required text, mark FAIL.
+
+EXAMPLES OF HALLUCINATION (DO NOT DO THIS):
+  ❌ Condition: "must state vessel is covered under Institute
+     Classification Clause"
+     Document text: "14 DAYS FREE TIME DETENTION ALLOWED AT POD"
+     WRONG: findings="Carrying vessel is covered under Institute
+     Classification Clause" result=PASS
+     → This is HALLUCINATION. The document says NOTHING about
+     Institute Classification Clause. Correct answer: FAIL.
+  ❌ Condition: "must show ETA at port of destination"
+     Document text: "Sailing on: 01FEB 2025"
+     WRONG: findings="ETA: SEP.20.2025" result=PASS
+     → HALLUCINATED date. The document shows sailing date, not ETA.
+     Correct answer: FAIL (no ETA/arrival date found).
+  ❌ Condition: "must show vessel name"
+     Document text: "Vessel: KOTANEKAD0204S"
+     WRONG: findings="Name of carrying vessel: MV Ocean Voyager"
+     → HALLUCINATED vessel name. The actual vessel is KOTANEKAD0204S.
+
+RULE: If you cannot QUOTE the relevant text from the DOCUMENT TEXT,
+the answer is FAIL. Period.
 
 CRITICAL RULES (follow strictly):
 1. CHECK F47A FIRST: Before marking anything as FAIL, read ALL F47A conditions above carefully. If ANY F47A clause says something is "ACCEPTABLE", "ALLOWED", or "PERMITTED" that relates to this condition, it OVERRIDES the main requirement.
