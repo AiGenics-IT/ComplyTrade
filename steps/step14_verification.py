@@ -1947,9 +1947,12 @@ def _build_tasks(
                     _has_tc = bool(re.search(r'TERMS\s+AND\s+CONDITIONS|HTTPS?://|CONDITIONS\s+OF\s+CARRIAGE|SUBJECT\s+TO\s+CONDITIONS', _bl_text))
 
                     # Build context note for the LLM
-                    _bl_type_note = 'STANDARD CARRIER BL' if _is_known_carrier else 'BL'
-                    if _is_known_carrier or _signing in ('AS CARRIER', 'AS AGENT FOR THE CARRIER', 'AS AGENT FOR THE MASTER (carrier signing)'):
-                        _bl_type_note = f'MASTER BL from known carrier — NOT a house BL, NOT a freight forwarder BL'
+                    _bl_type_note = 'BL'
+                    if _signing == 'AS AGENT FOR THE MASTER (carrier signing)':
+                        # Master/captain signing = ALWAYS a master BL
+                        _bl_type_note = 'MASTER BL (signed by/for the Master of the vessel) — NOT a house BL, NOT a freight forwarder BL'
+                    elif _is_known_carrier or _signing in ('AS CARRIER', 'AS AGENT FOR THE CARRIER'):
+                        _bl_type_note = 'MASTER BL from known carrier — NOT a house BL, NOT a freight forwarder BL'
                     if _has_tc:
                         _bl_type_note += ', NOT short form (has T&C)'
                     if not _has_charter:
