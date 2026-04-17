@@ -75,6 +75,7 @@ DOC_TYPE_ALIASES = {
         "express waybill", "express envelope", "express courier",
         "express delivery receipt",
         "dhl", "fedex", "fed ex", "ups", "tnt", "aramex",
+        "shipment advice", "shipping advice", "declaration of shipment",
     ],
     "commercial invoice": [
         "commercial invoice", "invoice", "tax invoice", "signed invoice",
@@ -112,8 +113,8 @@ DOC_TYPE_ALIASES = {
     "email evidence": [
         "email evidence", "email screenshot", "email confirmation",
         "email copy", "covering email", "transmission record",
-        "shipment advice", "declaration of shipment",
-        "shipping advice",
+        "shipment advice", "shipment advise", "declaration of shipment",
+        "shipping advice", "shipping advise",
     ],
     "fax confirmation": [
         "fax confirmation", "fax report", "fax transmission",
@@ -704,6 +705,10 @@ EXAMPLES OF HALLUCINATION (DO NOT DO THIS):
 
 RULE: If you cannot QUOTE the relevant text from the DOCUMENT TEXT,
 the answer is FAIL. Period.
+
+ADDRESSING QUICK-CHECK: "TO:", "ALSO TO:", "AND TO:", "CC:" on a
+document ALL mean the party IS addressed. If a Shipment Advice shows
+"TO: [applicant name]", the applicant IS addressed → PASS.
 
 BL PROHIBITION QUICK-CHECK (applies to ALL BL type checks):
 When the condition says "BL must not be [Charter Party / Short Form /
