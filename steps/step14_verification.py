@@ -705,6 +705,17 @@ EXAMPLES OF HALLUCINATION (DO NOT DO THIS):
 RULE: If you cannot QUOTE the relevant text from the DOCUMENT TEXT,
 the answer is FAIL. Period.
 
+BL PROHIBITION QUICK-CHECK (applies to ALL BL type checks):
+When the condition says "BL must not be [Charter Party / Short Form /
+Blank Back / Freight Forwarder / House BL]", check the BL DOCUMENT:
+  • Signed "AS CARRIER" or "AS AGENT FOR THE CARRIER" by a shipping
+    line (PIL, MAERSK, MSC, EVERGREEN, CMA CGM, etc.) → PASS for ALL
+  • Has T&C text or URL to terms → NOT short form → PASS
+  • No "CHARTER PARTY" text on the BL → NOT charter party → PASS
+  • "FREIGHT FORWARDER" or "NVOCC" NOT in signing block → PASS
+The prohibition words are in the CONDITION, not on the BL. PASS means
+the BL is NOT the prohibited type.
+
 CRITICAL RULES (follow strictly):
 1. CHECK F47A FIRST: Before marking anything as FAIL, read ALL F47A conditions above carefully. If ANY F47A clause says something is "ACCEPTABLE", "ALLOWED", or "PERMITTED" that relates to this condition, it OVERRIDES the main requirement.
 2. CONDITIONAL ACCEPTANCE: If F47A allows something WITH conditions (e.g., "LATE SHIPMENT ALLOWED PROVIDED penalty deduction"), mark as REVIEW (not FAIL) and explain the condition that needs manual verification.
@@ -802,60 +813,7 @@ CRITICAL RULES (follow strictly):
        EXAMPLE: LC says "QTY 9025 KGS", F43P = "ALLOWED", invoice shows 10000 KGS → FAIL (exceeds LC quantity).
     c) UCP 600 Art 30(b): Unless the LC prohibits partial shipment, a tolerance of 5% more or less in quantity is allowed, provided the total amount does not exceed the LC amount. So even without explicit tolerance, 5% variation is acceptable if partial shipment is not prohibited.
 13. BILL OF LADING LIMITATIONS: BLs do NOT show dollar amounts or unit prices — never fail a BL for "amount not mentioned". BLs do NOT typically show LC/credit numbers unless F47A specifically requires it on BL.
-13e. BL TYPES — PROHIBITION CLAUSES (CRITICAL — READ VERY CAREFULLY):
-    When the CONDITION says "Bill of Lading must not be a [type]"
-    (Charter Party, Short Form, Blank Back, Freight Forwarder's, House BL):
-
-    THIS IS A PROHIBITION — it lists what the BL must NOT be.
-    The prohibition words appear in the CONDITION, NOT on the BL.
-    DO NOT confuse the condition text with the document content.
-
-    STEP 1 — IDENTIFY THE BL ISSUER:
-    Look at who ISSUED the BL. Major shipping lines include:
-    PIL (Pacific International Lines), MAERSK, MSC, EVERGREEN,
-    CMA CGM, HAPAG-LLOYD, ONE, COSCO, YANG MING, ZIM, HMM,
-    OOCL, HAMBURG SÜD, SHANGHAI LEAGUE SHIPPING, WAN HAI, etc.
-    A BL from ANY of these is a MASTER BL from a carrier → PASS
-    for all prohibition types (not charter party, not house,
-    not freight forwarder).
-
-    STEP 2 — CHECK SIGNING CAPACITY:
-    • "AS CARRIER" → carrier BL → PASS for all prohibitions
-    • "AS AGENT FOR THE CARRIER" or "AS AGENTS FOR THE CARRIER"
-      → this is the carrier's local office/agent signing on behalf
-      of the carrier. This is STILL a carrier BL → PASS.
-      Example: "PIL(VIETNAM) CO., LTD - As Agent For The Carrier
-      PACIFIC INTERNATIONAL LINES (PTE) LTD" → PASS
-    • "AS AGENT" alone (without "FOR THE CARRIER") AND the issuer
-      is NOT a known shipping line → may be a freight forwarder
-      → check further
-    • "FREIGHT FORWARDER" or "NVOCC" or "NON-VESSEL OPERATING"
-      → freight forwarder BL → FAIL for freight forwarder prohibition
-
-    STEP 3 — CHECK BL FORM:
-    • SHORT FORM: A BL with NO terms & conditions printed.
-      If the BL has T&C text (even a URL like "HTTPS://WWW.PILSHIP.COM
-      /TERMS") → it is NOT short form → PASS
-    • BLANK BACK: Same as short form — no T&C on reverse.
-      If visual_metadata shows "bl_form_status: full_form" → PASS
-    • HOUSE BL: A BL issued by a freight forwarder/NVOCC, NOT by
-      the actual ocean carrier. "As Agent For The Carrier [carrier name]"
-      is NOT a house BL — it's a carrier BL signed by their agent.
-
-    WRONG REASONING (DO NOT DO THIS):
-    ❌ "The condition mentions SHORT FORM therefore FAIL"
-    ❌ "Signed AS AGENT therefore it's a freight forwarder" — WRONG
-       if the agent is signing FOR a known carrier
-    ❌ "HOUSE B/L DETECTED" just because the signing party has a
-       different name than the carrier header — check if they sign
-       "As Agent For The Carrier [carrier name]"
-    ❌ "BL IS SHORT FORM" when the BL references full T&C
-
-    CORRECT REASONING:
-    ✓ "BL issued by Pacific International Lines (PIL), signed by
-       PIL(Vietnam) Co., Ltd as Agent For The Carrier. PIL is a
-       major ocean carrier. This is a master carrier BL, not a
-       short form, freight forwarder, or house BL. PASS"
+13e. BL TYPES — see BL PROHIBITION QUICK-CHECK above (near top of prompt).
 13f. DRAFT / BILL OF EXCHANGE DATES:
     A Draft / Bill of Exchange typically has TWO dates:
       • DRAFT DATE (date of drawing): "Dated September 15, 2025"
