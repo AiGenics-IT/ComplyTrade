@@ -2745,10 +2745,6 @@ def run(
             (r'COVER\s+NOTE\s+NO\.?\s*([A-Z0-9\-/]+)', 'Cover Note'),
             (r'POLICY\s+NO\.?\s*([A-Z0-9\-/]+)', 'Policy'),
         ]
-        # Only check proforma invoice reference when the condition is
-        # SPECIFICALLY about the proforma reference, not goods description
-        if 'PROFORMA INVOICE' in _cond_up and 'MUST' in _cond_up and 'GOODS' not in _cond_up:
-            _ref_patterns.append((r'PROFORMA\s+INVOICE\s+NO\.?\s*([A-Z0-9\-/]+)', 'Proforma Invoice'))
         for _pat, _label in _ref_patterns:
             _ref_m = re.search(_pat, _cond_up)
             if _ref_m:
