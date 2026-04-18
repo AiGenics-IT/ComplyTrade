@@ -1894,7 +1894,7 @@ def _build_tasks(
 
                     # Determine signing capacity
                     _signing = 'UNKNOWN'
-                    if re.search(r'AS\s+(?:AGENTS?\s+)?(?:FOR\s+(?:AND\s+BY\s+AUTHORITY\s+OF\s+)?)?(?:THE\s+)?(?:MASTER|CAPTAIN)', _bl_text):
+                    if re.search(r'AS\s+(?:AGENTS?\s+)?(?:ONLY\s+)?(?:FOR\s+(?:AND\s+BY\s+AUTHORITY\s+OF\s+)?)?(?:THE\s+)?(?:MASTER|CAPTAIN)', _bl_text):
                         _signing = 'AS AGENT FOR THE MASTER (carrier signing)'
                     elif 'AS CARRIER' in _bl_text:
                         _signing = 'AS CARRIER'
@@ -1938,36 +1938,44 @@ def _build_tasks(
                     # is a standard CONGENBILL/BIMCO form header, NOT a charter party BL.
                     _has_charter = False
                     if 'CHARTER PARTY' in _bl_text or 'CHARTER-PART' in _bl_text:
-                        # Check if it's just the form name
-                        if re.search(r'TO\s+BE\s+USED\s+WITH\s+CHARTER[\-\s]PART', _bl_text):
-                            _has_charter = False  # Form template name, not a charter party BL
-                        elif 'AS PER CHARTER PARTY' in _bl_text or 'CHARTER PARTY DATED' in _bl_text:
-                            _has_charter = True  # Actual charter party reference
+                        if 'AS PER CHARTER PARTY' in _bl_text or 'CHARTER PARTY DATE' in _bl_text:
+                            _has_charter = True
+                        elif re.search(r'TO\s+BE\s+USED\s+WITH\s+CHARTER[\-\s]PART', _bl_text):
+                            _has_charter = False  # Form template name only
 
-                    _has_tc = bool(re.search(r'TERMS\s+AND\s+CONDITIONS|HTTPS?://|CONDITIONS\s+OF\s+CARRIAGE|SUBJECT\s+TO\s+CONDITIONS', _bl_text))
+                    _has_tc = bool(re.search(r'TERMS\s+AND\s+CONDITIONS|HTTPS?://|CONDITIONS\s+OF\s+CARRIAGE|SUBJECT\s+TO\s+CONDITIONS|SEE\s+OVERLEAF', _bl_text))
 
-                    # Build context note for the LLM
-                    if _has_charter:
-                        _bl_type_note = 'CHARTER PARTY BL'
-                    elif _signing == 'AS AGENT FOR THE MASTER (carrier signing)':
-                        _bl_type_note = 'MASTER BL (signed by/for the Master) — NOT a house BL, NOT a freight forwarder BL'
-                    elif _is_known_carrier or _signing in ('AS CARRIER', 'AS AGENT FOR THE CARRIER'):
-                        _bl_type_note = 'MASTER BL from known carrier — NOT a house BL, NOT a freight forwarder BL'
-                    elif _signing == 'FREIGHT FORWARDER':
-                        _bl_type_note = 'FREIGHT FORWARDER BL — this IS a house BL / forwarder BL'
-                    else:
-                        _bl_type_note = 'HOUSE BL — not signed by carrier or master, not a known shipping line'
+                    # Build per-prohibition context — each check type needs
+                    # specific facts, not a single overall BL type label
+                    _is_carrier_signed = _signing in (
+                        'AS CARRIER', 'AS AGENT FOR THE CARRIER',
+                        'AS AGENT FOR THE MASTER (carrier signing)')
+                    _bl_facts = {
+                        'charter party': 'YES — AS PER CHARTER PARTY found on BL' if _has_charter else 'NO — no charter party reference on BL',
+                        'short form': 'NO — BL has terms & conditions' if _has_tc else 'POSSIBLE — no T&C found',
+                        'blank back': 'NO — BL references conditions (see overleaf/URL)' if _has_tc else 'POSSIBLE — no conditions referenced',
+                        'freight forwarder': 'NO — signed by ' + _signing if _is_carrier_signed else ('YES — signed by freight forwarder' if _signing == 'FREIGHT FORWARDER' else 'POSSIBLE — unknown signing capacity'),
+                        'house': 'NO — signed by ' + _signing if _is_carrier_signed else ('YES — not signed by carrier/master' if _signing not in ('UNKNOWN', 'AS AGENT (check context)') else 'POSSIBLE — unknown signing capacity'),
+                    }
+                    # Pick the relevant fact for THIS specific condition
+                    _relevant_fact = ''
+                    for _pk, _pv in _bl_facts.items():
+                        if _pk in _cond_upper.lower():
+                            _relevant_fact = f'Is this BL a {_pk} BL? {_pv}'
+                            break
+                    if not _relevant_fact:
+                        _cp = 'yes' if _has_charter else 'no'
+                        _tc = 'yes' if _has_tc else 'no'
+                        _relevant_fact = f'Signing: {_signing}, Charter Party: {_cp}, Has T&C: {_tc}'
                     if _has_tc:
                         _bl_type_note += ', NOT short form (has T&C)'
                     if not _has_charter:
                         _bl_type_note += ', NOT charter party'
 
                     condition_text = (
-                        f"[BL FACTS: Issuer='{_issuer}', Signed='{_signing}', "
-                        f"Type={_bl_type_note}. "
-                        f"'TO BE USED WITH CHARTER-PARTIES' is a CONGENBILL form name, NOT a charter party BL. "
-                        f"'AS AGENTS FOR THE MASTER' is a carrier signing, NOT a freight forwarder. "
-                        f"This is a PROHIBITION check — the BL is NOT the prohibited type → PASS.]\n"
+                        f"[BL PROHIBITION CHECK: {_relevant_fact}. "
+                        f"Issuer='{_issuer}', Signed='{_signing}'. "
+                        f"This is a PROHIBITION — answer based on the facts above.]\n"
                         f"{condition_text}"
                     )
                     break
