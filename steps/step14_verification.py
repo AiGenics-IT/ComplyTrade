@@ -2704,6 +2704,86 @@ def run(
                 break
 
     # ------------------------------------------------------------------ #
+    # 5c2. Override LLM false PASSes for specific verifiable conditions
+    # ------------------------------------------------------------------ #
+    for task in vlm_tasks:
+        row = task["row"]
+        row_id = task.get("row_id", "?")
+        compliance = _get(row, "compliance", "").upper()
+        if compliance != "PASS":
+            continue
+
+        cond_text = (task.get("condition_text") or "")
+        doc_text = (task.get("document_text") or "")
+        _cond_up = cond_text.upper()
+        _doc_up = doc_text.upper()
+
+        # Check A: Reference numbers (NTN, permit, certificate numbers)
+        # If condition says "NTN No. XXXXX must appear" and XXXXX is NOT
+        # in the document text, the LLM hallucinated PASS.
+        _ref_patterns = [
+            (r'NTN\s+(?:NO\.?\s*)?(\d[\d\-/]+)', 'NTN'),
+            (r'IMPORT\s+PERMIT\s+NO\.?\s*([A-Z0-9\-/]+)', 'Import Permit'),
+            (r'COVER\s+NOTE\s+NO\.?\s*([A-Z0-9\-/]+)', 'Cover Note'),
+            (r'POLICY\s+NO\.?\s*([A-Z0-9\-/]+)', 'Policy'),
+            (r'PROFORMA\s+INVOICE\s+NO\.?\s*([A-Z0-9\-/]+)', 'Proforma Invoice'),
+        ]
+        for _pat, _label in _ref_patterns:
+            _ref_m = re.search(_pat, _cond_up)
+            if _ref_m:
+                _ref_num = _ref_m.group(1).strip()
+                # Check if this reference number appears in the document
+                if _ref_num not in _doc_up and _ref_num.replace('-', '') not in _doc_up.replace('-', ''):
+                    _set(row, "compliance", "FAIL")
+                    _set(row, "result", f"{_label} {_ref_num} not found in document")
+                    _set(row, "findings", f"{_label} number {_ref_num} not found in document text")
+                    _progress(f"  {row_id}: PASS->FAIL ({_label} {_ref_num} not in document)")
+                break
+
+        # Check B: Consignee "TO ORDER OF [bank]" vs "TO ORDER" alone
+        # "TO ORDER" without a specific bank name is NOT the same as
+        # "TO THE ORDER OF UNITED BANK LTD"
+        if compliance == "PASS" and 'ORDER OF' in _cond_up and 'BILL OF LADING' in (task.get("document_type") or "").upper():
+            # Extract the bank/party name after "ORDER OF"
+            _order_m = re.search(r'ORDER\s+OF\s+([A-Z][A-Z\s,.\-()]+?)(?:\.|$|\n)', _cond_up)
+            if _order_m:
+                _order_party = _order_m.group(1).strip().rstrip('.,')
+                # Check if this party name appears after "ORDER" in the document
+                _doc_has_order_party = False
+                _order_keywords = [w for w in _order_party.split() if len(w) >= 3 and w not in ('THE', 'AND', 'LTD', 'LIMITED')]
+                if _order_keywords:
+                    _found_kw = sum(1 for w in _order_keywords if w in _doc_up)
+                    _doc_has_order_party = _found_kw >= len(_order_keywords) * 0.6
+                if not _doc_has_order_party:
+                    _set(row, "compliance", "FAIL")
+                    _set(row, "result", f"Consignee does not show '{_order_party[:40]}'")
+                    _set(row, "findings", f"BL shows 'TO ORDER' but LC requires 'TO THE ORDER OF {_order_party[:40]}'")
+                    _progress(f"  {row_id}: PASS->FAIL (order of {_order_party[:30]} not in BL)")
+
+        # Refresh compliance after possible override
+        compliance = _get(row, "compliance", "").upper()
+
+        # Check C: Notify party — must match the SPECIFIC party named
+        if compliance == "PASS" and 'NOTIFY' in _cond_up and 'ISSUING BANK' in _cond_up:
+            # Condition says "notify the issuing bank" — check if the
+            # issuing bank name appears in the notify party section
+            _notify_section = ''
+            _nm = re.search(r'NOTIFY\s+PARTY[:\s]*(.*?)(?:PRE[\-\s]CARRIAGE|OCEAN\s+VESSEL|PORT\s+OF|PLACE\s+OF|\Z)', _doc_up, re.DOTALL)
+            if _nm:
+                _notify_section = _nm.group(1)
+            # Get issuing bank name
+            _lc_pf = step06_result.get('final_lc', step06_result).get('consolidated_fields', step06_result.get('consolidated_fields', {}))
+            _ib = str(_lc_pf.get('52A', _lc_pf.get('51A', _lc_pf.get('42D', '')))).split('\n')[0].strip()
+            if _ib and _notify_section:
+                _ib_keywords = [w for w in _ib.upper().split() if len(w) >= 3 and w not in ('THE', 'AND', 'LTD', 'LIMITED')]
+                _found = sum(1 for w in _ib_keywords if w in _notify_section)
+                if _ib_keywords and _found < len(_ib_keywords) * 0.5:
+                    _set(row, "compliance", "FAIL")
+                    _set(row, "result", f"Notify party does not show issuing bank '{_ib[:40]}'")
+                    _set(row, "findings", f"BL notify party does not include '{_ib[:40]}'")
+                    _progress(f"  {row_id}: PASS->FAIL (issuing bank not in notify party)")
+
+    # ------------------------------------------------------------------ #
     # 5d. LOI presentation — suppress timing checks
     # ------------------------------------------------------------------ #
     # When LOI is presented, late presentation / late shipment / LC expiry
