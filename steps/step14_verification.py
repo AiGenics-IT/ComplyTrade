@@ -1899,6 +1899,15 @@ def _build_tasks(
             _issuing_bank = str(_lc_parties_fields.get('52A', _lc_parties_fields.get('52D', ''))).split('\n')[0].strip()
             if not _issuing_bank:
                 _issuing_bank = str(_lc_parties_fields.get('sender_institution', '')).split('\n')[0].strip()
+            if not _issuing_bank:
+                # Fallback: F42D (Drawee) is usually the issuing bank
+                _issuing_bank = str(_lc_parties_fields.get('42D', '')).split('\n')[0].strip()
+            if not _issuing_bank:
+                # Fallback: check F78 for bank name
+                _f78 = str(_lc_parties_fields.get('78', ''))
+                _bank_m = re.search(r'(BANK\s+AL\s+HABIB|UNITED\s+BANK|HABIB\s+BANK|MCB\s+BANK|ALLIED\s+BANK|NATIONAL\s+BANK|ASKARI\s+BANK|MEEZAN\s+BANK|FAYSAL\s+BANK|STANDARD\s+CHARTERED|BANK\s+OF\s+PUNJAB|SILK\s+BANK|JS\s+BANK|SONERI\s+BANK|SUMMIT\s+BANK|BANK\s+ALFALAH|HSBC|CITIBANK|DEUTSCHE\s+BANK)[\w\s,.]*(LTD\.?|LIMITED)?', _f78, re.IGNORECASE)
+                if _bank_m:
+                    _issuing_bank = _bank_m.group(0).strip().rstrip(',. ')
             _party_note = []
             if 'issuing bank' in _cond_lower_party and _issuing_bank:
                 _party_note.append(f'L/C Issuing Bank = "{_issuing_bank}"')
