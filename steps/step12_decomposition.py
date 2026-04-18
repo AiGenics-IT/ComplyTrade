@@ -147,6 +147,11 @@ RETURN EMPTY ARRAY [] FOR THESE CLAUSE TYPES:
     BANK MUST SEND/ADVISE/TRANSMIT VIA SWIFT..." — these are
     instructions between banks, NOT verifiable from shipping documents.
     Return EMPTY ARRAY [].
+  • Document forwarding/courier instructions: "ALL DOCUMENTS TO BE
+    FORWARDED TO US BY COURIER AT OUR ADDRESS...", "DOCUMENTS TO BE
+    SENT BY COURIER TO...", "FORWARD ALL DOCUMENTS BY COURIER" — these
+    are physical dispatch instructions for the negotiating bank, NOT
+    verifiable from document content. Return EMPTY ARRAY [].
     EXCEPTION: "NEGOTIATING BANK MUST CERTIFY ON THEIR DOCUMENTS
     FORWARDING SCHEDULE THAT..." is NOT a bank-to-bank obligation —
     it creates a VERIFIABLE requirement on the Documentary Remittance
@@ -1253,12 +1258,13 @@ def run(structured_lc: dict, output_dir: str = None, progress_callback=None) -> 
             filtered.append(cond)
 
         # Filter: SWIFT message obligations from negotiating bank
-        # "NEGOTIATING BANK MUST ADVISE US VIA AUTHENTICATED SWIFT..."
-        # The entire clause is a bank-to-bank instruction, including
-        # "COPY OF SUCH SWIFT MESSAGE MUST ACCOMPANY" — we cannot verify
-        # the SWIFT message content from shipping documents.
         if re.search(r'NEGOTIATING\s+BANK\s+MUST\s+ADVISE.*?VIA\s+(?:AUTHENTICATED\s+)?SWIFT', original_upper):
             _progress(f"  {dc.clause_ref}: FILTERED all conditions — bank SWIFT notification obligation")
+            filtered = []
+
+        # Filter: Document forwarding/courier instructions to the bank
+        if re.search(r'ALL\s+DOCUMENTS?\s+(?:TO\s+BE\s+|MUST\s+BE\s+)?(?:FORWARDED|SENT|DISPATCHED|COURIERED)\s+(?:TO\s+US|TO\s+THE\s+BANK|BY\s+COURIER)', original_upper):
+            _progress(f"  {dc.clause_ref}: FILTERED all conditions — document forwarding instruction")
             filtered = []
 
         dc.conditions = filtered
