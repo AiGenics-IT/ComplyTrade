@@ -1898,9 +1898,10 @@ def _build_tasks(
             _beneficiary = str(_lc_parties_fields.get('59', '')).split('\n')[0].strip()
             _issuing_bank = str(_lc_parties_fields.get('52A', _lc_parties_fields.get('52D', ''))).split('\n')[0].strip()
             if not _issuing_bank:
+                _issuing_bank = str(_lc_parties_fields.get('51A', _lc_parties_fields.get('51D', ''))).split('\n')[0].strip()
+            if not _issuing_bank:
                 _issuing_bank = str(_lc_parties_fields.get('sender_institution', '')).split('\n')[0].strip()
             if not _issuing_bank:
-                # Fallback: F42D (Drawee) is usually the issuing bank
                 _issuing_bank = str(_lc_parties_fields.get('42D', '')).split('\n')[0].strip()
             if not _issuing_bank:
                 # Fallback: check F78 for bank name
