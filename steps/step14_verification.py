@@ -706,6 +706,13 @@ EXAMPLES OF HALLUCINATION (DO NOT DO THIS):
 RULE: If you cannot QUOTE the relevant text from the DOCUMENT TEXT,
 the answer is FAIL. Period.
 
+GOODS DESCRIPTION TOLERANCE: Minor wording variations in goods
+description are acceptable if the PRODUCT is clearly the same.
+"Canadian Canola No.1" and "Canadian GMO Canola" refer to the same
+commodity (canola from Canada). Grade/variety descriptors like
+"No.1", "GMO", "non-GMO", "in bulk" are supplementary details,
+not a different product. If the core product name matches, PASS.
+
 ADDRESSING QUICK-CHECK: "TO:", "ALSO TO:", "AND TO:", "CC:" on a
 document ALL mean the party IS addressed. If a Shipment Advice shows
 "TO: [applicant name]", the applicant IS addressed → PASS.
