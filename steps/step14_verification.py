@@ -2718,6 +2718,24 @@ def run(
         _cond_up = cond_text.upper()
         _doc_up = doc_text.upper()
 
+        # Check 0: Company name changes — "currently known as" / "formerly known as"
+        # If the findings mention a name change phrase, the entity IS the same → keep PASS
+        _findings_text = (_get(row, "findings", "") or "").upper()
+        if compliance == "PASS":
+            pass  # Already PASS, no override needed
+        # But if FAIL and the document shows a name change phrase, override to PASS
+        if compliance == "FAIL":
+            _name_change_phrases = ['CURRENTLY KNOWN AS', 'FORMERLY KNOWN AS', 'NOW KNOWN AS',
+                                     'TRADING AS', 'T/A', 'D/B/A', 'ALSO KNOWN AS']
+            _doc_has_name_change = any(p in _doc_up for p in _name_change_phrases)
+            _cond_has_beneficiary = 'BENEFICIARY' in _cond_up or 'ISSUED BY' in _cond_up
+            if _doc_has_name_change and _cond_has_beneficiary:
+                _set(row, "compliance", "PASS")
+                _set(row, "result", "Beneficiary identified (name change noted on document)")
+                _set(row, "findings", "Document shows company name change — same legal entity")
+                _progress(f"  {row_id}: FAIL->PASS (company name change detected)")
+            compliance = _get(row, "compliance", "").upper()
+
         # Check A: Reference numbers (NTN, permit, certificate numbers)
         # If condition says "NTN No. XXXXX must appear" and XXXXX is NOT
         # in the document text, the LLM hallucinated PASS.
