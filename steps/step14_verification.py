@@ -1880,6 +1880,26 @@ def _build_tasks(
         doc_checked = _get(row, "document_checked", "")
         look_for = _get(row, "look_for_value", "")
 
+        # PARTY NAME INJECTION: resolve "Issuing Bank", "Applicant",
+        # "Beneficiary" to actual names so LLM can't confuse them.
+        _cond_lower_party = condition_text.lower()
+        if any(k in _cond_lower_party for k in ['issuing bank', 'applicant', 'beneficiary']):
+            _lc_parties_fields = step06_result.get('final_lc', step06_result).get('consolidated_fields', step06_result.get('consolidated_fields', {}))
+            _applicant = str(_lc_parties_fields.get('50', '')).split('\n')[0].strip()
+            _beneficiary = str(_lc_parties_fields.get('59', '')).split('\n')[0].strip()
+            _issuing_bank = str(_lc_parties_fields.get('52A', _lc_parties_fields.get('52D', ''))).split('\n')[0].strip()
+            if not _issuing_bank:
+                _issuing_bank = str(_lc_parties_fields.get('sender_institution', '')).split('\n')[0].strip()
+            _party_note = []
+            if 'issuing bank' in _cond_lower_party and _issuing_bank:
+                _party_note.append(f'L/C Issuing Bank = "{_issuing_bank}"')
+            if 'applicant' in _cond_lower_party and _applicant:
+                _party_note.append(f'Applicant = "{_applicant}"')
+            if 'beneficiary' in _cond_lower_party and _beneficiary:
+                _party_note.append(f'Beneficiary = "{_beneficiary}"')
+            if _party_note:
+                condition_text = f"[PARTY NAMES: {'; '.join(_party_note)}. Match the EXACT party name, not a different party.]\n{condition_text}"
+
         # BL PROHIBITION: inject signing capacity into the condition text
         # so the LLM sees it right in the question, not buried in rules.
         _bl_prohibition_kw = ['charter party', 'short form', 'blank back',
