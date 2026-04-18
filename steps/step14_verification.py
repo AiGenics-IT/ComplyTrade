@@ -1077,6 +1077,15 @@ Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 
     character-by-character. The bank's job is to confirm the parties
     are the same legal entity, NOT to police OCR perfection.
 
+    COMPANY NAME CHANGES / ALIASES:
+    Companies change names through mergers, acquisitions, or rebranding.
+    If a document shows "Viterra B.V. (currently known as Bunge
+    Netherlands Agri B.V.)" or "ABC Corp (formerly XYZ Ltd)", this
+    IS the same entity — PASS. The phrases "currently known as",
+    "formerly known as", "now known as", "trading as", "t/a", "d/b/a"
+    all indicate the SAME legal entity under a different name.
+    Match EITHER the old name OR the new name against the LC party.
+
     Step 1 — Normalise both sides:
       • Strip company-form suffixes / abbreviations: PVT, PVT., PVT LTD,
         PRIVATE LIMITED, LTD, LIMITED, LLC, LLP, INC, CORP, CO,
