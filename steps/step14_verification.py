@@ -1987,10 +1987,6 @@ def _build_tasks(
                         _cp = 'yes' if _has_charter else 'no'
                         _tc = 'yes' if _has_tc else 'no'
                         _relevant_fact = f'Signing: {_signing}, Charter Party: {_cp}, Has T&C: {_tc}'
-                    if _has_tc:
-                        _bl_type_note += ', NOT short form (has T&C)'
-                    if not _has_charter:
-                        _bl_type_note += ', NOT charter party'
 
                     condition_text = (
                         f"[BL PROHIBITION CHECK: {_relevant_fact}. "
