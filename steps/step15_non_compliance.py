@@ -150,6 +150,20 @@ NON_CHECKABLE_PATTERNS = [
     r'DOCUMENTS?\s+(?:TO\s+BE|MUST\s+BE|SHOULD\s+BE)\s+(?:SENT|FORWARDED|DISPATCHED|COURIERED)\s+(?:TO|BY|VIA).{0,200}(?:DHL|FEDEX|UPS|TNT|ARAMEX|COURIER)',
     r'AT\s+(?:THE\s+)?BENEFICIARY[\'S]{0,2}\s+COST',
     r'IN\s+\d+\s+LOTS?\s+BY\s+(?:DHL|FEDEX|UPS|COURIER)',
+    # P132 — ICC / sanctions liability disclaimers (boilerplate legal text,
+    # not a shipping document requirement). These are issuing-bank legal
+    # carve-outs and cannot be verified on any document.
+    r'NOTWITHSTANDING\s+ANYTHING\s+TO\s+THE\s+CONTRARY',
+    r'WE\s+DISCLAIM\s+LIABILITY\s+FOR',
+    r'DISCLAIM(?:S|ED|ING)?\s+(?:ANY|ALL)?\s*LIABILITY',
+    r'RESTRICTIVE\s+MEASURES',
+    r'COUNTER[- ]?MEASURES',
+    r'SANCTION[S]?\s+LAWS?\s+OR\s+REGULATIONS',
+    r'SANCTION[S]?\s+LAWS?\s+(?:OR|AND)\s+REGULATIONS',
+    r'MANDATORILY\s+APPLICABLE\s+TO\s+US',
+    r'(?:OUR|THE)\s+CORRESPONDENT\s+BANKS?',
+    r'DELAY,\s+NON[- ]?RETURN\s+OF\s+DOCUMENTS',
+    r'NON[- ]?PAYMENT,?\s+OR\s+OTHER\s+ACTION',
 ]
 
 # Compile patterns for performance (compiled once, used many times)

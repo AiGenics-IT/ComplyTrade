@@ -222,6 +222,43 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
     clause_groups: Dict[str, ClauseGroup] = {}
     for ref in sorted(clause_map.keys(), key=_sort_clause_ref):
         group_rows = clause_map[ref]
+
+        # P131 — Dedupe rows that share the same condition_text within one
+        # clause. When step 14 runs the same condition against multiple BL
+        # copies (3 originals + 1 copy), each returns its own verdict. If one
+        # reads the port clearly (PASS) while another's OCR is fuzzier
+        # (REVIEW), the report would show the same row twice with different
+        # verdicts — confusing the user. Collapse to the best verdict:
+        # PASS > REVIEW > FAIL (any PASS proves compliance; a REVIEW beside
+        # a PASS is just an OCR artefact of a copy).
+        def _cond_key(r):
+            c = (r.get('condition') or r.get('condition_text') or '').strip().lower()
+            d = (r.get('document_checked') or '').strip().lower()
+            return (c, d)
+
+        def _verdict_rank(r):
+            vc = (r.get('compliance') or '').upper().strip()
+            if vc in ('PASS', 'COMPLIED', 'COMPLIANT'):
+                return 3
+            if vc in ('FAIL', 'NOT COMPLIED', 'NON_COMPLIANT', 'DISCREPANT'):
+                return 1
+            if vc in ('REVIEW', 'REVIEW REQUIRED', 'REVIEW_REQUIRED'):
+                return 2
+            if vc in ('N/A', 'NA', 'INFORMATIONAL', 'INFO', 'SKIPPED'):
+                return 0
+            return 2  # unknown → treat as REVIEW
+
+        _by_key = {}
+        for _r in group_rows:
+            k = _cond_key(_r)
+            if not k[0]:  # empty condition → keep as-is (no dedup)
+                _by_key.setdefault(('__nokey__', id(_r)), _r)
+                continue
+            cur = _by_key.get(k)
+            if cur is None or _verdict_rank(_r) > _verdict_rank(cur):
+                _by_key[k] = _r
+        group_rows = list(_by_key.values())
+
         vrows = []
         pc = fc = rc = 0
 
