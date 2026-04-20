@@ -4093,75 +4093,74 @@ def run(
         has_fail = any(r["compliance"] == "FAIL" for r in results)
         has_review = any(r["compliance"] == "REVIEW" for r in results)
 
-        # P147 — Distinguish UNIVERSAL vs EXISTENTIAL multi-doc conditions.
-        # A condition like "must appear on ALL documents" / "on all other
-        # documents" / "every document" / "each document" requires EVERY
-        # checked doc to pass. Aggregation for these must report WHICH
-        # docs are missing the requirement.
-        # Other multi-doc conditions (e.g. "LC number must appear on at
-        # least one document" or checks fanned out to alternates like
-        # Draft AND Invoice for F32B amount) use the best-case logic.
-        _cond_text = (_get(row, "condition_text", "")
-                       or _get(row, "condition", "")).upper()
-        _is_universal = any(p in _cond_text for p in (
-            'ALL DOCUMENTS', 'ALL OTHER DOCUMENTS',
-            'EVERY DOCUMENT', 'EACH DOCUMENT',
-            'ALL THE DOCUMENTS', 'EACH OF THE DOCUMENTS',
-            'ALL SHIPPING DOCUMENTS', 'ON ALL DOCUMENTS',
-        ))
+        # P147 (DISABLED per user request) — Universal-quantifier
+        # aggregation for "must appear on ALL docs" was reporting false
+        # FAILs when one fan-out target genuinely shouldn't carry the
+        # value. Reverted to the original best-case existential logic:
+        # any PASS -> overall PASS. Re-enable by un-commenting the block
+        # below if you want per-doc missing-reporting back.
+        #
+        # _cond_text = (_get(row, "condition_text", "")
+        #                or _get(row, "condition", "")).upper()
+        # _is_universal = any(p in _cond_text for p in (
+        #     'ALL DOCUMENTS', 'ALL OTHER DOCUMENTS',
+        #     'EVERY DOCUMENT', 'EACH DOCUMENT',
+        #     'ALL THE DOCUMENTS', 'EACH OF THE DOCUMENTS',
+        #     'ALL SHIPPING DOCUMENTS', 'ON ALL DOCUMENTS',
+        # ))
+        # if _is_universal:
+        #     _fail_docs = [r.get("document_type", "?") for r in results
+        #                    if r.get("compliance") == "FAIL"]
+        #     _review_docs = [r.get("document_type", "?") for r in results
+        #                       if r.get("compliance") == "REVIEW"]
+        #     _pass_docs = [r.get("document_type", "?") for r in results
+        #                    if r.get("compliance") == "PASS"]
+        #     if _fail_docs:
+        #         agg_compliance = "FAIL"
+        #         _missing = ", ".join(_fail_docs)
+        #         combined_findings = (
+        #             f"Requirement missing on: {_missing}. "
+        #             f"Present on: {', '.join(_pass_docs) or '(none)'}."
+        #         )
+        #         combined_result = f"Missing on {len(_fail_docs)} doc(s): {_missing}"
+        #     elif _review_docs:
+        #         agg_compliance = "REVIEW"
+        #         combined_findings = (
+        #             f"Requirement unclear on: {', '.join(_review_docs)}. "
+        #             f"Present on: {', '.join(_pass_docs) or '(none)'}."
+        #         )
+        #         combined_result = f"Unclear on {len(_review_docs)} doc(s)"
+        #     else:
+        #         agg_compliance = "PASS"
+        #         combined_findings = (
+        #             f"Requirement satisfied on all {len(_pass_docs)} checked "
+        #             f"documents: {', '.join(_pass_docs)}"
+        #         )
+        #         combined_result = combined_findings[:200]
+        #     avg_conf = round(
+        #         sum(r.get("confidence", 0.0) for r in results) / max(len(results), 1),
+        #         2,
+        #     )
+        # else:
 
-        if _is_universal:
-            # Universal: every doc MUST pass. Report which fail.
-            _fail_docs = [r.get("document_type", "?") for r in results
-                           if r.get("compliance") == "FAIL"]
-            _review_docs = [r.get("document_type", "?") for r in results
-                              if r.get("compliance") == "REVIEW"]
-            _pass_docs = [r.get("document_type", "?") for r in results
-                           if r.get("compliance") == "PASS"]
-            if _fail_docs:
-                agg_compliance = "FAIL"
-                _missing = ", ".join(_fail_docs)
-                combined_findings = (
-                    f"Requirement missing on: {_missing}. "
-                    f"Present on: {', '.join(_pass_docs) or '(none)'}."
-                )
-                combined_result = f"Missing on {len(_fail_docs)} doc(s): {_missing}"
-            elif _review_docs:
-                agg_compliance = "REVIEW"
-                combined_findings = (
-                    f"Requirement unclear on: {', '.join(_review_docs)}. "
-                    f"Present on: {', '.join(_pass_docs) or '(none)'}."
-                )
-                combined_result = f"Unclear on {len(_review_docs)} doc(s)"
-            else:
-                agg_compliance = "PASS"
-                combined_findings = (
-                    f"Requirement satisfied on all {len(_pass_docs)} checked "
-                    f"documents: {', '.join(_pass_docs)}"
-                )
-                combined_result = combined_findings[:200]
-            avg_conf = round(
-                sum(r.get("confidence", 0.0) for r in results) / max(len(results), 1),
-                2,
-            )
+        # Existential best-case aggregation (restored default):
+        # ANY pass proves compliance.
+        if has_pass:
+            agg_compliance = "PASS"
+        elif has_review:
+            agg_compliance = "REVIEW"
         else:
-            # Existential: ANY pass proves compliance (best-case).
-            if has_pass:
-                agg_compliance = "PASS"
-            elif has_review:
-                agg_compliance = "REVIEW"
-            else:
-                agg_compliance = "FAIL"
-            _best = None
-            for r in results:
-                if r.get("compliance") == agg_compliance:
-                    _best = r
-                    break
-            if not _best:
-                _best = results[0]
-            combined_findings = _best.get("findings", "Nil")
-            combined_result = _best.get("result", "")
-            avg_conf = _best.get("confidence", 0.0)
+            agg_compliance = "FAIL"
+        _best = None
+        for r in results:
+            if r.get("compliance") == agg_compliance:
+                _best = r
+                break
+        if not _best:
+            _best = results[0]
+        combined_findings = _best.get("findings", "Nil")
+        combined_result = _best.get("result", "")
+        avg_conf = _best.get("confidence", 0.0)
 
         _set(row, "findings", combined_findings)
         _set(row, "found_text", combined_findings)
