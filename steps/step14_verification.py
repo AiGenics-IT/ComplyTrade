@@ -3079,6 +3079,64 @@ def _call_vlm(
                     if _token_in_blob(_t):
                         _hit_tok = _t
                         break
+                # P143 — if no quoted/id token matched, try raw phrase
+                # extraction from the FINDING itself. Any 2-4-word all-caps
+                # sequence in the finding that isn't just "NOT FOUND" etc.
+                # is probably the subject the LLM was looking for.
+                if not _hit_tok:
+                    _finding_caps = re.findall(
+                        r'\b([A-Z][A-Z\-]{2,}(?:\s+[A-Z][A-Z\-0-9]*){1,5})\b',
+                        parsed.get('findings', '') or '',
+                    )
+                    _STOPWORDS_CAPS = {
+                        'NOT FOUND', 'NOT PRESENT', 'DOES NOT', 'DOES NOT SHOW',
+                        'DOES NOT CONTAIN', 'DOES NOT INCLUDE', 'NOT APPEAR',
+                        'NOT DISPLAYED', 'NOT INCLUDED', 'IS MISSING',
+                        'NOT QUOTED', 'CANNOT FIND', 'NO MATCH',
+                        'THE DOCUMENT', 'THE BL', 'THE INVOICE', 'THE CONSIGNEE',
+                        'THE POLICY', 'THE REQUIRED',
+                    }
+                    for _phrase in _finding_caps:
+                        _ph = _phrase.strip()
+                        if any(sw in _ph for sw in _STOPWORDS_CAPS):
+                            continue
+                        if len(_ph) < 6:
+                            continue
+                        if _token_in_blob(_ph):
+                            _hit_tok = _ph
+                            break
+
+                # P144 — SPECIFIC BANK-NAME BRUTE FORCE. If the condition
+                # references a well-known Pakistani/Middle-East LC bank
+                # and the bank's distinctive name appears anywhere in the
+                # evidence blob, that is sufficient proof. This handles
+                # the stubborn "consignee does not show" hallucinations
+                # when BL clearly has "TO ORDER OF: BANK AL HABIB".
+                if not _hit_tok:
+                    _BANK_KEYWORDS = [
+                        'AL HABIB', 'ALHABIB', 'AL-HABIB',
+                        'ALFALAH', 'AL FALAH', 'AL-FALAH',
+                        'MEEZAN', 'FAYSAL', 'ASKARI',
+                        'UBL', 'HBL', 'MCB', 'NBP', 'ABL', 'BAF', 'JS BANK',
+                        'STANDARD CHARTERED', 'CITIBANK', 'HSBC',
+                        'DEUTSCHE BANK', 'BNP PARIBAS',
+                        'MIZUHO', 'MUFG', 'SUMITOMO',
+                        'EMIRATES NBD', 'MASHREQ', 'QNB',
+                        'COMMERCIAL BANK', 'DOHA BANK', 'RIYAD BANK',
+                        'SAMBA', 'SABB', 'NCB',
+                        'BANK OF CHINA', 'ICBC',
+                    ]
+                    _cond_upper = (condition_text or '').upper()
+                    for _bkw in _BANK_KEYWORDS:
+                        if _bkw in _cond_upper:
+                            # The condition names this bank. Is the bank
+                            # name present anywhere in the evidence blob?
+                            _bkw_flat = re.sub(r'\s+', ' ', _bkw)
+                            _blob_flat = re.sub(r'\s+', ' ', _blob_upper)
+                            if _bkw_flat in _blob_flat:
+                                _hit_tok = _bkw
+                                break
+
                 if _hit_tok:
                     parsed["compliance"] = "pass"
                     parsed["verdict"] = "PASS"

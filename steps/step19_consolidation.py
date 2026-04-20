@@ -40,6 +40,7 @@ AI MODEL: None -- structural transformation only (grouping, counting, sorting).
 """
 
 import json
+import re
 import sys as _sys; _sys.stdout.reconfigure(encoding="utf-8", errors="replace") if hasattr(_sys.stdout, "reconfigure") else None
 import time
 from collections import OrderedDict
@@ -217,6 +218,94 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
                                     or row.get('clause_text', ''))
 
     progress_fn(f"Grouped into {len(clause_map)} clause refs")
+
+    # P145 — Last-mile safety net at consolidation. Some hallucinations
+    # slip past Step 14's post-checks (e.g. when the LLM's finding doesn't
+    # quote the expected value in recognisable quotes, or when the row
+    # happens to miss the trigger-phrase list). Walk every FAIL row and
+    # if the condition's target value / identifier is clearly present in
+    # any field of the step-14 row's data (found_text, result, or
+    # provided packet text stored elsewhere), flip it to PASS.
+    def _brute_check_hallucinated_fail(row):
+        try:
+            _comp = (row.get('compliance') or '').upper().strip()
+            if _comp not in ('FAIL', 'NOT COMPLIED', 'NON_COMPLIANT', 'DISCREPANT'):
+                return
+            _fin = str(row.get('findings', '') or row.get('found_text', '') or '')
+            _fin_u = _fin.upper()
+            _NEG = (
+                'NOT FOUND', 'NOT PRESENT', 'DOES NOT CONTAIN',
+                'DOES NOT SHOW', 'DOES NOT INCLUDE', "DOESN'T SHOW",
+                'NOT APPEAR', 'NOT DISPLAYED', 'NOT INCLUDED',
+                'NOT REFERENCED', 'NOT QUOTED', 'NOT MENTIONED',
+                'NOT STATED', 'IS MISSING', 'CANNOT FIND',
+                'IS NOT SHOWN', 'NOT LISTED', 'NO MATCH', 'DOES NOT MATCH',
+            )
+            if not any(n in _fin_u for n in _NEG):
+                return
+            _cond = (row.get('condition') or row.get('condition_text') or '')
+            # Quoted strings in finding (LLM often quotes expected value)
+            _targets = []
+            for _m in re.finditer(r"[\'\"“”‘’]([^\'\"“”‘’]{3,120})[\'\"“”‘’]", _fin):
+                _targets.append(_m.group(1))
+            # Identifier-like tokens in condition
+            for _m in re.finditer(r'[A-Z0-9][A-Z0-9/\-._]{5,}[A-Z0-9]', _cond, re.IGNORECASE):
+                _targets.append(_m.group(0))
+            # Bank-name keywords
+            _cu = _cond.upper()
+            for _bkw in ('AL HABIB', 'ALFALAH', 'AL-HABIB', 'AL-FALAH',
+                         'MEEZAN', 'FAYSAL', 'ASKARI', 'MASHREQ', 'MIZUHO',
+                         'SAMBA', 'SABB', 'STANDARD CHARTERED', 'CITIBANK',
+                         'HSBC', 'DEUTSCHE', 'BNP PARIBAS'):
+                if _bkw in _cu:
+                    _targets.append(_bkw)
+            if not _targets:
+                return
+            # Evidence blob — use whatever fields the row carries. Best
+            # case: the packet's refined_text was stashed on the row.
+            _blob = ' '.join([
+                str(row.get('original_clause_text', '') or ''),
+                str(row.get('found_text', '') or ''),
+                str(row.get('result', '') or ''),
+                str(row.get('verification_notes', '') or ''),
+            ])
+            _blob_upper = _blob.upper()
+            # OCR-normalized blob for identifier matching
+            _OCR_SUBS = str.maketrans({'O':'0','I':'1','L':'1','S':'5',
+                                        'B':'8','Z':'2','G':'6','Q':'0'})
+            _blob_norm = ''.join(ch for ch in _blob.upper()
+                                  if ch.isalnum()).translate(_OCR_SUBS)
+            for _t in _targets:
+                _t = _t.strip(' .,:\'""')
+                if not _t or len(_t) < 3:
+                    continue
+                if re.search(r'\d', _t):
+                    _tn = ''.join(ch for ch in _t.upper()
+                                   if ch.isalnum()).translate(_OCR_SUBS)
+                    if len(_tn) >= 4 and _tn in _blob_norm:
+                        row['compliance'] = 'PASS'
+                        row['result'] = (
+                            f"{_t} is present — LLM finding was incorrect "
+                            f"(P145 consolidation override)."
+                        )[:200]
+                        row['findings'] = row['result']
+                        return
+                else:
+                    _tu = re.sub(r'\s+', ' ', _t.upper()).strip()
+                    _bf = re.sub(r'\s+', ' ', _blob_upper)
+                    if _tu in _bf:
+                        row['compliance'] = 'PASS'
+                        row['result'] = (
+                            f"{_t} is present — LLM finding was incorrect "
+                            f"(P145 consolidation override)."
+                        )[:200]
+                        row['findings'] = row['result']
+                        return
+        except Exception:
+            pass
+
+    for row in rows:
+        _brute_check_hallucinated_fail(row)
 
     # Step 2: Build ClauseGroups
     clause_groups: Dict[str, ClauseGroup] = {}

@@ -44,7 +44,7 @@ VLM_MODEL_SIZE = _os.environ.get("VLM_MODEL_SIZE", "72B").upper()
 # ── Server ──
 SERVER_HOST = _os.environ.get("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(_os.environ.get("SERVER_PORT", "8082"))
-BUILD_TAG = "2026-04-20-P142"
+BUILD_TAG = "2026-04-20-P145"
 
 # ── Processing ──
 MAX_CONCURRENT_OCR = 8
