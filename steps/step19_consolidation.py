@@ -331,6 +331,8 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
         'SAMBA', 'SABB', 'NCB', 'BANK AL JAZIRA',
         'BANK OF CHINA', 'ICBC', 'DBS',
     )
+    _p149_hits = 0
+    _p149_skipped = 0
     for row in rows:
         try:
             _c = (row.get('compliance') or '').upper().strip()
@@ -339,19 +341,54 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
                 continue
             _cond = (row.get('condition') or row.get('condition_text') or '').upper()
             # Build the widest possible evidence blob from whatever the row carries
-            _row_blob = ' '.join(str(v) for v in row.values() if isinstance(v, (str, int, float)))
-            _row_blob_upper = _row_blob.upper()
+            _row_blob_parts = []
+            for _v in row.values():
+                if isinstance(_v, (str, int, float)):
+                    _row_blob_parts.append(str(_v))
+                elif isinstance(_v, (list, dict)):
+                    _row_blob_parts.append(str(_v))
+            _row_blob_upper = ' '.join(_row_blob_parts).upper()
+            _hit_bk = None
             for _bk in _NUCLEAR_BANKS:
                 if _bk in _cond and _bk in _row_blob_upper:
-                    row['compliance'] = 'PASS'
-                    row['result'] = (
-                        f"{_bk} is referenced — LLM claim was incorrect "
-                        f"(P149 nuclear bank failsafe)."
-                    )[:200]
-                    row['findings'] = row['result']
+                    _hit_bk = _bk
                     break
-        except Exception:
-            pass
+            if _hit_bk:
+                row['compliance'] = 'PASS'
+                row['result'] = (
+                    f"{_hit_bk} is referenced — LLM claim was incorrect "
+                    f"(P149 nuclear bank failsafe)."
+                )[:200]
+                row['findings'] = row['result']
+                _p149_hits += 1
+                try:
+                    print(f"[P149] OVERRIDE fired on row {row.get('row_id', '?')} "
+                          f"clause={row.get('clause_ref', '?')} bank='{_hit_bk}'")
+                except Exception:
+                    pass
+            else:
+                # Log why no bank keyword matched — useful when the user
+                # reports a FAIL that should have been caught.
+                _cond_has_bank = any(_bk in _cond for _bk in _NUCLEAR_BANKS)
+                if _cond_has_bank:
+                    _p149_skipped += 1
+                    try:
+                        print(f"[P149] SKIPPED row {row.get('row_id', '?')} "
+                              f"clause={row.get('clause_ref', '?')} — "
+                              f"cond has bank keyword but row data doesn't. "
+                              f"cond[:100]={_cond[:100]!r} "
+                              f"blob[:200]={_row_blob_upper[:200]!r}")
+                    except Exception:
+                        pass
+        except Exception as _e:
+            try:
+                print(f"[P149] EXCEPTION on row {row.get('row_id', '?')}: {_e}")
+            except Exception:
+                pass
+    try:
+        progress_fn(f"P149 nuclear bank failsafe: {_p149_hits} rows overridden, {_p149_skipped} skipped")
+    except Exception:
+        pass
 
     # Step 2: Build ClauseGroups
     clause_groups: Dict[str, ClauseGroup] = {}

@@ -2864,17 +2864,22 @@ def _call_vlm(
                         if c1 != c2
                     )
                     if _near_miss:
-                        parsed["compliance"] = "review"
-                        parsed["verdict"] = "REVIEW"
+                        # P137 → P150: user requested PASS (not REVIEW).
+                        # When product codes differ by a single character,
+                        # the LC condition itself almost certainly has an
+                        # OCR error during extraction. Force PASS with a
+                        # note so the reviewer can still see the near-miss.
+                        parsed["compliance"] = "pass"
+                        parsed["verdict"] = "PASS"
                         parsed["findings"] = (
                             f"{parsed.get('findings','').rstrip('. ')}. "
                             f"Product codes differ by a single character "
                             f"({sorted(_cond_codes)} vs {sorted(_fin_codes)}) "
-                            f"— likely LC OCR error. Human review recommended "
-                            f"before marking as discrepancy. (P137 downgrade)"
+                            f"— treating as same product with OCR variant. "
+                            f"(P150 OCR near-miss override)"
                         )
                         parsed["result"] = parsed["findings"][:200]
-                        parsed["_post_check"] = "P137_unit_price_ocr_downgrade"
+                        parsed["_post_check"] = "P150_unit_price_ocr_pass"
         except Exception:
             pass
 
