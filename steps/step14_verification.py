@@ -2711,20 +2711,33 @@ def _call_vlm(
             pass  # never let the sanity check break the pipeline
 
         # P134 — Consignee-name post-check. LLM sometimes FAILs a
-        # "TO THE ORDER OF <BANK>" condition despite the structured
-        # consignee clearly containing that bank. If structured consignee
-        # has 'TO ORDER' + the target bank key word, override to PASS.
+        # "TO THE ORDER OF <BANK>" / "CONSIGNED TO <X>" / "CONSIGNEE MUST
+        # BE <X>" condition despite the structured consignee clearly
+        # containing that party. If structured consignee proves the
+        # requirement, override to PASS.
         try:
             _comp = str(parsed.get("compliance", "")).lower().strip()
             if _comp in ("fail", "not_complied", "non_compliant", "discrepant"):
                 _cu = (condition_text or "").upper()
-                if ('TO THE ORDER OF' in _cu or 'TO ORDER OF' in _cu or
-                        'MADE OUT TO' in _cu):
-                    _m = re.search(
-                        r'TO\s+(?:THE\s+)?ORDER\s+OF[\s:]+([^.\n,]+?)(?:[.,\n]|$|\s+KARACHI|\s+WITH|\s+FOR|\s+AT)',
-                        _cu,
-                    )
-                    _target = (_m.group(1).strip() if _m else '').strip(' .,:')
+                _trigger = (
+                    'TO THE ORDER OF' in _cu or 'TO ORDER OF' in _cu or
+                    'MADE OUT TO' in _cu or 'CONSIGNED TO' in _cu or
+                    'CONSIGNEE' in _cu or 'CONSIGN TO' in _cu or
+                    'ISSUED TO THE ORDER' in _cu
+                )
+                if _trigger:
+                    # Try multiple target extraction patterns
+                    _target = ''
+                    for _pat in (
+                        r'TO\s+(?:THE\s+)?ORDER\s+OF[\s:]+([^.\n,]+?)(?:[.,\n]|$|\s+KARACHI|\s+LAHORE|\s+WITH|\s+FOR|\s+AT)',
+                        r'CONSIGNED\s+TO[\s:]+([^.\n,]+?)(?:[.,\n]|$|\s+KARACHI|\s+LAHORE|\s+WITH|\s+FOR)',
+                        r'CONSIGNEE\s+(?:MUST\s+BE|SHOULD\s+BE|IS|=)[\s:\'""]+([^.\n,\'""]+?)(?:[.,\n\'""]|$)',
+                        r'MADE\s+OUT\s+TO[\s:]+([^.\n,]+?)(?:[.,\n]|$|\s+KARACHI|\s+LAHORE)',
+                    ):
+                        _m = re.search(_pat, _cu)
+                        if _m:
+                            _target = _m.group(1).strip(' .,:\'""')
+                            break
                     _target_key = re.sub(r'\bBANK\b', '', _target).strip()
                     _target_key = re.sub(
                         r'\s+(LTD|LIMITED|LLC|PLC|INC|CORP|CO)\b\.?',
@@ -2745,16 +2758,102 @@ def _call_vlm(
                                         str(item.get('raw', '') or '').upper()
                                     )
                                     break
-                    if (_cons_txt and 'TO ORDER' in _cons_txt and
-                            _target_key and _target_key in _cons_txt):
+                    # Match if consignee contains target key. Don't require
+                    # "TO ORDER" wording — sometimes the LC just says
+                    # "consigned to X" without the "to order" phrasing.
+                    if _cons_txt and _target_key and _target_key in _cons_txt:
                         parsed["compliance"] = "pass"
                         parsed["verdict"] = "PASS"
                         parsed["findings"] = (
-                            f"Structured consignee = '{_cons_txt[:150]}' — "
-                            f"contains 'TO ORDER OF {_target_key}'. (P134 override)"
+                            f"Structured consignee contains '{_target_key}' "
+                            f"(consignee='{_cons_txt[:150]}'). (P134 override)"
                         )
                         parsed["result"] = parsed["findings"][:200]
                         parsed["_post_check"] = "P134_consignee_override"
+                    elif _target_key and document_text:
+                        # Fallback: scan raw document text for "TO ORDER OF"
+                        # block followed by target key, or for the target
+                        # key appearing near "Consignee". This catches the
+                        # common case where step 3 didn't tag the consignee
+                        # cleanly but the BL text says "Consignee\n...\nTO
+                        # ORDER OF:\nBANK AL HABIB LTD.\nKARACHI".
+                        _dt_up = document_text.upper()
+                        _target_key_collapsed = re.sub(r'\s+', ' ', _target_key).strip()
+                        # Normalize document whitespace to one space for search
+                        _dt_flat = re.sub(r'\s+', ' ', _dt_up)
+                        _has_to_order = 'TO ORDER' in _dt_flat
+                        _has_target = _target_key_collapsed in _dt_flat
+                        _has_consignee_header = 'CONSIGNEE' in _dt_flat
+                        if _has_target and (_has_to_order or _has_consignee_header):
+                            parsed["compliance"] = "pass"
+                            parsed["verdict"] = "PASS"
+                            parsed["findings"] = (
+                                f"'{_target_key}' appears in document text "
+                                f"alongside consignee/'TO ORDER' marker — "
+                                f"requirement satisfied. (P134 doc-text override)"
+                            )
+                            parsed["result"] = parsed["findings"][:200]
+                            parsed["_post_check"] = "P134_doc_text_override"
+        except Exception:
+            pass
+
+        # P137 — Unit price / product code mismatch where BOTH differ by
+        # a single character from the LC (e.g. LC "HP4024N" at 1,190 vs
+        # invoice "HP4024WN" at 1,140). This pattern strongly suggests the
+        # LC condition itself was OCR-corrupted during decomposition
+        # (one character slipped in the product code + a digit swapped in
+        # the price). Downgrade FAIL → REVIEW so a human can verify the
+        # source LC rather than auto-flagging a discrepancy that may not
+        # actually exist.
+        try:
+            _comp_up = str(parsed.get("compliance", "")).lower().strip()
+            if _comp_up in ("fail", "not_complied", "non_compliant", "discrepant"):
+                _cu = (condition_text or "").upper()
+                _fu = str(parsed.get("findings", "")).upper()
+                if ('UNIT PRICE' in _cu or 'PRICE' in _cu) and (
+                    'DOES NOT MATCH' in _fu or 'MISMATCH' in _fu or
+                    'DIFFERENT' in _fu
+                ):
+                    # Pull product codes from both sides: tokens of 6-12 chars
+                    # that are mostly alphanumeric (HP4024N-type).
+                    _cond_codes = set(re.findall(
+                        r"\b([A-Z]{1,4}\d{3,6}[A-Z]{0,3})\b",
+                        _cu,
+                    ))
+                    _fin_codes = set(re.findall(
+                        r"\b([A-Z]{1,4}\d{3,6}[A-Z]{0,3})\b",
+                        _fu,
+                    ))
+                    # Edit-distance 1 between LC code and invoice code?
+                    def _lev1(a, b):
+                        if abs(len(a) - len(b)) > 1:
+                            return False
+                        if a == b:
+                            return False
+                        if len(a) == len(b):
+                            return sum(1 for x, y in zip(a, b) if x != y) == 1
+                        # insertion/deletion of 1 char
+                        _s, _l = (a, b) if len(a) < len(b) else (b, a)
+                        for i in range(len(_l)):
+                            if _l[:i] + _l[i+1:] == _s:
+                                return True
+                        return False
+                    _near_miss = any(
+                        _lev1(c1, c2) for c1 in _cond_codes for c2 in _fin_codes
+                        if c1 != c2
+                    )
+                    if _near_miss:
+                        parsed["compliance"] = "review"
+                        parsed["verdict"] = "REVIEW"
+                        parsed["findings"] = (
+                            f"{parsed.get('findings','').rstrip('. ')}. "
+                            f"Product codes differ by a single character "
+                            f"({sorted(_cond_codes)} vs {sorted(_fin_codes)}) "
+                            f"— likely LC OCR error. Human review recommended "
+                            f"before marking as discrepancy. (P137 downgrade)"
+                        )
+                        parsed["result"] = parsed["findings"][:200]
+                        parsed["_post_check"] = "P137_unit_price_ocr_downgrade"
         except Exception:
             pass
 
@@ -2771,7 +2870,11 @@ def _call_vlm(
                 'NOT FOUND' in _fu2 or 'NOT PRESENT' in _fu2 or
                 'DOES NOT CONTAIN' in _fu2 or 'NOT APPEAR' in _fu2 or
                 'CANNOT FIND' in _fu2 or 'NOT REFERENCED' in _fu2 or
-                "NOT QUOTED" in _fu2 or "NOT MENTIONED" in _fu2
+                "NOT QUOTED" in _fu2 or "NOT MENTIONED" in _fu2 or
+                'DOES NOT SHOW' in _fu2 or "DOESN'T SHOW" in _fu2 or
+                "IS NOT SHOWN" in _fu2 or "NOT DISPLAYED" in _fu2 or
+                "NOT INCLUDED" in _fu2 or "MISSING" in _fu2 or
+                "DOES NOT INCLUDE" in _fu2 or "NOT STATED" in _fu2
             ):
                 # Extract identifier tokens from the CONDITION (what we were
                 # looking for) — same pattern as the deterministic path.
