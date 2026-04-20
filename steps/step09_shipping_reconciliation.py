@@ -91,6 +91,11 @@ class ReconciledPacket:
     # Document-type-specific extracted fields
     extracted_fields: Dict[str, Any] = field(default_factory=dict)
 
+    # P129 — Carry forward Step 3 structured facts for deterministic Step 14
+    unified_summary: Dict[str, Any] = field(default_factory=dict)
+    bl_subtype: Dict[str, Any] = field(default_factory=dict)
+    validation_status: str = ""
+
     # Change tracking
     change_log: List[dict] = field(default_factory=list)
 
@@ -403,6 +408,10 @@ def _reconcile_single_packet(packet: dict, expected_docs: List[dict], packet_ind
         ambiguity_flag=ambiguity,
         ambiguity_notes=ambiguity_notes,
         elapsed_seconds=round(elapsed, 2),
+        # P129 — carry forward Step 3 structured facts
+        unified_summary=packet.get('unified_summary', {}) or {},
+        bl_subtype=packet.get('bl_subtype', {}) or {},
+        validation_status=packet.get('validation_status', '') or '',
     )
 
     return asdict(reconciled)

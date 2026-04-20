@@ -153,15 +153,14 @@ RETURN EMPTY ARRAY [] FOR THESE CLAUSE TYPES:
     are physical dispatch instructions for the negotiating bank, NOT
     verifiable from document content. Return EMPTY ARRAY [].
     EXCEPTION: "NEGOTIATING BANK MUST CERTIFY ON THEIR DOCUMENTS
-    FORWARDING SCHEDULE THAT..." is NOT a bank-to-bank obligation —
-    it creates a VERIFIABLE requirement on the Documentary Remittance
-    (covering schedule). Decompose it as:
-      document_to_check = "Documentary Remittance"
-      condition = "The Documents Forwarding Schedule must certify that
-        all charges of the negotiating bank and advising bank are paid
-        by the beneficiary"
-    Similarly, any "NEGOTIATING BANK MUST CERTIFY" clause that specifies
-    WHAT to certify ON WHICH DOCUMENT is verifiable — decompose it.
+    FORWARDING SCHEDULE THAT [something about the GOODS / PRESENTATION
+    / DOCUMENT CONTENT]" is VERIFIABLE — decompose it with
+    document_to_check = "Documentary Remittance".
+    BUT if the certification is about CHARGES / FEES / COST ALLOCATION
+    (e.g. "ALL CHARGES OF THE NEGOTIATING BANK AND ADVISING BANK ARE
+    PAID BY THE BENEFICIARY"), this is a bank fee-allocation policy —
+    NOT a document compliance check. Return EMPTY ARRAY [] for these
+    (P125). Charge-allocation lines are informational only.
   • Fee/charge clauses: "DISCREPANCY HANDLING CHARGES", "BANK CHARGES WILL BE DEDUCTED"
   • Document forwarding: "ALL DOCUMENTS TO BE FORWARDED TO US BY COURIER"
   • Regulatory/compliance statements: "TRANSPORTATION SHOULD BE EFFECTED BY COMPANIES OPERATING IN ACCORDANCE WITH...LAWS AND REGULATIONS", "SANCTIONED BY...", "BOUND BY SANCTIONS" (these cannot be verified from documents)

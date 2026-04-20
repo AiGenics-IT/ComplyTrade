@@ -282,8 +282,13 @@ def get_extracted_text(job_id: str):
             continue
         _doc_type = _cpkt.get('document_type', '')
         _doc_summary = _cpkt.get('document_summary', '')
+        # NOTE: do NOT include 'document_type' here — step8's classification
+        # is sometimes a WRONG LC-requirement match (e.g. it tags a Draft BoE
+        # as 'Bill of Lading' because that was the required doc it tried to
+        # fulfil). The CORRECT doc_type is already shown at the page level
+        # (sourced from step3 → step9 reclassification chain). Showing step8's
+        # type in the vlm_summary block causes a visible mismatch.
         _vlm_sum = {
-            'document_type': _doc_type,
             'document_number': _cpkt.get('document_number', ''),
             'document_date': _cpkt.get('document_date', ''),
             'document_amount': _cpkt.get('document_amount', ''),
@@ -332,14 +337,77 @@ def get_extracted_text(job_id: str):
                     'logos': _logos,
                 }
 
-    # Build page type lookup from Step 3
+    # Build page type lookup from Step 3 (including new bl_subtype + unified_summary)
     _page_types = {}
     _page_copy = {}
+    _page_bl_subtype = {}      # page -> bl_subtype dict (BL packets only)
+    _page_unified_summary = {} # page -> unified_summary dict
+    _page_copy_label = {}
+    _page_packet_pages = {}    # page -> list of ALL pages in the same packet
+    _page_packet_id = {}       # page -> packet_id
+    _page_original_type = {}   # page -> step3's ORIGINAL doc_type (before any step9 reclass)
     for pkt in s3.get('packets', []):
         if isinstance(pkt, dict):
+            _bl_st = pkt.get('bl_subtype')
+            _unified = pkt.get('unified_summary')
+            _pkt_page_list = sorted(pkt.get('page_numbers', []))
+            _pkt_id = pkt.get('packet_id', '')
             for pn in pkt.get('page_numbers', []):
-                _page_types[pn] = pkt.get('document_type', 'unknown')
+                _s3_dt = pkt.get('document_type', 'unknown')
+                _page_types[pn] = _s3_dt
+                _page_original_type[pn] = _s3_dt
                 _page_copy[pn] = pkt.get('copy_status', '')
+                _page_copy_label[pn] = pkt.get('copy_label', '')
+                _page_packet_pages[pn] = _pkt_page_list
+                _page_packet_id[pn] = _pkt_id
+                if _bl_st:
+                    _page_bl_subtype[pn] = _bl_st
+                if _unified:
+                    _page_unified_summary[pn] = _unified
+
+    # Step 9 may genuinely reclassify a packet (sets was_reclassified=True)
+    # — e.g. Quality Certificate → Agents Certificate when the doc is really
+    # an agent's cert the VLM misread. In that case we want the updated type
+    # shown on the UI.
+    # HOWEVER Step 8/9 also renames packets to the LC-required document name
+    # for matching purposes (matched_requirement_name), which does NOT
+    # indicate an actual classification change — it just means this packet
+    # is being checked against that LC requirement. If we blindly used step9's
+    # doc_type, ALL shipping packets can end up labelled with one LC-required
+    # type (e.g. "Shipping Company Certificate") overwriting Step 3's rich,
+    # correct classifications (Survey Report Cert, Cert of Quality, etc.).
+    # RULE: ONLY override step3's type when step9 explicitly marks
+    # was_reclassified=True AND previous_document_type differs from the new
+    # type. Otherwise keep Step 3's authoritative classification.
+    _s9 = sr.get('step09', {})
+    if not _s9.get('packets') and not _s9.get('reconciled_packets'):
+        _s9_file = os.path.join(_results_dir, 'step09', 'step09_result.json')
+        if os.path.exists(_s9_file):
+            try:
+                with open(_s9_file, 'r', encoding='utf-8') as _f:
+                    _s9 = json.load(_f)
+            except Exception:
+                pass
+    _s9_pkts = _s9.get('packets', _s9.get('reconciled_packets', []))
+    for _s9_pkt in _s9_pkts:
+        if not isinstance(_s9_pkt, dict):
+            continue
+        if not _s9_pkt.get('was_reclassified'):
+            continue  # not a real reclass — keep Step 3's type
+        _s9_dt = _s9_pkt.get('document_type', '')
+        _prev_dt = _s9_pkt.get('previous_document_type', '')
+        if not _s9_dt or not _prev_dt or _s9_dt == _prev_dt:
+            continue  # nothing actionable
+        _pg_nums = _s9_pkt.get('page_numbers', [])
+        if not _pg_nums:
+            for _op in _s9_pkt.get('original_pages', []) or []:
+                if isinstance(_op, dict):
+                    _pn = _op.get('page_number')
+                    if _pn:
+                        _pg_nums.append(_pn)
+        for _pn in _pg_nums:
+            if _pn in _page_types:
+                _page_types[_pn] = _s9_dt
 
     pages = []
     s1_pages = s1.get('pages', [])
@@ -380,6 +448,7 @@ def get_extracted_text(job_id: str):
                 'page_number': pn,
                 'document_type': _page_types.get(pn, 'unknown'),
                 'copy_status': _page_copy.get(pn, ''),
+                'copy_label': _page_copy_label.get(pn, ''),
                 'raw_text': raw,
                 'glm_chars': len(raw),
                 'cleaned_text': cleaned,
@@ -391,6 +460,17 @@ def get_extracted_text(job_id: str):
                 'document_summary': _page_summary.get(pn, ''),
                 'vlm_summary': _page_vlm_summary.get(pn, {}),
                 'stamps_info': _page_stamps.get(pn, {}),
+                # NEW: Step 3 sub-call outputs (bl_subtype for BL packets, unified_summary for all)
+                'bl_subtype': _page_bl_subtype.get(pn),
+                'unified_summary': _page_unified_summary.get(pn, {}),
+                # NEW: which packet this page belongs to + all pages of that packet
+                # (so the UI can show "Summary based on N pages: [X, Y, Z]")
+                'packet_id': _page_packet_id.get(pn, ''),
+                'packet_pages': _page_packet_pages.get(pn, [pn]),
+                # NEW: step3's original classification, exposed so the UI can
+                # display "currently Agents Certificate (originally Quality Certificate)"
+                # when Step 9 reclassified. document_type above reflects CURRENT type.
+                'original_document_type': _page_original_type.get(pn, ''),
             })
 
     return {
@@ -1224,10 +1304,26 @@ def get_result(job_id: str):
     # Use Step 3's document_type (Qwen classified correctly) instead of Step 8's VLM rename
     # Build Step 3 page->doc_type lookup
     _s3_page_type = {}
+    _s3_page_bl_subtype = {}     # page -> bl_subtype dict (BL packets only)
+    _s3_page_unified = {}        # page -> unified_summary dict
+    _s3_page_copy_status = {}    # page -> copy_status (original / copy / non_negotiable)
+    _s3_page_copy_label = {}     # page -> copy_label (ORIGINAL / COPY / NON-NEGOTIABLE / ...)
     for _p3 in s3.get('packets', []):
         if isinstance(_p3, dict):
+            _bl = _p3.get('bl_subtype')
+            _un = _p3.get('unified_summary')
+            _cs = _p3.get('copy_status', '')
+            _cl = _p3.get('copy_label', '')
             for _pn in _p3.get('page_numbers', []):
                 _s3_page_type[_pn] = _p3.get('document_type', 'unknown')
+                if _bl:
+                    _s3_page_bl_subtype[_pn] = _bl
+                if _un:
+                    _s3_page_unified[_pn] = _un
+                if _cs:
+                    _s3_page_copy_status[_pn] = _cs
+                if _cl:
+                    _s3_page_copy_label[_pn] = _cl
 
     # Prefer Step 9 packets (has document-specific fields) over Step 8
     _shipping_pkts = s9.get('packets', s9.get('reconciled_packets', s8.get('packets', s8.get('classified_packets', []))))
@@ -1265,12 +1361,44 @@ def get_result(job_id: str):
                 logos.extend(_pg.get('logos', []))
         has_stamps = bool(stamps)
         has_sigs = bool(signatures)
-        copy_status = pkt.get('copy_status', 'original')
-        copy_label = pkt.get('copy_label', '')
-        # Fix partial labels
-        if copy_label.upper() in ('COP', 'COP.'): copy_label = 'COPY'; copy_status = 'copy'
-        elif copy_label.upper().startswith('NON'): copy_label = 'NON-NEGOTIABLE'; copy_status = 'copy'
-        elif copy_label.upper() in ('ORIG', 'ORIGINAL'): copy_label = 'ORIGINAL'
+        # Step 3c is the AUTHORITATIVE source for copy_status (VLM call dedicated
+        # to stamp reading). Step 9 sometimes drops or defaults copy_status to
+        # 'original', causing mismatch between Extracted Text page (step3) and
+        # Identified Docs modal (step9). Prefer step3 value when step9 is
+        # missing/default.
+        _pkt_copy_status = pkt.get('copy_status', '')
+        _pkt_copy_label = pkt.get('copy_label', '')
+        # Step 3 copy_status for this packet's first page (authoritative)
+        _s3_cs = _s3_page_copy_status.get(_first_page, '')
+        _s3_cl = _s3_page_copy_label.get(_first_page, '')
+        # Prefer step3 when step9 value is missing, empty, or default-only
+        copy_status = _pkt_copy_status or _s3_cs or 'original'
+        copy_label = _pkt_copy_label or _s3_cl or ''
+        # If step3 has more specific info (non_negotiable) but step9 says
+        # just 'original', trust step3
+        if _s3_cs in ('non_negotiable', 'copy') and _pkt_copy_status in ('', 'original'):
+            copy_status = _s3_cs
+            copy_label = _s3_cl or copy_label
+        # Normalize copy_label — preserve ordinal for FIRST/SECOND/THIRD ORIGINAL
+        _cl_up = copy_label.upper()
+        if _cl_up in ('COP', 'COP.'):
+            copy_label = 'COPY'
+            copy_status = 'copy'
+        elif _cl_up.startswith('NON'):
+            copy_label = 'NON-NEGOTIABLE'
+            copy_status = 'non_negotiable'
+        elif 'FIRST ORIGINAL' in _cl_up or '1ST ORIGINAL' in _cl_up:
+            copy_label = 'FIRST ORIGINAL'
+            copy_status = 'original'
+        elif 'SECOND ORIGINAL' in _cl_up or '2ND ORIGINAL' in _cl_up:
+            copy_label = 'SECOND ORIGINAL'
+            copy_status = 'original'
+        elif 'THIRD ORIGINAL' in _cl_up or '3RD ORIGINAL' in _cl_up:
+            copy_label = 'THIRD ORIGINAL'
+            copy_status = 'original'
+        elif _cl_up in ('ORIG', 'ORIGINAL'):
+            copy_label = 'ORIGINAL'
+            copy_status = 'original'
         marking = pkt.get('marking_status', 'unsigned')
         if has_stamps and has_sigs: marking = 'stamped_and_signed'
         elif has_stamps: marking = 'stamped'
@@ -1345,6 +1473,64 @@ def get_result(job_id: str):
             _label = _fk.replace('_', ' ').title()
             _sm[_label] = _fv
             _used_keys.add(str(_fv).strip().lower()[:50])
+
+        # Pull Step 3 sub-call results (bl_subtype, unified_summary) for this packet
+        # (defined here so the merge block below AND the data_dict below can use them)
+        _bl_subtype_s3 = _s3_page_bl_subtype.get(_first_page) or None
+        _unified_summary_s3 = _s3_page_unified.get(_first_page) or {}
+
+        # NEW — merge Step 3e unified_summary into the card so BL-specific and
+        # cross-doc fields (NTN, HS, freight, charter party, dates_found,
+        # amounts_found, references_found, parties_found) show on the result page.
+        _us = _unified_summary_s3 or {}
+        if isinstance(_us, dict) and _us:
+            for _uk, _uv in _us.items():
+                if _uk.startswith('_'):
+                    continue
+                if not _uv:
+                    continue
+                # Structured arrays get rendered as a compact multi-line string
+                if isinstance(_uv, list) and _uv and isinstance(_uv[0], dict):
+                    _rows = []
+                    for _it in _uv:
+                        if not isinstance(_it, dict):
+                            continue
+                        _role = str(_it.get('role', 'other')).replace('_', ' ')
+                        _v = _it.get('value') or _it.get('name') or _it.get('raw') or ''
+                        _cur = _it.get('currency', '')
+                        if _cur:
+                            _rows.append(f"{_role}: {_cur} {_v}".strip())
+                        else:
+                            _rows.append(f"{_role}: {_v}")
+                    if _rows:
+                        _label_struct = _uk.replace('_found', '').replace('_', ' ').title()
+                        _sm[_label_struct] = " | ".join(_rows)
+                    continue
+                if isinstance(_uv, list):
+                    _uv = ", ".join(str(x) for x in _uv if x)
+                # Unwrap dicts — LLM sometimes returns typed fields as objects
+                # (e.g. amount={"role":"draft_amount","currency":"USD","value":"..."})
+                # rather than plain strings. Pick the primary value field.
+                if isinstance(_uv, dict):
+                    _inner = None
+                    for _pref in ('value', 'name', 'text', 'raw', 'in_words', 'amount'):
+                        if _uv.get(_pref):
+                            _inner = _uv[_pref]
+                            _cur = _uv.get('currency', '')
+                            _uv = (f"{_cur} {_inner}".strip() if _cur else str(_inner))
+                            break
+                    if _inner is None:
+                        # No recognized value key — skip rather than JSON-stringify
+                        continue
+                if not _uv or not str(_uv).strip():
+                    continue
+                _uv_key = str(_uv).strip().lower()[:50]
+                if _uv_key in _used_keys:
+                    continue
+                _label_u = _uk.replace('_', ' ').title()
+                if _label_u not in _sm:
+                    _sm[_label_u] = _uv
+                    _used_keys.add(_uv_key)
         _parts = [f"{k}: {str(v).strip()}" for k, v in _sm.items()
                    if v and str(v).strip() and str(v).strip().lower() not in ('none','n/a','unknown','','nil')]
         data_dict = {
@@ -1364,6 +1550,9 @@ def get_result(job_id: str):
             'copy_indicators': [{'text': copy_label, 'format': 'stamp', 'position': 'top-right'}] if copy_label else [],
             'document_summary': ' | '.join(_parts) if _parts else '',
             '_vlm_summary': {k.lower().replace(' ', '_'): v for k, v in _sm.items() if v and str(v).strip()},
+            # NEW — Step 3 sub-call outputs (bl_subtype only for BL; unified_summary for all)
+            'bl_subtype': _bl_subtype_s3,
+            'unified_summary': _unified_summary_s3,
         }
         for fk, fv in doc_fields.items():
             if fk not in data_dict and fv: data_dict[fk] = fv
@@ -1416,12 +1605,16 @@ def get_result(job_id: str):
             }
         })
 
-    # Build type_summary — count of each document type for the UI dashboard
-    # UI expects lowercase keys: ts.lc, ts.amendment, ts.final_lc
+    # Build type_summary — count of each document type for the UI dashboard.
+    # Keys are LOWERCASED to collapse case-variants (e.g. "Certificate of
+    # Quality and Weight..." and "CERTIFICATE OF QUALITY AND WEIGHT..." would
+    # otherwise appear as separate buckets). UI expects lowercase keys anyway
+    # (ts.lc / ts.amendment / ts.final_lc).
     type_summary = {}
     for obj in identified_objects:
-        ot = obj.get('object_type', 'unknown')
-        type_summary[ot] = type_summary.get(ot, 0) + 1
+        ot = obj.get('object_type', 'unknown') or 'unknown'
+        key = ot.lower().strip()
+        type_summary[key] = type_summary.get(key, 0) + 1
 
     # Count pages from Step 1
     total_pages = s1.get('total_pages', 0)
@@ -3070,29 +3263,79 @@ def settings_page():
 
 @app.get("/api/prompts")
 def get_prompts():
-    """Get all system prompts used in the pipeline."""
+    """Get ALL system prompts used in the pipeline (view-only).
+
+    Settings-page numbering (preserves user's '3a = Step 4' alignment):
+      Step 1  — GLM OCR                                (backend step01)
+      Step 3  — Page Classification (Legacy Combined)  (backend step03 legacy)
+      Step 4  — Document Type        (Step 3a)         (backend step03 sub)
+      Step 5  — Markings & Seals     (Step 3b)         (backend step03 sub)
+      Step 6  — Copy / Original      (Step 3c)         (backend step03 sub)
+      Step 7  — BL Sub-type          (Step 3d)         (backend step03 sub)
+      Step 8  — Packet Summary       (Step 3e)         (backend step03 sub)
+      Step 9  — Packet Validator     (Step 3f)         (backend step03 sub)
+      Step 10 — Page Re-check        (Step 3g)         (backend step03 sub)
+      Step 11 — MT Identification                      (backend step04)
+      Step 12 — MT Reconciliation                      (backend step05)
+      Step 13 — LC Field Extraction                    (backend step06)
+      Step 14 — LC Amendment Processing                (backend step06)
+      Step 15 — Shipping Classification                (backend step08)
+      Step 16 — Shipping Reconciliation                (backend step09)
+      Step 17 — Decomposition (System)                 (backend step12)
+      Step 18 — Decomposition (User)                   (backend step12)
+      Step 19 — Verification                           (backend step14)
+    """
+    def _safe_import(module_path: str, attr: str) -> str:
+        try:
+            mod = __import__(module_path, fromlist=[attr])
+            return getattr(mod, attr, '') or ''
+        except Exception:
+            return ''
+
     from config.settings import GLM_OCR_PROMPT
-    from steps.step03_sequencing import CLASSIFY_PROMPT
+    from steps.step03_sequencing import (
+        CLASSIFY_PROMPT,
+        CLASSIFY_DOCTYPE_PROMPT,
+        EXTRACT_MARKINGS_PROMPT,
+        COPY_STATUS_PROMPT,
+        BL_SUBTYPE_PROMPT,
+        PACKET_SUMMARY_PROMPT,
+        _PACKET_VALIDATOR_PROMPT,
+        _RECHECK_PROMPT,
+    )
     from steps.step12_decomposition import DECOMPOSITION_SYSTEM_PROMPT
     from steps.step14_verification import _VLM_PROMPT_TEMPLATE
-    # Step 6 and 8 prompts
-    try:
-        from steps.step06_final_lc import _VLM_EXTRACT_PROMPT
-        s6 = _VLM_EXTRACT_PROMPT
-    except ImportError:
-        s6 = ''
-    try:
-        from steps.step08_shipping_classification import _CLASSIFICATION_PROMPT
-        s8 = _CLASSIFICATION_PROMPT
-    except ImportError:
-        s8 = ''
+
+    # Step 2 combines main + fallback OCR cleaning prompts
+    _s02_main = _safe_import('steps.step02_ocr_cleaning', '_VLM_EXTRACT_PROMPT')
+    _s02_fb = _safe_import('steps.step02_ocr_cleaning', '_VLM_FALLBACK_PROMPT')
+    _s02_combined = (
+        "=== MAIN EXTRACTION PROMPT (used for every page) ===\n"
+        f"{_s02_main}\n\n"
+        "=== FALLBACK PROMPT (used when GLM returns garbage) ===\n"
+        f"{_s02_fb}"
+    ) if (_s02_main or _s02_fb) else ''
+
     return {
-        "step1": GLM_OCR_PROMPT,
-        "step3": CLASSIFY_PROMPT,
-        "step6": s6,
-        "step8": s8,
-        "step12": DECOMPOSITION_SYSTEM_PROMPT,
-        "step14": _VLM_PROMPT_TEMPLATE,
+        "step1":  GLM_OCR_PROMPT,
+        "step2":  _s02_combined,
+        "step3":  CLASSIFY_PROMPT,
+        "step4":  CLASSIFY_DOCTYPE_PROMPT,
+        "step5":  EXTRACT_MARKINGS_PROMPT,
+        "step6":  COPY_STATUS_PROMPT,
+        "step7":  BL_SUBTYPE_PROMPT,
+        "step8":  PACKET_SUMMARY_PROMPT,
+        "step9":  _PACKET_VALIDATOR_PROMPT,
+        "step10": _RECHECK_PROMPT,
+        "step11": _safe_import('steps.step04_mt_identification', '_VLM_CLASSIFY_PROMPT'),
+        "step12": _safe_import('steps.step05_mt_reconciliation', '_VLM_RECONCILE_PROMPT'),
+        "step13": _safe_import('steps.step06_final_lc', '_VLM_EXTRACT_PROMPT'),
+        "step14": _safe_import('steps.step06_final_lc', '_VLM_AMENDMENT_PROMPT'),
+        "step15": _safe_import('steps.step08_shipping_classification', '_CLASSIFICATION_PROMPT'),
+        "step16": _safe_import('steps.step09_shipping_reconciliation', '_RECONCILIATION_PROMPT'),
+        "step17": DECOMPOSITION_SYSTEM_PROMPT,
+        "step18": _safe_import('steps.step12_decomposition', 'DECOMPOSITION_USER_TEMPLATE'),
+        "step19": _VLM_PROMPT_TEMPLATE,
     }
 
 

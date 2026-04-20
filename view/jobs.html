@@ -623,6 +623,25 @@ async function showDocs(jobId) {
         });
         html += '</div>';
         html += '<table class="docs-tbl"><thead><tr><th>#</th><th>Document Type</th><th>Pages</th><th>Copy</th><th>Details</th></tr></thead><tbody>';
+        // Helper: unwrap an object-valued field to a readable string
+        const _uw = (v) => {
+            if (v === null || v === undefined) return '';
+            if (typeof v === 'string' || typeof v === 'number') return String(v);
+            if (Array.isArray(v)) return v.map(x => _uw(x)).filter(Boolean).join(', ');
+            if (typeof v === 'object') {
+                for (const k of ['value','name','text','raw','in_words','amount']) {
+                    if (v[k]) {
+                        const cur = v.currency || '';
+                        const unit = v.unit || '';
+                        return [cur, v[k], unit].filter(Boolean).join(' ').trim();
+                    }
+                }
+                return Object.entries(v).filter(([k,vv])=>vv && !['role','_error','_raw'].includes(k))
+                    .map(([k,vv])=>`${k}=${vv}`).join(', ');
+            }
+            return String(v);
+        };
+        const _escHtml = (s) => esc(String(s||''));
         docs.forEach((d, i) => {
             const dd = d.data || d;
             const dt = dd.document_type || d.object_type || d.type || 'Unknown';
@@ -632,20 +651,91 @@ async function showDocs(jobId) {
             const pages = (d.pages || d.page_numbers || []).join(', ') || d.page_reference || '—';
             const copy = dd.copy_status || dd.copy_label || dd.marking_status || '—';
             const details = [];
-            if (dd.document_number || dd.bl_number || dd.invoice_number) details.push('No: ' + (dd.document_number || dd.bl_number || dd.invoice_number));
-            if (dd.document_date || dd.bl_date) details.push('Date: ' + (dd.document_date || dd.bl_date));
-            if (dd.document_amount) details.push('Amt: ' + dd.document_amount);
-            if (dd.issued_by) details.push('By: ' + dd.issued_by);
-            if (dd.document_summary) details.push(dd.document_summary.substring(0, 60));
-            html += `<tr>
+            const us = dd.unified_summary || {};
+            const blSt = dd.bl_subtype || null;
+            const docNo = _uw(us.bl_number || us.document_identifier || dd.document_number || dd.bl_number || dd.invoice_number);
+            const docDate = _uw(us.bl_date || us.issue_date || dd.document_date || dd.bl_date);
+            if (docNo) details.push('No: ' + docNo);
+            if (docDate) details.push('Date: ' + docDate);
+            if (us.amount || dd.document_amount) details.push('Amt: ' + _uw(us.amount || dd.document_amount));
+            if (us.issuer || dd.issued_by) details.push('By: ' + _uw(us.issuer || dd.issued_by));
+            if (us.ntn_number) details.push('NTN: ' + _uw(us.ntn_number));
+            if (us.hs_codes && us.hs_codes.length) details.push('HS: ' + _uw(us.hs_codes));
+            if (us.freight_terms) details.push('Freight: ' + _uw(us.freight_terms));
+            if (us.vessel_name) details.push('Vessel: ' + _uw(us.vessel_name));
+            if (us.port_of_loading && us.port_of_discharge) details.push(_uw(us.port_of_loading) + ' → ' + _uw(us.port_of_discharge));
+            if (Array.isArray(us.dates_found) && us.dates_found.length) details.push(us.dates_found.length + ' dates');
+            if (Array.isArray(us.amounts_found) && us.amounts_found.length) details.push(us.amounts_found.length + ' amounts');
+            if (Array.isArray(us.quantities_found) && us.quantities_found.length) details.push(us.quantities_found.length + ' qtys');
+            if (Array.isArray(us.references_found) && us.references_found.length) details.push(us.references_found.length + ' refs');
+            if (Array.isArray(us.parties_found) && us.parties_found.length) details.push(us.parties_found.length + ' parties');
+            if (Array.isArray(us.other_details_found) && us.other_details_found.length) details.push(us.other_details_found.length + ' other');
+            if (blSt && blSt.contract_type && blSt.contract_type !== 'unknown') {
+                details.push('BL: ' + String(blSt.contract_type).replace(/_/g,' ') + (blSt.signing_type && blSt.signing_type !== 'unknown' ? ' / ' + String(blSt.signing_type).replace(/_/g,' ') : ''));
+            }
+            if (!details.length && dd.document_summary) details.push(dd.document_summary.substring(0, 80));
+
+            // Build expandable detail panel — shows EVERY field captured
+            const expandId = 'doc-exp-' + i;
+            let expHtml = '<div style="padding:10px 12px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:.82em;line-height:1.55">';
+            const section = (title, color) => `<div style="font-weight:700;color:${color};margin:8px 0 4px;font-size:.9em;text-transform:uppercase;letter-spacing:.3px">${title}</div>`;
+            const kv = (label, val) => val ? `<div style="padding:2px 0"><span style="color:#1554ca;font-weight:600;display:inline-block;min-width:140px">${_escHtml(label)}</span><span style="white-space:pre-wrap">${_escHtml(val)}</span></div>` : '';
+            // BL Sub-type
+            if (blSt && Object.keys(blSt).length) {
+                expHtml += section('BL Sub-type (Step 3d)', '#2c8a2c');
+                for (const [k, v] of Object.entries(blSt)) {
+                    if (k.startsWith('_') || v === null || v === undefined || v === '' || v === 'unknown') continue;
+                    if (typeof v === 'boolean' && !v && !['has_terms_overleaf','is_blank_back','is_claused_bl'].includes(k)) continue;
+                    const pretty = k.replace(/_/g,' ').replace(/\b\w/g, c => c.toUpperCase());
+                    const sval = typeof v === 'boolean' ? (v?'Yes':'No') : String(v).replace(/_/g,' ');
+                    expHtml += kv(pretty + ':', sval);
+                }
+            }
+            // Typed fields from unified_summary
+            expHtml += section('Packet Summary (Step 3e — all fields)', '#1554ca');
+            const ARRAY_KEYS = new Set(['dates_found','amounts_found','quantities_found','references_found','parties_found','other_details_found']);
+            const _preferred = ['document_identifier','bl_number','bl_date','invoice_reference','ntn_number','hs_codes','issue_date','onboard_date','shipment_date','issuer','signed_by','beneficiary','shipper','consignee','notify_party','drawer','drawee','payee','goods_description','quantity','amount','vessel_name','voyage_number','port_of_loading','port_of_discharge','place_of_receipt','place_of_delivery','freight_terms','freight_amount','number_of_originals','gross_weight','net_weight','measurement','number_of_packages','package_type','container_numbers','seal_numbers','marks_and_numbers','charter_party_reference','lc_reference','contract_reference','proforma_reference','key_clauses','cross_references','notes'];
+            const _seen = new Set();
+            const _fdump = (k, v) => {
+                if (v === null || v === undefined || v === '' || v === 'unknown' || (Array.isArray(v) && !v.length)) return;
+                const pretty = k.replace(/_/g,' ').replace(/\b\w/g, c => c.toUpperCase());
+                expHtml += kv(pretty + ':', _uw(v));
+                _seen.add(k);
+            };
+            for (const k of _preferred) if (k in us) _fdump(k, us[k]);
+            for (const [k, v] of Object.entries(us)) {
+                if (_seen.has(k) || ARRAY_KEYS.has(k) || k.startsWith('_')) continue;
+                _fdump(k, v);
+            }
+            // All 6 structured arrays
+            const dumpArr = (key, label, color, fmt) => {
+                const arr = us[key];
+                if (!Array.isArray(arr) || !arr.length) return;
+                expHtml += section(`${label} (${arr.length})`, color);
+                arr.forEach(it => {
+                    if (typeof it !== 'object' || !it) return;
+                    expHtml += `<div style="padding:2px 0;border-bottom:1px dotted #cdd6f5">${fmt(it)}</div>`;
+                });
+            };
+            dumpArr('dates_found','Dates','#0d3b8a', d => `<b>${_escHtml((d.role||'other').replace(/_/g,' '))}:</b> ${_escHtml(d.value||d.raw||'')} ${d.raw && d.raw !== d.value ? '<span style="color:#888">— '+_escHtml(d.raw)+'</span>' : ''}`);
+            dumpArr('amounts_found','Amounts','#0d3b8a', a => `<b>${_escHtml((a.role||'other').replace(/_/g,' '))}:</b> ${_escHtml(a.currency||'')} ${_escHtml(a.value||a.raw||'')} ${a.in_words?'<span style="color:#888">('+_escHtml(a.in_words)+')</span>':''}`);
+            dumpArr('quantities_found','Quantities','#0d3b8a', q => `<b>${_escHtml((q.role||'other').replace(/_/g,' '))}:</b> ${_escHtml(q.value||q.raw||'')} ${q.unit?_escHtml(q.unit):''}`);
+            dumpArr('references_found','References / Codes','#0d3b8a', r => `<b>${_escHtml((r.role||'other').replace(/_/g,' '))}:</b> ${_escHtml(r.value||r.raw||'')}`);
+            dumpArr('parties_found','Parties','#0d3b8a', p => `<b>${_escHtml((p.role||'other').replace(/_/g,' '))}:</b> ${_escHtml(p.name||p.raw||'')} ${p.address?'<span style="color:#888">— '+_escHtml(p.address)+'</span>':''}`);
+            dumpArr('other_details_found','Other Details','#0d3b8a', o => `<b>${_escHtml((o.role||'other').replace(/_/g,' '))}:</b> ${_escHtml(o.value||o.raw||'')} ${o.raw && o.raw !== o.value ? '<span style="color:#888">— '+_escHtml(o.raw)+'</span>':''}`);
+            expHtml += '</div>';
+
+            html += `<tr style="cursor:pointer" onclick="const el=document.getElementById('${expandId}');el.style.display=el.style.display==='none'||!el.style.display?'table-row':'none'">
                 <td>${i+1}</td>
                 <td><span class="doc-type-badge ${badgeCls}">${esc(dt)}</span></td>
                 <td>${esc(pages)}</td>
                 <td>${esc(copy)}</td>
-                <td style="font-size:.82em;color:var(--muted)">${esc(details.join(' | ') || '—')}</td>
-            </tr>`;
+                <td style="font-size:.82em;color:var(--muted)"><span style="margin-right:6px;opacity:.6">▸</span>${esc(details.join(' | ') || '—')}</td>
+            </tr>
+            <tr id="${expandId}" style="display:none"><td colspan="5" style="padding:0">${expHtml}</td></tr>`;
         });
         html += '</tbody></table>';
+        html += '<p style="margin-top:10px;font-size:.8em;color:var(--muted)">Click any row to expand and see EVERY extracted field / code / detail for that document.</p>';
         body.innerHTML = html;
     } catch (e) {
         body.innerHTML = `<p style="color:var(--danger)">Failed to load: ${esc(e.message)}</p>`;

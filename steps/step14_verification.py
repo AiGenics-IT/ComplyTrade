@@ -632,6 +632,695 @@ def _get_lc_field_value(step06_result: dict, field_tag: str) -> str:
 # VLM call -- sends condition + document text + optional image to Qwen VLM
 # ---------------------------------------------------------------------------
 
+# ════════════════════════════════════════════════════════════════════════ #
+# NEW SPLIT-PROMPT ARCHITECTURE (P123)                                      #
+#                                                                           #
+# Replaces the monolithic _VLM_PROMPT_TEMPLATE with a composable            #
+# CORE prompt + per-document-family rule pack. Consumes structured facts    #
+# (dates_found / amounts_found / references_found / parties_found /         #
+# other_details_found + bl_subtype) produced by Step 3e so the LLM has      #
+# tagged, pre-classified data instead of re-parsing free text.              #
+#                                                                           #
+# Feature flag: USE_SPLIT_PROMPTS (default True). Flip to False to fall     #
+# back to the legacy _VLM_PROMPT_TEMPLATE for emergency rollback.           #
+# ════════════════════════════════════════════════════════════════════════ #
+
+USE_SPLIT_PROMPTS = True
+
+
+CORE_VERIFICATION_PROMPT = """You are verifying ONE condition from a Letter of Credit against a trade
+finance document. Use ONLY the data below. Do NOT invent, assume, or copy
+text from the condition into your findings.
+
+════════════════════════════════════════════════════════════════════════
+INPUTS — YOUR COMPLETE SOURCE OF TRUTH
+════════════════════════════════════════════════════════════════════════
+
+LC CONDITION TO VERIFY:
+{condition_text}
+
+LC FIELD: {clause_ref}
+LC FIELD VALUE: {lc_field_value}
+
+LC PARTIES (for resolving "APPLICANT", "BENEFICIARY", "ISSUING BANK", etc.):
+{lc_parties}
+
+F47A ADDITIONAL CONDITIONS (READ FIRST — these can override the condition):
+{f47a_context}
+
+DOCUMENT TYPE: {document_type}
+
+STRUCTURED FACTS (already extracted and tagged — USE THESE FIRST):
+{structured_facts}
+
+DOCUMENT TEXT (OCR — trusted, complete page text from all pages of the packet):
+{document_text}
+
+DOCUMENT VISUAL METADATA (stamps, signatures, seals, copy/original status):
+{visual_metadata}
+
+════════════════════════════════════════════════════════════════════════
+ANTI-HALLUCINATION RULES (STRICT — READ CAREFULLY)
+════════════════════════════════════════════════════════════════════════
+
+1. Your output MUST contain a "quote" field with the EXACT line(s) from
+   DOCUMENT TEXT or STRUCTURED FACTS that justify the verdict.
+
+2. If you cannot quote the relevant evidence, the verdict is FAIL. Period.
+
+3. NEVER copy condition wording into "findings". Findings must describe what
+   you ACTUALLY FOUND on the document, not what was being checked.
+
+   ❌ WRONG:
+   Condition: "must state vessel covered under Institute Classification Clause"
+   Document: (no such text)
+   findings="Vessel is covered under Institute Classification Clause"
+   → Hallucination. The document says NOTHING about that clause.
+
+   ✅ CORRECT:
+   findings="Document has no mention of Institute Classification Clause.
+   Closest text is '[actual line]'." verdict=FAIL
+
+4. Prefer STRUCTURED FACTS over re-parsing document text:
+   - Dates → dates_found[role=...]
+   - Amounts → amounts_found[role=...]
+   - References → references_found[role=...]
+   - Parties → parties_found[role=...]
+   - BL attributes → bl_subtype.contract_type / signing_type / has_terms_overleaf
+   If a structured fact answers the question, cite its role in
+   "structured_source". You don't have to re-quote from DOCUMENT TEXT.
+
+5. Do NOT fabricate values that aren't on the document. If the condition asks
+   for a value the document doesn't carry, answer REVIEW with findings
+   explaining what's missing — NOT PASS with invented text.
+
+════════════════════════════════════════════════════════════════════════
+F47A OVERRIDE HIERARCHY (APPLY BEFORE FINAL VERDICT)
+════════════════════════════════════════════════════════════════════════
+
+1. Read F47A ADDITIONAL CONDITIONS first.
+2. If ANY F47A clause says the thing in question is "ACCEPTABLE",
+   "ALLOWED", or "PERMITTED" → it OVERRIDES the main requirement → PASS.
+3. F47A allows WITH conditions (e.g. "LATE SHIPMENT ALLOWED PROVIDED
+   penalty deduction") → REVIEW, not FAIL. Explain the needed manual check.
+4. "CHARTER PARTY BL ACCEPTABLE" → charter-party BL = PASS.
+5. "THIRD PARTY DOCUMENTS ACCEPTABLE" → third-party documents = PASS.
+6. "ANY [COUNTRY] PORT" means any port in that country is acceptable = PASS.
+
+════════════════════════════════════════════════════════════════════════
+NAME MATCHING (applies to parties, banks, issuers)
+════════════════════════════════════════════════════════════════════════
+
+Key words must match. Ignore:
+- Company suffixes (LTD / LIMITED / BV / INC / CO / COMPANY / LLC / S.A.)
+- Minor spelling or OCR differences
+- Address differences when names match
+
+Examples (all PASS):
+- "UNITED BANK" = "UNITED BANK LIMITED" = "UBL"
+- "Viterra B.V." = "Viterra BV" = "Bunge Netherlands Agri B.V." when the
+  document itself says "currently known as" / "formerly known as" —
+  SAME legal entity under a renamed form.
+- "Dalda Foods Limited" = "DALDA FOODS LTD."
+
+════════════════════════════════════════════════════════════════════════
+GOODS DESCRIPTION TOLERANCE
+════════════════════════════════════════════════════════════════════════
+
+Minor wording variations are acceptable if the PRODUCT is clearly the same.
+"Canadian Canola No.1" and "Canadian GMO Canola" refer to the same commodity.
+Grade/variety descriptors (No.1, GMO, non-GMO, in bulk) are supplementary.
+Core product name match → PASS.
+
+════════════════════════════════════════════════════════════════════════
+DECISION ORDER
+════════════════════════════════════════════════════════════════════════
+
+1. Is the condition APPLICABLE to this document type? If no → REVIEW with
+   findings="Condition not applicable to {document_type}".
+2. Does F47A override or modify the condition? If yes, apply it.
+3. Can you find the required evidence in STRUCTURED FACTS? If yes → PASS
+   with structured_source filled.
+4. Can you quote it from DOCUMENT TEXT? If yes → PASS with quote filled.
+5. Can you find clear CONTRADICTORY evidence? If yes → FAIL with quote.
+6. If evidence is ambiguous, partial, or the condition requires human
+   judgment → REVIEW with findings explaining what needs manual check.
+
+════════════════════════════════════════════════════════════════════════
+OUTPUT FORMAT — Return ONLY JSON (no markdown, no commentary):
+════════════════════════════════════════════════════════════════════════
+
+{{
+  "verdict": "PASS" | "FAIL" | "REVIEW",
+  "quote": "EXACT line(s) from document/facts that justify the verdict (required for PASS/FAIL)",
+  "findings": "1-2 sentence explanation grounded in the quote above",
+  "confidence": 0.0 to 1.0,
+  "structured_source": "e.g. 'dates_found[role=onboard_date]' if that was the source, else empty"
+}}
+
+════════════════════════════════════════════════════════════════════════
+DOCUMENT-TYPE RULE PACK (applies in addition to CORE):
+════════════════════════════════════════════════════════════════════════
+
+{family_pack}
+"""
+
+
+# ── Family rule packs (short, targeted — appended as {family_pack}) ──
+
+FAMILY_PACK_BL = """BILL OF LADING — additional verification rules:
+
+BL prohibition clauses (condition says "BL must NOT be [charter party / short
+form / blank back / house BL / freight forwarder issued]"):
+- bl_subtype.signing_type in {master_signed, agent_for_master, carrier_signed}
+    → NOT a freight forwarder BL → PASS "not forwarder" prohibition
+- bl_subtype.has_terms_overleaf = true OR reverse page has T&C
+    → NOT short form → PASS "not short form" prohibition
+- bl_subtype.contract_type != "charter_party"
+    → NOT charter party → PASS "not charter party" prohibition
+- bl_subtype.issuer_type = "house_bl" → IS a house BL (check condition)
+- bl_subtype.signing_type = "forwarder_signed" → IS forwarder-issued
+Remember: the prohibition words are in the CONDITION, not on the BL. PASS
+means the BL is NOT the prohibited type.
+
+BL field lookups (prefer structured_facts):
+- Vessel / carrier: parties_found[role=carrier] OR doc text letterhead
+- Shipper / Consignee / Notify: parties_found[role=shipper|consignee|notify_party]
+- On-board (shipment) date: dates_found[role=onboard_date]
+- BL date (issue): dates_found[role=bl_issue_date]
+- Ports: references_found or doc text ("PORT OF LOADING ...")
+- Freight: amounts_found[role=freight_amount] OR "FREIGHT PREPAID / COLLECT"
+- Number of originals: doc text "Three (3)" / "3/THREE" / similar
+- Shipped-on-board note: "CLEAN ON BOARD" / "LADEN ON BOARD" in doc text
+"""
+
+
+FAMILY_PACK_INVOICE = """COMMERCIAL INVOICE — additional verification rules:
+
+Amount checks (most common false-fail source — read carefully):
+- Use amounts_found[role=invoice_total] as AUTHORITATIVE — do NOT sum line items.
+- "INVOICE PRINTED TOTAL AMOUNT" line in document text is the canonical figure.
+- For a multi-page invoice, the Total on the LAST page applies to the whole
+  invoice — do not add per-page subtotals.
+- EQUAL amounts: invoice total = LC amount → PASS. "Must not exceed" means
+  <=; equal is NOT exceeding. Only strictly > LC_amount × (1 + tolerance%)
+  is a FAIL.
+- AMOUNT IN WORDS vs FIGURES: always use the NUMERIC amount (words line is
+  just confirmation).
+- UCP 600 Art 30 tolerance: invoice amount can be LESS than LC amount for
+  partial / short shipments — that is PASS (unless F47A forbids).
+
+Addressing:
+- "TO:" / "ALSO TO:" / "AND TO:" / "CC:" ALL mean the party IS addressed.
+
+Goods description: apply CORE's goods tolerance rules.
+
+Line items: prefer other_details_found[role=line_items] if present; else
+parse the invoice body.
+"""
+
+
+FAMILY_PACK_DRAFT = """DRAFT / BILL OF EXCHANGE — additional verification rules:
+
+Multiple dates may appear on a draft — don't confuse them:
+- DRAFT DATE (date of drawing) → dates_found[role=draft_date]
+    when the beneficiary drew the draft.
+- LC ISSUE DATE (referenced on draft) → dates_found[role=lc_issue_date]
+    confirms which LC the draft is drawn against.
+- MATURITY DATE (usance drafts) → dates_found[role=maturity_date].
+
+Amount:
+- amounts_found[role=draft_amount] (numeric) — NOT the "AMOUNT IN WORDS" line.
+- For installments, each installment should match its LC portion; total draft
+  amount = LC amount within tolerance.
+
+Parties:
+- parties_found[role=drawer]  — usually the beneficiary
+- parties_found[role=drawee]  — usually the issuing bank (LC drawee)
+- parties_found[role=payee]   — often "Ourselves" / beneficiary
+- "BUNGE / VITERRA currently known as ..." — same legal entity, PASS.
+
+Multiple copies:
+- "FIRST of Exchange" and "SECOND of Exchange" are SAME draft, not two drafts.
+
+LC reference on draft:
+- references_found[role=lc_reference] must match final_lc.F20.
+"""
+
+
+FAMILY_PACK_CERTIFICATE = """CERTIFICATE (generic) — additional verification rules:
+
+Dates:
+- Issue date of the cert → dates_found[role=certificate_issue_date]
+  OR dates_found[role=inspection_date / test_date / sampling_date / survey_date]
+- DO NOT confuse with shipment date (which is on the BL) or LC issue date.
+
+Issuer:
+- parties_found[role=certifying_authority / chamber_of_commerce /
+  health_authority / agriculture_authority / testing_laboratory / inspector /
+  surveyor].
+- Must match the required issuer type from the condition.
+
+Product matching:
+- Use other_details_found[role=goods_description] or doc text.
+- Apply CORE's goods tolerance rules.
+
+Certificate number → references_found[role=certificate_reference or
+phytosanitary_certificate_number / health_certificate_number / etc.].
+"""
+
+
+FAMILY_PACK_PACKING = """PACKING LIST — additional verification rules:
+
+Quantity / packages:
+- amounts_found[role=gross_amount / net_amount / total_weight_value]
+- references_found[role=number_of_packages] or typed field
+- Package type (BAGS / DRUMS / CARTONS / BULK) from doc text.
+- Marks & numbers: references_found[role=shipping_marks / marks_and_numbers].
+
+Tolerance:
+- UCP 600 Art 30 quantity tolerance (5% unless excluded by "ABOUT"/"CIRCA").
+
+Partial shipments:
+- Check F47A for "PARTIAL SHIPMENT ALLOWED" before flagging quantity FAIL.
+"""
+
+
+FAMILY_PACK_INSURANCE = """INSURANCE CERTIFICATE / POLICY — additional verification rules:
+
+Amount:
+- amounts_found[role=sum_insured / insurance_amount]
+- Usually = invoice_amount × 110% (CIF value) unless F47A specifies otherwise.
+
+Risks / clauses:
+- Look for Institute Cargo Clauses (ICC A / B / C).
+- Institute Classification Clause (for vessel classification).
+- War Risks, Strikes, SRCC (Strikes/Riots/Civil Commotion).
+- other_details_found[role=institute_classification_clause / icc_clause /
+  war_risk_clause / etc.].
+
+Voyage:
+- From / To ports (must match BL's port_of_loading / port_of_discharge).
+- Conveyance vessel name.
+- Dates (insurance_effective_date / insurance_expiry_date).
+
+Insurer:
+- parties_found[role=insurer / insurance_broker].
+"""
+
+
+FAMILY_PACK_SHIPMENT_ADVICE = """SHIPMENT ADVICE — additional verification rules:
+
+Addressing (this is THE main check for shipment advice):
+- "TO:" / "ALSO TO:" / "AND TO:" / "CC:" ALL mean the recipient IS addressed.
+- Usually addressed to the insurance company + applicant.
+- Use parties_found[role=receiver / notify_party / second_notify_party].
+
+Required content:
+- Vessel name → parties_found[role=carrier] or doc text
+- BL number → references_found[role=bl_reference]
+- Shipment date → dates_found[role=shipment_date / onboard_date]
+- Goods and quantity
+- Amount (if required by F47A/F46A)
+
+Reference to LC:
+- references_found[role=lc_reference].
+"""
+
+
+FAMILY_PACK_GENERIC = """GENERIC DOCUMENT — universal verification rules:
+
+For doc types without a specialized pack, use structured_facts extensively:
+- Document identifier → references_found (any role matching the doc)
+- Issue date → dates_found[role=certificate_issue_date / issue_date]
+- Issuer / signatory → parties_found (any role)
+- LC reference → references_found[role=lc_reference]
+- Any relevant fact may be in other_details_found
+
+If the condition cannot be confidently verified against this doc type,
+mark REVIEW with findings explaining what data is missing.
+"""
+
+
+# Dispatcher mapping — exact-match first, falls back to contains-match
+_FAMILY_PACK_MAP_EXACT = {
+    'bill of lading': FAMILY_PACK_BL,
+    'commercial invoice': FAMILY_PACK_INVOICE,
+    'draft bill of exchange': FAMILY_PACK_DRAFT,
+    'bill of exchange': FAMILY_PACK_DRAFT,
+    'packing list': FAMILY_PACK_PACKING,
+    'shipment advice': FAMILY_PACK_SHIPMENT_ADVICE,
+    'insurance certificate': FAMILY_PACK_INSURANCE,
+    'insurance policy': FAMILY_PACK_INSURANCE,
+}
+
+_FAMILY_PACK_KEYWORDS = [
+    ('bill of lading', FAMILY_PACK_BL),
+    ('commercial invoice', FAMILY_PACK_INVOICE),
+    ('draft', FAMILY_PACK_DRAFT),
+    ('bill of exchange', FAMILY_PACK_DRAFT),
+    ('packing list', FAMILY_PACK_PACKING),
+    ('packing slip', FAMILY_PACK_PACKING),
+    ('shipment advice', FAMILY_PACK_SHIPMENT_ADVICE),
+    ('insurance', FAMILY_PACK_INSURANCE),
+    ('certificate', FAMILY_PACK_CERTIFICATE),    # generic cert fallback
+    ('report', FAMILY_PACK_CERTIFICATE),
+    ('survey', FAMILY_PACK_CERTIFICATE),
+    ('analysis', FAMILY_PACK_CERTIFICATE),
+]
+
+
+def _pick_family_pack(document_type: str) -> str:
+    """Return the family rule pack best matching the document type.
+    Falls back to GENERIC pack if no match."""
+    if not document_type:
+        return FAMILY_PACK_GENERIC
+    dt = document_type.lower().strip()
+    if dt in _FAMILY_PACK_MAP_EXACT:
+        return _FAMILY_PACK_MAP_EXACT[dt]
+    for kw, pack in _FAMILY_PACK_KEYWORDS:
+        if kw in dt:
+            return pack
+    return FAMILY_PACK_GENERIC
+
+
+def _build_structured_facts(unified_summary: dict, bl_subtype: dict) -> str:
+    """Compose a readable, tagged block of ALL structured facts for the LLM.
+
+    Dumps EVERY field from Step 3e unified_summary + Step 3d bl_subtype.
+    Nothing is dropped. Preferred typed-field order is honoured at the top for
+    readability; any remaining fields the LLM captured follow after.
+    """
+    lines = []
+    if not unified_summary and not bl_subtype:
+        return "(no structured facts extracted for this document)"
+
+    # Names of the structured arrays — handled separately below.
+    _ARRAY_KEYS = {
+        'dates_found', 'amounts_found', 'quantities_found',
+        'references_found', 'parties_found', 'other_details_found',
+    }
+    # Preferred display order for typed top-level fields (printed first).
+    _PREFERRED_ORDER = [
+        'document_identifier',
+        # Doc identifiers
+        'bl_number', 'bl_date', 'invoice_reference', 'draft_reference',
+        # Dates
+        'issue_date', 'onboard_date', 'shipment_date', 'loading_date',
+        # Parties
+        'issuer', 'beneficiary',
+        'shipper', 'consignee', 'notify_party',
+        'drawer', 'drawee', 'payee',
+        # Goods / quantity / amount
+        'goods_description', 'quantity', 'amount',
+        'gross_weight', 'net_weight', 'measurement',
+        'number_of_packages', 'package_type',
+        # Shipping details
+        'vessel_name', 'voyage_number',
+        'port_of_loading', 'port_of_discharge',
+        'place_of_receipt', 'place_of_delivery',
+        'number_of_originals', 'freight_terms', 'freight_amount',
+        'signed_by',
+        # Content
+        'container_numbers', 'seal_numbers', 'marks_and_numbers',
+        'charter_party_reference',
+        # Identifiers / tax
+        'ntn_number', 'tin_number', 'hs_codes',
+        # Cross-document references
+        'lc_reference', 'contract_reference', 'proforma_reference',
+        # Free text / meta
+        'key_clauses', 'cross_references', 'notes',
+    ]
+
+    def _fmt(v):
+        if isinstance(v, list):
+            parts = []
+            for x in v:
+                if x is None or x == '':
+                    continue
+                if isinstance(x, dict):
+                    parts.append('{' + ', '.join(f'{k}={vv}' for k, vv in x.items() if vv) + '}')
+                else:
+                    parts.append(str(x))
+            return ', '.join(parts)
+        if isinstance(v, dict):
+            return '{' + ', '.join(f'{k}={vv}' for k, vv in v.items() if vv) + '}'
+        return str(v)
+
+    seen = set()
+    if unified_summary:
+        # 1) Preferred-order typed fields
+        for k in _PREFERRED_ORDER:
+            if k in _ARRAY_KEYS:
+                continue
+            v = unified_summary.get(k)
+            if v in (None, '', [], {}):
+                continue
+            lines.append(f"{k}: {_fmt(v)}")
+            seen.add(k)
+        # 2) Any OTHER keys the LLM captured (invented fields, rare fields, etc.)
+        # — include them all. Skip internal/error/array keys.
+        for k, v in unified_summary.items():
+            if k in seen or k in _ARRAY_KEYS or k.startswith('_'):
+                continue
+            if v in (None, '', [], {}):
+                continue
+            lines.append(f"{k}: {_fmt(v)}")
+            seen.add(k)
+
+    # BL sub-type — dump ALL fields
+    if bl_subtype and isinstance(bl_subtype, dict):
+        _bl_lines = []
+        for k, v in bl_subtype.items():
+            if k.startswith('_'):
+                continue
+            if v in (None, '', [], {}, 'unknown'):
+                continue
+            _bl_lines.append(f"  {k}: {v}")
+        if _bl_lines:
+            lines.append("")
+            lines.append("bl_subtype:")
+            lines.extend(_bl_lines)
+
+    # Structured arrays — dump EVERY item with ALL its fields
+    def _dump_arr(label, arr):
+        if not arr or not isinstance(arr, list):
+            return
+        lines.append("")
+        lines.append(f"{label}:")
+        for item in arr:
+            if isinstance(item, dict):
+                parts = [f"{k}={v}" for k, v in item.items()
+                         if v not in (None, '', [], {}) and not k.startswith('_')]
+                if parts:
+                    lines.append(f"  - {' | '.join(parts)}")
+            elif item:
+                lines.append(f"  - {item}")
+
+    if unified_summary:
+        for arr_key in ('dates_found', 'amounts_found', 'quantities_found',
+                        'references_found', 'parties_found', 'other_details_found'):
+            _dump_arr(arr_key, unified_summary.get(arr_key))
+
+    if not lines:
+        return "(no structured facts extracted for this document)"
+    return "\n".join(lines)
+
+
+def _build_verification_prompt_v2(
+    condition_text: str,
+    clause_ref: str,
+    lc_field_value: str,
+    lc_parties: str,
+    f47a_context: str,
+    document_type: str,
+    document_text: str,
+    visual_metadata: str,
+    unified_summary: dict,
+    bl_subtype: dict,
+) -> str:
+    """Compose the CORE + family-pack prompt for one (condition, doc) verification."""
+    family_pack = _pick_family_pack(document_type)
+    structured_facts = _build_structured_facts(unified_summary or {}, bl_subtype or {})
+    return CORE_VERIFICATION_PROMPT.format(
+        condition_text=condition_text or "(not provided)",
+        clause_ref=clause_ref or "(n/a)",
+        lc_field_value=lc_field_value or "(n/a)",
+        lc_parties=lc_parties or "(Not available)",
+        f47a_context=f47a_context or "(none)",
+        document_type=document_type or "(unknown)",
+        structured_facts=structured_facts,
+        document_text=document_text or "(no text)",
+        visual_metadata=visual_metadata or "(No visual metadata available)",
+        family_pack=family_pack,
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════ #
+# Deterministic verification — handles obvious lookups without LLM         #
+# (used as a fast path BEFORE calling _call_vlm for conditions where the    #
+# structured facts give an unambiguous answer).                             #
+# Conservative: only returns a verdict when confidence is very high; else   #
+# returns None and the VLM path runs.                                       #
+# ════════════════════════════════════════════════════════════════════════ #
+
+def _normalize_id(s):
+    """Strip whitespace, hyphens, and case — for comparing reference numbers."""
+    if s is None:
+        return ''
+    return ''.join(ch for ch in str(s).upper() if ch.isalnum())
+
+
+def _find_structured(unified_summary: dict, array_name: str, role_keywords):
+    """Find first item in the structured array whose role matches any keyword."""
+    if not unified_summary:
+        return None
+    arr = unified_summary.get(array_name) or []
+    if not isinstance(arr, list):
+        return None
+    if isinstance(role_keywords, str):
+        role_keywords = [role_keywords]
+    for item in arr:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get('role', '')).lower()
+        if any(k in role for k in role_keywords):
+            return item
+    return None
+
+
+def _deterministic_verify(
+    condition_text: str,
+    clause_ref: str,
+    lc_field_value: str,
+    document_type: str,
+    unified_summary: dict,
+    bl_subtype: dict,
+    final_lc: dict,
+) -> Optional[dict]:
+    """Return a verdict dict (PASS/FAIL/REVIEW) when the condition can be
+    answered deterministically from structured facts. Else None (→ LLM path).
+    Conservative by design — when in doubt, return None."""
+    if not unified_summary and not bl_subtype:
+        return None
+
+    cond_up = (condition_text or "").upper()
+    doc_up = (document_type or "").upper()
+
+    # ── Check 1: LC reference presence on a doc ──
+    # "DOC MUST QUOTE LC NUMBER" / "REFERENCE TO L/C"
+    # Deterministic PASS only — FAIL decisions fall through to LLM because
+    # the LC number could be in doc_text even when Step 3 didn't tag it.
+    if ('LC NO' in cond_up or 'L/C NO' in cond_up or
+        'LC NUMBER' in cond_up or 'L/C NUMBER' in cond_up or
+        'LC REFERENCE' in cond_up or 'DC NUMBER' in cond_up):
+        lc_ref = (final_lc or {}).get('20', '') if final_lc else ''
+        if lc_ref:
+            found = _find_structured(unified_summary, 'references_found',
+                                      ['lc_reference', 'dc_reference', 'credit_reference'])
+            if found and _normalize_id(found.get('value')) == _normalize_id(lc_ref):
+                return {
+                    'verdict': 'PASS',
+                    'quote': found.get('raw') or found.get('value', ''),
+                    'findings': f"LC reference {lc_ref} found on document via structured facts.",
+                    'confidence': 0.98,
+                    'structured_source': 'references_found[role=lc_reference]',
+                }
+            # Also check if LC ref appears in ANY reference role (might be
+            # tagged as other/invoice_reference/etc.)
+            for item in (unified_summary.get('references_found') or []):
+                if isinstance(item, dict):
+                    if _normalize_id(item.get('value')) == _normalize_id(lc_ref):
+                        return {
+                            'verdict': 'PASS',
+                            'quote': item.get('raw') or item.get('value', ''),
+                            'findings': f"LC reference {lc_ref} found on document (tagged as {item.get('role', 'other')}).",
+                            'confidence': 0.95,
+                            'structured_source': f"references_found[role={item.get('role','other')}]",
+                        }
+            # Not found in structured refs — FALL THROUGH to LLM (it can
+            # check doc_text where an untagged match may still appear).
+
+    # ── Check 2: BL prohibition checks — fully structured ──
+    if 'BILL OF LADING' in doc_up and bl_subtype:
+        # "NOT CHARTER PARTY" / "NOT CHARTER-PARTY"
+        if ('NOT' in cond_up and 'CHARTER PART' in cond_up):
+            ct = str(bl_subtype.get('contract_type', '')).lower()
+            if ct and ct != 'charter_party':
+                return {
+                    'verdict': 'PASS',
+                    'quote': f"bl_subtype.contract_type = {ct}",
+                    'findings': f"BL is not charter party (contract_type={ct}).",
+                    'confidence': 0.95,
+                    'structured_source': 'bl_subtype.contract_type',
+                }
+        # "NOT SHORT FORM" / "NOT SHORT-FORM" / "NOT BLANK BACK"
+        if ('NOT' in cond_up and
+                ('SHORT FORM' in cond_up or 'SHORT-FORM' in cond_up or
+                 'BLANK BACK' in cond_up or 'BLANK-BACK' in cond_up)):
+            if bl_subtype.get('has_terms_overleaf') is True or bl_subtype.get('is_blank_back') is False:
+                return {
+                    'verdict': 'PASS',
+                    'quote': f"bl_subtype.has_terms_overleaf={bl_subtype.get('has_terms_overleaf')}, is_blank_back={bl_subtype.get('is_blank_back')}",
+                    'findings': "BL has T&C printed on reverse (not short form / blank back).",
+                    'confidence': 0.95,
+                    'structured_source': 'bl_subtype.has_terms_overleaf',
+                }
+        # "NOT ISSUED BY FREIGHT FORWARDER" / "NOT FORWARDER"
+        if 'NOT' in cond_up and ('FORWARDER' in cond_up or 'FREIGHT FORWARDER' in cond_up):
+            st = str(bl_subtype.get('signing_type', '')).lower()
+            if st in ('master_signed', 'agent_for_master', 'carrier_signed'):
+                return {
+                    'verdict': 'PASS',
+                    'quote': f"bl_subtype.signing_type = {st}",
+                    'findings': f"BL signed as {st.replace('_', ' ')} — not a freight forwarder.",
+                    'confidence': 0.95,
+                    'structured_source': 'bl_subtype.signing_type',
+                }
+        # P122: "NOT HOUSE BL" / "NOT A HOUSE BILL OF LADING"
+        if 'NOT' in cond_up and 'HOUSE' in cond_up:
+            it = str(bl_subtype.get('issuer_type', '')).lower()
+            ih = bl_subtype.get('is_house_bl')
+            if it in ('master_bl', 'charter_party_bl') or ih is False:
+                return {
+                    'verdict': 'PASS',
+                    'quote': f"bl_subtype.issuer_type = {it}, is_house_bl = {ih}",
+                    'findings': f"BL is not a house BL (issuer_type={it}).",
+                    'confidence': 0.95,
+                    'structured_source': 'bl_subtype.issuer_type',
+                }
+
+    # ── Check 3: Beneficiary name change ("currently known as") ──
+    # If the draft/invoice has a drawer/beneficiary showing renamed entity,
+    # and the condition is about beneficiary identity — PASS.
+    if ('BENEFICIARY' in cond_up or 'ISSUED BY' in cond_up or
+        'THIRD PARTY' in cond_up or 'DRAWN BY' in cond_up):
+        # Look in parties_found for a drawer/beneficiary/issuer/shipper
+        # whose raw text contains "currently known as" / "formerly known as"
+        arr = (unified_summary or {}).get('parties_found') or []
+        for item in arr:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get('role', '')).lower()
+            if role in ('drawer', 'beneficiary', 'issuer', 'shipper'):
+                raw = str(item.get('raw', '') or item.get('name', '')).upper()
+                if ('CURRENTLY KNOWN AS' in raw or
+                    'FORMERLY KNOWN AS' in raw or
+                    'NOW KNOWN AS' in raw or
+                    'TRADING AS' in raw or 'T/A ' in raw or
+                    'D/B/A' in raw):
+                    return {
+                        'verdict': 'PASS',
+                        'quote': item.get('raw', ''),
+                        'findings': "Beneficiary/drawer identified — document shows legal entity name change (same party).",
+                        'confidence': 0.9,
+                        'structured_source': f"parties_found[role={role}]",
+                    }
+
+    # Fall through to LLM
+    return None
+
+
 _VLM_PROMPT_TEMPLATE = """You are verifying ONE condition from a Letter of Credit against a shipping document.
 
 LC CONDITION TO VERIFY:
@@ -740,8 +1429,11 @@ CRITICAL RULES (follow strictly):
    • The "INVOICE PRINTED TOTAL AMOUNT" line in the SYSTEM PRE-CALCULATED SUMMARY at the top of the document text is the de-duplicated correct figure — TRUST IT and use it as the invoice amount.
    • Do NOT count the same Total twice. If a multi-copy invoice (e.g. octuplicate) was merged, the same "Total Amount: 97,216.00" line may appear several times in the raw text — this is ONE invoice with ONE total, not multiple invoices. The SUMMARY at the top has already deduped this for you.
    • For a multi-page invoice, the Total line on the LAST page is the figure for the whole invoice — do not add per-page subtotals on top of it.
-   • The invoice amount can be LESS than the LC amount (partial/short shipment, allowed under UCP 600 Art 30 tolerance) — that is PASS.
-   • Only when invoice Total > LC amount × (1 + tolerance%) is it a FAIL. Verify your arithmetic: 97,216 is NOT greater than 97,216. 95,000 is LESS than 97,216 (PASS, not FAIL).
+   • SYMMETRIC TOLERANCE (P127 — CRITICAL): If the LC has F39A = "05/05" or F47A says "+/-5%" or "05PCT MORE OR LESS" or similar plus-minus language, the tolerance band is +/- that percent in BOTH directions. The invoice amount is a PASS if it falls in [LC × (1 − tolerance%), LC × (1 + tolerance%)].
+       EXAMPLE: LC = USD 100,000.00 with F39A "05/05" → band = 95,000 to 105,000. Invoice 104,500 → PASS. Invoice 96,000 → PASS. Invoice 106,000 → FAIL. Invoice 94,000 → FAIL only if partial shipment is prohibited — otherwise PASS as short shipment under UCP 600 Art 30.
+   • ASYMMETRIC TOLERANCE: If F39A says "10/05" → +10% / -5%. If it says "05/10" → +5% / -10%. Apply each side separately.
+   • NO EXPLICIT TOLERANCE: Without F39A or an explicit +/- clause, UCP 600 Art 30(b) gives an IMPLICIT 5% symmetric tolerance on the AMOUNT only when the LC amount is expressed with "ABOUT" / "APPROXIMATELY" / "CIRCA". Without those qualifiers, invoice must be <= LC amount (but can be less — partial/short shipment is allowed unless prohibited).
+   • "MUST NOT EXCEED" / "NOT TO EXCEED": invoice amount must be <= LC amount × (1 + tolerance%). Equal (=) is NOT exceeding — that is PASS.
    • EQUAL AMOUNTS: If the invoice amount EQUALS the LC amount exactly
      (e.g., both are USD 30,080.00), this is PASS — NOT a discrepancy.
      "Must not exceed" means the invoice amount must be <= LC amount.
@@ -961,6 +1653,124 @@ CRITICAL RULES (follow strictly):
 18. COPIES/DUPLICATES: "IN DUPLICATE" = 2 copies, "IN TRIPLICATE" = 3, "IN QUADRUPLICATE" = 4, "IN OCTUPLICATE" = 8, "FULL SET" = 3/3 originals. The number of copies is verified by the SYSTEM (not you) — it counts how many separate document packets exist. When you see a condition about copies/duplicates, mark it as PASS — the system handles copy counting separately. Do NOT fail a document for "not in duplicate/octuplicate" — you are only seeing ONE representative copy.
 19. MISSING DOCUMENT: If a required document is completely MISSING from the submission, report ONE failure: "Required document missing". Do NOT add sub-failures for content checks (importer name, language, etc.) on a missing document — those are meaningless if the document doesn't exist.
 20. PORT MATCHING: Ports are the SAME if the city/country matches, even if qualifiers differ. "KARACHI SEAPORT, PAKISTAN" = "KARACHI, PAKISTAN" = "KARACHI PORT, PAKISTAN". The word "SEAPORT"/"PORT" is just a qualifier. Similarly: "PENANG PORT, MALAYSIA" = "PENANG, MALAYSIA". Also "ANY [COUNTRY] PORT/SEAPORT" means ANY port in that country = PASS if port is in that country. "ANY MALAYSIA PORT" matches "PENANG PORT, MALAYSIA". "ANY CANADIAN PORT" matches "VANCOUVER, CANADA". "ANY CHINESE SEAPORT" matches "HONGKONG SEAPORT, CHINA" or "SHANGHAI, CHINA" or any port in China (including Hong Kong, Macau — they are part of China). The word "CHINESE" = "CHINA". Country adjectives ALWAYS equal the country noun: CHINESE=CHINA, MALAYSIAN=MALAYSIA, INDIAN=INDIA, PAKISTANI=PAKISTAN, JAPANESE=JAPAN, KOREAN=KOREA, GERMAN=GERMANY, FRENCH=FRANCE, ITALIAN=ITALY, SPANISH=SPAIN, AMERICAN=USA=UNITED STATES, BRITISH=ENGLISH=UK=UNITED KINGDOM, DUTCH=NETHERLANDS, BELGIAN=BELGIUM, SWISS=SWITZERLAND, BRAZILIAN=BRAZIL, ARGENTINEAN=ARGENTINA, EGYPTIAN=EGYPT, SAUDI=SAUDI ARABIA, EMIRATI=UAE=UNITED ARAB EMIRATES, TURKISH=TURKEY, RUSSIAN=RUSSIA. So "ANY CHINESE SEAPORT" = "ANY CHINA SEAPORT" = "ANY CHINA PORT" = "ANY PORT IN CHINA".
+
+20b. PORT CLUSTERS / MULTI-TERMINAL CITIES (P123): When an LC names a city that has multiple named sea terminals, any of those terminals satisfies the LC requirement. Do NOT raise a discrepancy when the BL shows a sub-terminal of the LC-named city — they are the SAME PORT COMPLEX.
+    • "KARACHI" / "KARACHI SEAPORT" / "KARACHI PORT" includes:
+        PORT QASIM, BIN QASIM, PORT BIN QASIM, PORT MUHAMMAD BIN QASIM, PQA,
+        KEMARI, KIAMARI, KPT (Karachi Port Trust),
+        KICT (Karachi International Container Terminal),
+        QICT (Qasim International Container Terminal),
+        PICT (Pakistan International Container Terminal),
+        KGTL (Karachi Gateway Terminal Ltd),
+        SAPT (South Asia Pakistan Terminals),
+        GWADAR is NOT part of Karachi — it is a separate port.
+    • "SHANGHAI" includes YANGSHAN, WAIGAOQIAO, WUSONGKOU.
+    • "NEW YORK" / "NEW YORK PORT" includes NEWARK, PORT ELIZABETH, BAYONNE, RED HOOK.
+    • "LOS ANGELES" port complex includes LONG BEACH (adjacent twin ports, often treated together only when LC says "LA/LB" — otherwise distinct).
+    • "ROTTERDAM" includes MAASVLAKTE, EUROPOORT, BOTLEK.
+    • "ANTWERP" includes DEURGANCKDOK, DELWAIDEDOK.
+    • "HAMBURG" includes ALTENWERDER (CTA), BURCHARDKAI (CTB), TOLLERORT (CTT), EUROGATE.
+    • "SINGAPORE" includes TUAS, PASIR PANJANG, BRANI, KEPPEL.
+    • "HONG KONG" includes KWAI CHUNG, KWAI TSING, STONECUTTERS.
+    • "DUBAI" includes JEBEL ALI, PORT RASHID.
+    • "MUMBAI" includes NHAVA SHEVA / JNPT (Jawaharlal Nehru Port Trust), MUMBAI PORT TRUST.
+    • "CHENNAI" includes ENNORE, KATTUPALLI.
+    • "JEDDAH" includes KING ABDULAZIZ PORT, JEDDAH ISLAMIC PORT.
+    • "COLOMBO" includes COLOMBO INTERNATIONAL CONTAINER TERMINAL (CICT), SAGT, JCT.
+    MATCH RULES — ASYMMETRIC (CRITICAL):
+    (a) LC names the PARENT CITY (e.g. "KARACHI", "KARACHI SEAPORT", "ANY KARACHI PORT") and BL shows any TERMINAL in that cluster (e.g. "PORT QASIM", "KEMARI", "KICT") → PASS. The city name covers every sub-terminal.
+    (b) LC names a SPECIFIC TERMINAL (e.g. "PORT QASIM", "BIN QASIM", "KEMARI", "KICT", "QICT") and BL shows the SAME terminal (or a direct synonym: PORT QASIM = BIN QASIM = PORT MUHAMMAD BIN QASIM = PQA; KEMARI = KIAMARI = KPT) → PASS.
+    (c) LC names a SPECIFIC TERMINAL but BL shows only the PARENT CITY (e.g. LC says "PORT QASIM" but BL says "KARACHI") → this is AMBIGUOUS, NOT automatic PASS. The city name alone does not prove the cargo moved through the specific terminal. Mark as REVIEW (not FAIL) unless the BL also shows a terminal code that differs from the LC's requirement.
+    (d) LC names a SPECIFIC TERMINAL and BL shows a DIFFERENT terminal in the same cluster (e.g. LC says "PORT QASIM" but BL says "KEMARI") → FAIL. Specific means specific; a sister terminal is not a substitute.
+
+20c. KNOWN PORT → CITY / COUNTRY REFERENCE (P124). Use this table to resolve "ANY [COUNTRY] PORT" requirements. If the BL's port is listed below, it IS a port of the stated country — do NOT fail the row because the country wasn't spelled on the BL.
+
+    PAKISTAN: Karachi, Port Qasim, Bin Qasim, Port Muhammad Bin Qasim, PQA, Kemari, Kiamari, KPT, KICT, QICT, PICT, KGTL, SAPT, Gwadar
+    INDIA: Nhava Sheva, JNPT, Mumbai, Chennai, Kolkata, Haldia, Cochin, Kochi, Tuticorin, Visakhapatnam, Vizag, Mundra, Kandla, Paradip, Ennore, Kattupalli, Krishnapatnam, Mangalore, Pipavav
+    BANGLADESH: Chittagong, Chattogram, Mongla
+    SRI LANKA: Colombo, CICT, SAGT, JCT, Hambantota, Galle, Trincomalee
+    CHINA: Shanghai, Yangshan, Waigaoqiao, Wusongkou, Ningbo, Zhoushan, Shenzhen, Yantian, Shekou, Chiwan, Guangzhou, Nansha, Qingdao, Tianjin, Xingang, Dalian, Xiamen, Fuzhou, Yingkou, Lianyungang, Rizhao, Taicang, Nantong, Zhanjiang, Haikou, Beihai
+    HONG KONG (part of China): Hong Kong, Kwai Chung, Kwai Tsing, Stonecutters, HIT
+    TAIWAN: Kaohsiung, Keelung, Taichung, Taipei, Hualien, Taoyuan
+    JAPAN: Tokyo, Yokohama, Nagoya, Osaka, Kobe, Hakata, Kitakyushu, Moji, Chiba, Tomakomai, Niigata, Shimizu, Sendai
+    SOUTH KOREA: Busan, Pusan, Incheon, Ulsan, Gwangyang, Kwangyang, Pyeongtaek, Pohang, Donghae, Masan
+    SINGAPORE: Singapore, Tuas, Pasir Panjang, Brani, Keppel, Jurong
+    MALAYSIA: Port Klang, Klang, Penang, Butterworth, Johor, Pasir Gudang, Tanjung Pelepas, PTP, Kuantan, Bintulu, Kuching, Kota Kinabalu, Labuan
+    INDONESIA: Tanjung Priok, Jakarta, Tanjung Perak, Surabaya, Belawan, Medan, Makassar, Batam, Semarang, Tanjung Emas, Balikpapan, Dumai
+    THAILAND: Laem Chabang, Bangkok, Klong Toey, Map Ta Phut, Songkhla, Sattahip
+    VIETNAM: Ho Chi Minh, Saigon, Cat Lai, Cai Mep, Haiphong, Hai Phong, Da Nang, Qui Nhon, Quy Nhon, Vung Tau
+    PHILIPPINES: Manila, MICT, Subic Bay, Cebu, Davao, Batangas, Cagayan de Oro, General Santos
+    CAMBODIA: Sihanoukville, Phnom Penh
+    MYANMAR: Yangon, Rangoon, Thilawa
+    UAE: Jebel Ali, Port Rashid, Dubai, Khalifa Port, Zayed Port, Abu Dhabi, Fujairah, Khor Fakkan, Sharjah, Hamriyah, Ajman
+    SAUDI ARABIA: Jeddah, King Abdulaziz Port Jeddah, Jeddah Islamic Port, Dammam, King Abdul Aziz Port Dammam, Jubail, Yanbu, King Abdullah Port, KAP, Ras Tanura
+    QATAR: Hamad Port, Doha, Ras Laffan, Mesaieed
+    KUWAIT: Shuwaikh, Shuaiba, Doha Port Kuwait
+    BAHRAIN: Khalifa Bin Salman Port, KBSP, Mina Salman
+    OMAN: Sohar, Salalah, Muscat, Port Sultan Qaboos, Duqm
+    IRAN: Bandar Abbas, Bandar Imam, Imam Khomeini, Chabahar, Bushehr, Anzali
+    YEMEN: Aden, Hodeidah, Mukalla
+    TURKEY: Istanbul, Ambarli, Haydarpasa, Izmit, Kocaeli, Gemlik, Mersin, Izmir, Aliaga, Iskenderun, Tekirdag, Samsun
+    EGYPT: Alexandria, Port Said, East Port Said, Damietta, Sokhna, Ain Sokhna, Suez, El Dekheila
+    ISRAEL: Haifa, Ashdod, Eilat
+    LEBANON: Beirut, Tripoli Lebanon
+    JORDAN: Aqaba
+    SYRIA: Latakia, Tartous
+    USA: Los Angeles, LA, Long Beach, LB, New York, NY/NJ, Newark, Elizabeth, Bayonne, Savannah, Houston, Seattle, Tacoma, Northwest Seaport Alliance, NWSA, Oakland, Charleston, Norfolk, Virginia, Miami, PortMiami, Baltimore, Jacksonville, JAXPORT, Boston, Philadelphia, Wilmington, New Orleans, Mobile, Galveston, Tampa, Port Everglades, Fort Lauderdale, Portland, Honolulu
+    CANADA: Vancouver, Prince Rupert, Montreal, Halifax, Toronto, Quebec City, Saint John, St. John's
+    MEXICO: Manzanillo, Lazaro Cardenas, Veracruz, Altamira, Ensenada, Progreso, Tampico
+    PANAMA: Balboa, Colon, Cristobal, Manzanillo International Terminal, MIT, Rodman
+    BRAZIL: Santos, Paranagua, Rio de Janeiro, Itaqui, Suape, Rio Grande, Vitoria, Itajai, Navegantes, Itapoa, Pecem
+    ARGENTINA: Buenos Aires, Rosario, Bahia Blanca, Zarate
+    CHILE: San Antonio, Valparaiso, Iquique, Arica, San Vicente, Coronel, Mejillones
+    PERU: Callao, Paita, Matarani, Salaverry, Pisco
+    COLOMBIA: Cartagena, Buenaventura, Barranquilla, Santa Marta
+    ECUADOR: Guayaquil, Manta, Posorja
+    VENEZUELA: La Guaira, Puerto Cabello, Maracaibo
+    URUGUAY: Montevideo
+    PARAGUAY: Asuncion
+    UK / UNITED KINGDOM: Felixstowe, Southampton, London Gateway, London, Tilbury, Liverpool, Harwich, Hull, Grimsby, Immingham, Thamesport, Teesport, Belfast
+    IRELAND: Dublin, Cork, Waterford, Ringaskiddy
+    NETHERLANDS: Rotterdam, Maasvlakte, Europoort, Botlek, Amsterdam, Vlissingen, Flushing
+    BELGIUM: Antwerp, Deurganckdok, Delwaidedok, Zeebrugge, Ghent, Oostende
+    FRANCE: Le Havre, Marseille, Fos, Fos-sur-Mer, Dunkirk, Dunkerque, Nantes, Saint-Nazaire, La Rochelle, Bordeaux, Calais, Sete
+    GERMANY: Hamburg, Altenwerder, CTA, Burchardkai, CTB, Tollerort, CTT, Eurogate, Bremen, Bremerhaven, Wilhelmshaven, JadeWeserPort, Rostock, Kiel, Lubeck
+    SPAIN: Valencia, Algeciras, Barcelona, Bilbao, Las Palmas, Tenerife, Santa Cruz, Vigo, Tarragona, Cartagena Spain, Cadiz
+    PORTUGAL: Lisbon, Lisboa, Sines, Leixoes, Porto, Setubal
+    ITALY: Genoa, Genova, La Spezia, Naples, Napoli, Livorno, Trieste, Taranto, Gioia Tauro, Ancona, Civitavecchia, Salerno, Venice, Venezia, Ravenna, Cagliari
+    GREECE: Piraeus, Athens, Thessaloniki, Heraklion, Patras
+    CYPRUS: Limassol, Larnaca
+    MALTA: Valletta, Marsaxlokk, Freeport
+    POLAND: Gdansk, Gdynia, Szczecin, Swinoujscie
+    CZECH REPUBLIC / SLOVAKIA / HUNGARY: (landlocked — no seaports)
+    RUSSIA: St. Petersburg, Saint Petersburg, Ust-Luga, Vladivostok, Nakhodka, Vostochny, Novorossiysk, Murmansk, Kaliningrad, Arkhangelsk
+    UKRAINE: Odessa, Odesa, Chornomorsk, Illichivsk, Pivdennyi, Yuzhny, Mykolaiv, Mariupol
+    ROMANIA: Constanta, Constantza
+    BULGARIA: Varna, Burgas
+    GEORGIA: Poti, Batumi
+    SWEDEN: Gothenburg, Goteborg, Stockholm, Helsingborg, Malmo
+    NORWAY: Oslo, Bergen, Stavanger, Kristiansand, Tromso
+    DENMARK: Copenhagen, Kobenhavn, Aarhus, Arhus, Esbjerg, Fredericia, Aalborg
+    FINLAND: Helsinki, Hamina, Kotka, HaminaKotka, Turku, Rauma, Pori
+    ESTONIA / LATVIA / LITHUANIA: Tallinn, Muuga (Estonia); Riga, Ventspils, Liepaja (Latvia); Klaipeda (Lithuania)
+    SOUTH AFRICA: Durban, Cape Town, Port Elizabeth, Gqeberha, Ngqura, Coega, Richards Bay, Saldanha
+    KENYA: Mombasa, Lamu
+    TANZANIA: Dar es Salaam, Zanzibar, Tanga
+    MOZAMBIQUE: Maputo, Beira, Nacala
+    NIGERIA: Lagos, Apapa, Tin Can Island, TCIP, Port Harcourt, Onne, Calabar, Lekki
+    GHANA: Tema, Takoradi
+    IVORY COAST / CÔTE D'IVOIRE: Abidjan, San Pedro
+    SENEGAL: Dakar
+    MOROCCO: Casablanca, Tanger Med, Tangier, Agadir, Jorf Lasfar
+    ALGERIA: Algiers, Alger, Oran, Bejaia, Annaba, Skikda, Djendjen
+    TUNISIA: Rades, Tunis, Sfax, Gabes, Bizerte
+    LIBYA: Tripoli Libya, Benghazi, Misrata, Khoms
+    SUDAN: Port Sudan
+    DJIBOUTI: Djibouti, Doraleh
+    AUSTRALIA: Sydney, Botany, Port Botany, Melbourne, Brisbane, Fremantle, Perth, Adelaide, Port Adelaide, Darwin, Newcastle, Port Kembla, Hobart
+    NEW ZEALAND: Auckland, Tauranga, Wellington, Lyttelton, Christchurch, Napier, Port Chalmers, Dunedin
+
+    USE: when the LC condition says "ANY CHINESE SEAPORT" and the BL shows "YANTIAN" — Yantian is in the CHINA row → PASS. When LC says "ANY UAE PORT" and BL shows "JEBEL ALI" → Jebel Ali is in UAE → PASS. When LC says a specific city that has no sub-terminals listed (e.g., "SALALAH"), match literally — no cluster expansion needed. If the port name is NOT in this table, do NOT fail the row — fall back to the document's own country/city wording and apply rule 20 (city+country match). The table is a helpful reference, not an exhaustive whitelist.
 
 20a. TRADE TERMS / INCOTERMS — MATCH THE CODE ONLY (CRITICAL):
     When the LC condition asks for a "trade term" / "Incoterm" / "delivery term" to appear on a document (typically the Commercial Invoice), you MUST verify ONLY the Incoterm CODE, not the country, city, port or any other suffix that follows it.
@@ -1316,6 +2126,9 @@ def _call_vlm(
     image_path: Optional[str] = None,
     visual_metadata: str = "",
     lc_parties: str = "",
+    unified_summary: Optional[dict] = None,
+    bl_subtype: Optional[dict] = None,
+    final_lc_fields: Optional[dict] = None,
 ) -> dict:
     """
     Send a single verification request to Qwen VLM.
@@ -1514,16 +2327,58 @@ def _call_vlm(
     if len(document_text) > max_chars:
         document_text = document_text[:max_chars] + "\n... [truncated]"
 
-    prompt_text = _VLM_PROMPT_TEMPLATE.format(
-        condition_text=condition_text,
-        clause_ref=clause_ref,
-        lc_field_value=lc_field_value,
-        lc_parties=lc_parties or "(Not available)",
-        f47a_context=f47a_context,
-        document_type=document_type,
-        document_text=document_text,
-        visual_metadata=visual_metadata or "(No visual metadata available)",
-    )
+    # ── FAST PATH: try deterministic verification first ──
+    # Conservative — only returns a verdict when confidence is very high.
+    if USE_SPLIT_PROMPTS and (unified_summary or bl_subtype):
+        _det = _deterministic_verify(
+            condition_text=condition_text,
+            clause_ref=clause_ref,
+            lc_field_value=lc_field_value,
+            document_type=document_type,
+            unified_summary=unified_summary or {},
+            bl_subtype=bl_subtype or {},
+            final_lc=final_lc_fields or {},
+        )
+        if _det is not None:
+            return {
+                "row_id": row_id,
+                "findings": _det.get("findings", "") or "",
+                "result": _det.get("findings", "") or "",
+                "quote": _det.get("quote", "") or "",
+                "compliance": _det.get("verdict", "REVIEW").lower(),
+                "confidence": float(_det.get("confidence", 0.0) or 0.0),
+                "reasoning": f"Deterministic (no LLM): {_det.get('structured_source', '')}",
+                "structured_source": _det.get("structured_source", ""),
+                "elapsed": time.time() - start,
+                "_verification_path": "deterministic",
+            }
+
+    # ── VLM PATH: build the prompt ──
+    if USE_SPLIT_PROMPTS:
+        prompt_text = _build_verification_prompt_v2(
+            condition_text=condition_text,
+            clause_ref=clause_ref,
+            lc_field_value=lc_field_value,
+            lc_parties=lc_parties or "(Not available)",
+            f47a_context=f47a_context or "",
+            document_type=document_type,
+            document_text=document_text,
+            visual_metadata=visual_metadata or "(No visual metadata available)",
+            unified_summary=unified_summary or {},
+            bl_subtype=bl_subtype or {},
+        )
+    else:
+        # Legacy fallback path
+        prompt_text = _VLM_PROMPT_TEMPLATE.format(
+            condition_text=condition_text,
+            clause_ref=clause_ref,
+            lc_field_value=lc_field_value,
+            lc_parties=lc_parties or "(Not available)",
+            f47a_context=f47a_context,
+            document_type=document_type,
+            document_text=document_text,
+            visual_metadata=visual_metadata or "(No visual metadata available)",
+        )
 
     # P63: text-only verification. document_text + visual_metadata already
     # Text-only LLM — no images needed for verification.
@@ -1576,8 +2431,25 @@ def _call_vlm(
                 "reasoning": "Could not parse VLM output as JSON",
             }
 
+        # ── Normalize CORE-prompt response schema to legacy schema ──
+        # CORE prompt returns: verdict / quote / findings / confidence / structured_source
+        # Legacy downstream expects:   compliance / findings / result / confidence / reasoning
+        if "compliance" not in parsed and "verdict" in parsed:
+            parsed["compliance"] = str(parsed.get("verdict") or "review").lower()
+        if "result" not in parsed:
+            # Use findings as the short status; truncate for UI display
+            _f = parsed.get("findings") or ""
+            parsed["result"] = _f[:200] if _f else parsed.get("compliance", "review")
+        if "reasoning" not in parsed:
+            _src = parsed.get("structured_source") or ""
+            _q = parsed.get("quote") or ""
+            parsed["reasoning"] = (
+                f"Source: {_src}. Quote: {_q[:150]}" if _src or _q else parsed.get("findings", "")[:200]
+            )
+
         parsed["row_id"] = row_id
         parsed["elapsed"] = elapsed
+        parsed["_verification_path"] = "vlm_split" if USE_SPLIT_PROMPTS else "vlm_legacy"
         return parsed
 
     except requests.exceptions.Timeout:
@@ -1926,101 +2798,14 @@ def _build_tasks(
             if _party_note:
                 condition_text = f"[PARTY NAMES: {'; '.join(_party_note)}. Match the EXACT party name, not a different party.]\n{condition_text}"
 
-        # BL PROHIBITION: inject signing capacity into the condition text
-        # so the LLM sees it right in the question, not buried in rules.
-        _bl_prohibition_kw = ['charter party', 'short form', 'blank back',
-                              'freight forwarder', 'house b/l', 'house bill']
-        if doc_checked.lower() in ('bill of lading', 'bl') and \
-           any(k in _cond_upper.lower() for k in _bl_prohibition_kw):
-            # Find the BL packet and extract signing info
-            for _bp in packets:
-                _bpt = (_pkt_type(_bp) or '').lower()
-                if 'bill of lading' in _bpt or _bpt == 'bl':
-                    _bl_text = (_pkt_text(_bp) or '').upper()
-
-                    # Determine signing capacity
-                    _signing = 'UNKNOWN'
-                    if re.search(r'AS\s+(?:AGENTS?\s+)?(?:ONLY\s+)?(?:FOR\s+(?:AND\s+BY\s+AUTHORITY\s+OF\s+)?)?(?:THE\s+)?(?:MASTER|CAPTAIN)', _bl_text):
-                        _signing = 'AS AGENT FOR THE MASTER (carrier signing)'
-                    elif 'AS CARRIER' in _bl_text:
-                        _signing = 'AS CARRIER'
-                    elif re.search(r'AS\s+AGENTS?\s+(?:FOR|OF)\s+(?:THE\s+)?CARRIER', _bl_text):
-                        _signing = 'AS AGENT FOR THE CARRIER'
-                    elif re.search(r'(?:FREIGHT\s+FORWARDER|NVOCC|NON[\-\s]VESSEL)', _bl_text):
-                        _signing = 'FREIGHT FORWARDER'
-                    elif 'AS AGENT' in _bl_text:
-                        _signing = 'AS AGENT (check context)'
-
-                    # Determine issuer — check against known shipping lines
-                    _KNOWN_CARRIERS = [
-                        'MSC', 'MEDITERRANEAN SHIPPING', 'MAERSK', 'CMA CGM',
-                        'COSCO', 'HAPAG', 'HAPAG-LLOYD', 'ONE', 'OCEAN NETWORK',
-                        'EVERGREEN', 'HMM', 'YANG MING', 'ZIM', 'WAN HAI',
-                        'PIL', 'PACIFIC INTERNATIONAL', 'SEA LEAD', 'X-PRESS',
-                        'SITC', 'UNIFEEDER', 'IRISL', 'KMTC', 'KOREA MARINE',
-                        'SINOKOR', 'GLOBAL FEEDER', 'ZHONGGU', 'TS LINES',
-                        'ANTONG', 'NINGBO OCEAN', 'EMIRATES SHIPPING',
-                        'SWIRE', 'MATSON', 'SM LINE', 'CULINES', 'CHINA UNITED',
-                        'BAL CONTAINER', 'SHANGHAI LEAGUE', 'OOCL', 'HAMBURG SUD',
-                        'APL', 'MOL', 'NYK', 'K LINE', 'HYUNDAI',
-                        'PACIFIC NORTHWEST', 'SAMUDERA', 'RCL', 'REGIONAL CONTAINER',
-                    ]
-                    _issuer = ''
-                    _is_known_carrier = False
-                    for _line in _bl_text.split('\n'):
-                        _line_clean = _line.strip()
-                        if any(k in _line_clean for k in ('LINES', 'SHIPPING', 'TRANSPORT', 'NAVIGATION', 'MARITIME', 'CARRIER')):
-                            _issuer = _line_clean[:60]
-                            break
-                    # Check if any known carrier name appears anywhere in BL
-                    for _kc in _KNOWN_CARRIERS:
-                        if _kc in _bl_text:
-                            _is_known_carrier = True
-                            if not _issuer:
-                                _issuer = _kc
-                            break
-
-                    # Check for charter party — BUT "TO BE USED WITH CHARTER-PARTIES"
-                    # is a standard CONGENBILL/BIMCO form header, NOT a charter party BL.
-                    _has_charter = False
-                    if 'CHARTER PARTY' in _bl_text or 'CHARTER-PART' in _bl_text:
-                        if 'AS PER CHARTER PARTY' in _bl_text or 'CHARTER PARTY DATE' in _bl_text:
-                            _has_charter = True
-                        elif re.search(r'TO\s+BE\s+USED\s+WITH\s+CHARTER[\-\s]PART', _bl_text):
-                            _has_charter = False  # Form template name only
-
-                    _has_tc = bool(re.search(r'TERMS\s+AND\s+CONDITIONS|HTTPS?://|CONDITIONS\s+OF\s+CARRIAGE|SUBJECT\s+TO\s+CONDITIONS|SEE\s+OVERLEAF', _bl_text))
-
-                    # Build per-prohibition context — each check type needs
-                    # specific facts, not a single overall BL type label
-                    _is_carrier_signed = _signing in (
-                        'AS CARRIER', 'AS AGENT FOR THE CARRIER',
-                        'AS AGENT FOR THE MASTER (carrier signing)')
-                    _bl_facts = {
-                        'charter party': 'YES — AS PER CHARTER PARTY found on BL' if _has_charter else 'NO — no charter party reference on BL',
-                        'short form': 'NO — BL has terms & conditions' if _has_tc else 'POSSIBLE — no T&C found',
-                        'blank back': 'NO — BL references conditions (see overleaf/URL)' if _has_tc else 'POSSIBLE — no conditions referenced',
-                        'freight forwarder': 'NO — signed by ' + _signing if _is_carrier_signed else ('YES — signed by freight forwarder' if _signing == 'FREIGHT FORWARDER' else 'POSSIBLE — unknown signing capacity'),
-                        'house': 'NO — signed by ' + _signing if _is_carrier_signed else ('YES — not signed by carrier/master' if _signing not in ('UNKNOWN', 'AS AGENT (check context)') else 'POSSIBLE — unknown signing capacity'),
-                    }
-                    # Pick the relevant fact for THIS specific condition
-                    _relevant_fact = ''
-                    for _pk, _pv in _bl_facts.items():
-                        if _pk in _cond_upper.lower():
-                            _relevant_fact = f'Is this BL a {_pk} BL? {_pv}'
-                            break
-                    if not _relevant_fact:
-                        _cp = 'yes' if _has_charter else 'no'
-                        _tc = 'yes' if _has_tc else 'no'
-                        _relevant_fact = f'Signing: {_signing}, Charter Party: {_cp}, Has T&C: {_tc}'
-
-                    condition_text = (
-                        f"[BL PROHIBITION CHECK: {_relevant_fact}. "
-                        f"Issuer='{_issuer}', Signed='{_signing}'. "
-                        f"This is a PROHIBITION — answer based on the facts above.]\n"
-                        f"{condition_text}"
-                    )
-                    break
+        # NOTE: The P120 regex-heavy BL prohibition injection block was REMOVED
+        # in P123. The information it produced (signing capacity, charter party
+        # presence, T&C presence, known-carrier check) is now captured by
+        # Step 3d bl_subtype (signing_type / contract_type / has_terms_overleaf
+        # / is_claused_bl / etc.) and flows into the CORE + FAMILY_PACK_BL
+        # prompt via _build_structured_facts. The deterministic fast-path in
+        # _call_vlm also handles the common prohibition cases without LLM.
+        # No regex, no hard-coded carrier list — pure LLM-driven classification.
 
         # Get the LC field value for context
         lc_field_value = look_for or _get_lc_field_value(step06_result, field_tag)
@@ -2231,6 +3016,10 @@ def _build_tasks(
             _is_multi = len(doc_types_to_check) > 1 or len(matched_pkts) > 1
             for pkt in matched_pkts:
                 images = _pkt_images(pkt)
+                # Pull Step 3 outputs if present — drives new split-prompt path
+                # and the deterministic fast-path in _call_vlm.
+                _u_sum = pkt.get('unified_summary') if isinstance(pkt, dict) else None
+                _bl_st = pkt.get('bl_subtype') if isinstance(pkt, dict) else None
                 tasks.append({
                     "row": row,
                     "skip": False,
@@ -2244,6 +3033,8 @@ def _build_tasks(
                     "visual_metadata": _pkt_visual_metadata(pkt),
                     "image_path": images[0] if images else None,
                     "multi_doc": _is_multi,
+                    "unified_summary": _u_sum if isinstance(_u_sum, dict) else None,
+                    "bl_subtype": _bl_st if isinstance(_bl_st, dict) else None,
                 })
 
     return tasks
@@ -2426,6 +3217,10 @@ def run(
 
     if vlm_tasks:
         _progress(f"Sending {len(vlm_tasks)} conditions to Qwen LLM...")
+        # Final-LC fields for the deterministic fast-path in _call_vlm
+        _final_lc_fields = step06_result.get('final_lc', step06_result).get(
+            'consolidated_fields', step06_result.get('consolidated_fields', {})
+        )
 
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_VLM) as executor:
             futures = {}
@@ -2442,6 +3237,9 @@ def run(
                     task.get("image_path"),
                     task.get("visual_metadata", ""),
                     task.get("lc_parties", ""),
+                    task.get("unified_summary"),
+                    task.get("bl_subtype"),
+                    _final_lc_fields,
                 )
                 futures[future] = task
 
@@ -2800,66 +3598,14 @@ def run(
                     _set(row, "findings", f"BL notify party does not include '{_ib[:40]}'")
                     _progress(f"  {row_id}: PASS->FAIL (issuing bank not in notify party)")
 
-    # ------------------------------------------------------------------ #
-    # 5c3. Hard-coded FAIL->PASS overrides for three specific cases only
-    # ------------------------------------------------------------------ #
-    # These overrides apply ONLY to the three exact evidence patterns
-    # below. They are narrowly scoped — matching unique identifying
-    # strings — so no other FAIL rows are affected.
-    for task in vlm_tasks:
-        row = task["row"]
-        row_id = task.get("row_id", "?")
-        compliance = _get(row, "compliance", "").upper()
-        if compliance != "FAIL":
-            continue
-
-        cond_text = (task.get("condition_text") or "")
-        doc_text = (task.get("document_text") or "")
-        findings_text = (_get(row, "findings", "") or "")
-        result_text = (_get(row, "result", "") or "")
-        evidence_pool = f"{doc_text}\n{findings_text}\n{result_text}".upper()
-        _cond_up = cond_text.upper()
-        _doc_type = (task.get("document_type") or "").upper()
-
-        # Case 1: Draft beneficiary — "B.V. (currently known as Bunge Netherlands Agri B.V.)"
-        _case1_match = (
-            'BUNGE NETHERLANDS AGRI' in evidence_pool
-            and 'CURRENTLY KNOWN AS' in evidence_pool
-            and ('BENEFICIARY' in _cond_up or 'THIRD PARTY' in _cond_up)
-        )
-        if _case1_match:
-            _set(row, "compliance", "PASS")
-            _set(row, "result", "Beneficiary identified (company name change noted on draft)")
-            _set(row, "findings", "Draft shows 'currently known as Bunge Netherlands Agri B.V.' — same legal entity under new name")
-            _progress(f"  {row_id}: FAIL->PASS (Bunge name change — hard-coded)")
-            continue
-
-        # Case 2: BL forwarder agent — "Pacific Northwest Ship & Cargo Services Inc.
-        # AS AGENTS ONLY FOR AND BY AUTHORITY OF CAPTAIN ZBIGNIEW KLUBA THE MASTER OF M.V. SCION CHARLOTTE"
-        _case2_match = (
-            'PACIFIC NORTHWEST SHIP' in evidence_pool
-            and 'AGENTS ONLY FOR AND BY AUTHORITY OF' in evidence_pool
-            and ('ZBIGNIEW KLUBA' in evidence_pool or 'SCION CHARLOTTE' in evidence_pool)
-            and 'FORWARDER' in _cond_up
-        )
-        if _case2_match:
-            _set(row, "compliance", "PASS")
-            _set(row, "result", "BL signed by agent under Master's authority — not a forwarder agent")
-            _set(row, "findings", "Pacific Northwest Ship & Cargo Services Inc. signed AS AGENTS ONLY FOR AND BY AUTHORITY OF CAPTAIN ZBIGNIEW KLUBA (Master of M.V. SCION CHARLOTTE) — this is a carrier-authorised signing, not a freight forwarder")
-            _progress(f"  {row_id}: FAIL->PASS (Pacific NW agent-for-master — hard-coded)")
-            continue
-
-        # Case 3: BL blank back — "FOR CONDITIONS OF CARRIAGE SEE OVERLEAF"
-        _case3_match = (
-            'FOR CONDITIONS OF CARRIAGE SEE OVERLEAF' in evidence_pool
-            and 'BLANK BACK' in _cond_up
-        )
-        if _case3_match:
-            _set(row, "compliance", "PASS")
-            _set(row, "result", "BL references conditions of carriage on overleaf — not blank-back")
-            _set(row, "findings", "Bill of Lading states 'FOR CONDITIONS OF CARRIAGE SEE OVERLEAF' — terms are printed on the reverse, so the back is not blank")
-            _progress(f"  {row_id}: FAIL->PASS (overleaf conditions — hard-coded)")
-            continue
+    # NOTE: Section 5c3 (hard-coded FAIL->PASS overrides for specific evidence
+    # patterns — Bunge name change, Pacific NW agent-for-master, "SEE OVERLEAF"
+    # blank-back) was REMOVED in P123.
+    # Rationale: the new split-prompt path (CORE + family packs) + structured
+    # facts from Step 3e (bl_subtype.signing_type, bl_subtype.has_terms_overleaf,
+    # parties_found with "currently known as" raw text) now covers these cases
+    # via general LLM reasoning + deterministic fast-path in _call_vlm —
+    # no string-matching overrides needed.
 
     # ------------------------------------------------------------------ #
     # 5d. LOI presentation — suppress timing checks

@@ -37,6 +37,33 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
+# ── Module-level prompts (exposed in settings page — view only) ──
+_VLM_EXTRACT_PROMPT = (
+    "Extract ALL text from this trade finance document page. "
+    "Read every single line visible in the image.\n\n"
+    "RULES:\n"
+    "- Extract text exactly as it appears, do NOT add markdown, bold, or table formatting\n"
+    "- Preserve original line breaks\n"
+    "- Include ALL numbers, amounts, quantities exactly as shown\n"
+    "- Include company names, addresses, phone/fax numbers\n"
+    "- Include ALL column values (QTY, UNIT PRICE, AMOUNT) for each row\n"
+    "- Note stamps as [STAMP] and signatures as [SIGNATURE]\n\n"
+    "Return PLAIN TEXT only. No markdown. No bold. No table separators."
+)
+
+_VLM_FALLBACK_PROMPT = (
+    "The OCR model failed to read this page correctly. "
+    "Please extract ALL text from this document page image.\n\n"
+    "RULES:\n"
+    "- Extract EVERY line of text exactly as it appears\n"
+    "- Include ALL SWIFT field tags (F20:, :20:, F46A:, :46A:, etc.) with their complete values\n"
+    "- Include ALL numbered clauses (1., 2., 3... or 1), 2), 3)...)\n"
+    "- Preserve line breaks and formatting\n"
+    "- Do NOT summarize or interpret — extract the raw text\n"
+    "- If text continues from previous page, still extract it completely"
+)
+
+
 @dataclass
 class CorrectionEntry:
     """
@@ -186,17 +213,7 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
 
             # If GLM returned garbage (echoed prompt), do FULL extraction
             if _is_garbage_text(cleaned) or len(cleaned) < 20:
-                _prompt = (
-                    "The OCR model failed to read this page correctly. "
-                    "Please extract ALL text from this document page image.\n\n"
-                    "RULES:\n"
-                    "- Extract EVERY line of text exactly as it appears\n"
-                    "- Include ALL SWIFT field tags (F20:, :20:, F46A:, :46A:, etc.) with their complete values\n"
-                    "- Include ALL numbered clauses (1., 2., 3... or 1), 2), 3)...)\n"
-                    "- Preserve line breaks and formatting\n"
-                    "- Do NOT summarize or interpret — extract the raw text\n"
-                    "- If text continues from previous page, still extract it completely"
-                )
+                _prompt = _VLM_FALLBACK_PROMPT
                 _resp = _requests.post(QWEN_VLM_URL, json={
                     "model": QWEN_VLM_MODEL,
                     "messages": [{"role": "user", "content": [
@@ -215,18 +232,7 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
             # (amounts, headers, table values) even when char counts are similar.
             # VLM output replaces GLM when VLM succeeds.
             # GLM is the fallback when VLM fails or returns too little.
-            _prompt = (
-                "Extract ALL text from this trade finance document page. "
-                "Read every single line visible in the image.\n\n"
-                "RULES:\n"
-                "- Extract text exactly as it appears, do NOT add markdown, bold, or table formatting\n"
-                "- Preserve original line breaks\n"
-                "- Include ALL numbers, amounts, quantities exactly as shown\n"
-                "- Include company names, addresses, phone/fax numbers\n"
-                "- Include ALL column values (QTY, UNIT PRICE, AMOUNT) for each row\n"
-                "- Note stamps as [STAMP] and signatures as [SIGNATURE]\n\n"
-                "Return PLAIN TEXT only. No markdown. No bold. No table separators."
-            )
+            _prompt = _VLM_EXTRACT_PROMPT
             _resp = _requests.post(QWEN_VLM_URL, json={
                 "model": QWEN_VLM_MODEL,
                 "messages": [{"role": "user", "content": [

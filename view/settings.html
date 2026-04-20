@@ -236,42 +236,131 @@
       &#128221; System Prompts <span style="font-size:.75em;color:#888;margin-left:8px">(click to expand)</span>
     </div>
     <div class="card-body" id="prompts-body" style="display:none">
+      <div style="font-size:.75em;color:#666;margin-bottom:10px;padding:6px 10px;background:#f8fafc;border-radius:6px">
+        All prompts below are <strong>view-only</strong>. Numbering follows the settings-page scheme;
+        backend pipeline step is noted in parentheses.
+        Each card is tagged with the model family it runs on —
+        <span style="display:inline-block;padding:1px 6px;border-radius:10px;background:#fff4e5;color:#c2410c;font-weight:700;font-size:.9em;border:1px solid #fed7aa">OCR</span>
+        (dedicated OCR model),
+        <span style="display:inline-block;padding:1px 6px;border-radius:10px;background:#e0f2fe;color:#0369a1;font-weight:700;font-size:.9em;border:1px solid #bae6fd">VLM</span>
+        (image + text, Qwen VLM),
+        <span style="display:inline-block;padding:1px 6px;border-radius:10px;background:#f3e8ff;color:#6b21a8;font-weight:700;font-size:.9em;border:1px solid #e9d5ff">LLM</span>
+        (text-only, Qwen text LLM).
+      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
 
         <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
-          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 1 — GLM OCR Prompt</div>
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 1 — GLM OCR Prompt <span style="font-weight:400;color:#888">(backend step01)</span></div>
           <div style="font-size:.75em;color:#666;margin-bottom:6px">Extracts raw text from each PDF page using GLM-OCR model</div>
-          <textarea id="prompt-step1" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical" readonly></textarea>
+          <textarea id="prompt-step1" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
         </div>
 
         <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
-          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 3 — Classification Prompt</div>
-          <div style="font-size:.75em;color:#666;margin-bottom:6px">Classifies each page as LC, BL, Invoice, Certificate, etc. with stamps/signatures detection</div>
-          <textarea id="prompt-step3" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical" readonly></textarea>
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 2 — OCR Cleaning &amp; VLM Text Completion <span style="font-weight:400;color:#888">(backend step02)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">VLM re-extraction for each page to catch text GLM missed. Includes a main prompt + a fallback used when GLM returns garbage.</div>
+          <textarea id="prompt-step2" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
         </div>
 
         <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
-          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 6 — LC Field Extraction Prompt</div>
-          <div style="font-size:.75em;color:#666;margin-bottom:6px">VLM fallback to extract SWIFT fields when regex fails on scanned LCs</div>
-          <textarea id="prompt-step6" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical" readonly></textarea>
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 3 — Page Classification (Legacy Combined) <span style="font-weight:400;color:#888">(backend step03 legacy)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Original single-prompt classifier — kept for back-compat. The new pipeline uses Steps 4-8 below.</div>
+          <textarea id="prompt-step3" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #bfe3bf;border-radius:8px;padding:12px;background:#f7fdf7">
+          <div style="font-size:.78em;font-weight:700;color:#2c8a2c;margin-bottom:4px">Step 4 — Document Type Classification (Step 3a) <span style="font-weight:400;color:#888">(backend step03 sub)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Per-page doc_type + is_continuation. Text-dominant, runs first in the 3-way split.</div>
+          <textarea id="prompt-step4" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #bfe3bf;border-radius:8px;padding:12px;background:#f7fdf7">
+          <div style="font-size:.78em;font-weight:700;color:#2c8a2c;margin-bottom:4px">Step 5 — Markings &amp; Seals (Step 3b) <span style="font-weight:400;color:#888">(backend step03 sub)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Visual-only. Extracts stamps, signatures, seals, logos per page at higher resolution.</div>
+          <textarea id="prompt-step5" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #bfe3bf;border-radius:8px;padding:12px;background:#f7fdf7">
+          <div style="font-size:.78em;font-weight:700;color:#2c8a2c;margin-bottom:4px">Step 6 — Copy / Original Status (Step 3c) <span style="font-weight:400;color:#888">(backend step03 sub)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Narrow question: find ORIGINAL / COPY / NON-NEGOTIABLE / FIRST-ORIGINAL marker and report copy status.</div>
+          <textarea id="prompt-step6" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #bfe3bf;border-radius:8px;padding:12px;background:#f7fdf7">
+          <div style="font-size:.78em;font-weight:700;color:#2c8a2c;margin-bottom:4px">Step 7 — BL Sub-type (Step 3d) <span style="font-weight:400;color:#888">(backend step03 sub — BL packets only)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Packet-level. Classifies BL as short-form / charter-party / master / house / forwarder with overleaf &amp; blank-back detection.</div>
+          <textarea id="prompt-step7" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #bfe3bf;border-radius:8px;padding:12px;background:#f7fdf7">
+          <div style="font-size:.78em;font-weight:700;color:#2c8a2c;margin-bottom:4px">Step 8 — Packet Summary (Step 3e) <span style="font-weight:400;color:#888">(backend step03 sub — all packets)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Packet-level structured summary across all pages. Tiered: ≤4 pages → VLM with images; 5–20 → text LLM; 21+ → chunked LLM.</div>
+          <textarea id="prompt-step8" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #bfe3bf;border-radius:8px;padding:12px;background:#f7fdf7">
+          <div style="font-size:.78em;font-weight:700;color:#2c8a2c;margin-bottom:4px">Step 9 — Packet Validator (Step 3f) <span style="font-weight:400;color:#888">(backend step03 sub)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">LLM-based validator: does the packet's combined text support its classification? Used to flag mis-classifications.</div>
+          <textarea id="prompt-step9" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #bfe3bf;border-radius:8px;padding:12px;background:#f7fdf7">
+          <div style="font-size:.78em;font-weight:700;color:#2c8a2c;margin-bottom:4px">Step 10 — Page Re-check (Step 3g) <span style="font-weight:400;color:#888">(backend step03 sub)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Neighbour-context re-classification. Triggered when a packet fails validation — pages are re-sent with prev/next page types as context.</div>
+          <textarea id="prompt-step10" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
         </div>
 
         <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
-          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 8 — Shipping Classification Prompt</div>
-          <div style="font-size:.75em;color:#666;margin-bottom:6px">Matches shipping documents against LC requirements with detailed field extraction</div>
-          <textarea id="prompt-step8" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical" readonly></textarea>
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 11 — MT Identification <span style="font-weight:400;color:#888">(backend step04)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Classifies document packets into MT-side (SWIFT LC) vs shipping-side</div>
+          <textarea id="prompt-step11" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
         </div>
 
         <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
-          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 12 — Decomposition Prompt</div>
-          <div style="font-size:.75em;color:#666;margin-bottom:6px">Breaks LC clauses into individual checkable conditions for verification</div>
-          <textarea id="prompt-step12" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical" readonly></textarea>
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 12 — MT Reconciliation <span style="font-weight:400;color:#888">(backend step05)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">VLM cross-check of GLM OCR on SWIFT MT-side pages to catch missed fields</div>
+          <textarea id="prompt-step12" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
         </div>
 
         <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
-          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 14 — Verification Prompt</div>
-          <div style="font-size:.75em;color:#666;margin-bottom:6px">Checks each condition against actual documents with 21 critical rules</div>
-          <textarea id="prompt-step14" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical" readonly></textarea>
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 13 — LC Field Extraction <span style="font-weight:400;color:#888">(backend step06)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">VLM fallback to extract SWIFT fields when OCR regex fails on scanned LCs</div>
+          <textarea id="prompt-step13" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 14 — LC Amendment Processing <span style="font-weight:400;color:#888">(backend step06)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Parses MT707 amendments and applies them to the base LC to produce the Final LC</div>
+          <textarea id="prompt-step14" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 15 — Shipping Classification <span style="font-weight:400;color:#888">(backend step08)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Matches shipping documents against LC requirements with field extraction</div>
+          <textarea id="prompt-step15" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 16 — Shipping Reconciliation <span style="font-weight:400;color:#888">(backend step09)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">VLM reconciliation on shipping documents to resolve OCR ambiguities and extract structured fields</div>
+          <textarea id="prompt-step16" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 17 — Decomposition (System) <span style="font-weight:400;color:#888">(backend step12)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">System instructions for breaking LC clauses into individual checkable conditions</div>
+          <textarea id="prompt-step17" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 18 — Decomposition (User Template) <span style="font-weight:400;color:#888">(backend step12)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Per-clause user prompt template sent alongside the Decomposition system prompt</div>
+          <textarea id="prompt-step18" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
+        </div>
+
+        <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
+          <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 19 — Verification <span style="font-weight:400;color:#888">(backend step14)</span></div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Checks each condition against shipping documents with critical rules + post-check overrides</div>
+          <textarea id="prompt-step19" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
         </div>
 
       </div>
@@ -461,25 +550,80 @@ function showToast(msg) {
 loadSettings();
 
 // ── Load Prompts ──
+// Model tag per settings-page step (OCR / VLM / LLM / VLM+LLM)
+const _STEP_MODEL_TAGS = {
+  step1:  {tag: 'OCR',     desc: 'GLM dedicated OCR model'},
+  step2:  {tag: 'VLM',     desc: 'Qwen VLM — image + text'},
+  step3:  {tag: 'VLM',     desc: 'Legacy single-prompt VLM'},
+  step4:  {tag: 'VLM',     desc: 'Doc type — VLM with image'},
+  step5:  {tag: 'VLM',     desc: 'Markings — visual-only VLM'},
+  step6:  {tag: 'VLM',     desc: 'Copy status — visual VLM'},
+  step7:  {tag: 'VLM',     desc: 'BL sub-type — VLM with text+image'},
+  step8:  {tag: 'VLM+LLM', desc: 'Tiered: ≤4 pg VLM, 5+ pg text LLM, 21+ chunked LLM'},
+  step9:  {tag: 'LLM',     desc: 'Text-only packet validator'},
+  step10: {tag: 'VLM',     desc: 'Page re-check — VLM with image+context'},
+  step11: {tag: 'VLM',     desc: 'MT identification'},
+  step12: {tag: 'VLM',     desc: 'MT reconciliation'},
+  step13: {tag: 'VLM',     desc: 'LC field extraction'},
+  step14: {tag: 'VLM',     desc: 'LC amendment processing'},
+  step15: {tag: 'VLM',     desc: 'Shipping classification'},
+  step16: {tag: 'VLM',     desc: 'Shipping reconciliation'},
+  step17: {tag: 'LLM',     desc: 'Text-only decomposition'},
+  step18: {tag: 'LLM',     desc: 'Text-only decomposition user template'},
+  step19: {tag: 'LLM',     desc: 'Verification — text-only LLM (uses document_text + visual_metadata)'},
+};
+function _renderModelTag(tag) {
+  const styles = {
+    'OCR':     'background:#fff4e5;color:#c2410c;border:1px solid #fed7aa',
+    'VLM':     'background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd',
+    'LLM':     'background:#f3e8ff;color:#6b21a8;border:1px solid #e9d5ff',
+    'VLM+LLM': 'background:linear-gradient(90deg,#e0f2fe,#f3e8ff);color:#0d3b8a;border:1px solid #cdd6f5',
+  };
+  const s = styles[tag] || styles['VLM'];
+  return `<span style="display:inline-block;padding:1px 6px;border-radius:10px;${s};font-weight:700;font-size:.75em;margin-left:6px;vertical-align:middle">${tag}</span>`;
+}
+function _injectModelTags() {
+  for (const [key, info] of Object.entries(_STEP_MODEL_TAGS)) {
+    const el = document.getElementById('prompt-' + key);
+    if (!el) continue;
+    // Walk up to the card, find the title div (first div with font-weight:700)
+    const card = el.closest('div[style*="border"]');
+    if (!card) continue;
+    const titleDiv = card.querySelector('div[style*="font-weight:700"]');
+    if (!titleDiv || titleDiv.querySelector('.model-tag')) continue;
+    const wrap = document.createElement('span');
+    wrap.className = 'model-tag';
+    wrap.title = info.desc;
+    wrap.innerHTML = _renderModelTag(info.tag);
+    titleDiv.appendChild(wrap);
+  }
+}
+
 async function loadPrompts() {
+  const _PROMPT_KEYS = ['step1','step2','step3','step4','step5','step6','step7','step8','step9','step10','step11','step12','step13','step14','step15','step16','step17','step18','step19'];
   try {
     const r = await fetch('/api/prompts');
     if (r.ok) {
       const d = await r.json();
-      if (d.step1) document.getElementById('prompt-step1').value = d.step1;
-      if (d.step3) document.getElementById('prompt-step3').value = d.step3;
-      if (d.step6) document.getElementById('prompt-step6').value = d.step6;
-      if (d.step8) document.getElementById('prompt-step8').value = d.step8;
-      if (d.step12) document.getElementById('prompt-step12').value = d.step12;
-      if (d.step14) document.getElementById('prompt-step14').value = d.step14;
+      _PROMPT_KEYS.forEach(k => {
+        const el = document.getElementById('prompt-' + k);
+        if (!el) return;
+        el.value = d[k] || '(prompt not found)';
+      });
     } else {
       const msg = 'Restart server to load prompts.';
-      ['step1','step3','step6','step8','step12','step14'].forEach(s => {
+      _PROMPT_KEYS.forEach(s => {
         const el = document.getElementById('prompt-' + s);
         if (el) el.value = msg;
       });
     }
-  } catch(e) {}
+  } catch(e) {
+    _PROMPT_KEYS.forEach(s => {
+      const el = document.getElementById('prompt-' + s);
+      if (el) el.value = '(error: ' + (e && e.message ? e.message : String(e)) + ')';
+    });
+  }
+  _injectModelTags();
 }
 loadPrompts();
 </script>

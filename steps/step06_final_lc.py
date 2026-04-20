@@ -2736,6 +2736,42 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             _cf['48'] = _days_m.group(1)
             _progress(f"  F48: extracted {_days_m.group(1)} days from presentation period")
 
+    # P126 — Rescue "DAYS FROM SHIPMENT DATE BUT WITHIN VALIDITY" from any
+    # field it leaked into (typically F47A), fold it back into F48. This
+    # handles Alliance/Fusion SWIFT exports where the F48 presentation
+    # period straddles fields without a proper (CONT FROM FIELD 48) marker.
+    _days_pat = re.compile(
+        r'(?:^|\n)\s*(?P<num>\d{1,3})?\s*DAYS?\s+FROM\s+(?:DATE\s+OF\s+)?SHIPMENT(?:\s+DATE)?\s+BUT\s+WITHIN\s+(?:THE\s+)?(?:VALIDITY|EXPIRY)(?:\s+OF\s+(?:THIS\s+)?(?:LC|L/C|CREDIT))?[.\s]*',
+        re.IGNORECASE,
+    )
+    _rescued_days = None
+    _rescued_num = None
+    for _tag in list(_cf.keys()):
+        if _tag == '48' or _tag.startswith('_'):
+            continue
+        _val = _cf.get(_tag, '')
+        if not isinstance(_val, str) or not _val:
+            continue
+        _m = _days_pat.search(_val)
+        if not _m:
+            continue
+        _rescued_days = _m.group(0).strip().rstrip('.').strip()
+        _rescued_num = _m.group('num') or ''
+        _cf[_tag] = (_val[:_m.start()] + _val[_m.end():]).strip()
+        _progress(f"  P126: rescued '{_rescued_days[:60]}' from F{_tag} → F48")
+        break
+    if _rescued_days:
+        _existing_f48 = str(_cf.get('48', '')).strip()
+        _has_days_text = bool(re.search(r'DAYS?\s+FROM\s+SHIPMENT', _existing_f48, re.IGNORECASE))
+        _has_num = bool(re.search(r'\d+', _existing_f48))
+        if not _has_days_text:
+            if _rescued_num and not _has_num:
+                _cf['48'] = f"{_rescued_num} {_rescued_days if 'DAYS' in _rescued_days.upper() else 'DAYS ' + _rescued_days}".strip()
+            elif _has_num and not re.search(r'DAYS?\b', _existing_f48, re.IGNORECASE):
+                _cf['48'] = f"{_existing_f48} {_rescued_days}".strip()
+            else:
+                _cf['48'] = f"{_existing_f48}\n{_rescued_days}".strip() if _existing_f48 else _rescued_days
+
     # 2c. Run full cleanup on ALL consolidated fields (not just amended ones)
     for _tag in list(_cf.keys()):
         if _tag.startswith('_'):

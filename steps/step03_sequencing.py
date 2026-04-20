@@ -48,6 +48,11 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import QWEN_VLM_URL, QWEN_VLM_MODEL, MAX_CONCURRENT_VLM, VLM_TIMEOUT
+try:
+    from config.settings import QWEN_TEXT_LLM_URL, QWEN_TEXT_LLM_MODEL
+except ImportError:
+    QWEN_TEXT_LLM_URL = os.getenv("QWEN_TEXT_LLM_URL", "")
+    QWEN_TEXT_LLM_MODEL = os.getenv("QWEN_TEXT_LLM_MODEL", "Qwen2.5-72B-Instruct")
 
 
 # ── Data Models ──
@@ -88,10 +93,810 @@ class DocumentPacket:
     seals: List[dict] = field(default_factory=list)
     logos: List[dict] = field(default_factory=list)
     doc_hint: str = ""
+    # ── New additive fields (backward compatible) ──
+    # bl_subtype: populated only for Bill of Lading packets (Tier 7)
+    #   form_type, contract_type, issuer_type, signing_type,
+    #   has_terms_overleaf, is_blank_back, carrier_name, forwarder_name
+    bl_subtype: Optional[dict] = None
+    # unified_summary: structured fields extracted from ALL pages of the
+    # packet (Tier 8). Used by step09/step13/step14 to avoid page-1-only bias.
+    unified_summary: Optional[dict] = None
+    # validation_status: valid | re_checked | low_confidence (Tier 3)
+    validation_status: str = "valid"
 
 
-# ── VLM Classification Prompt ──
+# ──────────────────────────────────────────────────────────────────────── #
+# PROMPTS — 5 specialized sub-prompts (editable in settings page)           #
+#                                                                          #
+# Each prompt does ONE job. Sub-call flow per page:                        #
+#   Step 3a → CLASSIFY_DOCTYPE_PROMPT   (text-heavy: doc type + continuation) #
+#   Step 3b → EXTRACT_MARKINGS_PROMPT   (visual: stamps, sigs, seals, logos)  #
+#   Step 3c → COPY_STATUS_PROMPT        (narrow: ORIGINAL/COPY/NON-NEGOTIABLE)#
+# Packet-level calls (run once per packet, not per page):                  #
+#   Step 3d → BL_SUBTYPE_PROMPT         (BL sub-type — 8 yes/no fields)    #
+#   Step 3e → PACKET_SUMMARY_PROMPT     (structured summary across pages)  #
+# ──────────────────────────────────────────────────────────────────────── #
 
+
+# ── Step 3a — Document Type Classification (text-dominant) ──
+CLASSIFY_DOCTYPE_PROMPT = """You are a trade finance document classifier. Classify ONE page.
+
+GLM OCR TEXT (trusted):
+{glm_text}
+
+Return ONLY JSON:
+{{
+  "document_type": "exact doc type or heading visible on page",
+  "is_continuation": false,
+  "confidence": 0.95,
+  "doc_hint": "one-line description"
+}}
+
+COMMON TYPES (use exact heading when visible):
+  LC, Amendment, MT799, MT999, Bill of Lading, Commercial Invoice,
+  Draft Bill of Exchange, Packing List, Certificate of Origin,
+  Insurance Certificate, Insurance Policy, Weight Certificate,
+  Quality Certificate, Quantity Certificate, Shipment Advice,
+  Document Remittance, Beneficiary Certificate, Fumigation Certificate,
+  Phytosanitary Certificate, Health Certificate, Inspection Certificate,
+  Notice of Readiness, Port Clearance Certificate, Tanker Cleanliness Certificate,
+  Shore Tank Measurements, Time Sheet, Vessel Experience Factor,
+  Master Receipt for Sealed Samples, Letter of Authority, Letter of Indemnity,
+  Certificate of Receipted Quantity, Products Quality Certificate,
+  Products Quantity Certificate, Loading Inspection Report, Survey Report,
+  Ullage Report, Cargo Manifest, Mate Receipt, Debit Note, Credit Note,
+  Proforma Invoice, Air Waybill, Railway Bill, CMR, Courier Receipt,
+  Truck Receipt, Delivery Order, Warehouse Receipt, Halal Certificate,
+  Radiation Certificate, Non-GMO Certificate, Age Certificate,
+  Pre-Shipment Inspection Certificate, GSP Form A, Export License,
+  Import License, Chamber of Commerce Certificate, Mill Certificate,
+  BL Conditions of Carriage, Endorsement Page, Covering Letter, Header Page.
+
+DECISIVE RULES (apply in order):
+
+1. SWIFT / LC family:
+   - F-tags visible (F20:, F26E:, F31C:, F46A:, F47A:, :20:, :31C:, :46A:, :47A:)
+     → "LC" (default). If F26E or "Date of Amendment" present → "Amendment".
+   - "fin.799" / "Free Format Message" / "F79:" / "MT 799" / "Bank-to-Bank Message"
+     → "MT799" (NOT an LC, even if body mentions 45A/46A/47A — those are references
+     inside the free-format narrative, not real fields).
+   - Same signals with 999 → "MT999".
+   - Page with ONLY a bank letterhead/logo/SWIFT BIC and NO F-tags → "Header Page"
+     or "Covering Letter" (NOT an LC). "FUSION TRADE INNOVATION" header +
+     "Select 'Print' to output" with no SWIFT body → "Header Page".
+
+2. Draft / Bill of Exchange:
+   - "BILL OF EXCHANGE" OR any TWO of: "PAY THIS FIRST/SECOND/THIRD",
+     "AT SIGHT" / "AT XX DAYS SIGHT", "DRAWN ON", "FOR VALUE RECEIVED",
+     "DRAWER/DRAWEE", "TO THE ORDER OF" → "Draft Bill of Exchange".
+   - Drafts are short (~300-500 chars). FIRST/SECOND/THIRD copies are
+     each separate Draft packets — do NOT merge them via is_continuation.
+   - A page with "AT Sight" + "DRAWN ON" + L/C number but no BL fields is a
+     DRAFT, not a BL.
+
+3. Bill of Lading family:
+   - "BILL OF LADING" / "B/L NO" / "B/L NO." / "TANKER BILL OF LADING"
+     / "CONGENBILL" / "GENCON" / SHIPPER+CONSIGNEE+VESSEL+PORTS together
+     → "Bill of Lading".
+   - "Details As Per Attached Sheet(s)" / "See Attached" / "As Per Rider" in a
+     BL → the next page(s) are BL continuation (is_continuation=true).
+   - Full-set BL = 3 originals + N non-negotiables. Each copy is its OWN packet;
+     do NOT merge them via is_continuation. Different copy_status ⇒ different packet.
+   - Back of BL with endorsement stamps only (e.g. "TO THE ORDER OF..." stamps,
+     no shipper/consignee/vessel) → "Endorsement Page" with is_continuation=true.
+
+4. BL Conditions of Carriage (CRITICAL — NOT a BL):
+   - Page titled "Conditions of Carriage" / "Conditions of Contract" /
+     "Terms and Conditions" containing ONLY numbered legal clauses (Hague Rules,
+     Paramount, Jason, BIMCO, General Average, Arbitration, Liberty and Deviation)
+     and NO shipper/consignee/vessel/port fields → "BL Conditions of Carriage".
+   - This is the REVERSE side of a BL, NOT a BL itself.
+
+5. Commercial Invoice family:
+   - "COMMERCIAL INVOICE" / "Invoice No." / "Invoice Number" → "Commercial Invoice".
+   - "PROFORMA INVOICE" → "Proforma Invoice".
+   - "DEBIT NOTE" / "CREDIT NOTE" → those exact types.
+   - Page 2+ of an invoice with additional line items / totals / bank details and
+     no new title → "Commercial Invoice" with is_continuation=true.
+
+6. Packing List: "PACKING LIST" / "PACKING SLIP" → "Packing List".
+
+7. Bank presentation schedules (easy to confuse with LC):
+   - "L/C BILLS SCHEDULE" / "COVERING SCHEDULE" / "DOCUMENT PRESENTATION" /
+     "EXPORT DC DOCUMENT PRESENTATION SCHEDULE" with document list + CBC +
+     amount + maturity → "Document Remittance" (NOT an LC).
+
+8. Surveyor / weight / quality reports — USE EXACT TITLE:
+   - "WEIGHT / QUALITY CERTIFICATE" → "Weight / Quality Certificate".
+   - "QUALITY / ANALYSIS" (only test results, no weight) → "Quality / Analysis"
+     (NOT "Inspection Certificate" — use the actual heading).
+   - "FULL LOADING SURVEY REPORT" (loading timeline, tank cleanliness) →
+     "Full Loading Survey Report".
+   - "HEALTH CERTIFICATE" → "Health Certificate".
+   - Always use the EXACT document heading. Do NOT force-fit generic categories.
+
+9. Continuation / multi-page (CRITICAL — read carefully):
+   - "Page X of Y" with X > 1 → is_continuation=true ALWAYS, even if the
+     page has its own prominent heading / title block / letterhead. A
+     surveyor, bank, or lab commonly repeats their letterhead on EVERY
+     page of a multi-page report. The HEADER does NOT define the doc
+     boundary — the "Page N of M" footer does.
+     Example:
+       Page 8 has heading "CERTIFICATE OF QUALITY AND WEIGHT..." + "Page 1 of 2"
+         → new doc, cont=false
+       Page 9 has heading "REPORT" or even repeats the same letterhead +
+         "Page 2 of 2" → is_continuation=true (SAME doc as page 8).
+   - If the page shows "Page X of Y" with X > 1 AND your instinct is
+     "this looks like a new doc" because of the heading, STILL tag
+     is_continuation=true. The doc_type should match the previous page's
+     (the one with "Page 1 of Y").
+   - Letterhead-or-footer-only page following a classified doc → SAME type as
+     previous page with is_continuation=true. NEVER return "unknown" here —
+     either continue the previous type or use "Header Page".
+   - A continuation page mentions amounts/quantities/goods matching the previous
+     doc → same type, is_continuation=true. Do NOT relabel as a different type.
+
+10. Fallback: use the EXACT heading visible on the page. "unknown" is a last resort.
+
+CRITICAL DON'TS:
+- Do NOT classify a BL copy (same text, different stamp) as Shipment Advice.
+- Do NOT confuse REFERENCES (an "Invoice No." inside a BL body) with DOCUMENT
+  TYPE — look at HEADERS + FIELD STRUCTURE, not keywords in body text.
+- Do NOT classify an MT799/MT999 as "LC" or "Amendment" even if its body
+  references F45A / F46A / F47A — F79 narrative field or fin.799 header is
+  decisive.
+- Do NOT relabel a BL copy/original as something else because stamps differ.
+
+Return JSON only.
+"""
+
+
+# ── Step 3b — Visual Markings Extraction (visual-only, no doc-type rules) ──
+EXTRACT_MARKINGS_PROMPT = """Look at this page image. List EVERY visual marking you see.
+
+Return ONLY JSON:
+{
+  "stamps": [{"text": "exact text inside stamp", "type": "rubber_stamp|embossed|printed", "position": "top-right|bottom-left|center|etc"}],
+  "signatures": [{"description": "handwritten signature shape/style", "type": "handwritten|digital", "signatory": "name if readable, else empty"}],
+  "seals": [{"description": "round/oval company seal", "position": "where on page"}],
+  "logos": [{"company_name": "name in logo", "position": "top-left|header|etc"}]
+}
+
+Rules:
+- Include EVERY visible marking, even faint ones. Err on the side of including.
+- For stamps: read the exact text inside the stamp bounding box.
+- For signatures: describe the shape if name is illegible (e.g. "looping cursive initials").
+- Return empty arrays [] for categories with nothing found.
+- Do NOT classify the document type. Do NOT describe page content outside markings.
+- Only output JSON. No commentary.
+"""
+
+
+# ── Step 3c — Copy / Original Status (narrow targeted question) ──
+COPY_STATUS_PROMPT = """Look at this page image. Find the ORIGINAL / COPY / NON-NEGOTIABLE marker
+(usually a stamp, sometimes printed text) and report the document's copy status.
+
+Return ONLY JSON:
+{
+  "copy_status": "original|copy|non_negotiable|unknown",
+  "copy_label": "exact text of the marker (e.g. 'ORIGINAL', 'COPY', 'NON-NEGOTIABLE', 'FIRST ORIGINAL', 'SECOND ORIGINAL', 'THIRD ORIGINAL')",
+  "marking_status": "stamped_and_signed|signed|stamped|unsigned"
+}
+
+Rules:
+- "FIRST ORIGINAL" / "SECOND ORIGINAL" / "THIRD ORIGINAL" → copy_status = original (record ordinal in copy_label)
+- "NON-NEGOTIABLE" / "NON NEGOTIABLE" → copy_status = non_negotiable
+- "COPY" (without "ORIGINAL") → copy_status = copy
+- No marker visible → copy_status = "unknown"
+- marking_status: does the page show BOTH stamps AND signatures, just one, or neither?
+
+Only output JSON.
+"""
+
+
+# ── Step 3d — BL Sub-type Classification (packet-level, runs once per BL packet) ──
+BL_SUBTYPE_PROMPT = """You are classifying a Bill of Lading that may span multiple pages. Below
+is the full concatenated OCR text from all pages of the BL packet (front + reverse).
+Determine the BL's full set of sub-type attributes.
+
+PACKET TEXT (all pages):
+{packet_text}
+
+Return ONLY JSON:
+{{
+  "form_type": "short_form_blank_back|long_form_printed_overleaf|condensed|unknown",
+  "contract_type": "standard|charter_party|combined_transport|through|tanker|multimodal|unknown",
+  "issuer_type": "master_bl|house_bl|charter_party_bl|unknown",
+  "signing_type": "master_signed|agent_for_master|carrier_signed|forwarder_signed|unknown",
+  "cleanness": "clean|claused|unknown",
+  "shipped_on_board_status": "shipped_on_board|received_for_shipment|unknown",
+  "negotiability": "negotiable|non_negotiable|straight|unknown",
+  "consigned_form": "to_order|to_order_of_bank|to_order_of_shipper|straight_consignee|bearer|unknown",
+  "has_terms_overleaf": false,
+  "is_blank_back": false,
+  "is_short_form": false,
+  "is_house_bl": false,
+  "is_charter_party_bl": false,
+  "is_claused_bl": false,
+  "freight_status": "prepaid|collect|payable_at_destination|unknown",
+  "carrier_name": "name of carrier/shipping line, empty if not identifiable",
+  "forwarder_name": "name of forwarder if house_bl, else empty",
+  "clausing_notes": "if claused, the exact text of any damage/defect clause (e.g. '2 BAGS TORN') — else empty",
+  "bl_type_description": "one-sentence human summary, e.g. 'Charter-party, long-form, agent-for-master, clean-on-board, to-order-of-bank, non-negotiable copy'"
+}}
+
+DETECTION RULES:
+
+Contract type:
+  - "CONGENBILL" / "GENCON" / "AS PER CHARTER PARTY" / "CHARTER PARTY DATED" → charter_party
+  - "COMBINED TRANSPORT" → combined_transport
+  - "MULTIMODAL TRANSPORT" → multimodal
+  - "THROUGH BILL OF LADING" → through
+  - "TANKER BILL OF LADING" → tanker
+  - else → standard
+
+Signing (look in signature block):
+  - "AS MASTER" or "MASTER OF THE VESSEL" → master_signed
+  - "AS AGENTS ONLY FOR AND BY AUTHORITY OF" + CAPTAIN/MASTER → agent_for_master
+  - "AS CARRIER" / "THE CARRIER" → carrier_signed
+  - "AS FREIGHT FORWARDER" / "NVOCC" / "NON-VESSEL OPERATING" → forwarder_signed
+
+Issuer:
+  - Carrier/shipping line in letterhead → master_bl (also set is_house_bl=false)
+  - Freight forwarder / NVOCC in letterhead → house_bl (also set is_house_bl=true)
+  - CONGENBILL/GENCON + charter party → charter_party_bl (also set is_charter_party_bl=true)
+
+CLEAN vs CLAUSED (CRITICAL — UCP 600 Art 27):
+  - A CLEAN BL has NO NOTATION of damage, defect, or shortage on the cargo
+    (e.g. "CLEAN ON BOARD" / "LADEN ON BOARD" / just "SHIPPED ON BOARD" with
+    no damage remarks) → cleanness = "clean", is_claused_bl = false.
+  - A CLAUSED BL (also called "dirty" / "foul" BL) has explicit damage/defect
+    notations. Look for clauses like:
+      • "2 BAGS TORN" / "X BAGS BROKEN" / "BROKEN PACKAGING"
+      • "CARGO DAMAGED" / "IN DAMAGED CONDITION"
+      • "LEAKING DRUMS" / "STAINED" / "WET DAMAGE"
+      • "SHORT SHIPPED" / "SHORTAGE OF X UNITS"
+      • "RUSTY" / "DENTED" / "TORN"
+      • "WITH EXCEPTIONS" / "SUBJECT TO CLAUSE X"
+      • Pre-printed "said to contain" + damage remarks
+    → cleanness = "claused", is_claused_bl = true,
+      clausing_notes = the exact offending clause text.
+  - "SAID TO CONTAIN" / "SHIPPER'S LOAD AND COUNT" by themselves are STANDARD
+    disclaimers and do NOT make the BL claused.
+
+Shipped-on-board:
+  - "SHIPPED ON BOARD" / "CLEAN ON BOARD" / "LADEN ON BOARD" with a date
+    → shipped_on_board_status = "shipped_on_board"
+  - "RECEIVED FOR SHIPMENT" without on-board notation
+    → shipped_on_board_status = "received_for_shipment"
+
+Negotiability:
+  - "NON-NEGOTIABLE" / "NON NEGOTIABLE" stamp → non_negotiable
+  - "NEGOTIABLE" or ORIGINAL stamp (and no NON-NEGOTIABLE) → negotiable
+  - Consigned to a specific named party with no "TO ORDER" → straight
+
+Consignee form (look at CONSIGNEE field):
+  - "TO ORDER" (blank) → to_order
+  - "TO ORDER OF [BANK NAME]" → to_order_of_bank
+  - "TO ORDER OF [SHIPPER/beneficiary]" → to_order_of_shipper
+  - A specific named company with no "ORDER OF" → straight_consignee
+  - "TO BEARER" → bearer
+
+Freight:
+  - "FREIGHT PREPAID" → prepaid
+  - "FREIGHT COLLECT" / "FREIGHT PAYABLE AT DESTINATION" → collect
+  - "FREIGHT PAYABLE AT [X]" → payable_at_destination
+
+Overleaf / blank back / short form — DECISIVE RULE:
+  Every BL has ONE Terms & Conditions (T&C) page on its reverse (overleaf).
+  The PACKET TEXT above is the COMBINED text of all pages of this BL packet,
+  including any T&C page that was merged in during grouping.
+
+  Check the PACKET TEXT for T&C content — look for legal-clause signals like:
+    • "CONDITIONS OF CARRIAGE" / "TERMS AND CONDITIONS OF CARRIAGE"
+    • "PARAMOUNT CLAUSE" / "HAGUE RULES" / "HAGUE-VISBY"
+    • "JASON CLAUSE" / "NEW JASON CLAUSE"
+    • "BOTH-TO-BLAME COLLISION CLAUSE"
+    • "BIMCO" / "YORK-ANTWERP RULES"
+    • "GENERAL AVERAGE" (in full legal framing, not just a mention)
+    • "LIBERTY AND DEVIATION CLAUSE"
+    • Numbered legal clauses (1. Paramount Clause, 2. ..., 3. ...)
+
+  DECISION:
+  - PACKET TEXT contains T&C legal clauses (detectable by above signals)
+    → has_terms_overleaf = true
+    → form_type = long_form_printed_overleaf
+    → is_blank_back = false
+    → is_short_form = false
+
+  - "SEE OVERLEAF" / "CONDITIONS OF CARRIAGE SEE OVERLEAF" / "TERMS ON
+    REVERSE" appears on the BL face but NO T&C clauses in packet text
+    → has_terms_overleaf = true (text is on a separate page not in packet)
+    → form_type = long_form_printed_overleaf
+    → is_blank_back = false
+
+  - NO T&C clauses detected in packet AND no "SEE OVERLEAF" reference on
+    the BL face → is_blank_back = true
+    → form_type = short_form_blank_back
+    → is_short_form = true
+    → has_terms_overleaf = false
+
+  - Short form with external T&C URL ("see www.carrier.com/terms") →
+    form_type = short_form_blank_back, is_short_form = true,
+    has_terms_overleaf = false (terms are NOT physically attached).
+
+  A BL WITHOUT ANY T&C (neither overleaf clauses nor a URL reference) is
+  BLANK BACK — this is the core UCP 600 Art 20(c) consideration.
+
+bl_type_description: Write ONE sentence combining the detected attributes,
+e.g. "Charter-party, long-form, agent-for-master, clean on board,
+to-order-of-bank, non-negotiable copy."
+
+Return JSON only. Use "unknown" only when the signal is genuinely absent.
+"""
+
+
+# ── Step 3e — Packet Summary (structured extraction across all pages) ──
+PACKET_SUMMARY_PROMPT = """You are creating a structured summary of a trade finance document
+that may span multiple pages. Merge information from ALL pages into one object so
+downstream verification checks work on the whole document, not page-1 only.
+
+DOCUMENT TYPE: {doc_type}
+PACKET TEXT (concatenated from all pages):
+{packet_text}
+
+Return ONLY JSON. INCLUDE ONLY fields that have real values. OMIT empty fields.
+
+========================================================================
+CAPTURE COMPLETE TEXT — NEVER TRUNCATE OR SUMMARIZE.
+========================================================================
+
+The PACKET TEXT below is the FULL concatenated OCR of every page of this
+document (separated by "--- PAGE BREAK ---" markers). This is ONE logical
+document even if each page has its own letterhead / heading / "Page N of M"
+footer — that repetition is normal for multi-page docs. Treat the whole
+packet as a single document and produce ONE unified summary covering ALL
+pages.
+
+For ALL text fields, capture the COMPLETE text as printed on the document.
+Do NOT summarize, paraphrase, or keep only the first line.
+
+CRITICAL for multi-page docs:
+ - A single dates_found entry (e.g. certificate_issue_date) must reflect
+   the date shown on the doc, NOT be multiplied per page.
+ - A single amount_total applies to the whole doc — don't sum page totals
+   if the same figure repeats on each page.
+ - BUT line items, batch/lot rows, individual weights, and per-batch
+   MFG/EXP dates MUST be captured EACH — if 16 line items span across
+   pages 1-2, return 16 separate quantities_found entries.
+ - goods_description must contain the COMPLETE text across all pages —
+   don't truncate at a page break.
+ - parties on the document appear once (usually on page 1) — don't
+   duplicate per page.
+
+CRITICAL — fields that commonly span multiple lines and MUST be captured in full:
+  - goods_description: include EVERY line of the goods description block.
+    LC / invoice / BL / packing list goods descriptions often run 5-20 lines
+    (product + grade + variety + origin + specification + incoterm + port +
+    proforma reference + etc.). Concatenate with spaces or keep line breaks.
+  - marks_and_numbers: the FULL shipping marks block (container marks,
+    package marks, L/C ref stamp, all lines).
+  - key_clauses: EVERY clause, each as its own array element (do NOT merge).
+  - notes: the FULL body of any remarks/notes block.
+  - clausing_notes (for BL): exact text of every damage/defect clause.
+  - any address: FULL multi-line address (street, city, postcode, country).
+
+If a field has multiple values (e.g. two notify parties, three HS codes,
+two quantities — ordered AND shipped), return them as SEPARATE entries in
+the relevant array, NEVER collapsed into one.
+
+========================================================================
+EXTRACT EVERY DATE, AMOUNT, QUANTITY, REFERENCE, AND PARTY YOU CAN SEE.
+========================================================================
+
+Beyond the typed fields below, return FOUR structured arrays that capture
+EVERY date / amount / reference number / named party that appears on the
+document — each tagged with its role. These arrays are the authoritative
+source used by downstream verification; don't skip any.
+
+1. dates_found[] — every date-like string on the page.
+   CAPTURE EVERY DATE. A single document can legitimately carry 10+ distinct
+   dates (e.g. LC issue + LC expiry + latest shipment + invoice date +
+   proforma date + BL issue + on-board + ETA + signing + bank received stamp +
+   cert issue + test date + each batch's MFG + each batch's EXP). Each goes
+   as its OWN entry.
+   role vocabulary (use exactly one — or invent a descriptive snake_case
+   role when nothing below fits, rather than "other"):
+     — Document's own dates —
+       bl_issue_date, invoice_date, draft_date, certificate_issue_date,
+       issue_date (generic fallback)
+     — LC / credit dates —
+       lc_issue_date, expiry_date (LC F31D validity), latest_shipment_date,
+       amendment_date, presentation_date
+     — Shipment / vessel dates —
+       onboard_date, shipment_date, loading_date, discharge_date,
+       delivery_date, eta_date, etd_date, arrival_date, departure_date,
+       sailing_date, nor_date, nor_tender_date, vessel_clearance_date,
+       port_clearance_date, customs_clearance_date
+     — Inspection / testing / surveying —
+       inspection_date, test_date, sampling_date, survey_date,
+       fumigation_date, treatment_date, sample_collection_date,
+       test_report_date
+     — Insurance / validity —
+       insurance_effective_date, insurance_expiry_date,
+       validity_start_date, validity_end_date
+     — Product / batch / lot —
+       manufacturing_date, production_date, packed_date,
+       product_expiry_date, best_before_date, use_by_date,
+       batch_date, lot_date
+     — Contractual —
+       charter_party_date, contract_date, maturity_date, due_date,
+       payment_date
+     — Signature / receipt stamps —
+       signature_date, stamp_date, received_date, acceptance_date,
+       transmittal_date
+     — Fallback —
+       other (last resort only — ALWAYS include raw text)
+   Tagging hints:
+     - "ETA ..." / "Estimated Time of Arrival" / "ETA DISPORT" → eta_date
+     - "ETD" / "Estimated Time of Departure" → etd_date
+     - "Actual arrival" / "Arrived on" → arrival_date
+     - "SHIPPED ON BOARD" / "LADEN ON BOARD" → onboard_date
+     - "NOTICE OF READINESS" tender → nor_tender_date
+     - "Bank RECEIVED stamp" dated → stamp_date OR received_date
+     - "Cert issued on" → certificate_issue_date
+     - "L/C DATE" / "L/C ISSUE DATE" / "DC DATE" / "CREDIT DATE" anywhere on
+       ANY document (even if the doc itself is a draft/invoice/cert) →
+       lc_issue_date (NOT the doc's own issue_date). The referenced LC's
+       issuance date is a separate role from the document's own issue date.
+     - "MFG" / "MFG DATE" / "MANUFACTURING DATE" / "DATE OF MFG" /
+       "PRODUCTION DATE" / "PACKED DATE" → manufacturing_date
+     - "EXP" / "EXP DATE" / "EXPIRY DATE" / "EXPIRATION DATE" / "USE BY" /
+       "USE BEFORE" (on goods/products — NOT on LC) → product_expiry_date
+     - "BEST BEFORE" / "BBD" / "BEST BY" → best_before_date
+     - "BATCH DATE" / "LOT DATE" (when separate from MFG date) → batch_date
+     - Per-batch / per-lot dates on a packing list: one entry PER batch, tagged appropriately.
+     - LC expiry (F31D) / certificate validity → expiry_date (distinct from product_expiry_date).
+     - Use "other" ONLY when nothing above fits — include reason in raw.
+   Format: {{"role": "...", "value": "YYYY-MM-DD", "raw": "text as printed"}}
+
+2. amounts_found[] — every monetary amount on the page.
+   role vocabulary (preferred):
+     invoice_total, invoice_subtotal, line_item_amount, unit_price,
+     draft_amount, lc_amount, freight_amount, freight_prepaid_amount,
+     insurance_premium, insurance_amount, sum_insured,
+     penalty, discount, tax, duty, demurrage, commission,
+     bank_charges, handling_fee, storage_fee, advance_payment,
+     deposit, balance_due, exchange_rate_amount, net_amount, gross_amount,
+     loi_amount, refund, total_weight_value.
+   Format: {{"role": "...", "currency": "USD", "value": "123456.78",
+     "in_words": "amount in words if present", "raw": "USD 123,456.78"}}
+
+3. references_found[] — every reference number / document number / code.
+   Tagging hints:
+     - "L/C NO" / "LC NUMBER" / "DC NUMBER" / "CREDIT NO" / "CREDIT NUMBER"
+       → lc_reference (tag this on ANY document type — BLs, drafts, invoices,
+       covering schedules, and shipment advices all commonly reference the LC).
+     - "B/L NO" / "BL NUMBER" → bl_reference.
+     - "INVOICE NO" / "INVOICE NUMBER" / "INV NO" → invoice_reference.
+     - "CONTRACT NO" / "CONTRACT REF" → contract_reference.
+     - "PROFORMA INV" → proforma_reference.
+   role vocabulary (preferred):
+     lc_reference, invoice_reference, bl_reference, draft_reference,
+     contract_reference, proforma_reference, purchase_order,
+     booking_reference, voyage_number, container_number, seal_number,
+     vessel_imo, vessel_mmsi,
+     hs_code, tariff_code, ncm_code, goods_code,
+     ntn_number, tin_number, vat_number, eori_number, aeo_number,
+     sales_tax_reg_no, sro_number, customs_declaration_number,
+     cover_note_reference, policy_reference, certificate_reference,
+     phytosanitary_certificate_number, health_certificate_number,
+     weight_certificate_number, quality_certificate_number,
+     coo_reference, gsp_form_a_number, chamber_reference,
+     mill_certificate_number, test_report_number,
+     batch_number, lot_number, shipping_marks, marks_and_numbers,
+     warehouse_receipt_number, delivery_order_number, mate_receipt_number,
+     export_license_number, import_license_number, export_registration,
+     swift_bic, iban, account_number,
+     msds_reference, tally_sheet_reference.
+   Format: {{"role": "...", "value": "VANPAK10", "raw": "BL NO: VANPAK10"}}
+
+4. parties_found[] — every named company / person / bank on the document.
+
+   CRITICAL — MULTIPLE PARTIES IN THE SAME FIELD (notify, consignee,
+   shipper, etc.) are VERY COMMON and MUST each be captured as a
+   SEPARATE entry. Do NOT collapse, pick only the first, or treat the
+   second as continuation text.
+
+   Signals that a field carries multiple parties:
+     • The word "and" / "And" / "AND" inside the block on its own line
+     • A second full company name with its own address after the first
+     • Multiple numbered entries ("1.", "2.")
+     • Bullets / dashes between names
+     • Bank names following a company (common: notify = company + bank)
+     • "ALSO TO:" / "AND TO:" / "CC:" / "with a copy to" headers
+
+   Example (MUST return BOTH as separate entries):
+     Document text:
+       "Notify Party (see clause 22)
+        Global Brands Marketing (PVT) Ltd.
+        204, E.I.Lines
+        Karachi, Pakistan
+        and
+        BANK AL-HABIB LTD"
+     CORRECT extraction:
+       {{"role":"notify_party","name":"Global Brands Marketing (PVT) Ltd.",
+         "address":"204, E.I.Lines, Karachi, Pakistan",
+         "raw":"Global Brands Marketing (PVT) Ltd., 204, E.I.Lines, Karachi, Pakistan"}}
+       {{"role":"second_notify_party","name":"BANK AL-HABIB LTD",
+         "raw":"and BANK AL-HABIB LTD"}}
+     WRONG extraction (do NOT do this):
+       only one notify_party entry for "Global Brands Marketing".
+
+   Use role=second_notify_party / second_consignee / co_shipper etc. when
+   a SECOND party is present in the same field. If more than two, invent
+   role=third_notify_party / ... to preserve all of them.
+
+   role vocabulary (preferred):
+     applicant, beneficiary, issuer, shipper, exporter, manufacturer, producer,
+     consignee, ultimate_consignee, notify_party, second_notify_party,
+     drawer, drawee, payee,
+     issuing_bank, advising_bank, confirming_bank, reimbursing_bank,
+     negotiating_bank, paying_bank, collecting_bank,
+     carrier, vessel_owner, vessel_charterer, charterer,
+     forwarder, freight_forwarder, nvocc, broker, agent, signing_agent,
+     master, captain,
+     insurer, insurance_broker,
+     surveyor, inspector, testing_laboratory,
+     certifying_authority, chamber_of_commerce,
+     health_authority, agriculture_authority, port_authority,
+     customs_authority, stevedore, tallyman, receiver.
+   Format: {{"role": "...", "name": "UNITED BANK LTD", "raw": "to the order of UNITED BANK LTD",
+     "address": "optional"}}
+
+5. quantities_found[] — every QUANTITY/WEIGHT/COUNT on the document.
+   These are NOT monetary amounts — they are physical units (MT, BAGS,
+   CARTONS, CBM, M3, PCS, DRUMS, PIECES, TONS, KG, LBS, etc.).
+   Capture EACH separately — a Packing List may show quantity_ordered AND
+   quantity_shipped AND quantity_loaded AND quantity_discharged, all
+   different. Do NOT collapse them into one.
+   role vocabulary (preferred, but invent new snake_case roles when needed):
+     quantity_ordered, quantity_shipped, quantity_loaded, quantity_discharged,
+     quantity_declared, quantity_invoiced, quantity_allowed,
+     gross_weight, net_weight, tare_weight, dead_weight,
+     weight_per_package, weight_per_unit,
+     measurement, volume, cubic_measurement,
+     number_of_packages, number_of_containers, number_of_bags,
+     number_of_drums, number_of_cartons, number_of_pallets, number_of_units,
+     minimum_quantity, maximum_quantity, tolerance_percent.
+   Format: {{"role": "...", "value": "65,052.890", "unit": "MT",
+     "raw": "GROSS WEIGHT: 65,052.890 METRIC TONS"}}
+
+6. other_details_found[] — ANY other factual detail on the document that
+   doesn't fit the five arrays above. Examples: vessel dimensions, stowage
+   holds, cargo grade, tariff notes, INCOTERMS, UCP/ICC clause references,
+   Institute Classification Clause, validity clauses, governing law, special
+   remarks, loading instructions, hold numbers, cargo quality specs, etc.
+   Format: {{"role": "short_snake_case_label", "value": "the detail",
+     "raw": "text as printed"}}
+
+========================================================================
+RULES FOR ALL SIX ARRAYS:
+========================================================================
+- Be EXHAUSTIVE. If a date / amount / quantity / reference / party / fact
+  appears on the document, capture it. Do NOT skip anything as "minor".
+- If multiple items share a role (e.g. TWO notify parties, THREE HS codes,
+  FIVE dates all of different roles), return each as a SEPARATE entry.
+- If a specific value fits no preferred role, INVENT a descriptive
+  snake_case role (e.g. "vessel_imo", "institute_classification_clause",
+  "arbitration_clause_reference") rather than using "other".
+- Use role="other" ONLY as a last resort, AND include why in the raw text.
+- Omit arrays entirely if the document truly has none of that kind of item.
+
+========================================================================
+EXPLICIT EXTRACTION CHECKLIST — DO NOT SKIP (CRITICAL)
+========================================================================
+Many documents carry data in SECTIONS the LLM may gloss over. Explicitly
+LOOK FOR and capture these if they appear ANYWHERE on any page:
+
+0. BL-SPECIFIC IDENTIFIERS (CRITICAL — often on Bill of Lading face):
+   Modern BLs commonly carry an "L/C BACK REFERENCE" block listing:
+     • L/C no. (Documentary Credit number) → references_found[role=lc_reference]
+     • L/C opening date / L/C date / DC issue date →
+       dates_found[role=lc_issue_date]
+     • L/C opening bank / Issuing Bank / Credit-opening bank →
+       parties_found[role=issuing_bank]
+       DO NOT mix this into consignee even if consignee is "TO ORDER OF
+       [the same bank]" — the issuing_bank role is SEPARATE from consignee
+       role. If the consignee is "TO ORDER OF BANK XYZ" AND BANK XYZ is
+       also named as "L/C opening bank", create BOTH entries:
+       - parties_found[role=consignee, name="To The Order of Bank XYZ"]
+       - parties_found[role=issuing_bank, name="Bank XYZ"]
+     • Exporter's bank / Advising bank / Negotiating bank if shown →
+       parties_found with the specific role.
+
+1. IDENTIFIERS ALWAYS EXTRACTED TO references_found + typed fields:
+   - Every HS Code / HTS code / commodity code → references_found[role=hs_code]
+     AND hs_codes[] typed array.
+   - NTN / TIN / VAT / EORI / AEO / SRO number → references_found with its
+     specific role AND the matching typed field (ntn_number, tin_number, etc.).
+   - Every container number, seal number → references_found[role=...]
+     AND container_numbers[]/seal_numbers[] typed arrays.
+   - Every LC / DC / proforma / purchase order / contract number →
+     references_found[role=lc_reference / proforma_reference / ...]
+     AND matching typed field.
+   - SWIFT/BIC codes, IBAN, bank account numbers →
+     references_found[role=swift_bic / iban / account_number].
+
+2. DATES ALWAYS EXTRACTED TO dates_found (multiple distinct dates possible):
+   - Doc's own issue date → certificate_issue_date / invoice_date / bl_issue_date / draft_date.
+   - LC issue date referenced (e.g. "DC Date of Issue: 2-Jan-2026") →
+     lc_issue_date (distinct from the doc's own issue_date).
+   - Proforma invoice date referenced (e.g. "DATED: 28-Nov-2025") → invoice_date with clear raw.
+   - Shipment / on-board / ETA / ETD / loading / discharge — all separate entries.
+   - PRODUCT / BATCH / LOT level dates (CRITICAL — common on pharmaceuticals,
+     food, chemicals, perishables, medical devices, packing lists):
+       • "MFG" / "MFG DATE" / "MANUFACTURING DATE" → manufacturing_date
+       • "EXP" / "EXP DATE" / "EXPIRY DATE" / "USE BY" → product_expiry_date
+       • "BEST BEFORE" / "BBD" → best_before_date
+       • "PRODUCTION DATE" / "PACKED" → production_date / packed_date
+       • "BATCH DATE" / per-batch dating → batch_date
+     If a packing list or invoice has SEVERAL batches each with its own
+     MFG/EXP → return one entry per batch, each correctly tagged. Do NOT
+     collapse them.
+
+3. LINE ITEMS ON INVOICES / PACKING LISTS:
+   - Capture EVERY line item. If an invoice has 16 rows, return 16 separate
+     quantities_found entries (one per row) — do NOT skip duplicates or
+     summarize "same product appears 10 times". Each Lot number, Qty, and
+     Unit Price is a DISTINCT quantity entry.
+   - In goods_description, include EVERY line item's full text (product code,
+     lot, qty, HS, ECCN, COO, etc.). Do NOT truncate for brevity.
+
+4. BANK / PAYMENT DETAILS — capture in references_found:
+   - "Remit To" bank name → parties_found[role=paying_bank or collecting_bank]
+   - SWIFT address / BIC → references_found[role=swift_bic]
+   - Account numbers (Export A/C, Bank A/C) → references_found[role=account_number]
+
+5. EXPORT CONTROL / ORIGIN NOTES:
+   - Country of Origin → other_details_found[role=country_of_origin].
+   - Export License Type / Number → references_found[role=export_license_number].
+   - Destination Control Statements → other_details_found[role=destination_control_statement].
+
+5b. INCOTERMS (CRITICAL — often in table cells under "Incoterms" column):
+   - Any of: CFR, CIF, FOB, EXW, DAP, DDP, DAT, DPU, CPT, FCA, C&F, CNF, FAS
+     → other_details_found[role=incoterms] with value = the 2-3-letter code.
+   - Include the NAMED PLACE if present (e.g. "CFR KARACHI SEAPORT" or
+     "FOB ANY CHINESE SEAPORT"). Raw keeps full text.
+   - These often appear in a small table alongside "Sales Rep", "Haemo No",
+     "Payment Term", "Currency" — capture them even if the column header is
+     in a different row than the value.
+   - Payment terms like "LC at Sight" / "TT" / "Cash" →
+     other_details_found[role=payment_terms].
+
+6. WEIGHTS / MEASUREMENTS:
+   - Gross weight, net weight, tare weight, measurement (CBM) — all as
+     SEPARATE quantities_found entries with proper units.
+
+7. SHIPMENT ADVICE / NOTIFICATION EMAILS (P128 — CRITICAL for Shipment Advice):
+   A Shipment Advice is typically an email/fax sent BY the beneficiary to
+   MULTIPLE recipients (insurer, applicant, consignee, bank). The email
+   header lists ALL recipients — capture EVERY ONE, not just the first.
+   Watch for these header patterns:
+     • "Sent: <date>"         → dates_found[role=advice_sent_date]
+     • "To: a@x.com ; b@y.com ; c@z.com"  (top-of-document email header)
+     • "TO: Company A"  ...  "TO: Company B"  (each "TO:" is a separate recipient)
+     • "CC:" / "BCC:"         → also separate recipients
+     • "E-Mail: foo(at)bar.com" or "foo@bar.com" under a recipient block
+     • "Fax: +92-21-1234567"  under a recipient block
+   EXTRACTION RULES:
+   (a) EVERY distinct "TO:" recipient or email address in the "To:" header
+       MUST become a parties_found entry. Use roles: notify_party,
+       second_notify_party, third_notify_party, fourth_notify_party,
+       insurer, applicant, consignee, advising_bank (pick the role that
+       matches what the document says about the recipient's purpose).
+   (b) EVERY email address on the document MUST be captured in
+       other_details_found with role=notification_email, one entry per
+       address. Normalize "(at)" / "(AT)" back to "@" in the value field,
+       keep the raw verbatim. Even if the same address is in both the
+       header and a per-recipient block, emit ONE entry per DISTINCT
+       address but list all raw occurrences.
+   (c) Fax numbers → other_details_found[role=notification_fax], one entry
+       per distinct number.
+   (d) The SUBJECT line → other_details_found[role=subject].
+   (e) Open Policy / Cover Note / Insurance reference → references_found
+       with role=open_policy_reference / cover_note_reference.
+   (f) CRITICAL: do NOT drop a notify party just because the same company
+       name also appears elsewhere on the document. If the email header
+       lists three distinct companies/addresses, emit THREE parties_found
+       entries. Missing a recipient makes the Shipment Advice fail the
+       "notify all parties" check.
+   (g) For the typed top-level field "notify_party", put the FIRST notify
+       party only (it is a single string) — the full list lives in
+       parties_found[].
+
+If a value is on the document but you didn't extract it to a structured
+array, you have FAILED this extraction. Re-check your output before
+returning.
+
+========================================================================
+TYPED TOP-LEVEL FIELDS (convenience copies — pull best value from arrays above):
+========================================================================
+
+CRITICAL — TYPED FIELDS MUST BE SIMPLE STRINGS OR NUMBERS, NEVER OBJECTS:
+  ✅ CORRECT:  "amount": "USD 97,216.00"
+  ❌ WRONG:    "amount": {{"role": "draft_amount", "currency": "USD", "value": "97216.00"}}
+  ✅ CORRECT:  "lc_reference": "0401ILC083248"
+  ❌ WRONG:    "lc_reference": {{"role": "lc_reference", "value": "0401ILC083248"}}
+Use structured objects ONLY inside the five structured arrays
+(dates_found[], amounts_found[], quantities_found[], references_found[],
+parties_found[], other_details_found[]) — NEVER as top-level field values.
+
+
+{{
+  "document_identifier": "the document's OWN reference/serial/tracking number (e.g. invoice no, BL no, cert no, LC no, draft no) — NEVER the document TYPE name. If there is no specific number, leave this empty rather than putting the doc type.",
+  "issue_date": "YYYY-MM-DD",
+  "issuer": "name of issuing party",
+  "beneficiary": "beneficiary / recipient name",
+  "shipper": "for BL/Invoice",
+  "consignee": "for BL",
+  "notify_party": "for BL",
+  "drawer": "for Draft",
+  "drawee": "for Draft",
+  "payee": "for Draft",
+  "goods_description": "full description — include all pages if it spans",
+  "quantity": "with unit",
+  "weight": "with unit",
+  "amount": "with currency",
+  "vessel_name": "for BL",
+  "voyage_number": "for BL",
+  "port_of_loading": "",
+  "port_of_discharge": "",
+  "place_of_receipt": "",
+  "place_of_delivery": "",
+  "shipment_date": "YYYY-MM-DD — on-board date for BL",
+  "lc_reference": "any LC/DC number referenced",
+  "invoice_reference": "any invoice number referenced",
+  "contract_reference": "",
+  "key_clauses": ["charter party dated X", "LC 47A clause", etc],
+  "cross_references": ["references to other documents in the same packet set"],
+  "notes": "anything unusual (name change, stamps-only page, etc.)",
+
+  // Bill of Lading specific fields (include when doc is a BL — else omit)
+  "bl_number": "BL / B/L number",
+  "bl_date": "YYYY-MM-DD — date on the BL itself",
+  "ntn_number": "NTN / National Tax Number (usually on Pakistan BLs)",
+  "hs_codes": ["HS / HTS / commodity codes found (e.g. 1201.00.00)"],
+  "freight_terms": "FREIGHT PREPAID / FREIGHT COLLECT / FREIGHT PAYABLE AT DESTINATION",
+  "freight_amount": "amount + currency if shown on BL",
+  "number_of_originals": "e.g. 3/THREE",
+  "container_numbers": ["MSCU1234567", "etc"],
+  "seal_numbers": ["seal IDs"],
+  "marks_and_numbers": "shipping marks block (can be multi-line)",
+  "gross_weight": "with unit",
+  "net_weight": "with unit",
+  "measurement": "CBM / volume with unit",
+  "number_of_packages": "e.g. 500 BAGS",
+  "package_type": "BAGS / BULK / DRUMS / CTNS",
+  "onboard_date": "YYYY-MM-DD — 'SHIPPED ON BOARD' date",
+  "signed_by": "signing party name (e.g. 'AS AGENT FOR CAPTAIN ...')",
+  "charter_party_reference": "if CP BL: 'AS PER CHARTER PARTY DATED YYYY-MM-DD'"
+}}
+
+Rules:
+- If a field value spans multiple pages (e.g. goods description on page 1 + continuation on page 2), merge them.
+- For BL: include vessel + both ports + shipment date even if on different pages.
+- For Invoice: include total amount (may be on last page) + all goods lines.
+- For Draft: include drawer/drawee/payee + amount + tenor.
+- If the document references other documents (LC no, invoice no), record them in lc_reference / invoice_reference / cross_references.
+- Do NOT invent values. Omit fields with no actual data.
+
+Only output JSON.
+"""
+
+
+# ── Back-compat alias — kept so existing imports (server.py) keep working ──
+# Legacy single-prompt path. New flow uses the 5 prompts above.
 CLASSIFY_PROMPT = """You are a trade finance document classifier. Look at this page image and the OCR text below.
 
 GLM OCR TEXT (trusted — extracted from this page):
@@ -435,6 +1240,633 @@ def _classify_page_vlm(page_num: int, image_path: str, glm_text: str, _max_retri
             'error': f'Failed after {_max_retries} retries: {last_err}'}
 
 
+# ──────────────────────────────────────────────────────────────────────── #
+# NEW — per-page sub-call VLM helpers (Tier 1 split)                        #
+# Each function sends ONE focused prompt per page. Callers parallelize.     #
+# ──────────────────────────────────────────────────────────────────────── #
+
+def _prepare_image_b64(image_path: str, max_dim: int = 1280) -> Optional[str]:
+    """Resize image to at most max_dim on either axis; return base64 PNG."""
+    if not os.path.exists(image_path):
+        return None
+    try:
+        from PIL import Image
+        import io
+        img = Image.open(image_path)
+        if img.width > max_dim or img.height > max_dim:
+            scale = min(max_dim / img.width, max_dim / img.height)
+            new_size = (int(img.width * scale), int(img.height * scale))
+            img = img.resize(new_size, Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            return base64.b64encode(buf.getvalue()).decode()
+        return base64.b64encode(open(image_path, 'rb').read()).decode()
+    except Exception:
+        try:
+            return base64.b64encode(open(image_path, 'rb').read()).decode()
+        except Exception:
+            return None
+
+
+def _extract_json_from_response(text: str) -> Optional[dict]:
+    """Robust JSON extraction from LLM/VLM response:
+    1. Strip markdown code fences (```json ... ```).
+    2. Try a direct parse on the stripped body.
+    3. Fall back to greedy-brace extraction.
+    4. Fall back to 'balance-braces-on-truncation' for responses cut off mid-JSON.
+    Returns parsed dict or None.
+    """
+    if not text:
+        return None
+    # Strip common markdown code-fence wrappers
+    cleaned = text.strip()
+    for fence_re in (r'^```(?:json|JSON)?\s*', r'\s*```$'):
+        cleaned = re.sub(fence_re, '', cleaned, flags=re.DOTALL).strip()
+    # Direct parse
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+    # Greedy brace match
+    m = re.search(r'\{[\s\S]*\}', cleaned)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
+    # Balance-braces-on-truncation: response ran out before closing {
+    # Count unclosed braces and append them. Also close any unclosed string.
+    start = cleaned.find('{')
+    if start >= 0:
+        partial = cleaned[start:]
+        # If we're in the middle of a string, close it
+        if partial.count('"') % 2 == 1:
+            partial += '"'
+        # Trim trailing incomplete value: if last meaningful char is comma, drop it
+        partial_stripped = partial.rstrip()
+        if partial_stripped.endswith(','):
+            partial = partial_stripped[:-1]
+        # Close unbalanced braces
+        open_braces = partial.count('{') - partial.count('}')
+        open_brackets = partial.count('[') - partial.count(']')
+        if open_brackets > 0:
+            partial += ']' * open_brackets
+        if open_braces > 0:
+            partial += '}' * open_braces
+        try:
+            return json.loads(partial)
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def _vlm_call_json(prompt: str, image_b64: Optional[str],
+                   max_tokens: int = 1500, temperature: float = 0.1,
+                   max_retries: int = 3) -> dict:
+    """Send a prompt (+ optional image) to Qwen VLM and parse JSON out of the response."""
+    content = [{"type": "text", "text": prompt}]
+    if image_b64:
+        content.insert(0, {"type": "image_url",
+                           "image_url": {"url": f"data:image/png;base64,{image_b64}"}})
+    payload = {
+        "model": QWEN_VLM_MODEL,
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(QWEN_VLM_URL, json=payload, timeout=None)
+            if resp.status_code != 200:
+                last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                time.sleep(2 * (attempt + 1))
+                continue
+            text = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+            parsed = _extract_json_from_response(text)
+            if parsed is not None:
+                return parsed
+            last_err = f"could not parse JSON: {text[:200]}"
+        except requests.exceptions.Timeout:
+            last_err = 'VLM timeout'
+            time.sleep(2 * (attempt + 1))
+        except Exception as e:
+            last_err = str(e)
+            time.sleep(2 * (attempt + 1))
+    return {"_error": last_err or "unknown"}
+
+
+def _llm_text_call(prompt: str, max_tokens: int = 2500, temperature: float = 0.1,
+                   max_retries: int = 3) -> dict:
+    """Send a text-only prompt to the Qwen text LLM (used for large-packet summaries)."""
+    if not QWEN_TEXT_LLM_URL:
+        return {"_error": "QWEN_TEXT_LLM_URL not configured"}
+    payload = {
+        "model": QWEN_TEXT_LLM_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(QWEN_TEXT_LLM_URL, json=payload, timeout=None)
+            if resp.status_code != 200:
+                last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                time.sleep(2 * (attempt + 1))
+                continue
+            text = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+            parsed = _extract_json_from_response(text)
+            if parsed is not None:
+                return parsed
+            # If no JSON found or unparseable, return raw text so caller can inspect
+            return {"_raw": text}
+        except requests.exceptions.Timeout:
+            last_err = 'LLM timeout'
+            time.sleep(2 * (attempt + 1))
+        except Exception as e:
+            last_err = str(e)
+            time.sleep(2 * (attempt + 1))
+    return {"_error": last_err or "unknown"}
+
+
+def _classify_doctype_vlm(page_num: int, image_path: str, glm_text: str) -> dict:
+    """Step 3a — classify ONE page's document_type + is_continuation.
+    Text-dominant task. Sends image at 1280px (classification doesn't need detail)."""
+    img_b64 = _prepare_image_b64(image_path, max_dim=1280)
+    _text = glm_text[:4000] if len(glm_text) > 4000 else glm_text
+    prompt = CLASSIFY_DOCTYPE_PROMPT.format(glm_text=_text)
+    result = _vlm_call_json(prompt, img_b64, max_tokens=800)
+    # Normalize
+    return {
+        "page_number": page_num,
+        "document_type": result.get("document_type", "unknown"),
+        "is_continuation": bool(result.get("is_continuation", False)),
+        "confidence": float(result.get("confidence", 0.0) or 0.0),
+        "doc_hint": result.get("doc_hint", "") or "",
+        "_error": result.get("_error"),
+    }
+
+
+def _extract_markings_vlm(page_num: int, image_path: str) -> dict:
+    """Step 3b — extract stamps/signatures/seals/logos from ONE page.
+    Visual-only. Uses HIGHER resolution (1920px) so small stamps stay legible."""
+    img_b64 = _prepare_image_b64(image_path, max_dim=1920)
+    result = _vlm_call_json(EXTRACT_MARKINGS_PROMPT, img_b64, max_tokens=1200)
+    _as_list = lambda v: v if isinstance(v, list) else []
+    return {
+        "page_number": page_num,
+        "stamps": _as_list(result.get("stamps")),
+        "signatures": _as_list(result.get("signatures")),
+        "seals": _as_list(result.get("seals")),
+        "logos": _as_list(result.get("logos")),
+        "_error": result.get("_error"),
+    }
+
+
+def _detect_copy_status_vlm(page_num: int, image_path: str) -> dict:
+    """Step 3c — find ORIGINAL / COPY / NON-NEGOTIABLE stamp and report copy status.
+    Narrow visual question. 1600px — balance between legibility and speed."""
+    img_b64 = _prepare_image_b64(image_path, max_dim=1600)
+    result = _vlm_call_json(COPY_STATUS_PROMPT, img_b64, max_tokens=400)
+    return {
+        "page_number": page_num,
+        "copy_status": result.get("copy_status", "unknown"),
+        "copy_label": result.get("copy_label", "") or "",
+        "marking_status": result.get("marking_status", "unknown"),
+        "_error": result.get("_error"),
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────── #
+# NEW — packet-level VLM helpers (Tier 7 + Tier 8)                          #
+# Called ONCE per packet after grouping.                                    #
+# ──────────────────────────────────────────────────────────────────────── #
+
+def _classify_bl_subtype(packet_text: str, front_image_path: Optional[str] = None,
+                         reverse_image_path: Optional[str] = None) -> dict:
+    """Step 3d — classify BL sub-type (form/contract/issuer/signing + overleaf/blank-back).
+    Sends up to 2 page images (front + reverse) for stamp/signature disambiguation."""
+    _text = packet_text[:12000] if len(packet_text) > 12000 else packet_text
+    prompt = BL_SUBTYPE_PROMPT.format(packet_text=_text)
+    # BL packets are small (1-3 pages typically) → send front + reverse images
+    img_b64 = _prepare_image_b64(front_image_path, max_dim=1600) if front_image_path else None
+    # For now pass only the front image; reverse-specific signals come from text
+    result = _vlm_call_json(prompt, img_b64, max_tokens=800)
+    # Normalize shape so caller can trust the fields
+    _bool = lambda v: bool(v) if isinstance(v, bool) else (str(v).lower() in ('true', 'yes', '1'))
+    return {
+        "form_type": result.get("form_type", "unknown"),
+        "contract_type": result.get("contract_type", "unknown"),
+        "issuer_type": result.get("issuer_type", "unknown"),
+        "signing_type": result.get("signing_type", "unknown"),
+        "has_terms_overleaf": _bool(result.get("has_terms_overleaf", False)),
+        "is_blank_back": _bool(result.get("is_blank_back", False)),
+        "carrier_name": result.get("carrier_name", "") or "",
+        "forwarder_name": result.get("forwarder_name", "") or "",
+        "_error": result.get("_error"),
+    }
+
+
+def _summarize_packet(doc_type: str, page_texts: List[str],
+                      page_images: Optional[List[str]] = None) -> dict:
+    """Step 3e — structured summary across all pages of a packet.
+
+    Tiered chunking by packet size:
+      1-4 pages   → VLM, send ALL images + full text
+      5-20 pages  → LLM text-only, full concatenated OCR
+      21+ pages   → LLM text-only, chunk by 10 (or 15 for very large),
+                    per-chunk summary, then merge summaries with one LLM call
+    """
+    n = len(page_texts)
+    combined = "\n\n--- PAGE BREAK ---\n\n".join(page_texts)
+
+    # Packet summaries can be large: 5 structured arrays + typed fields +
+    # BL-specific fields + invented roles. Raised max_tokens to prevent
+    # mid-JSON truncation (bug seen with max_tokens=2000: response cut off
+    # mid-word on a rich Commercial Invoice, leaving summary unparseable).
+    _SUMMARY_MAX_TOKENS = 5000
+
+    # Path A: small packet (≤4 pages) — VLM with images
+    if n <= 4:
+        _text = combined[:15000] if len(combined) > 15000 else combined
+        prompt = PACKET_SUMMARY_PROMPT.format(doc_type=doc_type, packet_text=_text)
+        # Use first page image only; text carries the rest
+        img_b64 = None
+        if page_images:
+            for p in page_images:
+                if p and os.path.exists(p):
+                    img_b64 = _prepare_image_b64(p, max_dim=1280)
+                    if img_b64:
+                        break
+        result = _vlm_call_json(prompt, img_b64, max_tokens=_SUMMARY_MAX_TOKENS)
+        return _clean_summary(result)
+
+    # Path B: medium packet (5-20 pages) — text-only LLM
+    if n <= 20:
+        _text = combined[:40000] if len(combined) > 40000 else combined
+        prompt = PACKET_SUMMARY_PROMPT.format(doc_type=doc_type, packet_text=_text)
+        result = _llm_text_call(prompt, max_tokens=_SUMMARY_MAX_TOKENS)
+        return _clean_summary(result)
+
+    # Path C: large packet (21+ pages) — chunk, summarize each, then merge
+    chunk_size = 10 if n <= 40 else 15
+    chunk_summaries = []
+    for i in range(0, n, chunk_size):
+        chunk_pages = page_texts[i:i + chunk_size]
+        chunk_text = "\n\n--- PAGE BREAK ---\n\n".join(chunk_pages)
+        chunk_text = chunk_text[:30000]
+        chunk_prompt = PACKET_SUMMARY_PROMPT.format(
+            doc_type=f"{doc_type} (pages {i+1}-{i+len(chunk_pages)} of {n})",
+            packet_text=chunk_text,
+        )
+        chunk_result = _llm_text_call(chunk_prompt, max_tokens=3500)
+        chunk_summaries.append(_clean_summary(chunk_result))
+
+    # Merge chunk summaries into a final summary
+    merge_prompt = (
+        f"You have {len(chunk_summaries)} partial summaries from a single {doc_type} "
+        f"document that spans {n} pages. Merge them into ONE unified summary. "
+        f"Preserve all identifiers, parties, amounts, and dates. Concatenate goods "
+        f"descriptions without duplication. Use the same JSON schema as the partials.\n\n"
+        f"PARTIAL SUMMARIES:\n{json.dumps(chunk_summaries, ensure_ascii=False)[:30000]}\n\n"
+        f"Return ONLY the merged JSON summary."
+    )
+    merged = _llm_text_call(merge_prompt, max_tokens=_SUMMARY_MAX_TOKENS)
+    return _clean_summary(merged)
+
+
+def _clean_summary(raw: dict) -> dict:
+    """Strip internal error/raw keys and empty values from a summary."""
+    if not isinstance(raw, dict):
+        return {"_error": f"non-dict summary: {type(raw).__name__}"}
+    cleaned = {}
+    for k, v in raw.items():
+        if k.startswith('_'):
+            continue
+        if v in (None, "", [], {}):
+            continue
+        cleaned[k] = v
+    # Preserve error if present
+    if raw.get("_error"):
+        cleaned["_error"] = raw["_error"]
+    return cleaned
+
+
+# ──────────────────────────────────────────────────────────────────────── #
+# NEW — Tier 3: LLM-based packet validator                                  #
+# Validates packet's COMBINED text against its claimed document_type        #
+# using a short LLM text call. NO regex — LLM handles noisy OCR gracefully. #
+# ──────────────────────────────────────────────────────────────────────── #
+
+_PACKET_VALIDATOR_PROMPT = """You are validating a trade-finance document classification.
+
+CLAIMED DOCUMENT TYPE: {doc_type}
+
+FULL PACKET TEXT (all pages combined):
+{packet_text}
+
+Does the text support the claimed document type?
+- YES if content matches (e.g. an LC packet contains SWIFT field tags; a BL contains shipper+consignee+vessel/port; an invoice contains items+amounts).
+- NO if the text clearly describes a different document (e.g. claimed LC but only letterhead; claimed BL but only legal clauses from a T&C page).
+- UNSURE if the text is too short or ambiguous to tell.
+
+Return ONLY JSON:
+{{
+  "verdict": "YES|NO|UNSURE",
+  "confidence": 0.0-1.0,
+  "suggested_type": "if NO, what type would fit better; else empty",
+  "reason": "one short sentence"
+}}
+"""
+
+
+def _validate_packet_llm(doc_type: str, combined_text: str,
+                         max_chars: int = 8000) -> dict:
+    """Ask the text LLM whether the combined packet text supports the
+    claimed document type. Returns a verdict dict — NOT regex-based.
+    Callers decide how strictly to act on 'NO' / 'UNSURE'.
+    """
+    if not combined_text or not combined_text.strip():
+        return {"verdict": "UNSURE", "confidence": 0.0,
+                "suggested_type": "", "reason": "empty text"}
+    _text = combined_text[:max_chars] if len(combined_text) > max_chars else combined_text
+    prompt = _PACKET_VALIDATOR_PROMPT.format(doc_type=doc_type, packet_text=_text)
+    result = _llm_text_call(prompt, max_tokens=300)
+    # Normalize
+    verdict = str(result.get("verdict", "UNSURE")).upper()
+    if verdict not in ("YES", "NO", "UNSURE"):
+        verdict = "UNSURE"
+    return {
+        "verdict": verdict,
+        "confidence": float(result.get("confidence", 0.0) or 0.0),
+        "suggested_type": result.get("suggested_type", "") or "",
+        "reason": result.get("reason", "") or "",
+        "_error": result.get("_error"),
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────── #
+# NEW — Drop-in split classifier: runs the 3 sub-calls in parallel for     #
+# one page and merges results into the same shape as legacy classifier.    #
+# Callers (run() orchestrator) can swap _classify_page_vlm for this.       #
+# ──────────────────────────────────────────────────────────────────────── #
+
+def _classify_page_vlm_split(page_num: int, image_path: str, glm_text: str) -> dict:
+    """Run 3 specialized VLM sub-calls in parallel for ONE page and merge."""
+    if not os.path.exists(image_path):
+        return {'page_number': page_num, 'document_type': 'unknown', 'confidence': 0.0,
+                'error': 'Image not found'}
+
+    doctype_result = {}
+    markings_result = {}
+    copy_result = {}
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f_doctype = pool.submit(_classify_doctype_vlm, page_num, image_path, glm_text)
+        f_markings = pool.submit(_extract_markings_vlm, page_num, image_path)
+        f_copy = pool.submit(_detect_copy_status_vlm, page_num, image_path)
+        try:
+            doctype_result = f_doctype.result()
+        except Exception as e:
+            doctype_result = {"_error": f"doctype sub-call failed: {e}"}
+        try:
+            markings_result = f_markings.result()
+        except Exception as e:
+            markings_result = {"_error": f"markings sub-call failed: {e}"}
+        try:
+            copy_result = f_copy.result()
+        except Exception as e:
+            copy_result = {"_error": f"copy sub-call failed: {e}"}
+
+    # Merge into the legacy dict shape so _group_into_packets keeps working
+    merged = {
+        "page_number": page_num,
+        "document_type": doctype_result.get("document_type", "unknown"),
+        "is_continuation": bool(doctype_result.get("is_continuation", False)),
+        "confidence": float(doctype_result.get("confidence", 0.0) or 0.0),
+        "doc_hint": doctype_result.get("doc_hint", "") or "",
+        "stamps": markings_result.get("stamps") or [],
+        "signatures": markings_result.get("signatures") or [],
+        "seals": markings_result.get("seals") or [],
+        "logos": markings_result.get("logos") or [],
+        "copy_status": copy_result.get("copy_status", "unknown"),
+        "copy_label": copy_result.get("copy_label", "") or "",
+        "marking_status": copy_result.get("marking_status", "unknown"),
+    }
+    # Roll up sub-call errors (if any) into a single error field
+    errors = [e for e in (doctype_result.get("_error"),
+                          markings_result.get("_error"),
+                          copy_result.get("_error")) if e]
+    if errors:
+        merged["_sub_errors"] = errors
+    return merged
+
+
+# ──────────────────────────────────────────────────────────────────────── #
+# NEW — neighbour-context re-classifier (for validation failures)           #
+# Sends a page back to the VLM with context from prev + next pages so it   #
+# can make a better decision when the first-pass classification was wrong. #
+# ──────────────────────────────────────────────────────────────────────── #
+
+_RECHECK_PROMPT = """You are re-classifying a page that likely got the wrong document_type
+on the first pass. Use the neighbour-page context to decide correctly.
+
+PAGE IMAGE is attached. Its OCR text is below.
+
+CURRENT PAGE OCR:
+{glm_text}
+
+PREVIOUS PAGE TYPE: {prev_type}
+NEXT PAGE TYPE:     {next_type}
+FIRST-PASS GUESS:   {first_guess}
+VALIDATOR VERDICT:  {validator_verdict} — reason: {validator_reason}
+
+Consider: does this page continue the previous doc? Is it a different doc? A
+letterhead/cover page? An endorsement page (back of a BL)? A BL Conditions of
+Carriage (back of a BL with legal clauses only)?
+
+Return ONLY JSON:
+{{
+  "document_type": "final decision",
+  "is_continuation": false,
+  "confidence": 0.0-1.0,
+  "doc_hint": "short reason"
+}}
+"""
+
+
+def _recheck_page_with_context(page_num: int, image_path: str, glm_text: str,
+                               prev_type: str, next_type: str,
+                               first_guess: str, validator_verdict: str,
+                               validator_reason: str) -> dict:
+    """Re-classify a page using neighbour context. Returns same shape as doctype sub-call."""
+    img_b64 = _prepare_image_b64(image_path, max_dim=1280)
+    _text = glm_text[:3500] if len(glm_text) > 3500 else glm_text
+    prompt = _RECHECK_PROMPT.format(
+        glm_text=_text, prev_type=prev_type or "(none)",
+        next_type=next_type or "(none)", first_guess=first_guess or "unknown",
+        validator_verdict=validator_verdict or "UNSURE",
+        validator_reason=(validator_reason or "")[:200],
+    )
+    result = _vlm_call_json(prompt, img_b64, max_tokens=500)
+    return {
+        "page_number": page_num,
+        "document_type": result.get("document_type", first_guess),
+        "is_continuation": bool(result.get("is_continuation", False)),
+        "confidence": float(result.get("confidence", 0.0) or 0.0),
+        "doc_hint": result.get("doc_hint", "") or "",
+        "_error": result.get("_error"),
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────── #
+# DOC-TYPE SYNONYM TABLE                                                   #
+#                                                                          #
+# Canonicalizes VLM classification output so synonymous doc types don't    #
+# split one physical document into multiple packets. This happens when     #
+# the VLM uses different title words for front vs. back of the same doc   #
+# (e.g. "Packing Slip" on p1 and "Packing List" on p2), or when a BL is   #
+# classified variably as "Bill of Lading" / "Tanker BL" / "CONGENBILL".    #
+#                                                                          #
+# Keys = canonical name, values = list of synonymous lowercased strings.   #
+# Extend this table when new synonym pairs surface in real data.           #
+# ──────────────────────────────────────────────────────────────────────── #
+_DOC_TYPE_SYNONYMS = {
+    'LC': [
+        'lc', 'l/c', 'letter of credit', 'documentary credit', 'credit',
+        'swift message', 'mt700', 'mt 700', 'fin.700', 'irrevocable letter of credit',
+        'irrevocable documentary credit',
+    ],
+    'Amendment': [
+        'amendment', 'lc amendment', 'credit amendment', 'documentary credit amendment',
+        'mt707', 'mt 707', 'fin.707',
+    ],
+    'MT799': [
+        'mt799', 'mt 799', 'fin.799',
+        'free format message', 'bank-to-bank message', 'bank to bank message',
+    ],
+    'MT999': ['mt999', 'mt 999', 'fin.999'],
+    'Bill of Lading': [
+        'bill of lading', 'b/l', 'bl', 'bl no', 'b/l no',
+        'tanker bill of lading', 'tanker b/l',
+        'combined transport bill of lading', 'combined transport b/l', 'ctbl',
+        'through bill of lading', 'through b/l',
+        'house bill of lading', 'house b/l', 'hbl',
+        'master bill of lading', 'master b/l', 'mbl',
+        'charter party bill of lading', 'charter party b/l', 'cpbl',
+        'congenbill', 'gencon',
+        'ocean bill of lading', 'marine bill of lading',
+        'multimodal bill of lading',
+    ],
+    'BL Conditions of Carriage': [
+        'bl conditions of carriage', 'conditions of carriage',
+        'bill of lading conditions of carriage', 'terms and conditions of carriage',
+    ],
+    'Packing List': [
+        'packing list', 'packing slip', 'packing memo', 'packing note',
+        'list of packages', 'packaging list',
+    ],
+    'Commercial Invoice': [
+        'commercial invoice', 'tax invoice', 'trade invoice',
+        'final invoice', 'invoice',
+    ],
+    'Proforma Invoice': ['proforma invoice', 'pro-forma invoice', 'pro forma invoice'],
+    'Draft Bill of Exchange': [
+        'draft bill of exchange', 'bill of exchange', 'draft', 'boe', 'draft boe',
+        'bills of exchange',
+    ],
+    'Certificate of Origin': [
+        'certificate of origin', 'coo', 'c/o', 'origin certificate',
+        'chamber of commerce certificate of origin', 'gsp form a',
+    ],
+    'Phytosanitary Certificate': [
+        'phytosanitary certificate', 'plant health certificate', 'phyto certificate',
+        'phytosanitary',
+    ],
+    'Health Certificate': [
+        'health certificate', 'veterinary health certificate',
+        'food safety certificate', 'sanitary certificate',
+    ],
+    'Halal Certificate': ['halal certificate', 'halal', 'halal certification'],
+    'Fumigation Certificate': ['fumigation certificate', 'fumigation'],
+    'Weight Certificate': [
+        'weight certificate', 'certificate of weight', 'weighing certificate',
+        'weighbridge certificate',
+    ],
+    'Weight / Quality Certificate': [
+        'weight / quality certificate', 'weight/quality certificate',
+        'weight and quality certificate',
+    ],
+    'Quality Certificate': [
+        'quality certificate', 'quality analysis', 'quality / analysis',
+        'quality and analysis', 'products quality certificate',
+        'certificate of quality', 'quality report',
+    ],
+    'Quantity Certificate': [
+        'quantity certificate', 'certificate of quantity',
+        'products quantity certificate', 'certificate of receipted quantity',
+    ],
+    'Inspection Certificate': [
+        'inspection certificate', 'pre-shipment inspection certificate',
+        'pre shipment inspection certificate', 'psi certificate',
+    ],
+    'Insurance Certificate': [
+        'insurance certificate', 'marine insurance certificate',
+        'cargo insurance certificate',
+    ],
+    'Insurance Policy': [
+        'insurance policy', 'marine insurance policy', 'cargo insurance policy',
+    ],
+    'Shipment Advice': [
+        'shipment advice', 'advice of shipment', 'cargo advice',
+        'shipping advice',
+    ],
+    'Document Remittance': [
+        'document remittance', 'documentary remittance',
+        'l/c bills schedule', 'lc bills schedule', 'covering schedule',
+        'document presentation', 'export dc document presentation schedule',
+        'export documentary credit document presentation schedule',
+    ],
+    'Covering Letter': ['covering letter', 'cover letter', 'transmittal letter'],
+    'Letter of Indemnity': ['letter of indemnity', 'loi', 'indemnity letter'],
+    'Letter of Authority': ['letter of authority', 'authority letter'],
+    'Notice of Readiness': ['notice of readiness', 'nor'],
+    'Endorsement Page': ['endorsement page', 'endorsement', 'bl endorsement'],
+    'Header Page': ['header page', 'header'],
+    'Beneficiary Certificate': ['beneficiary certificate', 'beneficiarys certificate',
+                                 "beneficiary's certificate"],
+    'Port Clearance Certificate': ['port clearance certificate', 'port clearance'],
+    'Tanker Cleanliness Certificate': ['tanker cleanliness certificate',
+                                        'tank cleanliness certificate'],
+    'Survey Report': [
+        'survey report', 'draught survey report', 'loading survey report',
+        'discharge survey report', 'full loading survey report',
+    ],
+    'Agents Certificate': ['agents certificate', "agent's certificate",
+                           'shipping agents certificate', 'ships agents certificate'],
+}
+
+
+def _canonical_doc_type(doc_type: str) -> str:
+    """Map a VLM-returned doc_type string to its canonical name.
+    If no synonym matches, returns the original doc_type unchanged (so
+    unknown/new types are preserved verbatim).
+    """
+    if not doc_type:
+        return doc_type
+    key = doc_type.lower().strip()
+    # Strip parenthesized qualifiers like "(Original)" that sometimes slip in
+    if '(' in key:
+        key = key.split('(')[0].strip()
+    for canonical, synonyms in _DOC_TYPE_SYNONYMS.items():
+        if key == canonical.lower():
+            return canonical
+        if key in synonyms:
+            return canonical
+    return doc_type
+
+
 def _group_into_packets(classifications: List[dict]) -> List[DocumentPacket]:
     """Group classified pages into document packets."""
     if not classifications:
@@ -449,12 +1881,12 @@ def _group_into_packets(classifications: List[dict]) -> List[DocumentPacket]:
         is_cont = cls.get('is_continuation', False)
         confidence = cls.get('confidence', 0.0)
 
-        # Normalize doc type
+        # Normalize doc type using the comprehensive synonym table.
+        # Keeps alternating VLM outputs ("Packing Slip"/"Packing List",
+        # "CONGENBILL"/"Bill of Lading", etc.) from splitting one physical
+        # document into multiple packets.
+        doc_type = _canonical_doc_type(doc_type)
         doc_type_lower = doc_type.lower().strip()
-        if doc_type_lower in ('lc', 'letter of credit', 'swift message', 'mt700'):
-            doc_type = 'LC'
-        elif doc_type_lower in ('amendment', 'mt707', 'lc amendment'):
-            doc_type = 'Amendment'
 
         # Continuation: only merge if document type AND copy status match
         # (prevents different BL copies from being merged into one packet)
@@ -922,13 +2354,17 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     classifications = []
     vlm_tasks = list(all_page_data)
 
-    _progress(f"Sending ALL {len(vlm_tasks)} pages to VLM for classification + visual detection...")
+    _progress(f"[3a+3b+3c] Sending ALL {len(vlm_tasks)} pages to VLM for 3-way per-page split...")
+    _progress(f"  3a=Doc Type | 3b=Markings & Seals | 3c=Copy/Original Status (parallel per page)")
 
-    # Run VLM classification concurrently
-    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_VLM) as executor:
+    # Run VLM classification concurrently. Each page triggers 3 sub-calls
+    # (doc-type, markings, copy-status) in its own mini-pool, so we cap the
+    # outer pool lower to avoid overwhelming the VLM server.
+    _outer_workers = max(1, MAX_CONCURRENT_VLM // 2)
+    with ThreadPoolExecutor(max_workers=_outer_workers) as executor:
         futures = {}
         for pg_num, img_path, text in vlm_tasks:
-            future = executor.submit(_classify_page_vlm, pg_num, img_path, text)
+            future = executor.submit(_classify_page_vlm_split, pg_num, img_path, text)
             futures[future] = pg_num
 
         done_count = 0
@@ -1103,16 +2539,46 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             _prev_type = doc_type
             continue
 
+        # Track the previous page number for multi-page-marker inheritance
+        _prev_pg_num = locals().get('_prev_pg_num', 0)
+
+        # OVERRIDE: "Page X of Y" with X>1 is authoritative for continuation.
+        # The VLM sometimes says cont=false for pages 2/3/etc. because the
+        # page has its own heading — ignore that, the Page-of-Y footer wins.
+        if pg_num in _page_of_total:
+            _x, _y = _page_of_total[pg_num]
+            if _x > 1:
+                _prev_xy = _page_of_total.get(_prev_pg_num)
+                if _prev_xy and _prev_xy[1] == _y and _prev_xy[0] == _x - 1:
+                    # Sequential continuation — force is_cont=True
+                    if not is_cont:
+                        _progress(f"  Page {pg_num}: FORCING cont=true (has Page {_x} of {_y}, prev has Page {_x-1} of {_y}) — VLM said cont=false")
+                    is_cont = True
+                    cls['is_continuation'] = True
+
         if is_cont and _prev_type:
             # Check if this page has its own "Page X of Y" marker
             _has_page_xy = pg_num in _page_of_total
 
             if _has_page_xy:
-                # This page has "Page X of Y" — let multi-page grouping handle it.
-                # DON'T inherit from previous PDF page (could be a different document).
-                # But DO update _prev_type so NEXT continuation pages can inherit.
-                _prev_type = doc_type
-                _progress(f"  Page {pg_num}: has Page {_page_of_total[pg_num][0]} of {_page_of_total[pg_num][1]} — skipping inheritance, will use multi-page grouping")
+                _x, _y = _page_of_total[pg_num]
+                # Multi-page signal is authoritative for continuation decisions.
+                # If X > 1 AND the immediately preceding PDF page had
+                # "Page X-1 of Y" (same Y), this IS the continuation of that
+                # doc — inherit the previous doc_type even if the VLM gave it
+                # a different name (common when each page has its own heading).
+                _prev_xy = _page_of_total.get(_prev_pg_num)
+                if _x > 1 and _prev_xy and _prev_xy[1] == _y and _prev_xy[0] == _x - 1:
+                    if doc_type_lower != _prev_type.lower():
+                        _progress(f"  Page {pg_num}: MULTI-PAGE CONTINUATION (Page {_x} of {_y}): '{doc_type}' → '{_prev_type}' (inherits from Page {_x-1} of {_y})")
+                        cls['document_type'] = _prev_type
+                    # Keep _prev_type unchanged so subsequent pages of the
+                    # same multi-page doc also inherit correctly.
+                else:
+                    # Not a direct sequential continuation — let multi-page
+                    # grouping (Rule 3) handle it and update _prev_type.
+                    _prev_type = doc_type
+                    _progress(f"  Page {pg_num}: has Page {_x} of {_y} — skipping inheritance, will use multi-page grouping")
             else:
                 # No "Page X of Y" — safe to inherit previous page's type
                 if doc_type_lower != _prev_type.lower():
@@ -1122,6 +2588,8 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         else:
             # Not a continuation — this becomes the new "previous type"
             _prev_type = doc_type
+        # Update previous-page tracker for next iteration
+        _prev_pg_num = pg_num
 
     # ── Phase 2: Group pages into document packets ──
     _progress("Grouping pages into document packets...")
@@ -1151,22 +2619,46 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             continue
         dt = pkt.document_type.lower().strip()
 
-        # Rule 1: BL — absorb nearby BL T&C and Attach List pages
+        # Rule 1: BL — absorb ONE T&C page, picking the CLOSEST by page distance.
+        # Trade-finance convention: each BL has exactly ONE T&C (overleaf/back).
+        # - If a T&C page is within 3 pages of the BL (before or after), merge.
+        # - If no T&C is adjacent, leave the BL untouched so Step 3d can
+        #   correctly set bl_subtype.is_blank_back = true.
         if dt in _bl_types:
-            # 1a: Absorb ONE nearest T&C
+            _bl_max = max(pkt.page_numbers) if pkt.page_numbers else 0
+            _bl_min = min(pkt.page_numbers) if pkt.page_numbers else 9999
+            _best_tc = None
+            _best_dist = 999
             for j, other in enumerate(packets):
                 if j in _consumed or j == i:
                     continue
                 odt = other.document_type.lower().strip()
-                if odt in _bl_tc_types:
-                    pkt.page_numbers.extend(other.page_numbers)
-                    pkt.pages.extend(other.pages)
-                    pkt.stamps.extend(other.stamps)
-                    pkt.signatures.extend(other.signatures)
-                    pkt.seals.extend(other.seals)
-                    _consumed.add(j)
-                    _progress(f"  Merged {other.packet_id} (BL T&C pg {other.page_numbers}) into {pkt.packet_id} (BL pg {pkt.page_numbers[:2]})")
-                    break  # Only merge ONE T&C per BL
+                if odt not in _bl_tc_types:
+                    continue
+                _tc_min = min(other.page_numbers) if other.page_numbers else 9999
+                _tc_max = max(other.page_numbers) if other.page_numbers else 0
+                # Prefer T&C that comes AFTER the BL (overleaf is typically
+                # the next page). Accept BEFORE only when nothing follows.
+                if _tc_min > _bl_max:
+                    _dist = _tc_min - _bl_max
+                elif _tc_max < _bl_min:
+                    _dist = (_bl_min - _tc_max) + 100   # penalise "before BL"
+                else:
+                    _dist = 0                             # interleaved
+                if _dist < _best_dist:
+                    _best_tc = j
+                    _best_dist = _dist
+            # Only merge if within 3-page window — beyond that it likely
+            # belongs to a DIFFERENT BL packet.
+            if _best_tc is not None and _best_dist <= 3:
+                other = packets[_best_tc]
+                pkt.page_numbers.extend(other.page_numbers)
+                pkt.pages.extend(other.pages)
+                pkt.stamps.extend(other.stamps)
+                pkt.signatures.extend(other.signatures)
+                pkt.seals.extend(other.seals)
+                _consumed.add(_best_tc)
+                _progress(f"  Merged {other.packet_id} (BL T&C pg {other.page_numbers}) into {pkt.packet_id} (BL pg {pkt.page_numbers[:3]}) — distance {_best_dist}")
 
         # Rule 2: Bill of Exchange — absorb endorsement pages
         elif dt in _boe_types:
@@ -1218,8 +2710,16 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             _consumed.add(i)
             _progress(f"  Merged {pkt.packet_id} (Attach List pg {pkt.page_numbers}) into {_bl_pkt.packet_id} (BL pg {_bl_pkt.page_numbers[:3]})")
 
-    # Remove consumed packets from merged list
-    merged_packets = [p for i, p in enumerate(merged_packets) if i not in _consumed]
+    # Rule 1 already skipped consumed packets (via `if i in _consumed: continue`
+    # at the top of the loop) so they were never appended to merged_packets.
+    # The previous `merged_packets = [p for i, p in enumerate(merged_packets) if i not in _consumed]`
+    # was BUGGED: _consumed holds indices into the original `packets` list but
+    # the filter used them as indices into `merged_packets` (which has fewer
+    # entries and different positions). That silently dropped an unrelated
+    # packet (e.g. Document Remittance page 8 on job c4384df6) because its
+    # position in merged_packets happened to collide with a _consumed index.
+    # Just reset _consumed for Rule 3; merged_packets already excludes
+    # Rule 1 victims.
     _consumed = set()  # Reset for Rule 3
 
     # Build page_text_map for Rule 3 (needed for "Page X of Y" detection)
@@ -1316,7 +2816,16 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                     'loading inspection report': 'survey_report',
                     'full loading survey report': 'survey_report',
                     'survey report': 'survey_report',
+                    'survey report certificate': 'survey_report',
                     'inspection report': 'survey_report',
+                    'certificate of quality': 'survey_report',
+                    'certificate of weight': 'survey_report',
+                    'certificate of quality and weight': 'survey_report',
+                    'certificate of quality and weight ascertained': 'survey_report',
+                    'certificate of quality and weight ascertained at port of loading': 'survey_report',
+                    'certificate of quality and weight ascertained at port of discharge': 'survey_report',
+                    'certificate of analysis': 'survey_report',
+                    'certificate of inspection': 'survey_report',
                     'inspection certificate': 'survey_report',
                     'pre-shipment inspection report': 'survey_report',
                     'pre-shipment inspection certificate': 'survey_report',
@@ -1353,44 +2862,61 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         _page_x_values = [e[1] for e in pkt_entries]
         _has_duplicate_pages = len(_page_x_values) != len(set(_page_x_values))
         if len(pkt_entries) > _total_y or _has_duplicate_pages:
-            # More packets than total pages — likely multiple copies of same report
-            # Group by proximity: packets within a small window are one copy
-            # Use total_pages * 2 as the max gap (e.g., 3-page report → max 6 page gap)
-            # Group by matching Page X numbers — each complete set (1,2,3) is one copy.
-            # Build groups greedily: for each "Page 1", find the nearest "Page 2", "Page 3" etc.
+            # Multiple copies of the same N-page report. Assign each orphan
+            # (Page 2, Page 3, ...) to the NEAREST PRECEDING Page-1 anchor
+            # that doesn't already own that page number.
+            # Previous algorithm iterated Page-1 anchors in order and greedily
+            # grabbed far-away pages — it would give an anchor at page 18 the
+            # Page-3 at page 26 (distance 8) instead of the anchor at page 24
+            # (distance 2). Fixed: for each orphan, pick the closest preceding
+            # anchor that still needs that page number.
             _sorted = sorted(pkt_entries, key=lambda x: x[2])  # sort by first page number
-            _used = set()
-            _groups = []
+            anchors = {}  # anchor_first_pg -> [entries]
+            _orphan_queue = []
             for _entry in _sorted:
-                if id(_entry) in _used:
-                    continue
-                if _entry[1] != 1:
-                    continue  # Start groups from "Page 1"
-                _group = [_entry]
-                _used.add(id(_entry))
-                _last_pg = _entry[2]
-                # Find Page 2, Page 3, etc. — nearest unused match
-                for _need_x in range(2, _total_y + 1):
-                    _best = None
-                    _best_dist = 999
-                    for _cand in _sorted:
-                        if id(_cand) in _used:
+                if _entry[1] == 1:
+                    anchors[_entry[2]] = [_entry]
+                else:
+                    _orphan_queue.append(_entry)
+
+            # Assign each orphan to its best-matching anchor (nearest preceding
+            # anchor that hasn't already absorbed this page number). If none
+            # fit, fall back to the nearest anchor regardless of direction.
+            for _orphan in _orphan_queue:
+                _o_idx, _o_x, _o_pg = _orphan
+                _best_anchor_pg = None
+                _best_dist = 999
+                # Prefer anchors that come BEFORE the orphan in page order
+                for _a_pg, _a_group in anchors.items():
+                    _a_xs = {e[1] for e in _a_group}
+                    if _o_x in _a_xs:
+                        continue  # this anchor already has a Page _o_x
+                    _dist = _o_pg - _a_pg
+                    if _dist < 0:
+                        continue  # orphan must be after the anchor
+                    if _dist <= _total_y * 3 and _dist < _best_dist:
+                        _best_anchor_pg = _a_pg
+                        _best_dist = _dist
+                # Fallback: accept anchor AFTER the orphan if no preceding one
+                if _best_anchor_pg is None:
+                    for _a_pg, _a_group in anchors.items():
+                        _a_xs = {e[1] for e in _a_group}
+                        if _o_x in _a_xs:
                             continue
-                        if _cand[1] == _need_x:
-                            _dist = abs(_cand[2] - _last_pg)
-                            if _dist < _best_dist:
-                                _best = _cand
-                                _best_dist = _dist
-                    if _best and _best_dist <= _total_y * 3:
-                        _group.append(_best)
-                        _used.add(id(_best))
-                        _last_pg = _best[2]
-                if len(_group) > 1:
-                    _groups.append(_group)
-            # Also group orphan pages (Page 2 or 3 without a Page 1 nearby)
-            _remaining = [e for e in _sorted if id(e) not in _used]
-            if _remaining:
-                _groups.append(_remaining)
+                        _dist = abs(_o_pg - _a_pg)
+                        if _dist <= _total_y * 3 and _dist < _best_dist:
+                            _best_anchor_pg = _a_pg
+                            _best_dist = _dist
+                if _best_anchor_pg is not None:
+                    anchors[_best_anchor_pg].append(_orphan)
+
+            _groups = [g for g in anchors.values() if len(g) > 1]
+            # Track entries that found a home so we don't double-merge
+            _used_ids = set()
+            for g in _groups:
+                for e in g:
+                    _used_ids.add(id(e))
+            # Orphans without any preceding anchor stay as their own packets
 
             # Merge each proximity group
             for _group in _groups:
@@ -1439,13 +2965,164 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
 
     packets = final_packets
 
+    # ──────────────────────────────────────────────────────────────────── #
+    # NEW POST-GROUPING PHASES                                              #
+    #   Phase V1 — Build per-packet combined text (used by V2/V3/V4)       #
+    #   Phase V2 — LLM validation on combined packet text                  #
+    #   Phase V3 — BL sub-type classification (BL packets only)            #
+    #   Phase V4 — Packet summary (tiered chunking: VLM / LLM / chunked)   #
+    # ──────────────────────────────────────────────────────────────────── #
+
+    # Phase V1: combined text + image paths per packet
+    _packet_texts: Dict[str, str] = {}
+    _packet_images: Dict[str, List[str]] = {}
     for pkt in packets:
-        # Concatenate text from all pages in packet
-        all_text = []
+        _texts: List[str] = []
+        _imgs: List[str] = []
         for pg_num in pkt.page_numbers:
             pg_data = page_text_map.get(pg_num, {})
-            all_text.append(pg_data.get('cleaned_text', pg_data.get('raw_text', '')))
+            _texts.append(pg_data.get('cleaned_text', pg_data.get('raw_text', '')) or '')
+            _img = pg_data.get('page_image_path') or ''
+            if _img:
+                _imgs.append(_img)
+        _packet_texts[pkt.packet_id] = "\n\n--- PAGE BREAK ---\n\n".join(_texts)
+        _packet_images[pkt.packet_id] = _imgs
         pkt.doc_hint = pkt.doc_hint or pkt.document_type
+
+    # Phase V2: validate each packet's classification against its combined text
+    _progress(f"[3f] Validating {len(packets)} packets via LLM (no regex)...")
+    _validation_failures: List[tuple] = []  # (packet, verdict_dict)
+    if QWEN_TEXT_LLM_URL:
+        with ThreadPoolExecutor(max_workers=max(1, MAX_CONCURRENT_VLM // 2)) as executor:
+            _vfutures = {}
+            for pkt in packets:
+                _vfutures[executor.submit(
+                    _validate_packet_llm, pkt.document_type, _packet_texts[pkt.packet_id]
+                )] = pkt
+            for fut in as_completed(_vfutures):
+                pkt = _vfutures[fut]
+                try:
+                    verdict = fut.result()
+                except Exception as e:
+                    verdict = {"verdict": "UNSURE", "confidence": 0.0,
+                               "suggested_type": "", "reason": f"validator error: {e}"}
+                if verdict.get("verdict") == "NO":
+                    _validation_failures.append((pkt, verdict))
+                    pkt.validation_status = "low_confidence"
+                    _progress(f"  {pkt.packet_id} FAILED validation: claimed={pkt.document_type}, "
+                              f"suggested={verdict.get('suggested_type')!r} — {verdict.get('reason')}")
+    else:
+        _progress(f"  Skipped validation (QWEN_TEXT_LLM_URL not set)")
+
+    # Phase V2b: Neighbour-context re-check for pages in failed packets
+    if _validation_failures:
+        _progress(f"[3g] Re-checking {sum(len(p.page_numbers) for p, _ in _validation_failures)} "
+                  f"pages from {len(_validation_failures)} failed packets (neighbour context)...")
+        # Build a page_num → (prev_type, next_type) map
+        _pages_sorted = sorted(page_text_map.keys())
+        _neighbours = {}
+        # Use current packet assignment to look up prev/next doc types
+        _page_to_pkt_type = {}
+        for pkt in packets:
+            for pg in pkt.page_numbers:
+                _page_to_pkt_type[pg] = pkt.document_type
+        for idx, pg in enumerate(_pages_sorted):
+            prev_t = _page_to_pkt_type.get(_pages_sorted[idx - 1], "") if idx > 0 else ""
+            next_t = _page_to_pkt_type.get(_pages_sorted[idx + 1], "") if idx + 1 < len(_pages_sorted) else ""
+            _neighbours[pg] = (prev_t, next_t)
+
+        with ThreadPoolExecutor(max_workers=max(1, MAX_CONCURRENT_VLM // 2)) as executor:
+            _rfutures = {}
+            for pkt, verdict in _validation_failures:
+                for pg_num in pkt.page_numbers:
+                    pg_data = page_text_map.get(pg_num, {})
+                    _text = pg_data.get('cleaned_text', pg_data.get('raw_text', '')) or ''
+                    _img = pg_data.get('page_image_path') or ''
+                    if not _img:
+                        continue
+                    prev_t, next_t = _neighbours.get(pg_num, ("", ""))
+                    _rfutures[executor.submit(
+                        _recheck_page_with_context, pg_num, _img, _text,
+                        prev_t, next_t, pkt.document_type,
+                        verdict.get("verdict", "UNSURE"), verdict.get("reason", "")
+                    )] = (pkt, pg_num)
+            for fut in as_completed(_rfutures):
+                pkt, pg_num = _rfutures[fut]
+                try:
+                    rc = fut.result()
+                except Exception as e:
+                    rc = {"_error": str(e)}
+                if not rc.get("_error") and rc.get("document_type"):
+                    _progress(f"  re-check p{pg_num}: {pkt.document_type} -> {rc['document_type']} "
+                              f"(conf {rc.get('confidence', 0):.2f})")
+                    pkt.validation_status = "re_checked"
+                    # Note: we record the re-check but DON'T regroup automatically —
+                    # regrouping would risk breaking SWIFT/BAHL logic. Downstream
+                    # consumers can read pkt.validation_status and re-check values.
+
+    # Phase V3: BL sub-type classification (only for Bill of Lading packets).
+    # Broad match — covers all BL variants (CONGENBILL, Combined Transport BL,
+    # Tanker BL, House BL, Master BL, Charter Party BL, etc.) that may slip
+    # past canonicalization (e.g. on jobs that ran before the canonicalizer).
+    def _is_bl(dt: str) -> bool:
+        if not dt:
+            return False
+        dt_lower = dt.lower()
+        if 'conditions of carriage' in dt_lower:
+            return False  # back side of BL, not a BL itself
+        return (
+            'bill of lading' in dt_lower
+            or 'b/l' in dt_lower
+            or dt_lower in ('bl', 'congenbill', 'gencon')
+        )
+    _bl_packets = [p for p in packets if _is_bl(p.document_type)]
+    if _bl_packets:
+        _progress(f"[3d] Classifying BL sub-type for {len(_bl_packets)} Bill of Lading packet(s)...")
+        with ThreadPoolExecutor(max_workers=max(1, MAX_CONCURRENT_VLM // 2)) as executor:
+            _blfutures = {}
+            for pkt in _bl_packets:
+                _front = _packet_images[pkt.packet_id][0] if _packet_images[pkt.packet_id] else None
+                _rev = _packet_images[pkt.packet_id][1] if len(_packet_images[pkt.packet_id]) > 1 else None
+                _blfutures[executor.submit(
+                    _classify_bl_subtype, _packet_texts[pkt.packet_id], _front, _rev
+                )] = pkt
+            for fut in as_completed(_blfutures):
+                pkt = _blfutures[fut]
+                try:
+                    pkt.bl_subtype = fut.result()
+                    _progress(f"  {pkt.packet_id}: form={pkt.bl_subtype.get('form_type')}, "
+                              f"contract={pkt.bl_subtype.get('contract_type')}, "
+                              f"signing={pkt.bl_subtype.get('signing_type')}")
+                except Exception as e:
+                    pkt.bl_subtype = {"_error": str(e)}
+
+    # Phase V4: Packet summary for every packet (tiered chunking)
+    _progress(f"[3e] Generating packet summaries for {len(packets)} packets (tiered by page count)...")
+    _size_bucket = {"small": 0, "medium": 0, "large": 0}
+    with ThreadPoolExecutor(max_workers=max(1, MAX_CONCURRENT_VLM // 2)) as executor:
+        _sfutures = {}
+        for pkt in packets:
+            _pg_texts = _packet_texts[pkt.packet_id].split("\n\n--- PAGE BREAK ---\n\n")
+            _pg_imgs = _packet_images[pkt.packet_id]
+            n = len(pkt.page_numbers)
+            if n <= 4:
+                _size_bucket["small"] += 1
+            elif n <= 20:
+                _size_bucket["medium"] += 1
+            else:
+                _size_bucket["large"] += 1
+            _sfutures[executor.submit(
+                _summarize_packet, pkt.document_type, _pg_texts, _pg_imgs
+            )] = pkt
+        for fut in as_completed(_sfutures):
+            pkt = _sfutures[fut]
+            try:
+                pkt.unified_summary = fut.result()
+            except Exception as e:
+                pkt.unified_summary = {"_error": str(e)}
+    _progress(f"  summaries: {_size_bucket['small']} small (≤4pg VLM), "
+              f"{_size_bucket['medium']} medium (5-20pg LLM), "
+              f"{_size_bucket['large']} large (21+pg chunked LLM)")
 
     elapsed = time.time() - start_time
 

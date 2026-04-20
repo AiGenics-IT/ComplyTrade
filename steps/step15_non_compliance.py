@@ -139,6 +139,17 @@ NON_CHECKABLE_PATTERNS = [
     r'ALL\s+BANKING\s+CHARGES\s+OUTSIDE',
     r'DOCUMENTS\s+MUST\s+BE\s+PRESENTED\s+WITHIN',  # handled implicitly in Step 14
     r'PERIOD\s+FOR\s+PRESENTATION',                    # handled implicitly in Step 14
+    # P125 — Negotiation policy clauses (bank-to-bank, not document content)
+    r'NEGOTIATION\s+UNDER\s+(?:RESERVE|GUARANTEE)',
+    r'(?:UNDER\s+)?(?:RESERVE|GUARANTEE)\s+NOT\s+ALLOWED',
+    # P125 — Charge-allocation certification (fee policy, not shipping compliance)
+    r'NEGOTIATING\s+BANK\s+MUST\s+CERTIFY.{0,200}CHARGES.{0,50}PAID\s+BY\s+(?:THE\s+)?BENEFICIARY',
+    r'CHARGES\s+(?:OF|AND)\s+.{0,100}(?:ADVISING|NEGOTIATING)\s+BANK.{0,100}PAID\s+BY\s+(?:THE\s+)?BENEFICIARY',
+    # P125 — Courier / dispatch instructions (physical dispatch, not document content)
+    r'DOCUMENTS?\s+MUST\s+BE\s+SENT\s+TO.{0,300}(?:DHL|FEDEX|UPS|TNT|ARAMEX|COURIER|IN\s+\d+\s+LOTS?)',
+    r'DOCUMENTS?\s+(?:TO\s+BE|MUST\s+BE|SHOULD\s+BE)\s+(?:SENT|FORWARDED|DISPATCHED|COURIERED)\s+(?:TO|BY|VIA).{0,200}(?:DHL|FEDEX|UPS|TNT|ARAMEX|COURIER)',
+    r'AT\s+(?:THE\s+)?BENEFICIARY[\'S]{0,2}\s+COST',
+    r'IN\s+\d+\s+LOTS?\s+BY\s+(?:DHL|FEDEX|UPS|COURIER)',
 ]
 
 # Compile patterns for performance (compiled once, used many times)

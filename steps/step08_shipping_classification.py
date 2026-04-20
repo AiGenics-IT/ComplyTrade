@@ -123,6 +123,15 @@ class ClassifiedPacket:
     has_bl_terms_pages_in_set: bool = False
     bl_short_form_status: str = ""  # "" | "full_form" | "short_form" | "blank_back"
 
+    # ── NEW: Preserved from Step 3 (do NOT regenerate — read-through only) ──
+    # These fields MUST be carried forward so Step 14's new split-prompt path
+    # sees the structured facts Step 3 extracted. Without this, Step 14's
+    # _build_structured_facts receives empty dicts and the whole refactor is
+    # neutered. Always copy these fields from the source Step 3 packet.
+    unified_summary: Optional[dict] = None
+    bl_subtype: Optional[dict] = None
+    validation_status: str = "valid"
+
 
 # ── Classification Prompt ──
 
@@ -769,6 +778,10 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
             ambiguity_notes='',
             elapsed_seconds=round(elapsed, 2),
             is_bl_terms_page=False,
+            # Preserve Step 3 structured data through Step 8 so Step 14 can read it
+            unified_summary=packet.get('unified_summary'),
+            bl_subtype=packet.get('bl_subtype'),
+            validation_status=packet.get('validation_status', 'valid'),
         ))
 
     # Build required docs list for prompt
@@ -1150,6 +1163,10 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
         ambiguity_notes=ambiguity_notes,
         elapsed_seconds=round(elapsed, 2),
         is_bl_terms_page=is_bl_terms_page,
+        # Preserve Step 3 structured data so Step 14 can read it unchanged
+        unified_summary=packet.get('unified_summary'),
+        bl_subtype=packet.get('bl_subtype'),
+        validation_status=packet.get('validation_status', 'valid'),
     )
 
     return asdict(classified)
