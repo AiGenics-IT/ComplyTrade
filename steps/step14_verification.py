@@ -1165,10 +1165,28 @@ def _build_verification_prompt_v2(
 # ════════════════════════════════════════════════════════════════════════ #
 
 def _normalize_id(s):
-    """Strip whitespace, hyphens, and case — for comparing reference numbers."""
+    """Strip whitespace, hyphens, and case — for comparing reference numbers.
+    P135 — also normalize common OCR character confusions so that
+    "2023008MIPDO00453" (letter O) matches "2023008MIPD000453" (digit 0).
+    """
     if s is None:
         return ''
-    return ''.join(ch for ch in str(s).upper() if ch.isalnum())
+    out = ''.join(ch for ch in str(s).upper() if ch.isalnum())
+    # OCR character confusion: O↔0, I↔1, S↔5, B↔8, Z↔2, G↔6, Q↔0.
+    # For identifier matching we fold the ambiguous letters into their
+    # digit counterparts — typical policy / invoice / LC numbers are
+    # printed digits, and OCR sometimes reads them as letters.
+    _ocr_subs = str.maketrans({
+        'O': '0',
+        'I': '1',
+        'L': '1',
+        'S': '5',
+        'B': '8',
+        'Z': '2',
+        'G': '6',
+        'Q': '0',
+    })
+    return out.translate(_ocr_subs)
 
 
 def _find_structured(unified_summary: dict, array_name: str, role_keywords):
@@ -1240,6 +1258,87 @@ def _deterministic_verify(
                         }
             # Not found in structured refs — FALL THROUGH to LLM (it can
             # check doc_text where an untagged match may still appear).
+
+    # ── Check 1b (P135): Generic "must reference / quote / contain <ID>" ──
+    # For any condition that carries a specific identifier pattern (open
+    # policy no, contract no, proforma no, cover note, LC ref again, etc.)
+    # and asks a document to "reference / quote / contain / state / show"
+    # that ID, we try to find it in the document's structured references
+    # and typed fields with OCR-tolerant normalization.
+    if (('REFERENCE' in cond_up or 'QUOTE' in cond_up or 'CONTAIN' in cond_up or
+            'STATE' in cond_up or 'SHOW' in cond_up or 'INCLUDE' in cond_up or
+            'MENTION' in cond_up) and unified_summary):
+        # Pull all identifier-like tokens out of the condition: runs of
+        # digits + letters (length >= 6) OR digit/letter/slash/dash chains.
+        _cond_ids = re.findall(
+            r'[A-Z0-9][A-Z0-9/\-._]{5,}[A-Z0-9]',
+            condition_text or '',
+            flags=re.IGNORECASE,
+        )
+        for _needle in _cond_ids:
+            _n_norm = _normalize_id(_needle)
+            if len(_n_norm) < 6:
+                continue
+            # Skip common English words that can match the pattern
+            if _n_norm in ('LETTERCREDIT', 'DOCUMENTARY', 'SHIPMENTADVICE', 'COMMERCIALINVOICE'):
+                continue
+            # 1) Check references_found — any role
+            for item in (unified_summary.get('references_found') or []):
+                if not isinstance(item, dict):
+                    continue
+                _v = _normalize_id(item.get('value', ''))
+                if _v and (_v == _n_norm or _n_norm in _v or _v in _n_norm):
+                    return {
+                        'verdict': 'PASS',
+                        'quote': item.get('raw') or item.get('value', ''),
+                        'findings': (
+                            f"Reference '{_needle}' found on document as "
+                            f"'{item.get('value','')}' (role={item.get('role','other')})."
+                        ),
+                        'confidence': 0.92,
+                        'structured_source': f"references_found[role={item.get('role','other')}]",
+                    }
+            # 2) Check typed scalar fields
+            for _key in (
+                'lc_reference', 'invoice_reference', 'contract_reference',
+                'proforma_reference', 'bl_number', 'bl_reference',
+                'open_policy_reference', 'cover_note_reference',
+                'policy_number', 'document_identifier',
+            ):
+                _tv = _normalize_id(str(unified_summary.get(_key, '') or ''))
+                if _tv and (_tv == _n_norm or _n_norm in _tv or _tv in _n_norm):
+                    return {
+                        'verdict': 'PASS',
+                        'quote': str(unified_summary.get(_key, ''))[:200],
+                        'findings': (
+                            f"Reference '{_needle}' matches {_key} "
+                            f"= '{unified_summary.get(_key)}' on document."
+                        ),
+                        'confidence': 0.92,
+                        'structured_source': f"unified_summary.{_key}",
+                    }
+            # 3) Check other_details_found raw text (open policy, cover notes,
+            #    often land here when the LLM tags them as open_policy_reference)
+            for item in (unified_summary.get('other_details_found') or []):
+                if not isinstance(item, dict):
+                    continue
+                _raw = _normalize_id(
+                    str(item.get('value', '') or '') + ' ' +
+                    str(item.get('raw', '') or '')
+                )
+                if _raw and _n_norm in _raw:
+                    return {
+                        'verdict': 'PASS',
+                        'quote': item.get('raw') or item.get('value', ''),
+                        'findings': (
+                            f"Reference '{_needle}' appears in "
+                            f"other_details_found[role={item.get('role','other')}]."
+                        ),
+                        'confidence': 0.90,
+                        'structured_source': f"other_details_found[role={item.get('role','other')}]",
+                    }
+        # No identifier-token matched — fall through to LLM (could still
+        # match via free-text OCR on the cleaned document text).
 
     # ── Check 2: BL prohibition checks — fully structured ──
     if 'BILL OF LADING' in doc_up and bl_subtype:
@@ -2372,6 +2471,52 @@ def _call_vlm(
     if _doc_summary:
         document_text = f"[SYSTEM PRE-CALCULATED SUMMARY]\n{_doc_summary}[END SUMMARY]\n\n{document_text}"
 
+    # P136 — Fix OCR-garbled 3-letter month names inside dates.
+    # A BL stamp like "21 FEB 2025" is frequently OCR'd as "21 CCR 2025",
+    # "21 EEB 2025", "21 F€B 2025", etc. Downstream date parsing then
+    # fails and the condition row marks the shipment date as missing.
+    # Scan the document for "<day> <3 letters> <year>" patterns and map
+    # the 3-letter token to the closest valid month when it isn't one.
+    def _fix_month(m):
+        day, mon, yr = m.group(1), m.group(2).upper(), m.group(3)
+        _VALID = {'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+                  'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'}
+        if mon in _VALID:
+            return m.group(0)
+        # Common OCR → month corrections
+        _OCR_MONTH = {
+            'CCR': 'FEB', 'EEB': 'FEB', 'FEE': 'FEB', 'FBB': 'FEB',
+            'F€B': 'FEB', 'FFB': 'FEB', 'F88': 'FEB', 'CEB': 'FEB',
+            'NAR': 'MAR', 'MAP': 'MAR', 'HAR': 'MAR', 'M4R': 'MAR',
+            'APP': 'APR', 'AFR': 'APR', 'APK': 'APR', 'AP8': 'APR',
+            'MAT': 'MAY', 'MAV': 'MAY', 'HAY': 'MAY', 'M4Y': 'MAY',
+            'TUN': 'JUN', 'JUH': 'JUN', 'JUW': 'JUN', 'JUR': 'JUN',
+            'JUI': 'JUL', 'IUL': 'JUL', 'JUI.': 'JUL',
+            'AUC': 'AUG', 'AUC.': 'AUG', 'AUS': 'AUG', 'AU6': 'AUG',
+            'SEF': 'SEP', 'SFP': 'SEP', 'SEB': 'SEP', '$EP': 'SEP',
+            '0CT': 'OCT', 'OCI': 'OCT', '0CI': 'OCT', 'OCL': 'OCT', 'OCF': 'OCT',
+            'NCV': 'NOV', 'HOV': 'NOV', 'N0V': 'NOV', 'NQV': 'NOV',
+            'DEG': 'DEC', 'DFC': 'DEC', 'D€C': 'DEC', 'DCC': 'DEC',
+            'JAH': 'JAN', 'JAM': 'JAN', 'J4N': 'JAN',
+        }
+        fixed = _OCR_MONTH.get(mon)
+        if fixed:
+            return f"{day} {fixed} {yr}"
+        # Levenshtein-1 fallback: if the garbled token differs from a valid
+        # month by exactly one character, correct it.
+        for v in _VALID:
+            if len(mon) == 3 and sum(1 for a, b in zip(mon, v) if a != b) == 1:
+                return f"{day} {v} {yr}"
+        return m.group(0)
+    try:
+        document_text = re.sub(
+            r'(\b\d{1,2})[\s\-./]+([A-Za-z€$@#][A-Za-z€$@#0-9]{1,3})[\s\-./]+(\d{2,4}\b)',
+            _fix_month,
+            document_text,
+        )
+    except Exception:
+        pass
+
     # Truncate document text to avoid exceeding token limits
     max_chars = 6500
     if len(document_text) > max_chars:
@@ -2610,6 +2755,52 @@ def _call_vlm(
                         )
                         parsed["result"] = parsed["findings"][:200]
                         parsed["_post_check"] = "P134_consignee_override"
+        except Exception:
+            pass
+
+        # P135 — "Reference not found" post-check override. LLM sometimes
+        # FAILs a "document must reference X" row when X IS on the document
+        # but OCR-munged (e.g. letter O read as digit 0, letter I as 1).
+        # Re-scan the full document_text after OCR-normalization; if the
+        # identifier matches, override to PASS.
+        try:
+            _comp2 = str(parsed.get("compliance", "")).lower().strip()
+            _findings2 = str(parsed.get("findings", ""))
+            _fu2 = _findings2.upper()
+            if _comp2 in ("fail", "not_complied", "non_compliant", "discrepant") and (
+                'NOT FOUND' in _fu2 or 'NOT PRESENT' in _fu2 or
+                'DOES NOT CONTAIN' in _fu2 or 'NOT APPEAR' in _fu2 or
+                'CANNOT FIND' in _fu2 or 'NOT REFERENCED' in _fu2 or
+                "NOT QUOTED" in _fu2 or "NOT MENTIONED" in _fu2
+            ):
+                # Extract identifier tokens from the CONDITION (what we were
+                # looking for) — same pattern as the deterministic path.
+                _cids = re.findall(
+                    r'[A-Z0-9][A-Z0-9/\-._]{5,}[A-Z0-9]',
+                    condition_text or '',
+                    flags=re.IGNORECASE,
+                )
+                _doc_full = (
+                    _normalize_id(document_text or '') + ' ' +
+                    _normalize_id(str(unified_summary or ''))
+                )
+                for _needle in _cids:
+                    _n = _normalize_id(_needle)
+                    if len(_n) < 6 or _n in ('LETTERCREDIT', 'DOCUMENTARY', 'SHIPMENTADVICE', 'COMMERCIALINVOICE'):
+                        continue
+                    if _n in _doc_full:
+                        parsed["compliance"] = "pass"
+                        parsed["verdict"] = "PASS"
+                        parsed["findings"] = (
+                            f"Reference '{_needle}' IS present on document "
+                            f"(OCR-normalised match). Original LLM finding said "
+                            f"not found, but the identifier appears after "
+                            f"OCR character-confusion handling (O↔0, I↔1, etc.). "
+                            f"(P135 override)"
+                        )
+                        parsed["result"] = parsed["findings"][:200]
+                        parsed["_post_check"] = "P135_reference_found_override"
+                        break
         except Exception:
             pass
 
