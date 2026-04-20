@@ -715,6 +715,41 @@ LOOK FOR and capture these if they appear ANYWHERE on any page:
      • Exporter's bank / Advising bank / Negotiating bank if shown →
        parties_found with the specific role.
 
+0a. CONSIGNEE "TO ORDER OF" — CRITICAL (P142):
+   When the BL's CONSIGNEE box contains ANY of these patterns, capture
+   the FULL text (including "TO ORDER OF", the bank/party name, city,
+   country) in the typed "consignee" top-level field AND in
+   parties_found[role=consignee]. Do NOT abbreviate to just "TO ORDER".
+   Patterns to recognise:
+     • "TO ORDER OF: BANK AL HABIB LTD., KARACHI"
+     • "TO THE ORDER OF BANK ALFALAH LIMITED"
+     • "TO ORDER OF [bank/company name]"
+     • "CONSIGNED TO THE ORDER OF ..."
+     • "TO ORDER" (with empty bank line — still capture as "TO ORDER")
+     • "ORDER OF SHIPPER" / "ORDER OF [company]"
+   The typed consignee MUST be the COMPLETE phrase, e.g.:
+     "TO ORDER OF: BANK AL HABIB LTD., KARACHI, PAKISTAN"
+   NOT just "TO ORDER" or "BANK AL HABIB LTD" alone.
+
+0b. OPEN POLICY / COVER NOTE NUMBERS — CRITICAL (P142):
+   Insurance documents and Shipment Advices carry policy / cover note
+   numbers that LC conditions reference. Capture these in BOTH:
+     • references_found[role=open_policy_reference]  (or cover_note_reference)
+     • the typed top-level field open_policy_reference / cover_note_reference
+   Recognise these wordings:
+     • "OPEN POLICY NO. 2023008MIPDO00453"
+     • "POLICY NO. 11/0000118/1024/0-0"
+     • "COVER NOTE NO. XYZ/2025"
+     • "MARINE COVER NOTE 123"
+     • "INSURANCE POLICY NUMBER AB/12345"
+   CRITICAL — open policy number and cover note number are
+   INTERCHANGEABLE SYNONYMS. If the LC asks for "Open Policy No. X" and
+   the document labels it "Cover Note No. X" (or vice versa), they
+   refer to the same reference. Emit entries under BOTH role names
+   (open_policy_reference AND cover_note_reference) when the document
+   uses either label — this lets verification match regardless of which
+   label the LC used.
+
 1. IDENTIFIERS ALWAYS EXTRACTED TO references_found + typed fields:
    - Every HS Code / HTS code / commodity code → references_found[role=hs_code]
      AND hs_codes[] typed array.
@@ -730,6 +765,14 @@ LOOK FOR and capture these if they appear ANYWHERE on any page:
 
 2. DATES ALWAYS EXTRACTED TO dates_found (multiple distinct dates possible):
    - Doc's own issue date → certificate_issue_date / invoice_date / bl_issue_date / draft_date.
+   - Packing List / Weight List / any "List" document MUST have an
+     issue_date (look for "Date:", "Dated:", "Issue Date:", a date in
+     the header, or next to the logo / reference number). Emit
+     dates_found[role=issue_date] AND typed issue_date — NEVER leave
+     issue_date empty on a packing list or weight list if ANY date
+     appears on the page. (P142)
+   - Shipment Advice has a "Sent:" date at the top (email header style)
+     → dates_found[role=advice_sent_date] AND typed issue_date.
    - LC issue date referenced (e.g. "DC Date of Issue: 2-Jan-2026") →
      lc_issue_date (distinct from the doc's own issue_date).
    - Proforma invoice date referenced (e.g. "DATED: 28-Nov-2025") → invoice_date with clear raw.
