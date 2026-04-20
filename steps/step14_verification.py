@@ -1290,6 +1290,56 @@ def _deterministic_verify(
                     'structured_source': 'bl_subtype.issuer_type',
                 }
 
+        # P134: "MADE OUT TO THE ORDER OF <BANK>" / "CONSIGNED TO ORDER OF <X>"
+        # Conditions like "Bill of lading must be made out to the order of
+        # Bank Al Habib Ltd, Karachi" are very common. Check the structured
+        # consignee field — if it contains "TO ORDER OF" plus the required
+        # bank/party name, PASS deterministically.
+        if ('TO THE ORDER OF' in cond_up or 'TO ORDER OF' in cond_up or
+                'MADE OUT TO' in cond_up or 'CONSIGNED TO' in cond_up):
+            # Extract the target party name from the condition — text after
+            # "TO (THE) ORDER OF" up to "." / "," / end-of-line.
+            _m = re.search(
+                r'TO\s+(?:THE\s+)?ORDER\s+OF[\s:]+([^.\n,]+?)(?:[.,\n]|$|\s+KARACHI|\s+WITH|\s+FOR|\s+AT)',
+                cond_up,
+            )
+            _target = (_m.group(1).strip() if _m else '').strip(' .,:')
+            if _target:
+                # Pull consignee text from unified_summary — typed field or
+                # parties_found[role=consignee].
+                _cons_txt = ''
+                if isinstance(unified_summary, dict):
+                    _cons_txt = str(unified_summary.get('consignee', '') or '').upper()
+                    if not _cons_txt:
+                        arr = unified_summary.get('parties_found') or []
+                        for item in (arr if isinstance(arr, list) else []):
+                            if not isinstance(item, dict):
+                                continue
+                            role = str(item.get('role', '')).lower()
+                            if 'consignee' in role:
+                                _cons_txt = (
+                                    str(item.get('name', '') or '').upper() + ' ' +
+                                    str(item.get('raw', '') or '').upper()
+                                )
+                                break
+                # Match rule: consignee text must contain "TO ORDER" and the
+                # target bank's key word(s). "Bank Al Habib" → look for
+                # "AL HABIB" (skip the common word "BANK").
+                _target_key = re.sub(r'\bBANK\b', '', _target).strip()
+                _target_key = re.sub(r'\s+(LTD|LIMITED|LLC|PLC|INC|CORP|CO)\b\.?', '', _target_key).strip()
+                if (_cons_txt and 'TO ORDER' in _cons_txt and _target_key and
+                        _target_key in _cons_txt):
+                    return {
+                        'verdict': 'PASS',
+                        'quote': f"consignee = {_cons_txt[:200]}",
+                        'findings': (
+                            f"BL consigned 'TO ORDER OF {_target_key}' per "
+                            f"structured consignee field."
+                        ),
+                        'confidence': 0.95,
+                        'structured_source': 'unified_summary.consignee',
+                    }
+
     # ── Check 3: Beneficiary name change ("currently known as") ──
     # If the draft/invoice has a drawer/beneficiary showing renamed entity,
     # and the condition is about beneficiary identity — PASS.
@@ -2514,6 +2564,54 @@ def _call_vlm(
                         parsed["_post_check"] = "P133_arithmetic_override"
         except Exception:
             pass  # never let the sanity check break the pipeline
+
+        # P134 — Consignee-name post-check. LLM sometimes FAILs a
+        # "TO THE ORDER OF <BANK>" condition despite the structured
+        # consignee clearly containing that bank. If structured consignee
+        # has 'TO ORDER' + the target bank key word, override to PASS.
+        try:
+            _comp = str(parsed.get("compliance", "")).lower().strip()
+            if _comp in ("fail", "not_complied", "non_compliant", "discrepant"):
+                _cu = (condition_text or "").upper()
+                if ('TO THE ORDER OF' in _cu or 'TO ORDER OF' in _cu or
+                        'MADE OUT TO' in _cu):
+                    _m = re.search(
+                        r'TO\s+(?:THE\s+)?ORDER\s+OF[\s:]+([^.\n,]+?)(?:[.,\n]|$|\s+KARACHI|\s+WITH|\s+FOR|\s+AT)',
+                        _cu,
+                    )
+                    _target = (_m.group(1).strip() if _m else '').strip(' .,:')
+                    _target_key = re.sub(r'\bBANK\b', '', _target).strip()
+                    _target_key = re.sub(
+                        r'\s+(LTD|LIMITED|LLC|PLC|INC|CORP|CO)\b\.?',
+                        '', _target_key,
+                    ).strip()
+                    _cons_txt = ''
+                    if isinstance(unified_summary, dict):
+                        _cons_txt = str(unified_summary.get('consignee', '') or '').upper()
+                        if not _cons_txt:
+                            arr = unified_summary.get('parties_found') or []
+                            for item in (arr if isinstance(arr, list) else []):
+                                if not isinstance(item, dict):
+                                    continue
+                                role = str(item.get('role', '')).lower()
+                                if 'consignee' in role:
+                                    _cons_txt = (
+                                        str(item.get('name', '') or '').upper() + ' ' +
+                                        str(item.get('raw', '') or '').upper()
+                                    )
+                                    break
+                    if (_cons_txt and 'TO ORDER' in _cons_txt and
+                            _target_key and _target_key in _cons_txt):
+                        parsed["compliance"] = "pass"
+                        parsed["verdict"] = "PASS"
+                        parsed["findings"] = (
+                            f"Structured consignee = '{_cons_txt[:150]}' — "
+                            f"contains 'TO ORDER OF {_target_key}'. (P134 override)"
+                        )
+                        parsed["result"] = parsed["findings"][:200]
+                        parsed["_post_check"] = "P134_consignee_override"
+        except Exception:
+            pass
 
         return parsed
 
