@@ -1077,10 +1077,73 @@ These are DIFFERENT documents issued by the same surveyor (e.g. Alfred H Knight)
 USE THE EXACT TITLE from the document. Do NOT rename "QUALITY / ANALYSIS" to "Inspection Certificate".
 
 ━━━ L/C BILLS SCHEDULE / COVERING SCHEDULE / DOCUMENT PRESENTATION ━━━
-A page from a negotiating bank (e.g. Standard Chartered) showing "L/C BILLS SCHEDULE" or
-"COVERING SCHEDULE" or "DOCUMENT PRESENTATION" or "EXPORT DC DOCUMENT PRESENTATION SCHEDULE"
-with document list, CBC number, amount, maturity, and instructions is
-a "Documentary Remittance" (also known as Covering Schedule, L/C Bills Schedule, or Document Presentation).
+A page from a negotiating bank (e.g. Standard Chartered, BIDV, BNP Paribas) showing
+"L/C BILLS SCHEDULE" or "COVERING SCHEDULE" or "DOCUMENT PRESENTATION" or
+"EXPORT DC DOCUMENT PRESENTATION SCHEDULE" with document list, CBC number, amount,
+maturity, and instructions is a "Documentary Remittance" (also known as Covering
+Schedule, L/C Bills Schedule, or Document Presentation).
+
+P130 — DOCUMENT PRESENTATION vs MT799 (CRITICAL — common misclassification):
+A cover letter whose TITLE says "Document Presentation" and which lists attached
+documents in a TABLE is ALWAYS a "Document Remittance" (aka Documentary
+Remittance / Document Presentation / Covering Schedule / Bill Remittance Letter)
+— NEVER "MT799" / "MT999" / "MT740" even if those names appear as ROWS inside
+the attachment table.
+
+WORKED EXAMPLE (actual BIDV presenting-bank cover, do not misclassify):
+
+    BIDV  NGÂN HÀNG TMCP ĐẦU TƯ VÀ PHÁT TRIỂN VIỆT NAM
+    Bank for Investment and Development of Vietnam JSC
+    HA NOI BRANCH ... Swift code: BIDVVNVX
+    20 February 2025
+    Mail to: BANK AL-HABIB LTD., ... KARACHI-74000, PAKISTAN
+
+    Document Presentation                           ← PAGE TITLE
+
+    Letter of credit no: 0001LC55282/2025
+    Document set no:     BE25B00114-001
+    Documents value:     USD 56,661.00
+    Applicant:           AHMAD HASSAN TEXTILE MILLS LTD
+
+    Please acknowledge receipt for the documents enclosed herewith:
+
+    1st mail  2nd mail   Document Description       ← ATTACHMENT TABLE
+    2                    Bill of Exchange
+    3+1C                 Bill of Lading
+    8                    Commercial Invoice
+    1+1C                 Cert. of Origin
+    3                    Packing list
+    3                    shipping cert (14 DAYS)
+    1                    shipment advice
+    1                    SHIPPING CERT
+    1C                   MT799                       ← row naming an enclosed item
+    ...
+    Settlement instructions for this document set:
+    Please remit proceeds by SWIFT to our Hanoi Head Office's account ...
+    Subject to the Rules mentioned in the underlying Letter of Credit ...
+
+→ document_type = "Document Remittance" (NOT "MT799").
+   The words "MT799" / "SHIPPING CERT" inside the table are attachment
+   descriptions, not the page's classification. Confidence HIGH.
+
+DISTINGUISHING RULE — be strict:
+- If the page has ANY of these signals, it is a Document Remittance:
+    • title line containing "Document Presentation" / "Bill Remittance Letter"
+      / "Covering Schedule" / "L/C Bills Schedule" / "Export DC Document
+      Presentation Schedule"
+    • header block with "Letter of credit no:" + "Document set no:" +
+      "Documents value:" + "Applicant:" on consecutive lines
+    • "Please acknowledge receipt for the documents enclosed herewith"
+    • a table with columns "1st mail" / "2nd mail" / "Document Description"
+      (or "Originals" / "Copies" / "Description")
+    • "Settlement instructions for this document set"
+    • the page lists 3+ distinct document types as rows
+- An actual MT799 page looks NOTHING like the above. It has:
+    • page header "FIN.799" / "Free Format Message" / "Message type: 799"
+    • SWIFT F-tags (F20 Transaction Reference, F21 Related Reference,
+      F79 Narrative) as labelled blocks
+    • a single free-text narrative body — NO document-enclosed table
+    • no "1st mail / 2nd mail" columns
 
 ATTACHED SHEETS:
 - If a Bill of Lading says "Details As Per Attached Sheet(s)" or "See Attached" or "As Per Rider", the NEXT page(s) are continuation sheets of that BL — they should be classified as "Bill of Lading" with is_continuation=true, even if they have their own header.
@@ -2188,6 +2251,26 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         is_lc_cont = any(re.search(p, text, re.IGNORECASE) for p in _SWIFT_LC_CONT_PATTERNS)
         is_799 = any(re.search(p, text, re.IGNORECASE) for p in _SWIFT_799_PATTERNS)
         is_999 = any(re.search(p, text, re.IGNORECASE) for p in _SWIFT_999_PATTERNS)
+
+        # P130 — If page looks like a presenting-bank cover letter
+        # (Documentary Remittance / Document Presentation), cancel the
+        # MT799/MT999 detection — "MT799" appearing as a ROW in the
+        # attachment table is not the page's type.
+        _is_cover_letter = (
+            re.search(r'\bDocument\s+Presentation\b', text, re.IGNORECASE) or
+            re.search(r'\bBill\s+Remittance\s+Letter\b', text, re.IGNORECASE) or
+            re.search(r'\bCovering\s+Schedule\b', text, re.IGNORECASE) or
+            re.search(r'\bL/?C\s+Bills\s+Schedule\b', text, re.IGNORECASE) or
+            re.search(r'\bExport\s+DC\s+Document\s+Presentation\s+Schedule\b', text, re.IGNORECASE) or
+            re.search(r'\bPlease\s+acknowledge\s+receipt\s+for\s+the\s+documents?\s+enclosed\b', text, re.IGNORECASE) or
+            re.search(r'\b1st\s+mail\b.{0,20}\b2nd\s+mail\b', text, re.IGNORECASE | re.DOTALL) or
+            re.search(r'\bSettlement\s+instructions\s+for\s+this\s+document\s+set\b', text, re.IGNORECASE)
+        )
+        if _is_cover_letter:
+            # Force: this is a Document Remittance, not MT799/MT999.
+            is_799 = False
+            is_999 = False
+            _progress(f"  Page {pg_num}: overriding SWIFT MT detection — cover letter signals present (Document Remittance)")
         is_swift_cont = any(re.search(p, text, re.IGNORECASE) for p in _SWIFT_CONTINUATION_PATTERNS)
         is_fusion_header = any(re.search(p, text, re.IGNORECASE) for p in _FUSION_HEADER_PATTERNS)
 
