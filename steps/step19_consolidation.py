@@ -248,9 +248,12 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
             _targets = []
             for _m in re.finditer(r"[\'\"“”‘’]([^\'\"“”‘’]{3,120})[\'\"“”‘’]", _fin):
                 _targets.append(_m.group(1))
-            # Identifier-like tokens in condition
+            # Identifier-like tokens in condition (require at least one digit
+            # to avoid matching plain English words)
             for _m in re.finditer(r'[A-Z0-9][A-Z0-9/\-._]{5,}[A-Z0-9]', _cond, re.IGNORECASE):
-                _targets.append(_m.group(0))
+                _tok = _m.group(0)
+                if re.search(r'\d', _tok):
+                    _targets.append(_tok)
             # Bank-name keywords
             _cu = _cond.upper()
             for _bkw in ('AL HABIB', 'ALFALAH', 'AL-HABIB', 'AL-FALAH',

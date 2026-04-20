@@ -1260,6 +1260,7 @@ def _deterministic_verify(
             # check doc_text where an untagged match may still appear).
 
     # ── Check 1b (P135): Generic "must reference / quote / contain <ID>" ──
+    # (same digit-requirement fix applied below)
     # For any condition that carries a specific identifier pattern (open
     # policy no, contract no, proforma no, cover note, LC ref again, etc.)
     # and asks a document to "reference / quote / contain / state / show"
@@ -1270,11 +1271,14 @@ def _deterministic_verify(
             'MENTION' in cond_up) and unified_summary):
         # Pull all identifier-like tokens out of the condition: runs of
         # digits + letters (length >= 6) OR digit/letter/slash/dash chains.
-        _cond_ids = re.findall(
+        _cond_ids_raw = re.findall(
             r'[A-Z0-9][A-Z0-9/\-._]{5,}[A-Z0-9]',
             condition_text or '',
             flags=re.IGNORECASE,
         )
+        # Require at least one digit — otherwise plain English words
+        # like "reference", "Shipment" match the alphanumeric pattern.
+        _cond_ids = [_t for _t in _cond_ids_raw if re.search(r'\d', _t)]
         for _needle in _cond_ids:
             _n_norm = _normalize_id(_needle)
             if len(_n_norm) < 6:
@@ -3031,12 +3035,16 @@ def _call_vlm(
                     for _m in re.finditer(r"[\'\"“”‘’]([^\'\"“”‘’]{3,120})[\'\"“”‘’]",
                                             _src):
                         _cond_tokens.append(_m.group(1))
-                # Identifier-like tokens (numeric/alphanum refs)
+                # Identifier-like tokens (numeric/alphanum refs) — MUST
+                # contain at least one digit to avoid matching plain
+                # English words.
                 for _m in re.finditer(
                     r'[A-Z0-9][A-Z0-9/\-._]{5,}[A-Z0-9]',
                     condition_text or '', flags=re.IGNORECASE,
                 ):
-                    _cond_tokens.append(_m.group(0))
+                    _tok = _m.group(0)
+                    if re.search(r'\d', _tok):
+                        _cond_tokens.append(_tok)
                 # Multi-word proper-noun chunks from the condition
                 # (e.g. "Bank Al Habib Ltd", "Noor-Ud-Din And Sons") —
                 # uppercased phrases or title-cased runs of 2+ words.
