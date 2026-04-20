@@ -2729,20 +2729,37 @@ def _call_vlm(
                     # Try multiple target extraction patterns
                     _target = ''
                     for _pat in (
-                        r'TO\s+(?:THE\s+)?ORDER\s+OF[\s:]+([^.\n,]+?)(?:[.,\n]|$|\s+KARACHI|\s+LAHORE|\s+WITH|\s+FOR|\s+AT)',
-                        r'CONSIGNED\s+TO[\s:]+([^.\n,]+?)(?:[.,\n]|$|\s+KARACHI|\s+LAHORE|\s+WITH|\s+FOR)',
-                        r'CONSIGNEE\s+(?:MUST\s+BE|SHOULD\s+BE|IS|=)[\s:\'""]+([^.\n,\'""]+?)(?:[.,\n\'""]|$)',
-                        r'MADE\s+OUT\s+TO[\s:]+([^.\n,]+?)(?:[.,\n]|$|\s+KARACHI|\s+LAHORE)',
+                        r'TO\s+(?:THE\s+)?ORDER\s+OF[\s:]+([^.\n]+?)(?:[.,\n]|$)',
+                        r'CONSIGNED\s+TO[\s:]+([^.\n]+?)(?:[.,\n]|$)',
+                        r'CONSIGNEE\s+(?:MUST\s+BE|SHOULD\s+BE|IS|=)[\s:\'""]+([^.\n\'""]+?)(?:[.,\n\'""]|$)',
+                        r'MADE\s+OUT\s+TO[\s:]+([^.\n]+?)(?:[.,\n]|$)',
                     ):
                         _m = re.search(_pat, _cu)
                         if _m:
                             _target = _m.group(1).strip(' .,:\'""')
                             break
-                    _target_key = re.sub(r'\bBANK\b', '', _target).strip()
+                    # Extract just the core bank/company name by stripping
+                    # generic noise words. Keep the distinguishing words
+                    # (proper nouns like "AL HABIB", "NOOR-UD-DIN").
+                    _target_key = _target
+                    # Remove all punctuation for robust matching
+                    _target_key = re.sub(r'[.,;:\'"—–-]+', ' ', _target_key)
+                    # Strip trailing country / city words — these aren't the
+                    # distinguishing part of a party name
+                    _LOC_SUFFIX = (
+                        r'\b(?:PAKISTAN|INDIA|BANGLADESH|SRI\s+LANKA|UAE|SAUDI\s+ARABIA|'
+                        r'KARACHI|LAHORE|ISLAMABAD|MUMBAI|DUBAI|RIYADH|DOHA|BEIRUT|'
+                        r'HONG\s+KONG|SINGAPORE|LONDON|NEW\s+YORK|GULBERG|CITY)\b'
+                    )
+                    _target_key = re.sub(_LOC_SUFFIX, '', _target_key, flags=re.IGNORECASE).strip()
+                    # Strip common corporate suffixes & generic words
                     _target_key = re.sub(
-                        r'\s+(LTD|LIMITED|LLC|PLC|INC|CORP|CO)\b\.?',
-                        '', _target_key,
-                    ).strip()
+                        r'\b(BANK|LTD|LIMITED|LLC|PLC|INC|CORP|CO|PVT|PRIVATE|COMPANY|'
+                        r'LIMITEDS?|ENTERPRISES?|GROUP|HOLDINGS?|TRADING|'
+                        r'INSURERS?|INSURANCE)\b\.?',
+                        ' ', _target_key, flags=re.IGNORECASE,
+                    )
+                    _target_key = re.sub(r'\s+', ' ', _target_key).strip()
                     _cons_txt = ''
                     if isinstance(unified_summary, dict):
                         _cons_txt = str(unified_summary.get('consignee', '') or '').upper()
