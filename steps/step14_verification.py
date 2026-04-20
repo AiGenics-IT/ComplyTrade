@@ -3022,16 +3022,32 @@ def _call_vlm(
                     and any(p in _fin_final for p in _NEG_PHRASES)
                     and parsed.get("_post_check") is None):  # not already overridden
                 _cond_tokens = []
-                # Quoted strings in the condition are the most reliable
-                # things to look for: 'BANK AL HABIB LTD', "2023008MIPD000453"
-                for _m in re.finditer(r"[\'\"]([^\'\"]{3,80})[\'\"]", condition_text or ''):
-                    _cond_tokens.append(_m.group(1))
-                # Identifier-like tokens
+                # Quoted strings in the CONDITION and the FINDING — the
+                # LLM's own finding frequently quotes the expected value
+                # (e.g. "CONSIGNEE DOES NOT SHOW 'BANK AL HABIB LTD'").
+                # That quoted text is exactly what we should search for in
+                # the evidence blob to refute the claim.
+                for _src in (condition_text or '', parsed.get('findings', '') or ''):
+                    for _m in re.finditer(r"[\'\"“”‘’]([^\'\"“”‘’]{3,120})[\'\"“”‘’]",
+                                            _src):
+                        _cond_tokens.append(_m.group(1))
+                # Identifier-like tokens (numeric/alphanum refs)
                 for _m in re.finditer(
                     r'[A-Z0-9][A-Z0-9/\-._]{5,}[A-Z0-9]',
                     condition_text or '', flags=re.IGNORECASE,
                 ):
                     _cond_tokens.append(_m.group(0))
+                # Multi-word proper-noun chunks from the condition
+                # (e.g. "Bank Al Habib Ltd", "Noor-Ud-Din And Sons") —
+                # uppercased phrases or title-cased runs of 2+ words.
+                for _m in re.finditer(
+                    r'\b(?:[A-Z][A-Za-z\-]+(?:\s+(?:AND|&|OF|THE|AL|DE|DU|LA|EL))?\s+){1,6}[A-Z][A-Za-z\-]+(?:\s+(?:LTD|LIMITED|PLC|INC|CO|PVT|CORP|LLC|LLP))?',
+                    condition_text or '',
+                ):
+                    _chunk = _m.group(0).strip()
+                    if len(_chunk) >= 6 and _chunk.upper() != _chunk:
+                        # Title-cased phrase — likely a name
+                        _cond_tokens.append(_chunk)
                 # Build the evidence blob
                 _blob_raw = (document_text or '') + ' ' + str(unified_summary or '') + ' ' + str(bl_subtype or '')
                 _blob_norm = _normalize_id(_blob_raw)
