@@ -2450,6 +2450,71 @@ def _call_vlm(
         parsed["row_id"] = row_id
         parsed["elapsed"] = elapsed
         parsed["_verification_path"] = "vlm_split" if USE_SPLIT_PROMPTS else "vlm_legacy"
+
+        # P133 — Arithmetic sanity post-check for FAIL verdicts on
+        # quantity/amount conditions. LLM occasionally writes "X exceeds
+        # maximum Y" where X is in fact less than Y (self-contradictory
+        # finding). Parse the finding text, compare the two numbers, and
+        # flip to PASS when the stated overflow isn't real.
+        try:
+            _comp = str(parsed.get("compliance", "")).lower().strip()
+            _findings = str(parsed.get("findings", ""))
+            if _comp in ("fail", "not_complied", "non_compliant", "discrepant") and _findings:
+                _fu = _findings.upper()
+                # Pattern: "... IS X ... EXCEEDS ... MAXIMUM OF Y ..."
+                # Grab any two numeric values that appear in the finding and
+                # check the claimed exceedance.
+                _nums = re.findall(
+                    r'([-+]?\d{1,3}(?:[,\s]\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)',
+                    _findings,
+                )
+                def _to_float(s):
+                    try:
+                        return float(str(s).replace(',', '').replace(' ', ''))
+                    except Exception:
+                        return None
+                _vals = [_to_float(n) for n in _nums]
+                _vals = [v for v in _vals if v is not None and v > 0]
+
+                _says_exceeds = (
+                    'EXCEEDS' in _fu or 'EXCEED THE' in _fu or
+                    'GREATER THAN' in _fu or 'OVER THE MAXIMUM' in _fu or
+                    'ABOVE THE ALLOWED' in _fu
+                )
+                _says_less = (
+                    'LESS THAN THE MINIMUM' in _fu or 'BELOW THE MINIMUM' in _fu or
+                    'UNDER THE MINIMUM' in _fu
+                )
+                if _says_exceeds and len(_vals) >= 2:
+                    # Heuristic: actual value is the FIRST number quoted,
+                    # limit is typically the LARGEST number after "MAXIMUM"
+                    # or the last explicit number in the finding.
+                    _actual = _vals[0]
+                    _limit = max(_vals[1:])
+                    if _actual <= _limit * 1.0001:  # 0.01% slack for FP
+                        parsed["compliance"] = "pass"
+                        parsed["verdict"] = "PASS"
+                        parsed["findings"] = (
+                            f"{_findings.rstrip('. ')}. Arithmetic post-check: "
+                            f"{_actual:,.2f} is NOT greater than {_limit:,.2f} — within tolerance (P133 override)."
+                        )
+                        parsed["result"] = parsed["findings"][:200]
+                        parsed["_post_check"] = "P133_arithmetic_override"
+                if _says_less and len(_vals) >= 2:
+                    _actual = _vals[0]
+                    _limit = min(_vals[1:])
+                    if _actual >= _limit * 0.9999:
+                        parsed["compliance"] = "pass"
+                        parsed["verdict"] = "PASS"
+                        parsed["findings"] = (
+                            f"{_findings.rstrip('. ')}. Arithmetic post-check: "
+                            f"{_actual:,.2f} is NOT less than {_limit:,.2f} — within tolerance (P133 override)."
+                        )
+                        parsed["result"] = parsed["findings"][:200]
+                        parsed["_post_check"] = "P133_arithmetic_override"
+        except Exception:
+            pass  # never let the sanity check break the pipeline
+
         return parsed
 
     except requests.exceptions.Timeout:
