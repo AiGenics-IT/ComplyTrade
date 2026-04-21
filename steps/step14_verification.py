@@ -860,6 +860,145 @@ ANTI-HALLUCINATION RULES (STRICT — READ CAREFULLY)
    explaining what's missing — NOT PASS with invented text.
 
 ════════════════════════════════════════════════════════════════════════
+WORKED EXAMPLES — RECURRING FAILURE MODES (P195 — MUST INTERNALIZE)
+════════════════════════════════════════════════════════════════════════
+
+These six patterns are the LLM mistakes this system sees MOST OFTEN.
+Every time you evaluate a condition touching one of these topics, walk
+through the worked example FIRST, then apply the rule to your case.
+
+─── EXAMPLE 1: CONSIGNEE "TO ORDER" vs "TO THE ORDER OF X" ───────────
+When a BL's consignee field shows only "TO ORDER" (blank-endorsable)
+and the LC requires the BL to be made out "TO THE ORDER OF BANK X",
+you MUST return FAIL unless there is an EXPLICIT endorsement naming
+BANK X on the BL face. Mere presence of BANK X in the Notify Party
+field, or elsewhere on the document, does NOT satisfy this
+requirement.
+
+  Acceptable evidence for PASS (endorsement):
+    * "ENDORSED TO <BANK X>" or "ENDORSED IN FAVOUR OF <BANK X>"
+    * "FOR AND ON BEHALF OF <BANK X>"
+    * "PAY TO THE ORDER OF <BANK X>"
+    * The consignee field itself containing "TO (THE) ORDER OF <BANK X>"
+  NOT acceptable:
+    * <BANK X> appearing in the Notify Party address
+    * <BANK X> being the LC issuing bank mentioned only in the
+      "Documentary Credit No." block
+
+  Example:
+    LC: "Bill of lading must be made out to the order of Bank Al
+         Habib Ltd., Pakistan."
+    BL consignee: "TO ORDER"
+    BL notify   : "TRANSSION TECNO ELECTRONICS AND BANK AL HABIB LTD."
+    BL face text: no "ENDORSED TO BANK AL HABIB" line
+    ❌ WRONG: PASS — "face text references AL HABIB" (this is the
+        notify-address mention — NOT an endorsement).
+    ✅ CORRECT: FAIL — "Consignee is 'TO ORDER' only. No explicit
+        endorsement to Bank Al Habib on the BL face; its appearance
+        in the Notify Party address does not satisfy the
+        'to the order of Bank Al Habib Ltd.' requirement."
+
+─── EXAMPLE 2: BL SHIPPER MUST BE THE BENEFICIARY ────────────────────
+LC clause 47A-3 (or any "shipper other than beneficiary not
+acceptable") requires that the Shipper shown on the BL be the LC
+Beneficiary (or a legitimately-renamed version of it). When the two
+names are genuinely different entities, you MUST return FAIL — even
+if one name is "a bit shorter" or "seems related".
+
+  Rule: the SHORTER name must be a clear PREFIX of the LONGER name
+        AND share at least the first 2-3 distinctive proper-noun
+        words. Otherwise they are DIFFERENT parties.
+
+  Example (genuine mismatch):
+    LC beneficiary: "OLAM GLOBAL AGRI PTE LTD"
+    BL shipper    : "PT CITRA BORNEO UTAMA TBK"
+    ❌ WRONG: PASS via prefix tolerance — these share NO distinctive
+        words. "PT CITRA BORNEO" is not a prefix of "OLAM GLOBAL".
+    ✅ CORRECT: FAIL — "BL shipper 'PT CITRA BORNEO UTAMA TBK' is a
+        different entity from LC beneficiary 'OLAM GLOBAL AGRI PTE
+        LTD'. 47A-3 prohibits shipper other than beneficiary."
+
+  Counter-example (legitimate prefix — PASS):
+    LC beneficiary: "SINDH INSTITUTE OF UROLOGY AND"  (truncated by LC)
+    BL shipper    : "SINDH INSTITUTE OF UROLOGY AND TRANSPLANTATION"
+    ✅ CORRECT: PASS — LC's stored value is a prefix of the doc's,
+        same entity; the LC truncated the name.
+
+─── EXAMPLE 3: HS CODE EXACT MATCH (with OCR/format tolerance) ───────
+HS codes are regulatory and must match EXACTLY. Allowed
+equivalences:
+  * Trailing zeros: "9018.9050" == "90189050" == "9018905000"
+  * Dot/no-dot: "9018.9050" == "90189050"
+  * OCR O↔0 confusion: only in the same position
+NOT allowed:
+  * Last-digit differences: "9018.9050" ≠ "9018.9051"
+  * Two-digit differences: "90189050" ≠ "90189000"
+
+  Example:
+    LC: "H.S. Code No. 9018.9050 must appear on Bill of Lading."
+    BL: "HS CODE: 9018909000"
+    ❌ WRONG: PASS — "HS code 9018 matches" (only first 4 digits).
+    ✅ CORRECT: FAIL — "LC requires 9018.9050; BL shows 9018909000.
+        These are different codes (9050 vs 9090)."
+
+─── EXAMPLE 4: NTN vs GST ARE DIFFERENT FIELDS ───────────────────────
+Pakistani commercial docs carry two distinct regulator numbers:
+  * NTN (National Tax Number) — format "1234567-8"
+  * GST / STRN (General Sales Tax Reg No) — format "03-00-1234567-17"
+These are NOT interchangeable. If the LC asks for GST No. and the
+doc only shows NTN No., return FAIL — even though the two numbers
+may share some digits (the NTN is typically embedded inside GST).
+
+  Example:
+    LC 46A-2: "GST NO. 03-00-3075811-17 must appear on the Bill
+               of Lading."
+    BL text : "NTN NO. 3075811-4"
+    ❌ WRONG: PASS — "the numbers match" (they don't; the BL carries
+        NTN, not GST).
+    ✅ CORRECT: FAIL — "LC requires GST No. 03-00-3075811-17; BL
+        shows only NTN No. 3075811-4 — GST is missing."
+
+─── EXAMPLE 5: FREIGHT MUST BE SHOWN SEPARATELY ON COMMERCIAL INVOICE ─
+When the LC says "freight value must be shown/mentioned separately
+on the Commercial Invoice" and the invoice is on CFR/CIF/CIP terms,
+the invoice must carry an EXPLICIT freight line such as
+"FREIGHT: USD 500.00" or "OCEAN FREIGHT CHARGES: USD 500.00".
+A single CFR total line (e.g. "CFR KARACHI: USD 10,500.00") does
+NOT satisfy this check — the freight is bundled into the total.
+
+  Example:
+    LC: "Freight value should be mentioned on Commercial Invoice
+         separately."
+    CI text: "TOTAL CFR KARACHI: USD 97,216.00"  (no freight line)
+    ❌ WRONG: PASS — "invoice is CFR therefore includes freight".
+    ✅ CORRECT: FAIL — "Invoice shows only CFR total; no separate
+        freight amount line. LC requires freight mentioned as a
+        distinct value."
+
+─── EXAMPLE 6: MISSING DOCUMENT vs WRONG CONTENT ─────────────────────
+If the LC requires a specific document type (e.g. Agent Certificate,
+Courier Receipt, Beneficiary Certificate) and that document is
+NOT in the submission, return FAIL with "Required document missing"
+— do NOT try to verify the LC clause against an unrelated document
+and then fabricate a finding.
+
+  Example:
+    LC: "Courier Receipt must be presented proving dispatch of
+         Shipment Advice to Asia Insurance."
+    Submission contains: Commercial Invoice, Packing List,
+                         Air Waybill, BL (no Courier Receipt).
+    ❌ WRONG: Verify against Air Waybill and PASS because "AWB
+        proves courier dispatch".
+    ✅ CORRECT: FAIL — "Required document missing: Courier Receipt.
+        No courier dispatch receipt present in the submission."
+
+────────────────────────────────────────────────────────────────────
+These six modes are where LLM verification traditionally breaks.
+Read the example that matches your condition BEFORE forming a
+verdict. If in doubt, FAIL with clear evidence is always better
+than a hallucinated PASS.
+
+════════════════════════════════════════════════════════════════════════
 F47A OVERRIDE HIERARCHY (APPLY BEFORE FINAL VERDICT)
 ════════════════════════════════════════════════════════════════════════
 
