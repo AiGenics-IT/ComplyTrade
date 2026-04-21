@@ -750,6 +750,51 @@ def _hybrid_amount_check(lc_amount: float, lc_currency: str, tol_plus: float, to
     doc_amount = _parse_amount(doc_amt_str)
     doc_currency = _extract_currency(doc_amt_str)
 
+    # P184 — DRAFT TENOR DUPLICATE correction.
+    # If the document is a Draft / Bill of Exchange and the extracted
+    # amount is exactly 2× (or 3×) a repeating face value, this is a
+    # tenor-duplicate BoE (First + Second of Exchange on the same page,
+    # same face value) that got doubled by the summariser. Use the
+    # face value once.
+    _is_draft = (
+        'draft' in str(doc_type).lower() or
+        'bill of exchange' in str(doc_type).lower() or
+        'boe' == str(doc_type).lower().strip()
+    )
+    if _is_draft and doc_amount is not None and doc_text:
+        # Count distinct face-value occurrences in the doc text.
+        _amt_re = re.compile(
+            r'(?:USD|EUR|GBP|JPY|CNY|PKR|AED|SAR)\s*([\d,]+(?:\.\d{1,2})?)',
+            re.IGNORECASE,
+        )
+        _found_amts = []
+        for _m in _amt_re.finditer(doc_text or ''):
+            try:
+                _v = float(_m.group(1).replace(',', ''))
+                if _v > 0:
+                    _found_amts.append(_v)
+            except (ValueError, IndexError):
+                pass
+        if _found_amts:
+            # If the first occurrence repeats (2+ times) and sums to the
+            # current doc_amount, use the single face value.
+            _first = _found_amts[0]
+            _count_first = sum(1 for _v in _found_amts if abs(_v - _first) < 0.01)
+            if (_count_first >= 2 and _first > 0 and
+                    abs(doc_amount - _first * _count_first) < 0.02):
+                doc_amount = _first
+                doc_amt_str = f"{doc_currency or lc_currency} {_first:,.2f}"
+            # Alternative: if doc_text has explicit
+            # "First of Exchange" + "Second of Exchange" with the SAME
+            # reference number, always take the single face value.
+            _txt_up = (doc_text or '').upper()
+            if ('FIRST OF EXCHANGE' in _txt_up and
+                    ('SECOND OF EXCHANGE' in _txt_up or
+                     'SECOND OF THE SAME TENOR' in _txt_up)):
+                if _found_amts and _first > 0:
+                    doc_amount = _first
+                    doc_amt_str = f"{doc_currency or lc_currency} {_first:,.2f}"
+
     if doc_amount is None:
         return CheckResult(check_id=check_id, clause_ref="F32B",
             condition=f"Amount check on {doc_type}", document_checked=doc_type,
@@ -780,6 +825,38 @@ def _hybrid_amount_check(lc_amount: float, lc_currency: str, tol_plus: float, to
     elif check_type == 'draft_vs_invoice':
         # Compare draft to invoice total — NOT LC amount
         inv_total = _parse_amount(inv_amounts_str)
+
+        # P187 — Tenor-duplicate correction. When a Draft / Bill of
+        # Exchange page carries BOTH "First of Exchange" and "Second of
+        # Exchange" for the same underlying draft, the summariser
+        # commonly sums the two face values and returns 2× the real
+        # amount. If we see the tenor-duplicate markers in the text OR
+        # the extracted draft amount is effectively 2× (or 3×) the
+        # invoice total, divide the draft amount back down to the
+        # single face value before comparing.
+        if _is_draft and inv_total and doc_amount:
+            _txt_up = (doc_text or '').upper()
+            _has_first_second = (
+                ('FIRST OF EXCHANGE' in _txt_up or 'SOLE OF EXCHANGE' in _txt_up) and
+                ('SECOND OF EXCHANGE' in _txt_up or
+                 'SECOND OF THE SAME TENOR' in _txt_up or
+                 'OF THE SAME TENOR AND DATE' in _txt_up)
+            )
+            for _mult in (2, 3):
+                if abs(doc_amount - inv_total * _mult) <= max(0.02, inv_total * 0.001):
+                    # Amount is n× invoice total — strong tenor-dup signal.
+                    if _has_first_second or _mult == 2:
+                        doc_amount = doc_amount / _mult
+                        doc_amt_str = f"{doc_currency or lc_currency} {doc_amount:,.2f}"
+                    break
+            # Even if the ratio check didn't fire (rounding edge), the
+            # explicit First+Second markers plus a doc_amount >
+            # inv_total is enough signal. Halve once.
+            if (_has_first_second and doc_amount > inv_total * 1.8 and
+                    doc_amount <= inv_total * 2.2):
+                doc_amount = doc_amount / 2.0
+                doc_amt_str = f"{doc_currency or lc_currency} {doc_amount:,.2f}"
+
         if inv_total and abs(doc_amount - inv_total) <= 0.01:
             return CheckResult(check_id=check_id, clause_ref="F32B",
                 condition="Draft must match invoice total", document_checked=doc_type,

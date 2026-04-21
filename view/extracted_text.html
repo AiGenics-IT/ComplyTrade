@@ -151,7 +151,7 @@ function ct(t){const l=t.toLowerCase();return l==='lc'||l==='mt700'?'lc':l==='am
 
 async function init(){
     try{
-        const r=await fetch(`${API}/api/extracted-text/${jobId}`);
+        const r=await fetch(`${API}/api/extracted-text/${jobId}?_=${Date.now()}`,{cache:'no-store',headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}});
         if(!r.ok)throw new Error(`Server ${r.status}`);
         const d=await r.json();pages=d.pages||[];
         document.getElementById('ji').textContent=`Job: ${jobId.substring(0,8)}... | ${d.total_pages} pages`;
@@ -383,9 +383,27 @@ function toggleSummary(evt) {
 
     // Multi-page coverage banner (inside body, for emphasis)
     if (packetPages.length > 1) {
+        // Build a breakdown of what each page actually is, based on
+        // the page-level classifications from step03.
+        let _pg_breakdown = '';
+        try {
+            const _pieces = packetPages.map(pg => {
+                const _pt = (pages.find(x => x.page_number === pg) || {});
+                const _origDt = _pt.original_document_type || _pt.document_type || '';
+                return `p${pg}: ${_origDt}`;
+            });
+            _pg_breakdown = _pieces.join(' • ');
+        } catch (_e) { _pg_breakdown = packetPages.join(', '); }
+        const _isMergedBl = curType && curType.toLowerCase().includes('+');
+        const _bannerHeading = _isMergedBl
+            ? 'Merged packet'
+            : 'Multi-page document';
+        const _bannerDesc = _isMergedBl
+            ? `this packet groups ${packetPages.length} related pages — the Bill of Lading together with its attached lists and/or conditions of carriage. The summary is built from ALL pages below:`
+            : `this ${packetPages.length}-page packet's summary is built from ALL pages below:`;
         html += `<div style="padding:6px 12px;font-size:.72em;background:#e0f2fe;color:#075985;border-bottom:1px solid #bae6fd">
-          <b>Multi-page document:</b> this ${packetPages.length}-page packet's summary was generated from ALL pages
-          (${packetPages.join(', ')}). No page-1-only bias.
+          <b>${_bannerHeading}:</b> ${_bannerDesc}<br>
+          <span style="color:#0369a1">${e(_pg_breakdown)}</span>
         </div>`;
     }
     const summaryStr = p.document_summary || '';

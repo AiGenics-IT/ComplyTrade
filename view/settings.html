@@ -293,7 +293,7 @@
 
         <div style="border:1px solid #bfe3bf;border-radius:8px;padding:12px;background:#f7fdf7">
           <div style="font-size:.78em;font-weight:700;color:#2c8a2c;margin-bottom:4px">Step 8 — Packet Summary (Step 3e) <span style="font-weight:400;color:#888">(backend step03 sub — all packets)</span></div>
-          <div style="font-size:.75em;color:#666;margin-bottom:6px">Packet-level structured summary across all pages. Tiered: ≤4 pages → VLM with images; 5–20 → text LLM; 21+ → chunked LLM.</div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">Packet-level structured summary across all pages using the text LLM.</div>
           <textarea id="prompt-step8" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
         </div>
 
@@ -317,13 +317,13 @@
 
         <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
           <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 12 — MT Reconciliation <span style="font-weight:400;color:#888">(backend step05)</span></div>
-          <div style="font-size:.75em;color:#666;margin-bottom:6px">VLM cross-check of GLM OCR on SWIFT MT-side pages to catch missed fields</div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">LLM cross-check of GLM OCR on SWIFT MT-side pages to catch missed fields</div>
           <textarea id="prompt-step12" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
         </div>
 
         <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
           <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 13 — LC Field Extraction <span style="font-weight:400;color:#888">(backend step06)</span></div>
-          <div style="font-size:.75em;color:#666;margin-bottom:6px">VLM fallback to extract SWIFT fields when OCR regex fails on scanned LCs</div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">LLM extraction of SWIFT fields from scanned LCs when OCR regex fails</div>
           <textarea id="prompt-step13" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
         </div>
 
@@ -341,7 +341,7 @@
 
         <div style="border:1px solid #e0e5ff;border-radius:8px;padding:12px">
           <div style="font-size:.78em;font-weight:700;color:#1554ca;margin-bottom:4px">Step 16 — Shipping Reconciliation <span style="font-weight:400;color:#888">(backend step09)</span></div>
-          <div style="font-size:.75em;color:#666;margin-bottom:6px">VLM reconciliation on shipping documents to resolve OCR ambiguities and extract structured fields</div>
+          <div style="font-size:.75em;color:#666;margin-bottom:6px">LLM reconciliation on shipping documents to resolve OCR ambiguities and extract structured fields</div>
           <textarea id="prompt-step16" style="width:100%;height:120px;font-size:.75em;font-family:monospace;border:1px solid #ddd;border-radius:4px;padding:6px;resize:vertical;background:#fafafa" readonly></textarea>
         </div>
 
@@ -411,7 +411,7 @@
       <div class="ps-phase p2">Phase 2 — Compliance Verification (On Demand)</div>
       <div class="ps-step"><span class="ps-num p2">12</span><div class="ps-label"><div class="n">Clause Decomposition</div><div class="d">Break clauses into checkable conditions</div></div></div>
       <div class="ps-step"><span class="ps-num p2">13</span><div class="ps-label"><div class="n">Row Construction</div><div class="d">Build 5-column verification worksheet</div></div></div>
-      <div class="ps-step"><span class="ps-num p2">14</span><div class="ps-label"><div class="n">VLM Verification</div><div class="d">Check conditions against documents</div></div></div>
+      <div class="ps-step"><span class="ps-num p2">14</span><div class="ps-label"><div class="n">LLM Verification</div><div class="d">Check conditions against documents</div></div></div>
       <div class="ps-step"><span class="ps-num p2">14b</span><div class="ps-label"><div class="n">Key Term Checks</div><div class="d">Dates, amounts, ports, deadlines</div></div></div>
       <div class="ps-step"><span class="ps-num p2">15</span><div class="ps-label"><div class="n">Non-Compliance</div><div class="d">Classify checkable vs informational</div></div></div>
       <div class="ps-step"><span class="ps-num p2">16</span><div class="ps-label"><div class="n">Confidence Review</div><div class="d">Escalate low-confidence results</div></div></div>
@@ -551,33 +551,41 @@ loadSettings();
 
 // ── Load Prompts ──
 // Model tag per settings-page step (OCR / VLM / LLM / VLM+LLM)
+// Tags reflect the ACTUAL endpoint each step calls at runtime.
+//   OCR     = GLM-OCR (GLM_OCR_URL)
+//   VLM     = Qwen VLM with image payload (QWEN_VLM_URL)
+//   LLM     = Qwen text-only LLM (QWEN_TEXT_LLM_URL)
+//   VLM+LLM = tiered — some calls go to VLM, others to text LLM
+//   LLM+VLM = text LLM primary with VLM fallback
 const _STEP_MODEL_TAGS = {
-  step1:  {tag: 'OCR',     desc: 'GLM dedicated OCR model'},
-  step2:  {tag: 'VLM',     desc: 'Qwen VLM — image + text'},
-  step3:  {tag: 'VLM',     desc: 'Legacy single-prompt VLM'},
-  step4:  {tag: 'VLM',     desc: 'Doc type — VLM with image'},
-  step5:  {tag: 'VLM',     desc: 'Markings — visual-only VLM'},
-  step6:  {tag: 'VLM',     desc: 'Copy status — visual VLM'},
-  step7:  {tag: 'VLM',     desc: 'BL sub-type — VLM with text+image'},
-  step8:  {tag: 'VLM+LLM', desc: 'Tiered: ≤4 pg VLM, 5+ pg text LLM, 21+ chunked LLM'},
-  step9:  {tag: 'LLM',     desc: 'Text-only packet validator'},
-  step10: {tag: 'VLM',     desc: 'Page re-check — VLM with image+context'},
-  step11: {tag: 'VLM',     desc: 'MT identification'},
-  step12: {tag: 'VLM',     desc: 'MT reconciliation'},
-  step13: {tag: 'VLM',     desc: 'LC field extraction'},
-  step14: {tag: 'VLM',     desc: 'LC amendment processing'},
-  step15: {tag: 'VLM',     desc: 'Shipping classification'},
-  step16: {tag: 'VLM',     desc: 'Shipping reconciliation'},
-  step17: {tag: 'LLM',     desc: 'Text-only decomposition'},
-  step18: {tag: 'LLM',     desc: 'Text-only decomposition user template'},
-  step19: {tag: 'LLM',     desc: 'Verification — text-only LLM (uses document_text + visual_metadata)'},
+  step1:  {tag: 'GLM', desc: 'GLM-OCR at GLM_OCR_URL (dedicated OCR)'},
+  step2:  {tag: 'VLM', desc: 'Qwen VLM — OCR cleaning & text completion'},
+  step3:  {tag: 'VLM', desc: 'Legacy page classification — Qwen VLM with image'},
+  step4:  {tag: 'VLM', desc: 'Step 3a — Document type classification (Qwen VLM)'},
+  step5:  {tag: 'VLM', desc: 'Step 3b — Markings & seals extraction (Qwen VLM)'},
+  step6:  {tag: 'VLM', desc: 'Step 3c — Copy / Original status (Qwen VLM)'},
+  step7:  {tag: 'LLM', desc: 'Text LLM (QWEN_TEXT_LLM_URL)'},
+  step8:  {tag: 'LLM', desc: 'Text LLM (QWEN_TEXT_LLM_URL)'},
+  step9:  {tag: 'LLM', desc: 'Text LLM (QWEN_TEXT_LLM_URL)'},
+  step10: {tag: 'LLM', desc: 'Text LLM (QWEN_TEXT_LLM_URL)'},
+  step11: {tag: 'LLM', desc: 'Text LLM (QWEN_TEXT_LLM_URL)'},
+  step12: {tag: 'LLM', desc: 'Text LLM (QWEN_TEXT_LLM_URL)'},
+  step13: {tag: 'LLM', desc: 'Text LLM (QWEN_TEXT_LLM_URL)'},
+  step14: {tag: 'LLM', desc: 'Text LLM (QWEN_TEXT_LLM_URL)'},
+  step15: {tag: 'VLM', desc: 'Shipping classification — Qwen VLM with document image'},
+  step16: {tag: 'LLM', desc: 'Text LLM (QWEN_TEXT_LLM_URL)'},
+  step17: {tag: 'LLM', desc: 'Text LLM (QWEN_TEXT_LLM_URL)'},
+  step18: {tag: 'LLM', desc: 'Text LLM (QWEN_TEXT_LLM_URL)'},
+  step19: {tag: 'LLM', desc: 'Text LLM (QWEN_TEXT_LLM_URL)'},
 };
 function _renderModelTag(tag) {
   const styles = {
+    'GLM':     'background:#fff4e5;color:#c2410c;border:1px solid #fed7aa',
     'OCR':     'background:#fff4e5;color:#c2410c;border:1px solid #fed7aa',
     'VLM':     'background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd',
     'LLM':     'background:#f3e8ff;color:#6b21a8;border:1px solid #e9d5ff',
     'VLM+LLM': 'background:linear-gradient(90deg,#e0f2fe,#f3e8ff);color:#0d3b8a;border:1px solid #cdd6f5',
+    'LLM+VLM': 'background:linear-gradient(90deg,#f3e8ff,#e0f2fe);color:#0d3b8a;border:1px solid #cdd6f5',
   };
   const s = styles[tag] || styles['VLM'];
   return `<span style="display:inline-block;padding:1px 6px;border-radius:10px;${s};font-weight:700;font-size:.75em;margin-left:6px;vertical-align:middle">${tag}</span>`;

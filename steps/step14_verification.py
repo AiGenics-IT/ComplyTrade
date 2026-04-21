@@ -71,11 +71,16 @@ DOC_TYPE_ALIASES = {
     "air waybill": [
         "air waybill", "airway bill", "awb", "hawb", "mawb",
         "house air waybill", "master air waybill",
-        "courier receipt", "courier waybill", "courier service receipt",
-        "express waybill", "express envelope", "express courier",
-        "express delivery receipt",
-        "dhl", "fedex", "fed ex", "ups", "tnt", "aramex",
-        "shipment advice", "shipping advice", "declaration of shipment",
+        # P188/P192 — "Shipment Advice" AND "Courier Receipt" are SEPARATE
+        # instruments from the AWB:
+        #   - Shipment Advice = letter/email/fax from beneficiary
+        #   - Courier Receipt = proof that documents (esp. the shipment
+        #     advice) were dispatched by courier; a dedicated DHL/FedEx
+        #     voucher for the document envelope.
+        # An Air Waybill is the carriage contract for the goods itself.
+        # Keep all three groups disjoint so a missing Courier Receipt or
+        # missing Shipment Advice is reported as missing instead of
+        # being silently verified against the AWB.
     ],
     "commercial invoice": [
         "commercial invoice", "invoice", "tax invoice", "signed invoice",
@@ -106,15 +111,22 @@ DOC_TYPE_ALIASES = {
         "courier receipt", "courier waybill", "courier service receipt",
         "express waybill", "express delivery receipt", "express courier",
         "dhl", "fedex", "fed ex", "ups", "tnt", "aramex",
-        "air waybill", "airway bill", "awb",
-        "shipment advice", "declaration of shipment",
-        "shipping advice",
+        # P192 — Air Waybill is a SEPARATE instrument (carriage contract
+        # for the goods). Courier Receipt is the receipt for the
+        # courier dispatch of the DOCUMENTS (often the shipment advice).
+        # Keep groups disjoint so missing Courier Receipt reports as
+        # missing instead of being verified against the AWB.
     ],
     "email evidence": [
         "email evidence", "email screenshot", "email confirmation",
         "email copy", "covering email", "transmission record",
-        "shipment advice", "shipment advise", "declaration of shipment",
-        "shipping advice", "shipping advise",
+        # P188 — Shipment Advice is a separate instrument, see note on
+        # the "air waybill" group above.
+    ],
+    "shipment advice": [
+        "shipment advice", "shipment advise", "shipping advice",
+        "shipping advise", "beneficiary shipment advice",
+        "declaration of shipment", "notice of shipment",
     ],
     "fax confirmation": [
         "fax confirmation", "fax report", "fax transmission",
@@ -684,9 +696,93 @@ ANTI-HALLUCINATION RULES (STRICT — READ CAREFULLY)
 ════════════════════════════════════════════════════════════════════════
 
 1. Your output MUST contain a "quote" field with the EXACT line(s) from
-   DOCUMENT TEXT or STRUCTURED FACTS that justify the verdict.
+   DOCUMENT TEXT or STRUCTURED FACTS that justify the verdict. The
+   quote must be text that literally appears in the document — not a
+   paraphrase, not a generalization, not an inference.
 
 2. If you cannot quote the relevant evidence, the verdict is FAIL. Period.
+   "I don't see it written but it's probably implied" = FAIL, not PASS.
+
+1a. ABSOLUTE ANTI-INFERENCE RULE (P180 — read before every verdict):
+    Do NOT infer that a party is addressed/named on a document from
+    INDIRECT SIGNALS. Indirect signals that DO NOT satisfy a check:
+      - Presence of the LC / documentary credit number
+      - Presence of an OTHER party's name (insurer, shipper, etc.)
+      - The subject line mentioning "SHIPMENT ADVICE" or similar
+      - The document being issued by the beneficiary
+      - Any contextual relevance
+    A party X is "addressed to / named in / includes / mentions X"
+    ONLY when the DOCUMENT TEXT contains the FULL DISTINCTIVE NAME
+    of X as a contiguous phrase.
+    WORKED EXAMPLE (this is the hallucination we have repeatedly seen):
+      LC Applicant (F50): "SINDH INSTITUTE OF UROLOGY AND
+                          TRANSPLANTATION (SIUT), KARACHI, PAKISTAN"
+      Condition:         "Shipment Advice must be addressed to the
+                          Applicant"
+      Document text:     "Insurance Company Name: M/S. SINDH INSURANCE
+                          Documentary Credit Number: 0401ILC083248
+                          Haemonetics (Hong Kong) Limited ..."
+      ❌ WRONG LLM answer: PASS — "The Shipment Advice is addressed
+          to the Applicant, SINDH INSTITUTE OF UROLOGY AND, as
+          indicated by the presence of the LC number and insurance
+          company name." → This is a HALLUCINATION. The document
+          contains only "SINDH INSURANCE" (a different entity).
+          The applicant's full name "SINDH INSTITUTE OF UROLOGY AND
+          TRANSPLANTATION" never appears in the document.
+      ✅ CORRECT LLM answer: FAIL — "Applicant 'SINDH INSTITUTE OF
+          UROLOGY AND TRANSPLANTATION' does not appear on the
+          document. The document mentions 'M/S. SINDH INSURANCE'
+          but that is a different party."
+
+1b. HOW TO VERIFY "ADDRESSED TO <PARTY>" CORRECTLY:
+    Step 1. Read the LC PARTIES block at the top of this prompt and
+            find the full name of the party the condition references.
+    Step 2. Take the DISTINCTIVE CORE of that name — the 2-4
+            consecutive proper-noun words that uniquely identify the
+            entity (e.g. "SINDH INSTITUTE OF UROLOGY" — NOT just
+            "SINDH" alone, which is generic).
+    Step 3. Search the DOCUMENT TEXT for that CONTIGUOUS CORE phrase.
+            Ignore punctuation / whitespace differences, but require
+            the words to appear in order and next to each other.
+    Step 4.
+      - If found → PASS with the exact quoted text.
+      - If not found → FAIL. Mention that the party's name is absent
+        and what the document DOES say near a "To:" or "Attn:" header.
+
+1c. SAME LOGIC APPLIES TO:
+    "must be made out to the order of X" (consignee)
+    "must notify X" (notify party) — X must appear in the NOTIFY
+    field, not elsewhere
+    "must mention X" / "must quote X" / "must reference X"
+    "must be drawn on X" (drawee) — X must appear as the drawee
+    In every case: the party's full distinctive name must appear on
+    the document in its expected role-location. Indirect signals
+    (credit number, related party mention, subject line relevance)
+    are NEVER sufficient evidence.
+
+1d. BUT DO NOT BE OVERLY STRICT EITHER (P180 balance):
+    The rule above is about preventing HALLUCINATED PASSES, not
+    creating rigid FAIL everywhere. The following ARE ACCEPTABLE
+    variations of the same party name and MUST PASS:
+      - Case differences: "Sindh Institute" = "SINDH INSTITUTE"
+      - Honorifics: "M/s SINDH INSTITUTE..." = "SINDH INSTITUTE..."
+      - Corporate suffix differences: "UBL" = "UBL Ltd" = "United Bank"
+      - Acronym expansion: "SIUT" = "Sindh Institute of Urology and
+        Transplantation" — these are THE SAME entity under UCP 600
+      - Common typos: "Insititute" ≈ "Institute", "Karachhi" ≈ "Karachi"
+      - Address differences: name matches but address differs → PASS
+      - Company "currently known as / formerly known as" forms
+      - Ampersand vs "AND": "SONS & CO" = "SONS AND CO"
+      - Whitespace: "BANK ALHABIB" = "BANK AL HABIB" = "BANK AL-HABIB"
+      - ADDITIONAL INFO AFTER THE NAME: if the doc says "SINDH
+        INSTITUTE OF UROLOGY AND TRANSPLANTATION (SIUT), 9TH FLOOR,
+        XYZ BUILDING, KARACHI", that fully satisfies an LC naming
+        "SINDH INSTITUTE OF UROLOGY AND TRANSPLANTATION (SIUT),
+        KARACHI, PAKISTAN" — address differences are immaterial
+        once the entity name matches.
+    The test is: would a reasonable bank checker say these are the
+    same party? If YES → PASS. Only FAIL when the entity is genuinely
+    DIFFERENT or absent.
 
 3. NEVER copy condition wording into "findings". Findings must describe what
    you ACTUALLY FOUND on the document, not what was being checked.
@@ -784,6 +880,8 @@ Key words must match. Ignore:
 - Company suffixes (LTD / LIMITED / BV / INC / CO / COMPANY / LLC / S.A.)
 - Minor spelling or OCR differences
 - Address differences when names match
+- Honorifics / prefixes: M/s, M/S, Messrs., Mr., Mrs., Dr.
+- Acronyms in parentheses: "(SIUT)", "(NGO)", "(PVT) LTD"
 
 Examples (all PASS):
 - "UNITED BANK" = "UNITED BANK LIMITED" = "UBL"
@@ -791,6 +889,31 @@ Examples (all PASS):
   document itself says "currently known as" / "formerly known as" —
   SAME legal entity under a renamed form.
 - "Dalda Foods Limited" = "DALDA FOODS LTD."
+
+P165 — TRUNCATED / PREFIX NAME TOLERANCE (CRITICAL):
+LC extraction occasionally truncates long applicant/beneficiary
+names at a newline or field boundary (e.g. the LC F50 value stored
+as "SINDH INSTITUTE OF UROLOGY AND" — the continuation
+"TRANSPLANTATION (SIUT)" got cut off during field consolidation).
+When comparing a document's party name against an LC party name:
+
+- If the LC-required name appears as a PREFIX of the document's name
+  (after normalizing to uppercase, stripping M/S, honorifics,
+  punctuation, and extra whitespace) → PASS. The document has the
+  full form; the LC lost a suffix.
+  Example:
+    LC required:  "SINDH INSTITUTE OF UROLOGY AND"
+    Document:     "M/s Sindh Institute of Urology and Transplantation (SIUT)"
+    → Normalized LC:  "SINDH INSTITUTE OF UROLOGY AND"
+    → Normalized doc: "SINDH INSTITUTE OF UROLOGY AND TRANSPLANTATION SIUT"
+    → LC is a prefix of doc → PASS
+- Symmetrically: if the document's name is a prefix of the LC
+  required name (document carrying a short form), same PASS.
+- Do NOT write "does not exactly match" as a FAIL reason for these
+  cases — the mismatch is caused by LC-side text truncation, not
+  a real party mismatch. Under UCP 600 Art 14(d), minor differences
+  in spelling or completeness of name that do not change the party's
+  legal identity are acceptable.
 
 ════════════════════════════════════════════════════════════════════════
 GOODS DESCRIPTION TOLERANCE
@@ -839,16 +962,59 @@ DOCUMENT-TYPE RULE PACK (applies in addition to CORE):
 
 FAMILY_PACK_BL = """BILL OF LADING — additional verification rules:
 
+STALE BL — TIME CHECK ONLY (P170 — CRITICAL):
+"Stale" means ONE thing only: the BL was presented TO THE BANK more
+than 30 days AFTER the on-board date on the BL (fixed threshold).
+It is purely a DATE ARITHMETIC check:
+    days_elapsed = DR.receiving_date - BL.onboard_date
+    STALE if days_elapsed > 30 (fixed 30-day rule; do not use F48).
+Staleness is NOT related to:
+  - form_type (short form / long form / blank back) — that is UCP 600
+    Art 20(a)(v) short-form BL rules, a completely different topic
+  - issuer_type (house / master / charter party) — that is UCP 600
+    Art 19/20 issuer rules
+  - cleanness (clean / claused) — UCP 600 Art 27
+  - reverse-side T&C presence
+NEVER write "BL is stale because it is marked as short form" or
+"BL is stale because it is blank back" or any similar statement.
+Those attributes have NOTHING to do with staleness. If the LC says
+"BL must not be stale" and you can't compute the days_elapsed
+formula, return REVIEW with "cannot determine staleness without the
+receiving date on the Documentary Remittance" — do NOT invent
+reasoning from other BL attributes.
+
+BL ATTRIBUTES — NEVER CONFUSE THESE (P167 — CRITICAL):
+The following are FIVE INDEPENDENT attributes on a BL. They mean
+completely different things under UCP 600 and must NOT be substituted
+for each other:
+  • cleanness (Art 27):    clean | claused
+      - Clean = no damage/defect notation on the goods.
+      - Claused = has damage clause like "2 BAGS TORN".
+  • contract_type:         standard | charter_party | multimodal | ...
+  • issuer_type:           master_bl | house_bl | charter_party_bl
+  • signing_type:          master_signed | agent_for_master |
+                           carrier_signed | forwarder_signed
+  • form_type:             short_form_blank_back | long_form_printed_overleaf
+  • is_blank_back / has_terms_overleaf: reverse-side T&C presence
+"Blank back" is about the physical BACK of the BL page.
+"Claused" is about damage notations on the FACE of the BL.
+They are NOT the same thing. NEVER say "BL is claused because it
+is blank back" — that is a nonsense statement. If the condition
+says "BL must not be claused", read bl_subtype.cleanness (or
+is_claused_bl / clausing_notes) — do NOT read is_blank_back.
+
 BL prohibition clauses (condition says "BL must NOT be [charter party / short
-form / blank back / house BL / freight forwarder issued]"):
+form / blank back / house BL / freight forwarder issued / claused]"):
 - bl_subtype.signing_type in {master_signed, agent_for_master, carrier_signed}
     → NOT a freight forwarder BL → PASS "not forwarder" prohibition
 - bl_subtype.has_terms_overleaf = true OR reverse page has T&C
-    → NOT short form → PASS "not short form" prohibition
+    → NOT short form / NOT blank back → PASS "not short form" prohibition
 - bl_subtype.contract_type != "charter_party"
     → NOT charter party → PASS "not charter party" prohibition
 - bl_subtype.issuer_type = "house_bl" → IS a house BL (check condition)
 - bl_subtype.signing_type = "forwarder_signed" → IS forwarder-issued
+- bl_subtype.cleanness = "clean" → NOT claused → PASS "not claused" / "must be clean"
+- bl_subtype.cleanness = "claused" → IS claused → FAIL "not claused" / "must be clean"
 Remember: the prohibition words are in the CONDITION, not on the BL. PASS
 means the BL is NOT the prohibited type.
 
@@ -1407,17 +1573,128 @@ def _deterministic_verify(
                     'confidence': 0.95,
                     'structured_source': 'bl_subtype.contract_type',
                 }
-        # "NOT SHORT FORM" / "NOT SHORT-FORM" / "NOT BLANK BACK"
-        if ('NOT' in cond_up and
-                ('SHORT FORM' in cond_up or 'SHORT-FORM' in cond_up or
-                 'BLANK BACK' in cond_up or 'BLANK-BACK' in cond_up)):
-            if bl_subtype.get('has_terms_overleaf') is True or bl_subtype.get('is_blank_back') is False:
+        # P182 — "NOT SHORT FORM" and "NOT BLANK BACK" are DIFFERENT checks:
+        #   SHORT FORM = T&C printed overleaf but abbreviated/half-page
+        #   BLANK BACK = no T&C overleaf at all
+        # Handle each prohibition independently.
+        _asks_not_short_form = (
+            'NOT' in cond_up and
+            ('SHORT FORM' in cond_up or 'SHORT-FORM' in cond_up) and
+            'BLANK BACK' not in cond_up and 'BLANK-BACK' not in cond_up
+        )
+        _asks_not_blank_back = (
+            'NOT' in cond_up and
+            ('BLANK BACK' in cond_up or 'BLANK-BACK' in cond_up) and
+            'SHORT FORM' not in cond_up and 'SHORT-FORM' not in cond_up
+        )
+        _asks_not_either = (
+            'NOT' in cond_up and
+            ('SHORT FORM' in cond_up or 'SHORT-FORM' in cond_up) and
+            ('BLANK BACK' in cond_up or 'BLANK-BACK' in cond_up)
+        )
+
+        if _asks_not_short_form:
+            # Pass if BL is NOT flagged short_form (could be long form OR
+            # blank back — both acceptable for this specific condition).
+            _isf = bl_subtype.get('is_short_form')
+            _ibb = bl_subtype.get('is_blank_back')
+            # P186 — If the BL has NO T&C page at all it is classified as
+            # BLANK BACK, not short form. User rule: "if terms and
+            # conditions are missing just mark as blank back not short
+            # form". So when is_blank_back=True, short-form check must
+            # PASS here — the blank-back check (separate row) will carry
+            # the single FAIL for missing T&Cs.
+            if _ibb is True:
                 return {
                     'verdict': 'PASS',
-                    'quote': f"bl_subtype.has_terms_overleaf={bl_subtype.get('has_terms_overleaf')}, is_blank_back={bl_subtype.get('is_blank_back')}",
-                    'findings': "BL has T&C printed on reverse (not short form / blank back).",
+                    'quote': f"is_blank_back=True (no T&C page), is_short_form={_isf}",
+                    'findings': (
+                        "BL has no T&C page — classified as blank back, "
+                        "not short form. Short-form prohibition does not "
+                        "apply (the blank-back prohibition covers this)."
+                    ),
+                    'confidence': 0.95,
+                    'structured_source': 'bl_subtype.is_blank_back',
+                }
+            if _isf is False:
+                return {
+                    'verdict': 'PASS',
+                    'quote': f"bl_subtype.is_short_form = {_isf}",
+                    'findings': (
+                        "BL is not a short form "
+                        f"(is_short_form={_isf}, form_type="
+                        f"{bl_subtype.get('form_type','unknown')})."
+                    ),
+                    'confidence': 0.95,
+                    'structured_source': 'bl_subtype.is_short_form',
+                }
+            if _isf is True:
+                return {
+                    'verdict': 'FAIL',
+                    'quote': f"bl_subtype.is_short_form = True",
+                    'findings': (
+                        "BL is a short form (terms overleaf are "
+                        "abbreviated). LC prohibits short-form BLs."
+                    ),
+                    'confidence': 0.95,
+                    'structured_source': 'bl_subtype.is_short_form',
+                }
+        elif _asks_not_blank_back:
+            # Pass if BL has T&C attached (not blank back).
+            _ibb = bl_subtype.get('is_blank_back')
+            _hto = bl_subtype.get('has_terms_overleaf')
+            if _hto is True or _ibb is False:
+                return {
+                    'verdict': 'PASS',
+                    'quote': f"bl_subtype.has_terms_overleaf={_hto}, is_blank_back={_ibb}",
+                    'findings': (
+                        "BL has T&C printed on reverse (not blank back)."
+                    ),
                     'confidence': 0.95,
                     'structured_source': 'bl_subtype.has_terms_overleaf',
+                }
+            if _ibb is True:
+                return {
+                    'verdict': 'FAIL',
+                    'quote': f"bl_subtype.is_blank_back = True",
+                    'findings': (
+                        "BL has no T&C attached (blank back). "
+                        "LC prohibits blank-back BLs."
+                    ),
+                    'confidence': 0.95,
+                    'structured_source': 'bl_subtype.is_blank_back',
+                }
+        elif _asks_not_either:
+            # Condition forbids BOTH short-form AND blank-back.
+            _isf = bl_subtype.get('is_short_form')
+            _ibb = bl_subtype.get('is_blank_back')
+            _hto = bl_subtype.get('has_terms_overleaf')
+            if _isf is False and (_hto is True or _ibb is False):
+                return {
+                    'verdict': 'PASS',
+                    'quote': f"is_short_form={_isf}, is_blank_back={_ibb}",
+                    'findings': (
+                        "BL has full T&C on reverse (neither short form nor "
+                        "blank back)."
+                    ),
+                    'confidence': 0.95,
+                    'structured_source': 'bl_subtype.has_terms_overleaf',
+                }
+            if _isf is True:
+                return {
+                    'verdict': 'FAIL',
+                    'quote': f"bl_subtype.is_short_form = True",
+                    'findings': "BL is a short form — LC forbids.",
+                    'confidence': 0.95,
+                    'structured_source': 'bl_subtype.is_short_form',
+                }
+            if _ibb is True:
+                return {
+                    'verdict': 'FAIL',
+                    'quote': f"bl_subtype.is_blank_back = True",
+                    'findings': "BL is blank back — LC forbids.",
+                    'confidence': 0.95,
+                    'structured_source': 'bl_subtype.is_blank_back',
                 }
         # "NOT ISSUED BY FREIGHT FORWARDER" / "NOT FORWARDER"
         if 'NOT' in cond_up and ('FORWARDER' in cond_up or 'FREIGHT FORWARDER' in cond_up):
@@ -1442,6 +1719,49 @@ def _deterministic_verify(
                     'confidence': 0.95,
                     'structured_source': 'bl_subtype.issuer_type',
                 }
+        # P167: "BL MUST NOT BE CLAUSED" / "CLAUSED BL NOT ACCEPTABLE" /
+        # "BL MUST BE CLEAN". This is UCP 600 Art 27 — a claused BL has
+        # damage/defect notations. It is a COMPLETELY DIFFERENT attribute
+        # from blank_back (which is about the reverse side of the BL).
+        # Read bl_subtype.cleanness / is_claused_bl — never confuse with
+        # is_blank_back / has_terms_overleaf.
+        if (('NOT' in cond_up and 'CLAUSED' in cond_up) or
+                ('MUST BE CLEAN' in cond_up) or
+                ('CLEAN' in cond_up and ('BILL' in cond_up or 'BL' in cond_up) and
+                 ('BE' in cond_up or 'MUST' in cond_up))):
+            _cleanness = str(bl_subtype.get('cleanness', '')).lower().strip()
+            _is_claused = bl_subtype.get('is_claused_bl')
+            _notes = str(bl_subtype.get('clausing_notes', '') or '').strip()
+            # Explicit CLAUSED → FAIL
+            if _cleanness == 'claused' or _is_claused is True or _notes:
+                return {
+                    'verdict': 'FAIL',
+                    'quote': f"bl_subtype.cleanness = claused; clausing_notes = {_notes[:150]}",
+                    'findings': (
+                        f"BL is claused — damage/defect notation present: "
+                        f"'{_notes[:150] or '(see BL face)'}'. LC requires clean BL "
+                        f"(UCP 600 Art 27)."
+                    ),
+                    'confidence': 0.95,
+                    'structured_source': 'bl_subtype.cleanness',
+                }
+            # Otherwise default to CLEAN (P168). UCP 600 Art 27 says a
+            # BL is clean unless it has an explicit clause declaring the
+            # goods defective. If structured facts have no claused flag
+            # and no clausing_notes, the BL is clean by default — do
+            # NOT let the LLM hallucinate a FAIL.
+            return {
+                'verdict': 'PASS',
+                'quote': f"bl_subtype.cleanness = {_cleanness or 'clean'}, is_claused_bl = {_is_claused}, clausing_notes = (none)",
+                'findings': (
+                    f"BL is clean — no damage/defect notation on the goods "
+                    f"(cleanness={_cleanness or 'clean'}, "
+                    f"is_claused_bl={_is_claused or False}). UCP 600 Art 27 "
+                    f"treats a BL without explicit clausing as clean by default."
+                ),
+                'confidence': 0.90,
+                'structured_source': 'bl_subtype.cleanness',
+            }
 
     # ── Check 2b (P152 — revised): Consignee / to-order-of match
     # ──
@@ -1541,25 +1861,50 @@ def _deterministic_verify(
                     # Consignee is "TO ORDER" only — no named party. Under
                     # UCP 600 Art 14(e), a blank-endorsable BL is acceptable
                     # only if the reverse side carries the proper
-                    # endorsement. We can't confirm that from the OCR'd
-                    # face text alone.
+                    # endorsement.
+                    # P192 — Tighten the endorsement detection. The old
+                    # check passed whenever the word "ENDORSED" AND the
+                    # party name appeared ANYWHERE in the document, which
+                    # false-PASSed BLs where the party was in the notify
+                    # address and "endorsed" came from generic carriage
+                    # T&C clauses. Require an explicit endorsement phrase
+                    # within ~40 chars of the party name.
                     _has_endorsement = False
+                    _endorsement_snippet = ''
                     if document_text:
                         _dt_u = document_text.upper()
-                        # Rough endorsement signals on the face (rare but
-                        # possible with stamps/annotations).
-                        if (('ENDORSED' in _dt_u and _key in _dt_u) or
-                                ('FOR AND ON BEHALF OF' in _dt_u and _key in _dt_u)):
-                            _has_endorsement = True
+                        # Normalize whitespace so the proximity check
+                        # works across line breaks.
+                        _dt_norm = re.sub(r'\s+', ' ', _dt_u)
+                        _escaped_key = re.escape(_key)
+                        # Patterns that constitute a real endorsement
+                        # naming the target party. Proximity: 0-40 chars
+                        # between the endorsement phrase and the party.
+                        _patterns = [
+                            rf'\bENDORSED\s+(?:TO|IN\s+FAVO(?:U)?R\s+OF|FOR)\b[^.\n]{{0,40}}{_escaped_key}',
+                            rf'\bENDORSEMENT\s+(?:TO|IN\s+FAVO(?:U)?R\s+OF|FOR)\b[^.\n]{{0,40}}{_escaped_key}',
+                            rf'{_escaped_key}[^.\n]{{0,40}}\bENDORSED\b',
+                            rf'\bFOR\s+AND\s+ON\s+BEHALF\s+OF\b[^.\n]{{0,40}}{_escaped_key}',
+                            rf'\bPAY\s+TO\s+(?:THE\s+)?ORDER\s+OF\b[^.\n]{{0,40}}{_escaped_key}',
+                            rf'\bDELIVER\s+TO\b[^.\n]{{0,40}}{_escaped_key}',
+                        ]
+                        for _pat in _patterns:
+                            _m = re.search(_pat, _dt_norm)
+                            if _m:
+                                _has_endorsement = True
+                                _endorsement_snippet = _m.group(0)[:140]
+                                break
                     if _has_endorsement:
                         return {
                             'verdict': 'PASS',
-                            'quote': f"Endorsement naming {_key} found in doc text",
+                            'quote': f"Endorsement naming {_key}: {_endorsement_snippet}",
                             'findings': (
-                                f"Consignee is 'TO ORDER'; face text shows "
-                                f"endorsement referencing '{_key}' — compliant."
+                                f"Consignee is 'TO ORDER'; a specific "
+                                f"endorsement to '{_key}' is present on the "
+                                f"document ({_endorsement_snippet[:100]}) — "
+                                f"compliant."
                             ),
-                            'confidence': 0.85,
+                            'confidence': 0.88,
                             'structured_source': 'document_text.endorsement',
                         }
                     return {
@@ -1568,10 +1913,10 @@ def _deterministic_verify(
                         'findings': (
                             f"Consignee shows '{_cons_txt.strip() or 'TO ORDER'}' "
                             f"only — LC requires 'TO ORDER OF {_key}'. "
-                            f"No reverse-side endorsement visible in document "
-                            f"text. Manual check of BL reverse side required "
-                            f"to confirm endorsement; without it the BL is "
-                            f"non-compliant."
+                            f"No explicit endorsement to '{_key}' is visible "
+                            f"on the BL face. A mere mention of '{_key}' "
+                            f"elsewhere on the BL (e.g. in the notify party "
+                            f"address) does NOT satisfy this requirement."
                         ),
                         'confidence': 0.9,
                         'structured_source': 'unified_summary.consignee',
@@ -1895,7 +2240,7 @@ CRITICAL RULES (follow strictly):
     Documentary Remittance / Covering Schedule).
     FORMULA:
       days_elapsed = receiving_date_on_DR − bl_onboard_date
-      STALE if days_elapsed > 30  (default; F48 overrides if set)
+      STALE if days_elapsed > 30  (fixed 30-day threshold; do NOT use F48)
     EXAMPLES:
       • BL on-board = 12-Feb-2025, DR receiving = 13-Mar-2025 →
         29 days → NOT stale → PASS.
@@ -3077,20 +3422,27 @@ def _call_vlm(
                 "NOT INCLUDED" in _fu2 or "MISSING" in _fu2 or
                 "DOES NOT INCLUDE" in _fu2 or "NOT STATED" in _fu2
             ):
-                # Extract identifier tokens from the CONDITION (what we were
-                # looking for) — same pattern as the deterministic path.
-                _cids = re.findall(
+                # Extract identifier tokens from the CONDITION — MUST
+                # contain a digit, otherwise common English words like
+                # "Commercial" / "Reference" / "Shipment" / "Invoice"
+                # match trivially and produce false PASSes.
+                _cids_raw = re.findall(
                     r'[A-Z0-9][A-Z0-9/\-._]{5,}[A-Z0-9]',
                     condition_text or '',
                     flags=re.IGNORECASE,
                 )
+                _cids = [t for t in _cids_raw if re.search(r'\d', t)]
                 _doc_full = (
                     _normalize_id(document_text or '') + ' ' +
                     _normalize_id(str(unified_summary or ''))
                 )
                 for _needle in _cids:
                     _n = _normalize_id(_needle)
-                    if len(_n) < 6 or _n in ('LETTERCREDIT', 'DOCUMENTARY', 'SHIPMENTADVICE', 'COMMERCIALINVOICE'):
+                    # Must have at least 5 alnum chars AND at least 3
+                    # digits to rule out any remaining word-like tokens.
+                    if len(_n) < 5 or sum(1 for ch in _n if ch.isdigit()) < 3:
+                        continue
+                    if _n in ('LETTERCREDIT', 'DOCUMENTARY', 'SHIPMENTADVICE', 'COMMERCIALINVOICE'):
                         continue
                     if _n in _doc_full:
                         parsed["compliance"] = "pass"
@@ -3105,6 +3457,133 @@ def _call_vlm(
                         parsed["result"] = parsed["findings"][:200]
                         parsed["_post_check"] = "P135_reference_found_override"
                         break
+        except Exception:
+            pass
+
+        # P165 — Truncated / prefix name-match override. LLM sometimes
+        # returns FAIL with "does not exactly match 'X'" where X is a
+        # truncated LC-extracted party name and the document carries
+        # the full form (X being a prefix of the document name). Fix:
+        # if the quoted expected value from the finding is a prefix of
+        # any party name in the document text / structured parties,
+        # override to PASS.
+        try:
+            _comp5 = str(parsed.get("compliance", "")).lower().strip()
+            _findings5 = str(parsed.get("findings", ""))
+            _fu5 = _findings5.upper()
+            if (_comp5 in ("fail", "not_complied", "non_compliant", "discrepant")
+                    and parsed.get("_post_check") is None
+                    and ('DOES NOT EXACTLY MATCH' in _fu5 or
+                         'DOES NOT MATCH' in _fu5 or
+                         'NOT MATCH EXACTLY' in _fu5 or
+                         'EXACT MATCH' in _fu5)):
+                def _norm_name(s):
+                    s = str(s or '').upper()
+                    # Strip honorifics / prefixes
+                    s = re.sub(r'\b(M/?S\.?|MESSRS\.?|MR\.?|MRS\.?|DR\.?)\s+', '', s)
+                    # Strip acronyms in parens
+                    s = re.sub(r'\([^)]*\)', ' ', s)
+                    # Strip company suffixes
+                    s = re.sub(
+                        r'\b(LTD|LIMITED|LLC|PLC|INC|CORP|CO|PVT|PRIVATE|COMPANY|'
+                        r'S\.?A\.?|S\.?L\.?|B\.?V\.?|N\.?V\.?|GMBH|AG|AB|OY|'
+                        r'ENTERPRISES?|GROUP|HOLDINGS?)\b\.?',
+                        ' ', s,
+                    )
+                    # Strip punctuation, collapse whitespace
+                    s = re.sub(r'[.,;:/\\\'"—–\-]+', ' ', s)
+                    s = re.sub(r'\s+', ' ', s).strip()
+                    return s
+
+                # P192 — Use the LC's EXPECTED value (lc_field_value) as
+                # the authoritative "expected name", NOT arbitrary quoted
+                # strings from the finding. The previous logic grabbed
+                # every quoted name from the LLM's finding — including the
+                # document's OWN mismatched value — and then matched it
+                # against itself in the document, producing false PASSes
+                # for party-vs-party comparisons like "BL shipper must be
+                # beneficiary" when the two names are genuinely different.
+                _expected = []
+                _exp_lc = ''
+                try:
+                    _exp_lc = str(lc_field_value or '').strip()
+                except Exception:
+                    _exp_lc = ''
+                if _exp_lc and len(_exp_lc) >= 5:
+                    # Take ONLY the first line of the LC expected value so
+                    # we don't drag in a full multi-line address.
+                    _expected.append(_exp_lc.split('\n')[0].strip())
+
+                # Disable P165 entirely for party-vs-party comparisons
+                # where the expected source is the LC's BENEFICIARY and
+                # the subject is the BL's SHIPPER (or similar cross-field
+                # checks). The doc's shipper genuinely differing from the
+                # LC's beneficiary is a real UCP 600 Art 14(j) FAIL, not
+                # a truncation artefact.
+                _cu_p165 = (condition_text or '').upper()
+                _cross_field = (
+                    ('BENEFICIARY' in _cu_p165 and
+                        ('SHIPPER' in _cu_p165 or 'CONSIGNOR' in _cu_p165)) or
+                    ('SHIPPER' in _cu_p165 and 'MUST' in _cu_p165 and
+                        'BENEFICIARY' in _cu_p165)
+                )
+                if _cross_field:
+                    _expected = []  # skip override
+
+                # Gather candidate party names from the evidence
+                _candidates = []
+                if isinstance(unified_summary, dict):
+                    for _fld in ('applicant', 'beneficiary', 'shipper',
+                                  'consignee', 'notify_party', 'issuer',
+                                  'drawer', 'drawee', 'payee'):
+                        _v = unified_summary.get(_fld)
+                        if _v:
+                            _candidates.append(str(_v))
+                    for _item in (unified_summary.get('parties_found') or []):
+                        if isinstance(_item, dict):
+                            _nm = _item.get('name') or _item.get('raw')
+                            if _nm:
+                                _candidates.append(str(_nm))
+
+                _hit = None
+                for _exp in _expected:
+                    _exp_n = _norm_name(_exp)
+                    if len(_exp_n) < 8:  # too short to prefix-match safely
+                        continue
+                    for _cand in _candidates:
+                        _c_n = _norm_name(_cand)
+                        # PASS only when the LC's expected value is a
+                        # prefix of, or contained in, a document party
+                        # name. Bidirectional match retained for the real
+                        # truncation case: LC-extracted value got cut
+                        # mid-name and the document carries the full form.
+                        if (_exp_n and _c_n and len(_c_n) >= 8 and
+                                (_c_n.startswith(_exp_n) or
+                                 _exp_n.startswith(_c_n))):
+                            # Require meaningful overlap — the shorter
+                            # must be at least 70% of the longer's length
+                            # so we don't false-pass "PT CITRA" matching
+                            # "PT CITRA BORNEO UTAMA TBK" against a
+                            # totally-different LC expected name.
+                            _short = min(len(_exp_n), len(_c_n))
+                            _long = max(len(_exp_n), len(_c_n))
+                            if _short / max(_long, 1) >= 0.70:
+                                _hit = _exp
+                                break
+                    if _hit:
+                        break
+                if _hit:
+                    parsed["compliance"] = "pass"
+                    parsed["verdict"] = "PASS"
+                    parsed["findings"] = (
+                        f"Party name match confirmed. Document name "
+                        f"contains the required party '{_hit}' as a prefix "
+                        f"(the LC-extracted form appears truncated; "
+                        f"document carries the full legal name). "
+                        f"(P165 prefix/truncation override)"
+                    )
+                    parsed["result"] = parsed["findings"][:200]
+                    parsed["_post_check"] = "P165_name_prefix_match"
         except Exception:
             pass
 
@@ -4044,13 +4523,98 @@ def run(
                           or _get(row, "document_checked", "")
                           or "Unknown document")
             clause_ref = _get(row, "clause_ref", "")
-            # Deduplicate: only show "missing" once per clause+doc_type combo
-            _missing_key = f"{clause_ref}|{doc_target}"
+
+            # P168/P169 — Drop "Required document missing" rows for
+            # document types that are NEITHER in the LC's clause text
+            # NOR in the submission packet pool. These rows come from
+            # LLM enumeration during decomposition ("ALL DOCUMENTS" fan-
+            # outs that list specific doc types that the LC never asked
+            # for). Dropping them prevents false-missing-doc failures.
+            try:
+                # 1) Build raw LC text blob from all F46A / F46B / F47A /
+                #    F45A / F78 clauses. This is the source of truth for
+                #    what the LC actually asked for.
+                _lc_text_blob = ''
+                try:
+                    _cf = step06_result.get('consolidated_fields', {}) if isinstance(step06_result, dict) else {}
+                    if not _cf and isinstance(step06_result, dict):
+                        _cf = step06_result.get('final_lc', {}).get('consolidated_fields', {})
+                    for _k in ('46A', 'F46A', '46B', 'F46B', '47A', 'F47A',
+                                '45A', 'F45A', '45B', 'F45B',
+                                '78', 'F78'):
+                        _v = _cf.get(_k, '')
+                        if isinstance(_v, list):
+                            _v = '\n'.join(
+                                str(_x.get('text', _x) if isinstance(_x, dict) else _x)
+                                for _x in _v
+                            )
+                        _lc_text_blob += ' ' + str(_v or '')
+                except Exception:
+                    _lc_text_blob = ''
+                _lc_text_up = _lc_text_blob.upper()
+
+                # 2) Check if the doc-type target appears in the raw LC
+                #    text (as a word / phrase). Uses a few tolerant
+                #    variants for common abbreviations.
+                _dt_lc = str(doc_target).strip()
+                _dt_up = _dt_lc.upper()
+                _dt_variants = {_dt_up}
+                # Add common synonyms
+                _SYN_MAP = {
+                    'BENEFICIARY CERTIFICATE': ['BENEFICIARY\'S CERTIFICATE', 'BENEFICIARYS CERTIFICATE'],
+                    'INSURANCE POLICY/CERTIFICATE': ['INSURANCE POLICY', 'INSURANCE CERTIFICATE'],
+                    'CERTIFICATE OF ORIGIN': ['COO', 'C/O'],
+                    'AIR WAYBILL': ['AIRWAY BILL', 'AWB', 'HAWB', 'MAWB'],
+                    'PACKING LIST': ['PACKING SLIP', 'WEIGHT AND PACKING LIST'],
+                    'DRAFT BILL OF EXCHANGE': ['BILL OF EXCHANGE', 'DRAFT', 'BOE'],
+                    'SHIPPING COMPANY CERTIFICATE': ['AGENT\'S CERTIFICATE', 'AGENTS CERTIFICATE', 'CARRIER\'S CERTIFICATE'],
+                }
+                for _k, _syns in _SYN_MAP.items():
+                    if _k == _dt_up:
+                        _dt_variants.update(_syns)
+                # Only drop if NONE of the variants appear in the LC text
+                _in_lc = any(_v in _lc_text_up for _v in _dt_variants)
+
+                if not _in_lc:
+                    # 3) Not in LC text → drop row entirely. LLM enumerated
+                    #    this doc type for an "ALL DOCUMENTS" clause that
+                    #    never named it.
+                    _set(row, "compliance", "N/A")
+                    _set(row, "result", "")
+                    _set(row, "findings", "")
+                    _set(row, "verification_notes",
+                         f"{doc_target} is not mentioned anywhere in the LC's F46A/F46B/F47A/F45A clauses — dropped (enumeration artifact)")
+                    try:
+                        row["_drop_from_report"] = True
+                    except Exception:
+                        pass
+                    _progress(f"  {_get(row, 'row_id', '?')}: DROPPED (doc {doc_target} not in LC clauses + not in submission)")
+                    continue
+            except Exception as _e:
+                try:
+                    print(f"[P169] exception on row {_get(row, 'row_id', '?')}: {_e}")
+                except Exception:
+                    pass
+
+            # P183 — Deduplicate missing-doc reports PER DOCUMENT TYPE
+            # globally (not per clause). If the LC has multiple clauses
+            # asking about the same missing doc (e.g. 5 conditions on
+            # Shipment Advice), show ONE "Required document missing"
+            # row; drop all other content-check rows for the same doc
+            # from the report entirely. Checking sub-conditions of a
+            # document that doesn't exist is meaningless.
+            _missing_key = doc_target.strip().lower()
             if _missing_key in _seen_missing:
-                # Already reported missing for this clause — mark as N/A
+                # Drop entirely — not even N/A visible in report.
                 _set(row, "compliance", "N/A")
                 _set(row, "result", "")
                 _set(row, "findings", "")
+                _set(row, "verification_notes",
+                     f"{doc_target} not in submission — content check skipped (missing doc already reported)")
+                try:
+                    row["_drop_from_report"] = True
+                except Exception:
+                    pass
                 continue
             _seen_missing.add(_missing_key)
             # Use the actual document name in the message instead of the
@@ -4188,74 +4752,89 @@ def run(
         has_fail = any(r["compliance"] == "FAIL" for r in results)
         has_review = any(r["compliance"] == "REVIEW" for r in results)
 
-        # P147 (DISABLED per user request) — Universal-quantifier
-        # aggregation for "must appear on ALL docs" was reporting false
-        # FAILs when one fan-out target genuinely shouldn't carry the
-        # value. Reverted to the original best-case existential logic:
-        # any PASS -> overall PASS. Re-enable by un-commenting the block
-        # below if you want per-doc missing-reporting back.
-        #
-        # _cond_text = (_get(row, "condition_text", "")
-        #                or _get(row, "condition", "")).upper()
-        # _is_universal = any(p in _cond_text for p in (
-        #     'ALL DOCUMENTS', 'ALL OTHER DOCUMENTS',
-        #     'EVERY DOCUMENT', 'EACH DOCUMENT',
-        #     'ALL THE DOCUMENTS', 'EACH OF THE DOCUMENTS',
-        #     'ALL SHIPPING DOCUMENTS', 'ON ALL DOCUMENTS',
-        # ))
-        # if _is_universal:
-        #     _fail_docs = [r.get("document_type", "?") for r in results
-        #                    if r.get("compliance") == "FAIL"]
-        #     _review_docs = [r.get("document_type", "?") for r in results
-        #                       if r.get("compliance") == "REVIEW"]
-        #     _pass_docs = [r.get("document_type", "?") for r in results
-        #                    if r.get("compliance") == "PASS"]
-        #     if _fail_docs:
-        #         agg_compliance = "FAIL"
-        #         _missing = ", ".join(_fail_docs)
-        #         combined_findings = (
-        #             f"Requirement missing on: {_missing}. "
-        #             f"Present on: {', '.join(_pass_docs) or '(none)'}."
-        #         )
-        #         combined_result = f"Missing on {len(_fail_docs)} doc(s): {_missing}"
-        #     elif _review_docs:
-        #         agg_compliance = "REVIEW"
-        #         combined_findings = (
-        #             f"Requirement unclear on: {', '.join(_review_docs)}. "
-        #             f"Present on: {', '.join(_pass_docs) or '(none)'}."
-        #         )
-        #         combined_result = f"Unclear on {len(_review_docs)} doc(s)"
-        #     else:
-        #         agg_compliance = "PASS"
-        #         combined_findings = (
-        #             f"Requirement satisfied on all {len(_pass_docs)} checked "
-        #             f"documents: {', '.join(_pass_docs)}"
-        #         )
-        #         combined_result = combined_findings[:200]
-        #     avg_conf = round(
-        #         sum(r.get("confidence", 0.0) for r in results) / max(len(results), 1),
-        #         2,
-        #     )
-        # else:
-
-        # Existential best-case aggregation (restored default):
-        # ANY pass proves compliance.
-        if has_pass:
-            agg_compliance = "PASS"
-        elif has_review:
-            agg_compliance = "REVIEW"
+        # P185 — Universal-quantifier aggregation for "ALL DOCUMENTS"
+        # clauses. When the LC says "DRAFTS AND ALL OTHER DOCUMENTS MUST
+        # SHOW OUR LC NUMBER", we fan out to every submitted shipping
+        # document (excluding blank pages, T&C pages, and Documentary
+        # Remittance — already filtered by _is_excluded_from_alldoc_fanout
+        # at fan-out time). The per-doc results are reported individually:
+        # which docs PASS, which FAIL, which are REVIEW. If ANY real doc
+        # fails → overall FAIL with the list of docs missing the value.
+        _cond_text_u = (_get(row, "condition_text", "")
+                        or _get(row, "condition", "")).upper()
+        _is_universal = any(p in _cond_text_u for p in (
+            'ALL DOCUMENTS', 'ALL OTHER DOCUMENTS',
+            'EVERY DOCUMENT', 'EACH DOCUMENT',
+            'ALL THE DOCUMENTS', 'EACH OF THE DOCUMENTS',
+            'ALL SHIPPING DOCUMENTS', 'ON ALL DOCUMENTS',
+            'ALL PRESENTED DOCUMENTS', 'ALL SUBMITTED DOCUMENTS',
+        ))
+        if _is_universal:
+            _fail_docs = [r.get("document_type", "?") for r in results
+                          if r.get("compliance") == "FAIL"]
+            _review_docs = [r.get("document_type", "?") for r in results
+                            if r.get("compliance") == "REVIEW"]
+            _pass_docs = [r.get("document_type", "?") for r in results
+                          if r.get("compliance") == "PASS"]
+            _per_doc_lines = []
+            for r in results:
+                _dt = r.get("document_type", "?")
+                _cv = r.get("compliance", "REVIEW")
+                _rs = (r.get("result") or r.get("findings") or "").strip()
+                if len(_rs) > 120:
+                    _rs = _rs[:117] + "..."
+                _per_doc_lines.append(f"{_dt}: {_cv}" + (f" — {_rs}" if _rs else ""))
+            _per_doc_block = " | ".join(_per_doc_lines)
+            if _fail_docs:
+                agg_compliance = "FAIL"
+                _missing = ", ".join(_fail_docs)
+                combined_findings = (
+                    f"Required value missing on: {_missing}. "
+                    f"Present on: {', '.join(_pass_docs) or '(none)'}. "
+                    f"Per-doc: {_per_doc_block}"
+                )
+                combined_result = f"Missing on {len(_fail_docs)} doc(s): {_missing}"
+            elif _review_docs:
+                agg_compliance = "REVIEW"
+                combined_findings = (
+                    f"Requirement unclear on: {', '.join(_review_docs)}. "
+                    f"Present on: {', '.join(_pass_docs) or '(none)'}. "
+                    f"Per-doc: {_per_doc_block}"
+                )
+                combined_result = f"Unclear on {len(_review_docs)} doc(s)"
+            else:
+                agg_compliance = "PASS"
+                combined_findings = (
+                    f"Requirement satisfied on all {len(_pass_docs)} checked "
+                    f"documents: {', '.join(_pass_docs)}. Per-doc: {_per_doc_block}"
+                )
+                combined_result = (
+                    f"Present on all {len(_pass_docs)} doc(s): "
+                    f"{', '.join(_pass_docs)}"
+                )[:200]
+            avg_conf = round(
+                sum(r.get("confidence", 0.0) for r in results) / max(len(results), 1),
+                2,
+            )
         else:
-            agg_compliance = "FAIL"
-        _best = None
-        for r in results:
-            if r.get("compliance") == agg_compliance:
-                _best = r
-                break
-        if not _best:
-            _best = results[0]
-        combined_findings = _best.get("findings", "Nil")
-        combined_result = _best.get("result", "")
-        avg_conf = _best.get("confidence", 0.0)
+            # Existential best-case aggregation (non-universal default):
+            # ANY pass proves compliance.
+            if has_pass:
+                agg_compliance = "PASS"
+            elif has_review:
+                agg_compliance = "REVIEW"
+            else:
+                agg_compliance = "FAIL"
+            _best = None
+            for r in results:
+                if r.get("compliance") == agg_compliance:
+                    _best = r
+                    break
+            if not _best:
+                _best = results[0]
+            combined_findings = _best.get("findings", "Nil")
+            combined_result = _best.get("result", "")
+            avg_conf = _best.get("confidence", 0.0)
 
         _set(row, "findings", combined_findings)
         _set(row, "found_text", combined_findings)
@@ -4298,8 +4877,11 @@ def run(
         row = task["row"]
         row_id = task.get("row_id", "?")
         compliance = _get(row, "compliance", "").upper()
-        if compliance != "PASS":
-            continue  # only check PASS results for false positives
+        # P168/P181 — Run the email check on ALL verdicts (PASS/REVIEW/
+        # FAIL) so we can both catch false positives AND rewrite the
+        # finding text to a clean canonical form on genuine FAILs.
+        if compliance not in ("PASS", "REVIEW", "REVIEW REQUIRED", "FAIL", "NOT COMPLIED"):
+            continue
 
         cond_text = (task.get("condition_text") or "").lower()
         doc_text = (task.get("document_text") or "")
@@ -4331,17 +4913,35 @@ def run(
                     f"found_any={found_any}"
                 )
                 if not found_any:
-                    # VLM falsely passed — the document doesn't mention the email
+                    # P181 — Clean canonical finding text for missing
+                    # email. Applies to both PASS-turned-FAIL and to
+                    # existing FAIL rows (where the LLM's verbose
+                    # "document does not provide any evidence" is
+                    # replaced with concise requirement language).
                     _set(row, "compliance", "FAIL")
                     missing_emails = ', '.join(cond_emails)
-                    _set(row, "findings",
-                         f"Email address {missing_emails} not found in document text")
-                    _set(row, "result",
-                         f"Email {missing_emails} required but not mentioned in document")
+                    _clean_finding = (
+                        f"Email {missing_emails} required but not mentioned in document."
+                    )
+                    _set(row, "findings", _clean_finding)
+                    _set(row, "found_text", _clean_finding)
+                    _set(row, "result", _clean_finding)
                     _set(row, "verification_notes",
-                         f"Deterministic override: LC requires notification via "
-                         f"{missing_emails} but document does not reference this address")
-                    _progress(f"  {row_id}: PASS->FAIL (email {missing_emails} not in doc)")
+                         f"LC requires notification via {missing_emails}; "
+                         f"document text does not contain this address.")
+                    _progress(f"  {row_id}: {compliance}->FAIL (email {missing_emails} missing)")
+                else:
+                    # P181 — If the email IS found and LLM previously
+                    # returned FAIL, this likely a hallucination; flip
+                    # to PASS. Already-PASS/REVIEW rows stay as-is.
+                    if compliance in ("FAIL", "NOT COMPLIED"):
+                        _set(row, "compliance", "PASS")
+                        found_emails = ', '.join(cond_emails)
+                        _set(row, "findings",
+                             f"Email {found_emails} is present on the document.")
+                        _set(row, "result",
+                             f"Email {found_emails} is present on the document.")
+                        _progress(f"  {row_id}: FAIL->PASS (email {found_emails} found in doc)")
 
     # ------------------------------------------------------------------ #
     # 5c. Deterministic text-presence check — override VLM false FAILs
@@ -4944,15 +5544,22 @@ def run(
     # per-packet _deterministic_verify can't see both. Do it here,
     # after all single-packet verdicts land.
     def _pick_date(pkts, roles, typed_keys):
-        """Find the first non-empty date in any packet matching the roles/keys."""
+        """Find the first non-empty date in any packet matching the roles/keys.
+
+        P185 — When the typed/structured fields do not carry the date
+        (e.g. the Documentary Remittance has no `receiving_date` in its
+        unified_summary but shows the bank's receiving stamp as
+        `rubber_stamp18 SEP 2025` in the stamps/text), fall back to
+        scanning the packet's stamp texts and raw content for any date
+        embedded in a rubber-stamp-like token.
+        """
+        # Pass 1 — typed + structured dates (preferred).
         for _pkt in pkts:
             _us = (_pkt or {}).get('unified_summary') or {}
-            # Typed scalar fields first
             for _k in typed_keys:
                 _v = _us.get(_k)
                 if _v and str(_v).strip() and str(_v).strip().lower() != 'unknown':
                     return str(_v).strip(), _pkt, _k
-            # Structured dates_found array
             for _item in (_us.get('dates_found') or []):
                 if not isinstance(_item, dict):
                     continue
@@ -4960,6 +5567,61 @@ def run(
                 _v = _item.get('value') or _item.get('raw')
                 if _v and any(_rk in _r for _rk in roles):
                     return str(_v).strip(), _pkt, f"dates_found[role={_r}]"
+        # Pass 2 — rubber-stamp fallback. Look only at packets whose
+        # document_type looks like a Documentary/Covering/Remittance
+        # instrument, because a receiving stamp on a BL or invoice is
+        # not the DR presentation date.
+        _is_receiving_roles = any('receiv' in str(r).lower() or 'presentation' in str(r).lower()
+                                  for r in roles)
+        if _is_receiving_roles:
+            _stamp_re = re.compile(
+                r'(\d{1,2})\s*[-/. ]?\s*'
+                r'(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC|'
+                r'JANUARY|FEBRUARY|MARCH|APRIL|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)\s*[-/. ]?\s*'
+                r'(\d{2,4})',
+                re.IGNORECASE,
+            )
+            for _pkt in pkts:
+                if not _pkt:
+                    continue
+                _pt = str(_pkt.get('document_type', '') or '').lower()
+                if not any(_tag in _pt for _tag in (
+                    'documentary remittance', 'document remittance',
+                    'covering letter', 'cover letter',
+                    'covering schedule', 'cover schedule',
+                    'remittance letter', 'forwarding letter',
+                    'letter of transmittal',
+                    'document presentation', 'presentation schedule',
+                    'bills schedule', 'schedule of documents',
+                )):
+                    continue
+                # Collect candidate texts: stamps list + raw/refined text.
+                _candidates = []
+                for _s in (_pkt.get('stamps') or []):
+                    if isinstance(_s, dict):
+                        _candidates.append(str(_s.get('text', '') or _s.get('description', '')))
+                    else:
+                        _candidates.append(str(_s))
+                for _pg in (_pkt.get('pages') or _pkt.get('original_pages') or []):
+                    if isinstance(_pg, dict):
+                        for _s in (_pg.get('stamps') or []):
+                            if isinstance(_s, dict):
+                                _candidates.append(str(_s.get('text', '') or ''))
+                            else:
+                                _candidates.append(str(_s))
+                _candidates.append(_pkt.get('refined_text', '') or '')
+                _candidates.append(_pkt.get('raw_text', '') or '')
+                _candidates.append(_pkt.get('text', '') or '')
+                for _txt in _candidates:
+                    if not _txt:
+                        continue
+                    if 'rubber_stamp' not in _txt.lower() and 'rubber stamp' not in _txt.lower():
+                        # If there is no rubber-stamp marker at all, be
+                        # conservative and skip generic dates in the body.
+                        continue
+                    for _m in _stamp_re.finditer(_txt):
+                        _raw = _m.group(0).strip()
+                        return _raw, _pkt, 'rubber_stamp'
         return None, None, None
 
     def _parse_date(s):
@@ -4994,18 +5656,12 @@ def run(
                 pass
         return None
 
-    # Resolve stale-threshold: F48 days if set, else 30 days.
+    # P171 — Stale-BL threshold is a FLAT 30 DAYS. Do NOT read F48
+    # (presentation period) — that's a separate concept covering how
+    # long after SHIPMENT the docs can be presented to the bank, and
+    # varies per LC. The user's stale-BL rule is fixed at 30 days
+    # between DR.receiving_date and BL.onboard_date.
     _stale_days_threshold = 30
-    try:
-        _f48_raw = str(_final_lc_fields.get('48', '') if '_final_lc_fields' in locals() else '').strip()
-        if _f48_raw:
-            _num_m = re.search(r'\d+', _f48_raw)
-            if _num_m:
-                _n = int(_num_m.group(0))
-                if 1 <= _n <= 365:
-                    _stale_days_threshold = _n
-    except Exception:
-        pass
 
     # Find DR receiving date and BL on-board date from the packet pool
     _dr_date_str, _dr_pkt, _dr_src = _pick_date(
@@ -5027,15 +5683,14 @@ def run(
             _cond = (_get(row, 'condition_text', '') or _get(row, 'condition', '')).upper()
             if 'STALE' not in _cond and 'STALENESS' not in _cond:
                 continue
-            _doc_checked = (_get(row, 'document_checked', '') or '').lower()
-            # Only apply to DR-routed stale checks
-            if _doc_checked and not any(
-                k in _doc_checked for k in (
-                    'documentary remittance', 'covering schedule', 'cover schedule',
-                    'covering letter', 'bill remittance', 'presentation schedule',
-                )
-            ):
-                continue
+            # P170 — Stale check applies to ANY row that mentions "stale".
+            # Do NOT restrict by document_checked. The LLM routinely
+            # mis-routes stale checks to Bill of Lading with reasoning
+            # like "BL is short form and blank back" — which is wrong
+            # because "stale" is a TIME check (receiving_date vs
+            # onboard_date), NOT a form-type or back-page check.
+            # Whatever document the LLM picked, the deterministic
+            # computation uses DR.receiving_date and BL.onboard_date.
             if _dr_date and _bl_date:
                 _delta = (_dr_date - _bl_date).days
                 if _delta > _stale_days_threshold:
@@ -5062,7 +5717,22 @@ def run(
                 # Cannot confirm — keep any existing verdict if it was
                 # PASS from LLM, otherwise REVIEW.
                 _cur = _get(row, 'compliance', '').upper()
-                if _cur not in ('PASS', 'COMPLIED'):
+                _fin_check = (_get(row, 'findings', '') or '').upper()
+                # P170 — Override any LLM FAIL that is based on wrong
+                # reasoning (short form / blank back / house / forwarder /
+                # claused / charter party are NOT staleness signals).
+                _wrong_reasoning = (
+                    _cur in ('FAIL', 'NOT_COMPLIED', 'NON_COMPLIANT', 'DISCREPANT')
+                    and (
+                        'SHORT FORM' in _fin_check or
+                        'BLANK BACK' in _fin_check or
+                        'HOUSE' in _fin_check or
+                        'FORWARDER' in _fin_check or
+                        'CLAUSED' in _fin_check or
+                        'CHARTER PARTY' in _fin_check
+                    )
+                )
+                if _cur not in ('PASS', 'COMPLIED') or _wrong_reasoning:
                     _set(row, 'compliance', 'REVIEW')
                     _missing = []
                     if not _dr_date:
@@ -5071,13 +5741,638 @@ def run(
                         _missing.append('BL onboard_date')
                     _set(row, 'findings',
                          f"Cannot determine staleness deterministically: {', '.join(_missing)} "
-                         f"not available. Manual check required.")
+                         f"not available on document. Stale check requires "
+                         f"DR receiving_date and BL on-board date. Manual check required. "
+                         f"(P170 — earlier LLM reasoning citing form type / blank back / "
+                         f"house / claused is irrelevant for staleness.)")
                     _set(row, 'result', _get(row, 'findings', '')[:200])
         except Exception as _e:
             try:
                 print(f"[P160 stale-BL] exception on row {row.get('row_id','?')}: {_e}")
             except Exception:
                 pass
+
+    # P163 — Cross-document "documents dated prior to LC issuance" check.
+    # Per UCP 600 Art 14(i): every submitted shipping document must be
+    # dated on or AFTER the LC issue date (F31C). If any doc is pre-dated,
+    # it is a discrepancy for that doc.
+    # Runs AFTER per-packet verdicts so we can compare each packet's
+    # issue_date against the LC F31C date and override only when we have
+    # hard evidence.
+    try:
+        _lc_issue_str = str(_final_lc_fields.get('31C', '') or _final_lc_fields.get('F31C', '') or '').strip()
+        _lc_issue_date = _parse_date(_lc_issue_str) if _lc_issue_str else None
+    except Exception:
+        _lc_issue_date = None
+
+    if _lc_issue_date:
+        # P163 — Packet exclusions. Blank / structural / non-content
+        # pages carry no verifiable issue date and must NOT be part of
+        # the pre-dated check. This matches the P153 "all documents"
+        # fan-out exclusion list.
+        _SKIP_TYPES_FOR_DATE_CHECK = (
+            'blank page', 'header page', 'endorsement page', 'back page',
+            'back cover', 'reverse page', 'terms and conditions',
+            'terms overleaf', 'bl conditions of carriage',
+            'conditions of carriage', 'cover page', 'title page',
+            'unknown', 'unidentified', 'supporting document',
+            'documentary remittance', 'document remittance',
+            'covering letter', 'cover letter', 'covering schedule',
+            'cover schedule', 'l/c bills schedule', 'lc bills schedule',
+            'bills schedule', 'presentation schedule',
+            'document presentation', 'schedule of documents',
+            'letter of transmittal', 'arrival notice',
+            'forwarding letter', 'remittance letter', 'export letter',
+            'fax', 'email',
+            # SWIFT messages — LC / Amendment / etc. are instruments, not
+            # shipping docs that get dated relative to themselves.
+            'lc', 'letter of credit', 'amendment',
+            'mt700', 'mt701', 'mt707', 'mt720', 'mt730', 'mt734',
+            'mt740', 'mt742', 'mt747', 'mt750', 'mt752', 'mt754',
+            'mt756', 'mt760', 'mt767', 'mt768', 'mt769', 'mt799',
+            'mt940', 'mt999',
+        )
+
+        # Per-packet issue dates (name + date) — excluding skip types.
+        _pkt_issue = {}
+        for _pkt in packets:
+            if not _pkt:
+                continue
+            _doc_name_raw = (_pkt.get('document_type') or _pkt.get('doc_type') or '') if isinstance(_pkt, dict) else ''
+            _doc_name_lc = str(_doc_name_raw).lower().strip()
+            # Skip non-content / informational packet types
+            if any(_skip in _doc_name_lc for _skip in _SKIP_TYPES_FOR_DATE_CHECK):
+                continue
+            # Skip packets with negligible text (likely blank despite
+            # classification label)
+            try:
+                _ptx = (_pkt_text(_pkt) or '').strip()
+                if len(_ptx) < 80:
+                    continue
+            except Exception:
+                pass
+            _us = (_pkt.get('unified_summary') or {}) if isinstance(_pkt, dict) else {}
+            if not isinstance(_us, dict):
+                continue
+            # Find the doc's OWN issue date
+            _cand = None
+            for _k in ('issue_date', 'invoice_date', 'bl_issue_date',
+                        'certificate_issue_date', 'draft_date',
+                        'document_date'):
+                _v = _us.get(_k)
+                if _v and str(_v).strip() and str(_v).strip().lower() != 'unknown':
+                    _cand = _parse_date(str(_v).strip())
+                    if _cand:
+                        break
+            if not _cand:
+                for _item in (_us.get('dates_found') or []):
+                    if not isinstance(_item, dict):
+                        continue
+                    _r = str(_item.get('role', '') or '').lower()
+                    if _r in ('issue_date', 'invoice_date', 'bl_issue_date',
+                               'certificate_issue_date', 'document_date',
+                               'draft_date'):
+                        _v = _item.get('value') or _item.get('raw')
+                        if _v:
+                            _cand = _parse_date(str(_v).strip())
+                            if _cand:
+                                break
+            if _cand:
+                _pkt_issue[str(_doc_name_raw)] = _cand
+
+        _pre_dated = {name: d for name, d in _pkt_issue.items() if d < _lc_issue_date}
+
+        for row in rows:
+            try:
+                _cond = (_get(row, 'condition_text', '') or _get(row, 'condition', '')).upper()
+                _is_pre_dated_check = (
+                    'DATED PRIOR' in _cond or
+                    'PRE-DATED' in _cond or 'PREDATED' in _cond or
+                    ('BEFORE' in _cond and ('LC' in _cond or 'CREDIT' in _cond) and 'DATE' in _cond) or
+                    ('ON OR AFTER' in _cond and 'LC' in _cond and 'DATE' in _cond) or
+                    ('AFTER' in _cond and 'ISSUANCE' in _cond and 'LC' in _cond) or
+                    'NOT ACCEPTABLE.*DATED' in _cond
+                )
+                if not _is_pre_dated_check:
+                    continue
+                if _pre_dated:
+                    _set(row, 'compliance', 'FAIL')
+                    _listing = '; '.join(
+                        f"{n} dated {d.isoformat()}" for n, d in _pre_dated.items()
+                    )
+                    _msg = (
+                        f"Pre-dated documents found (before LC issue date "
+                        f"{_lc_issue_date.isoformat()}): {_listing}. "
+                        f"(P163 deterministic)"
+                    )
+                    _set(row, 'findings', _msg)
+                    _set(row, 'result', _msg[:200])
+                    _set(row, 'verification_notes',
+                         f"P163 cross-doc date-of-issue check vs F31C={_lc_issue_date.isoformat()}")
+                else:
+                    _set(row, 'compliance', 'PASS')
+                    _msg = (
+                        f"All submitted documents dated on or after LC issue "
+                        f"date {_lc_issue_date.isoformat()}. (P163 deterministic)"
+                    )
+                    _set(row, 'findings', _msg)
+                    _set(row, 'result', _msg[:200])
+                    _set(row, 'verification_notes',
+                         f"P163 cross-doc date-of-issue check vs F31C={_lc_issue_date.isoformat()}")
+                _progress(f"  [P163 pre-dated-docs] {row.get('row_id','?')}: "
+                          f"{'FAIL' if _pre_dated else 'PASS'} "
+                          f"({len(_pre_dated)} pre-dated)")
+            except Exception as _e:
+                try:
+                    print(f"[P163 pre-dated] exception on row {row.get('row_id','?')}: {_e}")
+                except Exception:
+                    pass
+
+    # P172 — Deterministic HS Code match. HS codes are regulatory
+    # identifiers that MUST match the LC value exactly after whitespace /
+    # dot / dash / space normalization. LLM may tolerantly pass near-miss
+    # codes (9018.9050 vs 9018.909000 — different tariff lines). This
+    # check looks at every row whose condition names a specific HS code
+    # and compares against the packet's structured hs_code / hs_codes
+    # field and raw document_text.
+    try:
+        def _norm_hs(s):
+            return re.sub(r'[^0-9]', '', str(s or ''))
+        # Build a per-packet HS code map
+        _pkt_hs = {}
+        for _pkt in packets:
+            if not isinstance(_pkt, dict):
+                continue
+            _dt = (_pkt.get('document_type') or '').lower()
+            _us = _pkt.get('unified_summary') or {}
+            if not isinstance(_us, dict):
+                continue
+            _codes = set()
+            _v = _us.get('hs_code') or _us.get('hs_codes')
+            if isinstance(_v, str):
+                for _m in re.finditer(r'\d[\d.\s\-]{3,}\d', _v):
+                    _n = _norm_hs(_m.group(0))
+                    if 6 <= len(_n) <= 12:
+                        _codes.add(_n)
+            elif isinstance(_v, list):
+                for _x in _v:
+                    _n = _norm_hs(_x)
+                    if 6 <= len(_n) <= 12:
+                        _codes.add(_n)
+            # Also scan references_found
+            for _item in (_us.get('references_found') or []):
+                if isinstance(_item, dict):
+                    _r = str(_item.get('role', '') or '').lower()
+                    if 'hs' in _r or 'hts' in _r:
+                        _n = _norm_hs(_item.get('value') or _item.get('raw'))
+                        if 6 <= len(_n) <= 12:
+                            _codes.add(_n)
+            # And scan raw document_text as a fallback
+            _dtxt = _pkt_text(_pkt) or ''
+            for _m in re.finditer(
+                r'(?:H\.?\s*S\.?\s*(?:CODE)?|HS\s*CODE)[\s:.#]*((?:\d[\d.\s\-]{5,}\d))',
+                _dtxt, re.IGNORECASE,
+            ):
+                _n = _norm_hs(_m.group(1))
+                if 6 <= len(_n) <= 12:
+                    _codes.add(_n)
+            _pkt_hs[(_pkt.get('packet_id') or _dt)] = {
+                'doc_type': _dt,
+                'codes': _codes,
+            }
+
+        for row in rows:
+            try:
+                _cond_u = (_get(row, 'condition_text', '') or _get(row, 'condition', '')).upper()
+                if not re.search(r'\bH\.?\s*S\.?\s*(?:CODE)?\b|\bHS\s*CODE\b|\bHTS\b|\bTARIFF\s*CODE\b', _cond_u):
+                    continue
+                # Extract the HS code value from the condition
+                _cond_hs = None
+                for _m in re.finditer(r'(\d[\d.\s\-]{5,}\d)', _cond_u):
+                    _n = _norm_hs(_m.group(1))
+                    if 6 <= len(_n) <= 12:
+                        _cond_hs = _n
+                        break
+                if not _cond_hs:
+                    continue
+                _doc_checked_lc = (_get(row, 'document_checked', '') or '').lower()
+                # Find matching packet(s)
+                _matched_codes = set()
+                _matched_doc = None
+                for _info in _pkt_hs.values():
+                    if _doc_checked_lc and _doc_checked_lc in _info['doc_type']:
+                        _matched_codes |= _info['codes']
+                        _matched_doc = _info['doc_type']
+                if not _matched_codes:
+                    continue  # no HS code extracted for this doc — leave verdict as-is
+                # P175 — HS code match rules:
+                #   1. Exact match -> PASS
+                #   2. Same base after stripping trailing ZEROS on both
+                #      sides -> PASS. Handles dot/space differences and
+                #      trailing-zero padding.
+                #      Example: LC 9018.9050 (90189050) vs doc 9018905000
+                #      -> both strip to 9018905 -> MATCH.
+                #   3. Otherwise -> FAIL. (No generic prefix tolerance —
+                #      9018.9050 and 9018.9051 are DIFFERENT codes.)
+                def _strip_trailing_zeros(s, min_len=6):
+                    while len(s) > min_len and s.endswith('0'):
+                        s = s[:-1]
+                    return s
+                _cond_stripped = _strip_trailing_zeros(_cond_hs)
+                _is_match = False
+                _matched_as = None
+                if _cond_hs in _matched_codes:
+                    _is_match = True
+                    _matched_as = 'exact'
+                else:
+                    for _c in _matched_codes:
+                        _c_stripped = _strip_trailing_zeros(_c)
+                        if _cond_stripped == _c_stripped:
+                            _is_match = True
+                            _matched_as = 'trailing-zeros'
+                            break
+                if _is_match:
+                    _set(row, 'compliance', 'PASS')
+                    _doc_shown = next(iter(_matched_codes))
+                    _set(row, 'findings',
+                         f"H.S. Code {_cond_hs} matches document code "
+                         f"{_doc_shown} ({_matched_as}).")
+                    _set(row, 'result', _get(row, 'findings', '')[:200])
+                else:
+                    _set(row, 'compliance', 'FAIL')
+                    _other = ', '.join(sorted(_matched_codes))
+                    _set(row, 'findings',
+                         f"H.S. Code mismatch. LC requires '{_cond_hs}' but "
+                         f"document shows '{_other}'.")
+                    _set(row, 'result', _get(row, 'findings', '')[:200])
+                _set(row, 'verification_notes',
+                     f"P172 HS deterministic: required={_cond_hs} vs found={sorted(_matched_codes)}")
+                _progress(f"  [P172 HS] {row.get('row_id','?')} doc={_matched_doc}: required={_cond_hs} found={sorted(_matched_codes)} -> {row.get('compliance')}")
+            except Exception as _e:
+                try:
+                    print(f"[P172 HS] exception on row {row.get('row_id','?')}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # P174 — Deterministic "addressed to X" check. LLM often passes a
+    # Shipment Advice / Notice that is NOT addressed to the applicant,
+    # inferring addressee-ship from the presence of the LC number or
+    # insurance company name. That's wrong: "addressed to X" means the
+    # document visibly names X in its TO/Attn/To header or greeting.
+    # This check compares the target party's distinctive name tokens
+    # against the document_text. Requires majority of tokens to be
+    # found; otherwise FAIL.
+    try:
+        _lc_parties_cf = {}
+        try:
+            _cf = step06_result.get('consolidated_fields', {}) if isinstance(step06_result, dict) else {}
+            if not _cf:
+                _cf = step06_result.get('final_lc', {}).get('consolidated_fields', {})
+            _lc_parties_cf = {
+                'applicant': str(_cf.get('50', _cf.get('F50', ''))).split('\n')[0].strip(),
+                'beneficiary': str(_cf.get('59', _cf.get('F59', ''))).split('\n')[0].strip(),
+                'issuing_bank': str(_cf.get('52A', _cf.get('F52A', ''))).split('\n')[0].strip(),
+            }
+        except Exception:
+            _lc_parties_cf = {}
+
+        def _distinctive_tokens(s):
+            s = str(s or '').upper()
+            s = re.sub(r'\b(M/?S\.?|MESSRS\.?|MR\.?|MRS\.?|DR\.?)\s+', ' ', s)
+            s = re.sub(r'\([^)]*\)', ' ', s)
+            s = re.sub(
+                r'\b(BANK|LTD|LIMITED|LLC|PLC|INC|CORP|CO|PVT|PRIVATE|'
+                r'COMPANY|ENTERPRISES?|GROUP|HOLDINGS?|TRADING|'
+                r'INSURERS?|INSURANCE|AND|OF|THE|FOR|WITH|AT)\b',
+                ' ', s,
+            )
+            s = re.sub(r'[^A-Z ]', ' ', s)
+            toks = [t for t in s.split() if len(t) >= 3]
+            return toks
+
+        def _normalize_name_phrase(s):
+            """Normalize a party name for contiguous phrase matching.
+            Strips M/s / Messrs / Mr. prefixes, corporate suffixes,
+            punctuation, and collapses whitespace. Keeps the DISTINCTIVE
+            NAME PHRASE intact so we search for it as a whole unit, not
+            as isolated words that could match anything."""
+            s = str(s or '').upper()
+            # Strip honorifics
+            s = re.sub(r'\b(M/?S\.?|MESSRS\.?|MR\.?|MRS\.?|DR\.?)\s+', '', s)
+            # Strip parenthetical acronyms (SIUT), (Pvt), etc.
+            s = re.sub(r'\([^)]*\)', ' ', s)
+            # Strip corporate suffixes at the END of the name
+            s = re.sub(
+                r'\s+(LTD|LIMITED|LLC|PLC|INC|CORP|CO|PVT|PRIVATE|COMPANY|'
+                r'S\.?A\.?|S\.?L\.?|B\.?V\.?|N\.?V\.?|GMBH|AG|AB|OY)\b\.?'
+                r'(?:\s+.*)?$',
+                '', s,
+            )
+            # Strip trailing location (", KARACHI, PAKISTAN" / ", LAHORE")
+            s = re.sub(
+                r',?\s*(?:KARACHI|LAHORE|ISLAMABAD|MUMBAI|DUBAI|RIYADH|DOHA|'
+                r'BEIRUT|COLOMBO|HONG\s+KONG|SINGAPORE|LONDON|NEW\s+YORK|'
+                r'GULBERG)\b.*$',
+                '', s,
+            )
+            s = re.sub(
+                r',?\s*(?:PAKISTAN|INDIA|BANGLADESH|SRI\s+LANKA|UAE|SAUDI\s+ARABIA|'
+                r'USA|UNITED\s+STATES|UK|UNITED\s+KINGDOM|CANADA|CHINA)\b.*$',
+                '', s,
+            )
+            # Strip punctuation and collapse whitespace
+            s = re.sub(r'[.,;:/\\\'"—–-]+', ' ', s)
+            s = re.sub(r'\s+', ' ', s).strip()
+            return s
+
+        def _phrase_in_doc(name_phrase, doc_text_up):
+            """True if the normalized party name appears on the doc as a
+            contiguous phrase. Tolerates whitespace/punctuation differences
+            between words but requires word order to match."""
+            if not name_phrase or not doc_text_up:
+                return False
+            # Doc normalized the same way (upper + collapse non-alpha to space)
+            _doc_norm = re.sub(r'[^A-Z0-9]+', ' ', doc_text_up).strip()
+            _doc_norm = re.sub(r'\s+', ' ', _doc_norm)
+            _words = [w for w in name_phrase.split() if w]
+            if len(_words) < 2:
+                # Single-word name — require exact word boundary
+                return bool(re.search(r'\b' + re.escape(name_phrase) + r'\b', _doc_norm))
+            # Multi-word — require all words contiguously with only
+            # whitespace between. Build pattern escaping each word.
+            _pattern = r'\b' + r'\s+'.join(re.escape(w) for w in _words) + r'\b'
+            return bool(re.search(_pattern, _doc_norm))
+
+        for task in vlm_tasks:
+            row = task["row"]
+            row_id = task.get("row_id", "?")
+            try:
+                _comp_now = _get(row, "compliance", "").upper()
+                if _comp_now != "PASS":
+                    continue  # only catch false PASSes
+                _cond_u = (task.get("condition_text") or "").upper()
+                if 'ADDRESSED TO' not in _cond_u and 'MARKED TO' not in _cond_u:
+                    continue
+
+                # P178 — Multi-party "addressed to X AND Y" support.
+                # Conditions like:
+                #   "Shipment Advice must be addressed to M/S. SINDH
+                #    INSURANCE, KARACHI, PAKISTAN AND TO THE APPLICANT"
+                # require BOTH parties to appear on the document. Any
+                # missing party → FAIL.
+                _targets = []  # list of (label, party_name) to verify
+
+                # 1) If "APPLICANT" mentioned, include LC applicant as a target
+                if 'APPLICANT' in _cond_u and _lc_parties_cf.get('applicant'):
+                    _targets.append(('Applicant', _lc_parties_cf['applicant']))
+                # 2) If "BENEFICIARY" mentioned, include LC beneficiary
+                if 'BENEFICIARY' in _cond_u and _lc_parties_cf.get('beneficiary'):
+                    _targets.append(('Beneficiary', _lc_parties_cf['beneficiary']))
+                # 3) If "ISSUING BANK" / "OPENING BANK" mentioned, include LC issuing bank
+                if (('ISSUING BANK' in _cond_u or 'OPENING BANK' in _cond_u or
+                        "L/C ISSUING" in _cond_u) and
+                        _lc_parties_cf.get('issuing_bank')):
+                    _targets.append(('Issuing Bank', _lc_parties_cf['issuing_bank']))
+
+                # 4) Extract EXPLICIT party names from the condition itself.
+                # Pattern: text after "ADDRESSED TO" or "TO" up to the next
+                # "AND TO" / "AND THE" / period / end-of-line. Split on
+                # "AND TO" / "AND THE" to get multiple explicit targets.
+                _explicit_tail = ''
+                _m_head = re.search(
+                    r'(?:ADDRESSED|MARKED)\s+(?:TO|AT)[:\s]+(.+)',
+                    _cond_u,
+                )
+                if _m_head:
+                    _explicit_tail = _m_head.group(1).strip()
+                if _explicit_tail:
+                    # Split on conjunctions that introduce new targets.
+                    # Keep "AND TO THE APPLICANT" as marker but we handle
+                    # "APPLICANT" via the LC-party branch above, so for
+                    # explicit extraction we split on "AND TO" (followed
+                    # by an all-caps or M/s-prefixed name).
+                    _parts = re.split(
+                        r'\s+AND\s+(?:TO\s+)?(?:THE\s+)?',
+                        _explicit_tail,
+                    )
+                    for _p in _parts:
+                        _p = _p.strip(' .,:\'""')
+                        if not _p:
+                            continue
+                        # Trim at "VIA" / "BY" / "AT" trailing methods
+                        _p = re.split(
+                            r'\s+(?:VIA|BY|AT|WITHIN|WITHIN\s+\d+|BEFORE|AFTER|REFERRING|MENTIONING)\s+',
+                            _p, maxsplit=1,
+                        )[0].strip(' .,:\'""')
+                        # P186 — Drop "NOTIFY …" prefixes. "Notify the
+                        # Applicant" is a BL-field reference (the Notify
+                        # Party should contain the applicant), NOT a
+                        # party literally named "Notify the Applicant".
+                        # The LC-party branch above already added the
+                        # applicant / issuing-bank target with the real
+                        # name; and the notify-party post-check at 5c
+                        # confirms the BL's Notify field content. Adding
+                        # "NOTIFY THE APPLICANT" as a Named party here
+                        # produces duplicate false FAILs because the
+                        # phrase never appears on the BL verbatim.
+                        _p_no_notify = re.sub(r'^NOTIFY\s+(?:THE\s+)?', '', _p).strip()
+                        if _p_no_notify != _p:
+                            # Was a "NOTIFY X" target — skip, handled elsewhere.
+                            continue
+                        # Skip generic words like "APPLICANT" / "BENEFICIARY"
+                        # / "ISSUING BANK" — already covered by LC-party
+                        # branch above.
+                        _p_words = _p.split()
+                        if (len(_p_words) == 1 and _p_words[0] in
+                                ('APPLICANT', 'BENEFICIARY', 'BANK')):
+                            continue
+                        if _p in ('APPLICANT', 'BENEFICIARY', 'ISSUING BANK',
+                                   'OPENING BANK', 'L/C ISSUING BANK'):
+                            continue
+                        # Keep only if has at least 3 words OR has M/s prefix
+                        # (indicating a named party)
+                        if len(_p_words) >= 2 and len(_p) >= 6:
+                            # Avoid duplicates with LC-party branch
+                            _dup = any(
+                                _p.upper() in _lp[1].upper() or
+                                _lp[1].upper() in _p.upper()
+                                for _lp in _targets
+                                if len(_lp[1]) >= 6
+                            )
+                            if not _dup:
+                                _targets.append(('Named party', _p))
+
+                if not _targets:
+                    continue
+                _doc_text_up = (task.get("document_text") or "").upper()
+                if not _doc_text_up:
+                    continue
+
+                # P179 — Phrase-based name check. Look for each target's
+                # DISTINCTIVE NAME PHRASE (e.g. "SINDH INSTITUTE OF
+                # UROLOGY") as a CONTIGUOUS string in the document, not
+                # isolated words. This way "SINDH" appearing in
+                # "M/S. SINDH INSURANCE" doesn't falsely satisfy a
+                # requirement for "SINDH INSTITUTE OF UROLOGY".
+                _missing_targets = []
+                for _lbl, _name in _targets:
+                    _phrase = _normalize_name_phrase(_name)
+                    if not _phrase or len(_phrase) < 4:
+                        continue
+                    if not _phrase_in_doc(_phrase, _doc_text_up):
+                        _missing_targets.append((_lbl, _name, _phrase))
+
+                if _missing_targets:
+                    _set(row, "compliance", "FAIL")
+                    _missing_summary = '; '.join(
+                        f"{_lbl} '{_name}'"
+                        for _lbl, _name, _phrase in _missing_targets
+                    )
+                    _set(row, "findings",
+                         f"Document is not addressed to the required "
+                         f"party/parties: {_missing_summary}.")
+                    _set(row, "result", _get(row, "findings", "")[:200])
+                    _set(row, "verification_notes",
+                         "P174/P178/P179 addressed-to deterministic: "
+                         + '; '.join(
+                             f"{lbl}='{nm}' (phrase='{ph}' not found)"
+                             for lbl, nm, ph in _missing_targets
+                         ))
+                    _progress(f"  [P174/P178/P179 addressed-to] {row_id}: PASS->FAIL ({_missing_summary})")
+            except Exception as _e:
+                try:
+                    print(f"[P174/P178 addressed-to] exception on row {row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # P177 — Deterministic "freight must be shown/mentioned separately
+    # on the Commercial Invoice" check. LLM routinely PASSes this check
+    # on CFR/CIF/CIP invoices where freight is EMBEDDED in the total
+    # (unit-price includes freight, single line total with Incoterm),
+    # rather than broken out as a distinct line. Under UCP practice,
+    # "freight shown separately" means an explicit FREIGHT: $X line
+    # OR a discounted "less freight" deduction line on the invoice.
+    try:
+        for task in vlm_tasks:
+            row = task["row"]
+            row_id = task.get("row_id", "?")
+            try:
+                _comp_now = _get(row, "compliance", "").upper()
+                if _comp_now != "PASS":
+                    continue
+                _cond_u = (task.get("condition_text") or "").upper()
+                if 'FREIGHT' not in _cond_u:
+                    continue
+                if not any(kw in _cond_u for kw in (
+                    'SEPARATELY', 'SEPARATE', 'DISTINCT', 'BROKEN OUT',
+                    'MENTIONED', 'SHOWN', 'INDICATED', 'INDICATE',
+                )):
+                    continue
+                _doc_type_lc = (task.get("document_type") or '').lower()
+                # Only applies when doc is a Commercial Invoice / Invoice.
+                if 'invoice' not in _doc_type_lc:
+                    continue
+                _doc_text_up = (task.get("document_text") or "").upper()
+                if not _doc_text_up:
+                    continue
+                # A "separately mentioned freight value" must look like a
+                # monetary amount following the word FREIGHT (not just
+                # "FREIGHT PREPAID" — that's a BL term for who paid).
+                # Search for FREIGHT + amount patterns.
+                _freight_amt_re = re.compile(
+                    r'\bFREIGHT(?:\s+(?:CHARGES?|COST|VALUE|AMOUNT))?\s*'
+                    r'(?:IS|:|\-|=)?\s*'
+                    r'(?:USD|EUR|GBP|JPY|CNY|PKR|AED|SAR|\$|€|£)?\s*'
+                    r'([\d,]+(?:\.\d{1,2})?)',
+                    re.IGNORECASE,
+                )
+                _found_separate = False
+                for _m in _freight_amt_re.finditer(_doc_text_up):
+                    # Extract number; must be > 0
+                    try:
+                        _val = float(_m.group(1).replace(',', ''))
+                        if _val > 0:
+                            # Exclude the total-line edge case where
+                            # "FREIGHT" is just part of "CFR / CIF"
+                            # wording or "FREIGHT PREPAID" label.
+                            _ctx = _doc_text_up[
+                                max(0, _m.start() - 20):
+                                min(len(_doc_text_up), _m.end() + 20)
+                            ]
+                            if 'PREPAID' in _ctx and not re.search(r'\d', _ctx.split('PREPAID', 1)[1] if 'PREPAID' in _ctx else ''):
+                                continue  # FREIGHT PREPAID with no amount after
+                            _found_separate = True
+                            break
+                    except (ValueError, IndexError):
+                        continue
+                if not _found_separate:
+                    # Also accept: CFR/CIF invoice with an EXPLICIT
+                    # "LESS FREIGHT" deduction, or a separate Incoterm
+                    # breakdown row.
+                    if re.search(
+                        r'\bLESS\s+FREIGHT\b|\bFREIGHT\s+COMPONENT\b|'
+                        r'\bFOB\s+VALUE\b.{0,50}\bFREIGHT\s+VALUE\b',
+                        _doc_text_up,
+                    ):
+                        _found_separate = True
+                if not _found_separate:
+                    _set(row, "compliance", "FAIL")
+                    _set(row, "findings",
+                         "Invoice does not show the freight value separately. "
+                         "The total appears to include freight (CFR/CIF/CIP) "
+                         "without a distinct freight line — LC requires freight "
+                         "to be mentioned as a separate value.")
+                    _set(row, "result", _get(row, "findings", "")[:200])
+                    _set(row, "verification_notes",
+                         "P177 freight-separate deterministic: no FREIGHT + amount line on invoice")
+                    _progress(f"  [P177 freight-separate] {row_id}: PASS->FAIL (no separate freight amount on invoice)")
+            except Exception as _e:
+                try:
+                    print(f"[P177 freight] exception on row {row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # P173 — Strip internal override markers like "(P172 deterministic)",
+    # "(P160 override)", "(P141 universal override)", "(P151a)" from
+    # user-facing findings/result/verification_notes. These are
+    # implementation tags for debugging; end users should never see
+    # them in the compliance report.
+    _override_tag_re = re.compile(
+        r'\s*\(\s*P\d+[a-z]?\b[^)]*\)\s*$',
+        flags=re.IGNORECASE,
+    )
+    _override_tag_inline_re = re.compile(
+        r'\s*\(\s*P\d+[a-z]?\b[^)]{0,80}\)',
+        flags=re.IGNORECASE,
+    )
+    for row in rows:
+        for _fld in ('findings', 'result', 'found_text', 'verification_notes'):
+            _v = _get(row, _fld, '')
+            if not _v or not isinstance(_v, str):
+                continue
+            _cleaned = _override_tag_re.sub('', _v)
+            _cleaned = _override_tag_inline_re.sub('', _cleaned)
+            _cleaned = re.sub(r'\s{2,}', ' ', _cleaned).strip()
+            _cleaned = re.sub(r'\s+\.', '.', _cleaned)
+            if _cleaned != _v:
+                _set(row, _fld, _cleaned)
+
+    # P169 — Drop rows flagged for removal (doc not in LC required-docs
+    # AND not in submission). These rows should never reach the report
+    # as informational placeholders.
+    _pre_drop = len(rows)
+    rows = [r for r in rows if not (
+        (hasattr(r, 'get') and r.get('_drop_from_report')) or
+        (hasattr(r, '__dict__') and getattr(r, '_drop_from_report', False))
+    )]
+    if len(rows) < _pre_drop:
+        _progress(f"P169 dropped {_pre_drop - len(rows)} row(s) for out-of-scope doc types")
 
     review_count = sum(1 for r in rows if _get(r, "compliance") == "REVIEW")
     info_count = sum(1 for r in rows if _get(r, "compliance") == "N/A")

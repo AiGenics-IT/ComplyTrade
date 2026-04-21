@@ -171,7 +171,23 @@ ACCOMPANIMENT CLAUSES:
   • Do NOT use "Original Documents" as a document_to_check — that is not a document type.
   • Pure permissive clauses: "LARGER QUANTITIES ACCEPTABLE", "CHARTER PARTY BL ACCEPTABLE", "GOODS DESCRIPTION SHOWING [X] TO BE ACCEPTABLE"
   • Tolerance specifications: "PLUS/MINUS X PERCENT TOLERANCE" (handled by code)
-  • Date validity: "DOCUMENTS DATED PRIOR TO... NOT ACCEPTABLE" (handled separately)
+
+DATE-VALIDITY CLAUSES (P163 — DO decompose, do NOT filter as informational):
+  • "DOCUMENTS DATED PRIOR TO [THE DATE OF] THIS CREDIT ARE NOT ACCEPTABLE"
+    "DOCUMENTS DATED PRIOR TO THE DATE OF LC/DC ISSUANCE NOT ACCEPTABLE"
+    "DOCUMENTS MUST BE DATED AFTER THE DATE OF THIS CREDIT"
+    "NO PRE-DATED DOCUMENTS ACCEPTABLE"
+    → Emit ONE verifiable condition:
+        document_to_check = "All Documents"
+        condition_text    = "Document must be dated on or after the LC
+                             issue date (F31C: <lc_issue_date>).
+                             Pre-dated documents are discrepancies per
+                             UCP 600 Art 14(i)."
+        look_for_value    = "document issue date vs LC F31C"
+    This fans out at verification to every shipping document; each doc's
+    issue_date is compared against the LC F31C date.  Any doc dated
+    before F31C → FAIL for that doc.  This is NOT an informational
+    clause — it is a hard UCP 600 requirement that must be checked.
 
 ═══════════════════════════════════════════════════════════════
 TRANSMISSION CLAUSES — ONE SET / VIA EMAIL / VIA COURIER (CRITICAL)
@@ -422,14 +438,52 @@ Always create BOTH:
   - Content checks against "Shipment Advice" (what does it say?)
   - Dispatch proof against "Courier Receipt" / "Email Evidence" (was it sent?)
 
-RULE I-4 ("ALL DOCUMENTS" fan-out):
-When a clause says "L/C NUMBER MUST APPEAR ON ALL DOCUMENTS" (or any
-"ALL DOCUMENTS" fan-out), use document_to_check = "All Documents"
-(literal string). Do NOT enumerate doc types yourself. The verifier
-will fan out at run time across documents that are ACTUALLY present in
-this submission. NEVER include "Insurance Policy/Certificate" in such
-a fan-out unless RULE I-1 and RULE I-2 both confirm that insurance is
-required from the beneficiary in this LC.
+RULE I-4 ("ALL DOCUMENTS" fan-out) — STRICT (P169):
+When a clause says "L/C NUMBER MUST APPEAR ON ALL DOCUMENTS", "H.S.
+CODE MUST APPEAR ON ALL DOCUMENTS", "MUST BE SHOWN ON ALL DOCUMENTS",
+or any "ALL DOCUMENTS" fan-out, you MUST use the literal string
+document_to_check = "All Documents" and emit EXACTLY ONE condition
+row per distinct value being required (one for L/C number, one for
+H.S. code, one for NTN, etc.).
+
+DO NOT under any circumstance enumerate doc type names such as
+"Commercial Invoice", "Bill of Lading", "Packing List", "Certificate
+of Origin", "Insurance Policy", "Beneficiary Certificate", etc. in
+response to an "ALL DOCUMENTS" clause. The verifier fans out at run
+time across documents that are ACTUALLY present in this submission.
+Enumerating here causes false "Required document missing" discrepancies
+for docs the LC never asked for.
+
+WORKED EXAMPLE (FOLLOW THIS EXACTLY):
+  Clause: "L/C NUMBER SHOULD APPEAR ON ALL DOCUMENTS AND H.S. CODE
+           NO. 9018.9050 IMPORTER'S NTN NO. 1550365-8 SHOULD APPEAR
+           ON BILL OF LADING AND INVOICES."
+  CORRECT decomposition — 3 conditions total:
+    [0] document_to_check = "All Documents"
+        condition_text   = "L/C number must appear on all documents."
+    [1] document_to_check = "Bill of Lading"
+        condition_text   = "H.S. Code 9018.9050 must appear on the Bill of Lading."
+    [2] document_to_check = "Commercial Invoice"
+        condition_text   = "H.S. Code 9018.9050 must appear on the Commercial Invoice."
+    [3] document_to_check = "Bill of Lading"
+        condition_text   = "Importer's NTN No. 1550365-8 must appear on the Bill of Lading."
+    [4] document_to_check = "Commercial Invoice"
+        condition_text   = "Importer's NTN No. 1550365-8 must appear on the Commercial Invoice."
+  WRONG (do NOT do this):
+    [0] doc="Commercial Invoice", cond="L/C number must appear on CI"
+    [1] doc="Bill of Lading",     cond="L/C number must appear on BL"
+    [2] doc="Packing List",       cond="L/C number must appear on PL"
+    [3] doc="Beneficiary Certificate", cond="L/C number must appear on Beneficiary Cert"
+    ... → these enumerated rows produce false-missing-doc failures
+    when the LC never required Beneficiary Certificate / PL / COO.
+
+For specific-doc-type sub-clauses like "H.S. CODE MUST APPEAR ON BILL
+OF LADING AND INVOICES" — enumerate ONLY the doc types EXPLICITLY
+NAMED in that sub-clause (BL + Invoice above), nothing else.
+
+NEVER include "Insurance Policy/Certificate" in a fan-out unless
+RULE I-1 and RULE I-2 both confirm that insurance is required from
+the beneficiary in this LC.
 
 WORKED EXAMPLE A — "BY COURIER" (STUDY THIS):
 Clause: "INSURANCE COVERED BY THE APPLICANT. ALL SHIPMENT UNDER

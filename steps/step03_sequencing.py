@@ -897,6 +897,47 @@ LOOK FOR and capture these if they appear ANYWHERE on any page:
    - Gross weight, net weight, tare weight, measurement (CBM) — all as
      SEPARATE quantities_found entries with proper units.
 
+6b. PACKING-LIST TOTALS (P191 — CRITICAL when doc_type is Packing List,
+    Weight List, Packing Slip, Weight & Packing List, or any variant):
+    A Packing List typically has a TABLE with per-row columns like:
+      Plt No. | CTN No. | Material No. | Model | Description |
+      PCS/CTN | Total CTNS | QTY | N.W (kgs) | G.W (kgs)
+    and a TOTALS row on the LAST page that sums the rightmost numeric
+    columns (often the row is labelled "TOTAL PACKED IN N PACKAGES"
+    or just the sum figures sitting alone at the foot of the table).
+    You MUST extract EACH of the following totals whenever they appear
+    on the LAST page (or anywhere labelled TOTAL / GRAND TOTAL):
+       - total_cartons / total_packages → quantities_found[role=total_cartons,
+         unit=CARTONS|PACKAGES], e.g. raw="TOTAL PACKED IN 17 PACKAGES"
+       - total_pieces (sum of all PCS across every carton row) →
+         quantities_found[role=total_pieces, unit=PCS], e.g. raw="522,000"
+       - total_quantity (the LC-level units column — may differ from
+         total_pieces when each "unit" contains multiple pieces; in
+         Mobile/SKD shipments Total QTY = 10,000 SETS while total_pieces
+         = 522,000 small items) → quantities_found[role=total_quantity,
+         unit=PCS|SETS|BAGS|UNITS], e.g. raw="QUANTITY: 10,000 PCS"
+       - total_net_weight (sum of the N.W column on the totals row) →
+         quantities_found[role=total_net_weight, unit=kgs|KG|MT|LBS],
+         e.g. raw="3522.96" when it sits on the N.W totals cell
+       - total_gross_weight (sum of the G.W column on the totals row) →
+         quantities_found[role=total_gross_weight, unit=kgs|KG|MT|LBS],
+         e.g. raw="4137.11"
+    CRITICAL — DO NOT CONFUSE N.W AND G.W. The LAST column of the
+    packing-list table is always GROSS weight; the second-to-last is
+    NET. G.W > N.W for every row. If you only see two numbers on the
+    totals row (e.g. 3522.96 and 4137.11), the SMALLER one is
+    total_net_weight and the LARGER one is total_gross_weight.
+    Also mirror these into typed fields:
+       "total_cartons": "17"
+       "total_pieces": "522,000"
+       "total_quantity": "10,000 PCS"
+       "total_net_weight": "3522.96 kgs"
+       "total_gross_weight": "4137.11 kgs"
+    If a given total is NOT printed on the document, OMIT that field —
+    never invent a value. If the packing list is SINGLE-PAGE with no
+    "TOTAL" row, the single product row's PCS/CTN × Total CTNS IS the
+    total_pieces — emit it accordingly.
+
 7. SHIPMENT ADVICE / NOTIFICATION EMAILS (P128 — CRITICAL for Shipment Advice):
    A Shipment Advice is typically an email/fax sent BY the beneficiary to
    MULTIPLE recipients (insurer, applicant, consignee, bank). The email
@@ -1601,11 +1642,91 @@ def _llm_text_call(prompt: str, max_tokens: int = 2500, temperature: float = 0.1
     return {"_error": last_err or "unknown"}
 
 
+_GLM_HALLUCINATION_PATTERNS = (
+    # GLM-OCR frequently emits these style-advice bullets when it fails to
+    # read a dense table or fine-print T&C page. Treating the page as
+    # continuation / back-page when we see this avoids mis-classifying
+    # such pages as standalone Commercial Invoices or MT730 messages.
+    "use underline for emphasis",
+    "use bold for headings",
+    "use italics for emphasis",
+    "use a table layout",
+    "use a consistent font",
+    "use standard fonts and colors",
+    "use standard text formatting",
+    "use a clear and concise language",
+    "use bold for headings and italics",
+    "use italics for headings",
+    "use underline for subheadings",
+)
+
+
+def _is_glm_hallucinated(text: str) -> bool:
+    """True if the GLM-OCR text is a style-instruction hallucination
+    (a strong signal that the page is unreadable fine-print — a back
+    page, carriage T&C overleaf, or a continuation page without a
+    header). No real document starts every line with 'Use bold for...'.
+    """
+    if not text:
+        return False
+    low = text.lower().strip()
+    if not low:
+        return False
+    # Count how many of the first ~12 non-empty lines are style bullets.
+    lines = [ln.strip() for ln in low.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    hits = 0
+    checked = 0
+    for ln in lines[:15]:
+        checked += 1
+        if ln.startswith("-") or ln.startswith("*"):
+            ln = ln.lstrip("-*").strip()
+        if any(pat in ln for pat in _GLM_HALLUCINATION_PATTERNS):
+            hits += 1
+    # If the majority of leading lines are style bullets, it's a
+    # hallucination. Also catch the common "same bullet repeated N times"
+    # case by checking for repetition of a single pattern.
+    if checked >= 3 and hits / checked >= 0.6:
+        return True
+    # Fallback: extreme repetition of any single hallucination phrase.
+    for pat in _GLM_HALLUCINATION_PATTERNS:
+        if low.count(pat) >= 5:
+            return True
+    return False
+
+
 def _classify_doctype_vlm(page_num: int, image_path: str, glm_text: str) -> dict:
     """Step 3a — classify ONE page's document_type + is_continuation.
     Text-dominant task. Sends image at 1280px (classification doesn't need detail)."""
     img_b64 = _prepare_image_b64(image_path, max_dim=1280)
     _text = glm_text[:4000] if len(glm_text) > 4000 else glm_text
+    # P188 — If the OCR text is a style-advice hallucination, the GLM
+    # couldn't read the page. Tell the classifier explicitly so it
+    # leans on the IMAGE alone and doesn't invent a doc type from the
+    # garbage bullets. Very short pages (just signatures) get the same
+    # treatment — they are almost always back pages of the surrounding
+    # document, not a separate instrument.
+    _hallucinated = _is_glm_hallucinated(_text)
+    _very_short = len(_text.strip()) < 150
+    if _hallucinated or _very_short:
+        _hint = (
+            "[OCR NOTE: the text extraction for this page returned "
+            "only generic formatting bullets or near-empty content. "
+            "This usually means the page is a back-side / carriage "
+            "Terms & Conditions page, a continuation of the previous "
+            "document (e.g. a multi-page Packing List / Invoice), or "
+            "a signature-only back page of a Draft / BL. Classify "
+            "based on the IMAGE and the surrounding pages, not the "
+            "garbage text. If the image is mostly blank or shows only "
+            "signatures/stamps, set is_continuation=true and use the "
+            "same document_type as the neighbouring page. If the "
+            "image shows a page of small-print carriage clauses, "
+            "document_type must be 'terms and conditions of bill of "
+            "lading' (NOT MT730, NOT Commercial Invoice).]\n\n"
+            + _text
+        )
+        _text = _hint
     prompt = CLASSIFY_DOCTYPE_PROMPT.format(glm_text=_text)
     result = _vlm_call_json(prompt, img_b64, max_tokens=800)
     # Normalize
@@ -2790,6 +2911,111 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             curr['copy_status'] = prev.get('copy_status', curr.get('copy_status', ''))
             _progress(f"  Page {curr.get('page_number', '?')}: CONTINUATION of page {prev.get('page_number', '?')} (similarity={similarity:.0%})")
 
+    # ── Phase 1b.5: GLM-OCR hallucination rescue (P189) ──
+    # When the OCR text is a style-advice hallucination or nearly empty,
+    # the classifier often mis-labels the page as MT730 / Commercial
+    # Invoice / unknown. Repair based on the neighbouring page context:
+    #   • previous page is a Bill of Lading  → T&C overleaf of that BL
+    #   • previous page is a Draft / BoE     → signature back-page of
+    #                                           the draft (continuation)
+    #   • previous page is a Packing List /
+    #     Commercial Invoice / similar       → continuation of that
+    #                                           multi-page document
+    # This is idempotent: only runs when the OCR really is hallucinated.
+    _BL_TYPES = ('bill of lading', 'b/l', 'ocean bill', 'marine bill',
+                 'copy non-negotiable bill of lading',
+                 'non-negotiable bill of lading', 'house bill of lading',
+                 'master bill of lading', 'transport document',
+                 'attached list', 'attached list ym express')
+    _DRAFT_TYPES = ('draft bill of exchange', 'draft', 'bill of exchange',
+                    'sight draft', 'usance draft', 'boe')
+    _CONT_TYPES = ('packing list', 'commercial invoice', 'invoice',
+                   'weight list', 'insurance policy', 'insurance certificate',
+                   'beneficiary certificate', "beneficiary's certificate",
+                   'shipment advice', 'shipping advice', 'tax invoice')
+    for i, cls in enumerate(classifications):
+        pg_num = cls.get('page_number', 0)
+        if pg_num in _swift_preclassified:
+            continue
+        # Get the page OCR text
+        _pg_text = ''
+        for _pn, _ip, _tx in all_page_data:
+            if _pn == pg_num:
+                _pg_text = _tx or ''
+                break
+        _halluc = _is_glm_hallucinated(_pg_text)
+        _near_empty = len(_pg_text.strip()) < 150
+        if not (_halluc or _near_empty):
+            continue
+        def _neighbour_dt(index, step):
+            """Return the nearest non-hallucinated neighbour's doc type
+            in the given direction (step=-1 prev, +1 next)."""
+            k = index + step
+            last_dt = ''
+            while 0 <= k < len(classifications):
+                nb = classifications[k]
+                nb_pg = nb.get('page_number', 0)
+                nb_text = ''
+                for _pn, _ip, _tx in all_page_data:
+                    if _pn == nb_pg:
+                        nb_text = _tx or ''
+                        break
+                nb_dt = (nb.get('document_type') or '').lower()
+                if (_is_glm_hallucinated(nb_text)
+                        or len(nb_text.strip()) < 150):
+                    last_dt = nb_dt or last_dt
+                    k += step
+                    continue
+                return nb_dt
+            return last_dt
+
+        prev_dt = _neighbour_dt(i, -1)
+        next_dt = _neighbour_dt(i, +1)
+        curr_dt = (cls.get('document_type') or '').lower()
+        # Rule A — neighbour is a BL: reclassify as T&C overleaf.
+        # Check BOTH previous and next page — a carriage T&C page can sit
+        # before OR after its BL depending on print/scan order.
+        if any(t in prev_dt for t in _BL_TYPES) or any(t in next_dt for t in _BL_TYPES):
+            if (curr_dt in ('mt730', 'unknown', '') or
+                    'mt730' in curr_dt or
+                    'commercial invoice' in curr_dt or
+                    'invoice' == curr_dt):
+                cls['document_type'] = (
+                    "Terms and Conditions of Bill of Lading"
+                )
+                cls['is_continuation'] = False
+                cls['_reclassified_by'] = 'P189_bl_tc_rescue'
+                _progress(
+                    f"  Page {pg_num}: RECLASSIFIED as T&C of BL "
+                    f"(BL neighbour, OCR hallucinated)"
+                )
+            continue
+        # Rule B — neighbour is a Draft/BoE: mark as back-page of draft.
+        # A short signature-only page adjacent to a Draft is the back side
+        # of that draft — merge it into the draft packet.
+        _prev_is_draft = any(t == prev_dt or t in prev_dt for t in _DRAFT_TYPES)
+        _next_is_draft = any(t == next_dt or t in next_dt for t in _DRAFT_TYPES)
+        if _prev_is_draft or _next_is_draft:
+            cls['document_type'] = 'Draft Bill of Exchange'
+            cls['is_continuation'] = True
+            cls['_reclassified_by'] = 'P189_draft_back_page'
+            _progress(
+                f"  Page {pg_num}: RECLASSIFIED as Draft back-page "
+                f"(Draft neighbour, OCR hallucinated/empty)"
+            )
+            continue
+        # Rule C — previous is a Packing List / Invoice / etc.: continuation
+        if any(t in prev_dt for t in _CONT_TYPES):
+            # Inherit the previous page's doc type and mark continuation
+            cls['document_type'] = prev_dt.title() if prev_dt.isupper() or prev_dt.islower() else prev_dt
+            cls['is_continuation'] = True
+            cls['_reclassified_by'] = 'P189_cont_inherit'
+            _progress(
+                f"  Page {pg_num}: RECLASSIFIED as continuation of "
+                f"'{prev_dt}' (OCR hallucinated)"
+            )
+            continue
+
     # ── Phase 1c: Continuation type inheritance ──
     # Handles THREE scenarios:
     #
@@ -2900,13 +3126,72 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     # 3. Bill of Exchange front + endorsement back → merge
     # 4. Any document split across pages with same issuer/BL number
 
-    _bl_types = {'bill of lading'}
-    _bl_tc_types = {'bl conditions of carriage', 'conditions of carriage', 'bl terms and conditions'}
-    _bl_attach_types = {'attach list', 'attached sheet', 'attached list', 'rider',
-                        'bl attached sheet', 'bl rider', 'attached schedule'}
-    _boe_types = {'draft bill of exchange', 'bill of exchange'}
+    # P190 — Expanded type sets so Rule 1 / 1b pick up BL variants
+    # (copy non-negotiable, YM Express attached list, "Terms and
+    # Conditions of <Carrier>'s Bill of Lading", etc.) that the
+    # classifier emits in real-world submissions.
+    _bl_types = {'bill of lading', 'copy non-negotiable bill of lading',
+                 'non-negotiable bill of lading', 'ocean bill of lading',
+                 'marine bill of lading', 'house bill of lading',
+                 'master bill of lading', 'combined transport bill of lading',
+                 'multimodal bill of lading', 'short form bill of lading',
+                 'blank back bill of lading', 'liner bill of lading',
+                 'charter party bill of lading'}
+    _bl_tc_types = {'bl conditions of carriage', 'conditions of carriage',
+                    'bl terms and conditions', 'terms and conditions',
+                    'bill of lading terms and conditions',
+                    'terms and conditions of carriage',
+                    'carrier terms and conditions',
+                    'terms and conditions of bill of lading'}
+    _bl_attach_types = {'attach list', 'attached sheet', 'attached list',
+                        'rider', 'bl attached sheet', 'bl rider',
+                        'attached schedule', 'attached list ym express'}
+    _boe_types = {'draft bill of exchange', 'bill of exchange', 'draft',
+                  'sight draft', 'usance draft', 'boe'}
     _boe_back_types = {'endorsement page'}
     _skip_merge = {'blank page', 'blank_page', 'header page'}
+
+    def _is_bl(dt: str) -> bool:
+        dtl = (dt or '').lower().strip()
+        if not dtl:
+            return False
+        if dtl in _bl_types:
+            return True
+        # Substring fallback — "copy non-negotiable bill of lading YM"
+        # or carrier-prefixed variants.
+        return 'bill of lading' in dtl
+
+    def _is_bl_tc(dt: str) -> bool:
+        dtl = (dt or '').lower().strip()
+        if not dtl:
+            return False
+        if dtl in _bl_tc_types:
+            return True
+        # Substring fallback — "Terms and Conditions of Yang Ming's
+        # Bill of Lading" etc.
+        if 'terms and conditions' in dtl and 'bill of lading' in dtl:
+            return True
+        if 'conditions of carriage' in dtl:
+            return True
+        return False
+
+    def _is_bl_attach(dt: str) -> bool:
+        dtl = (dt or '').lower().strip()
+        if not dtl:
+            return False
+        if dtl in _bl_attach_types:
+            return True
+        # "Attached List YM Express" / "Attach List BL Rider" variants
+        return dtl.startswith('attach') or dtl.startswith('bl attach')
+
+    def _is_boe(dt: str) -> bool:
+        dtl = (dt or '').lower().strip()
+        if not dtl:
+            return False
+        if dtl in _boe_types:
+            return True
+        return ('bill of exchange' in dtl or dtl == 'draft' or
+                'draft bill of exchange' in dtl)
 
     merged_packets = []
     _consumed = set()  # packet indices that were merged into another
@@ -2916,12 +3201,29 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             continue
         dt = pkt.document_type.lower().strip()
 
-        # Rule 1: BL — absorb ONE T&C page, picking the CLOSEST by page distance.
-        # Trade-finance convention: each BL has exactly ONE T&C (overleaf/back).
-        # - If a T&C page is within 3 pages of the BL (before or after), merge.
-        # - If no T&C is adjacent, leave the BL untouched so Step 3d can
-        #   correctly set bl_subtype.is_blank_back = true.
-        if dt in _bl_types:
+        # Rule 1: BL — absorb ONE T&C page, picking the CLOSEST by page
+        # distance. Trade-finance convention: each BL has exactly ONE
+        # T&C (overleaf/back). P190 relaxes the "before BL" penalty and
+        # widens the threshold so T&Cs immediately BEFORE their BL also
+        # match (common when the scan order is T&C-then-BL).
+        if _is_bl(dt):
+            # P191 — If the BL packet already contains a T&C page
+            # (from the initial grouping phase, which sometimes unions
+            # the BL with a same-doc-type-neighbour T&C before Rule 1
+            # runs), skip absorption. Each BL may carry exactly ONE
+            # T&C — a second one would be a duplicate that leaves
+            # another BL blank-back by mistake.
+            _already_has_tc = False
+            for _pg in (pkt.pages or []):
+                _pdt = ''
+                if isinstance(_pg, dict):
+                    _pdt = str(_pg.get('document_type') or '').lower()
+                if _pdt and _is_bl_tc(_pdt):
+                    _already_has_tc = True
+                    break
+            if _already_has_tc:
+                merged_packets.append(pkt)
+                continue
             _bl_max = max(pkt.page_numbers) if pkt.page_numbers else 0
             _bl_min = min(pkt.page_numbers) if pkt.page_numbers else 9999
             _best_tc = None
@@ -2930,35 +3232,42 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                 if j in _consumed or j == i:
                     continue
                 odt = other.document_type.lower().strip()
-                if odt not in _bl_tc_types:
+                if not _is_bl_tc(odt):
                     continue
                 _tc_min = min(other.page_numbers) if other.page_numbers else 9999
                 _tc_max = max(other.page_numbers) if other.page_numbers else 0
-                # Prefer T&C that comes AFTER the BL (overleaf is typically
-                # the next page). Accept BEFORE only when nothing follows.
+                # After-preference: T&C AFTER the BL is the typical
+                # overleaf ordering. Before is still allowed with a
+                # small +1 penalty so after wins on ties but before is
+                # still reachable within the threshold.
                 if _tc_min > _bl_max:
                     _dist = _tc_min - _bl_max
                 elif _tc_max < _bl_min:
-                    _dist = (_bl_min - _tc_max) + 100   # penalise "before BL"
+                    _dist = (_bl_min - _tc_max) + 1
                 else:
-                    _dist = 0                             # interleaved
+                    _dist = 0
                 if _dist < _best_dist:
                     _best_tc = j
                     _best_dist = _dist
-            # Only merge if within 3-page window — beyond that it likely
-            # belongs to a DIFFERENT BL packet.
-            if _best_tc is not None and _best_dist <= 3:
+            # P190 — threshold raised from 3 to 6 so T&Cs that are a few
+            # pages away from their BL (common with interleaved attach
+            # lists / rider sheets) still merge.
+            if _best_tc is not None and _best_dist <= 6:
                 other = packets[_best_tc]
                 pkt.page_numbers.extend(other.page_numbers)
                 pkt.pages.extend(other.pages)
                 pkt.stamps.extend(other.stamps)
                 pkt.signatures.extend(other.signatures)
                 pkt.seals.extend(other.seals)
+                # P191 — annotate the packet label so the UI shows the
+                # merged T&C explicitly instead of just "Bill of Lading".
+                if '+ conditions of carriage' not in pkt.document_type.lower():
+                    pkt.document_type = f"{pkt.document_type} + Conditions of Carriage"
                 _consumed.add(_best_tc)
                 _progress(f"  Merged {other.packet_id} (BL T&C pg {other.page_numbers}) into {pkt.packet_id} (BL pg {pkt.page_numbers[:3]}) — distance {_best_dist}")
 
         # Rule 2: Bill of Exchange — absorb endorsement pages
-        elif dt in _boe_types:
+        elif _is_boe(dt):
             for j, other in enumerate(packets):
                 if j in _consumed or j == i:
                     continue
@@ -2974,28 +3283,39 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
 
         merged_packets.append(pkt)
 
-    # Rule 1b: Attach List → merge into nearest preceding BL
-    # "Attach List" / "Attached Sheet" is a rider page of a Bill of Lading
-    # containing cargo details that didn't fit on the main BL page.
-    # Merge each Attach List into the nearest BL that comes BEFORE it.
+    # Rule 1b: Attach List → merge into nearest BL (before OR after).
+    # "Attach List" / "Attached Sheet" / "Attached List YM Express" is
+    # a rider page of a Bill of Lading containing cargo details that
+    # didn't fit on the main BL page. P190 widens this to ALSO match
+    # attach lists that come immediately AFTER the BL (scan-order
+    # variance) and uses substring matching so carrier-specific labels
+    # like "Attached List YM Express" are picked up.
     for i, pkt in enumerate(merged_packets):
         if i in _consumed:
             continue
         dt = pkt.document_type.lower().strip()
-        if dt not in _bl_attach_types:
+        if not _is_bl_attach(dt):
             continue
-        # Find nearest preceding BL by page number
-        _attach_pg = min(pkt.page_numbers) if pkt.page_numbers else 999
+        _attach_min = min(pkt.page_numbers) if pkt.page_numbers else 999
+        _attach_max = max(pkt.page_numbers) if pkt.page_numbers else 0
         _best_bl = None
         _best_dist = 999
         for j, other in enumerate(merged_packets):
             if j in _consumed or j == i:
                 continue
             odt = other.document_type.lower().strip()
-            if odt in _bl_types:
+            if _is_bl(odt):
                 _bl_max_pg = max(other.page_numbers) if other.page_numbers else 0
-                _dist = _attach_pg - _bl_max_pg
-                if 0 < _dist < _best_dist:
+                _bl_min_pg = min(other.page_numbers) if other.page_numbers else 9999
+                # Accept both: attach list AFTER BL (typical) or
+                # BEFORE BL (some carriers scan it first).
+                if _attach_min > _bl_max_pg:
+                    _dist = _attach_min - _bl_max_pg
+                elif _attach_max < _bl_min_pg:
+                    _dist = (_bl_min_pg - _attach_max) + 1
+                else:
+                    _dist = 0
+                if _dist < _best_dist and _dist <= 4:
                     _best_bl = j
                     _best_dist = _dist
         if _best_bl is not None:
@@ -3004,6 +3324,10 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             _bl_pkt.pages.extend(pkt.pages)
             _bl_pkt.stamps.extend(pkt.stamps)
             _bl_pkt.signatures.extend(pkt.signatures)
+            # P191 — annotate the packet label so the UI shows the
+            # attached list explicitly instead of just "Bill of Lading".
+            if '+ attached list' not in _bl_pkt.document_type.lower():
+                _bl_pkt.document_type = f"{_bl_pkt.document_type} + Attached List"
             _consumed.add(i)
             _progress(f"  Merged {pkt.packet_id} (Attach List pg {pkt.page_numbers}) into {_bl_pkt.packet_id} (BL pg {_bl_pkt.page_numbers[:3]})")
 
@@ -3387,9 +3711,92 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                 pkt = _blfutures[fut]
                 try:
                     pkt.bl_subtype = fut.result()
+                    # P162 — Packet-level override of has_terms_overleaf
+                    # and is_blank_back. The T&C / Conditions of Carriage
+                    # is ALWAYS a separate page that smart-merge attaches
+                    # to the BL packet. So the test is simply: does ANY
+                    # page in this BL packet have a T&C / Conditions of
+                    # Carriage / reverse-page doc_type?
+                    #   T&C page attached  -> has_terms_overleaf=True,
+                    #                         is_blank_back=False
+                    #   no T&C page attached -> is_blank_back=True,
+                    #                           has_terms_overleaf=False
+                    _pkt_has_tc = False
+                    _tc_page_num = None
+                    for _p in (pkt.pages or []):
+                        _pt = ''
+                        _pg_num = None
+                        if isinstance(_p, dict):
+                            _pt = str(_p.get('document_type', '') or '').lower()
+                            _pg_num = _p.get('page_number')
+                        if ('conditions of carriage' in _pt or
+                                'bl conditions' in _pt or
+                                'terms and conditions' in _pt or
+                                'back page' in _pt or
+                                'reverse page' in _pt or
+                                'terms overleaf' in _pt or
+                                'endorsement page' in _pt):
+                            _pkt_has_tc = True
+                            _tc_page_num = _pg_num
+                            break
+                    # P182 — Correct definitions (revised per user):
+                    #   - NO T&C page attached            → BLANK BACK only
+                    #                                       (is_blank_back=True,
+                    #                                        is_short_form=False)
+                    #   - T&C page attached, short/partial → SHORT FORM
+                    #                                       (is_short_form=True,
+                    #                                        is_blank_back=False)
+                    #   - T&C page attached, full-length  → LONG FORM overleaf
+                    #                                       (neither flag)
+                    # "Short form" means the BL has terms printed overleaf
+                    # BUT the terms are an abbreviated / half-page version.
+                    # A BL with NO reverse-side terms is NOT a short form —
+                    # it's blank back.
+                    pkt.bl_subtype["has_terms_overleaf"] = bool(_pkt_has_tc)
+                    if not _pkt_has_tc:
+                        # No T&C attached → blank back, NOT short form
+                        pkt.bl_subtype["is_blank_back"] = True
+                        pkt.bl_subtype["is_short_form"] = False
+                        _ft = str(pkt.bl_subtype.get("form_type", "") or "").lower()
+                        if _ft in ("", "unknown", "short_form_blank_back", "short_form"):
+                            pkt.bl_subtype["form_type"] = "blank_back"
+                    else:
+                        # T&C attached → not blank back.
+                        # Determine short vs long by T&C text length.
+                        pkt.bl_subtype["is_blank_back"] = False
+                        _tc_text_len = 0
+                        for _p in (pkt.pages or []):
+                            if isinstance(_p, dict):
+                                _pt = str(_p.get('document_type', '') or '').lower()
+                                if ('conditions of carriage' in _pt or
+                                        'bl conditions' in _pt or
+                                        'terms and conditions' in _pt or
+                                        'back page' in _pt or
+                                        'reverse page' in _pt or
+                                        'terms overleaf' in _pt):
+                                    _pn = _p.get('page_number')
+                                    for _tp in (_packet_texts.get(pkt.packet_id, '') or '').split(
+                                        '\n\n--- PAGE BREAK ---\n\n'
+                                    ):
+                                        if _tp.strip():
+                                            _tc_text_len = max(_tc_text_len, len(_tp))
+                        # Heuristic: a full overleaf has ≥ 2000 chars of
+                        # T&C text; a short-form overleaf is typically
+                        # under that (half-page / abbreviated).
+                        _is_short = _tc_text_len > 0 and _tc_text_len < 2000
+                        pkt.bl_subtype["is_short_form"] = bool(_is_short)
+                        _ft = str(pkt.bl_subtype.get("form_type", "") or "").lower()
+                        if _is_short:
+                            pkt.bl_subtype["form_type"] = "short_form"
+                        elif _ft in ("", "unknown", "short_form_blank_back",
+                                      "blank_back", "short_form"):
+                            pkt.bl_subtype["form_type"] = "long_form_printed_overleaf"
                     _progress(f"  {pkt.packet_id}: form={pkt.bl_subtype.get('form_type')}, "
                               f"contract={pkt.bl_subtype.get('contract_type')}, "
-                              f"signing={pkt.bl_subtype.get('signing_type')}")
+                              f"signing={pkt.bl_subtype.get('signing_type')}, "
+                              f"blank_back={pkt.bl_subtype.get('is_blank_back')}"
+                              + (f" (T&C page {_tc_page_num} attached)" if _pkt_has_tc
+                                  else " (no T&C page attached)"))
                 except Exception as e:
                     pkt.bl_subtype = {"_error": str(e)}
 

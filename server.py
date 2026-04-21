@@ -205,7 +205,14 @@ def serve_logo():
 def extracted_text_page():
     html_path = os.path.join(VIEW_DIR, "extracted_text.html")
     if os.path.exists(html_path):
-        return HTMLResponse(open(html_path, 'r', encoding='utf-8').read())
+        return HTMLResponse(
+            open(html_path, 'r', encoding='utf-8').read(),
+            headers={
+                'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+                'Pragma': 'no-cache',
+                'Expires': '0',
+            },
+        )
     raise HTTPException(404, "Extracted text viewer not found")
 
 
@@ -1374,11 +1381,19 @@ def get_result(job_id: str):
         # Prefer step3 when step9 value is missing, empty, or default-only
         copy_status = _pkt_copy_status or _s3_cs or 'original'
         copy_label = _pkt_copy_label or _s3_cl or ''
-        # If step3 has more specific info (non_negotiable) but step9 says
-        # just 'original', trust step3
+        # If step3 has more specific info (non_negotiable/copy) but step9
+        # says just 'original', trust step3
         if _s3_cs in ('non_negotiable', 'copy') and _pkt_copy_status in ('', 'original'):
             copy_status = _s3_cs
             copy_label = _s3_cl or copy_label
+        # P164 — STEP 3 ALWAYS WINS for non_negotiable. If Step 3 detected
+        # a NON-NEGOTIABLE stamp on the page, do NOT let downstream label
+        # normalization flip it back to 'original'. Previously, a BL with
+        # copy_status='non_negotiable' + copy_label='ORIGINAL' (the word
+        # ORIGINAL sometimes printed alongside the NON-NEGOTIABLE stamp)
+        # was being overwritten to copy_status='original' by the ORIG
+        # branch below.
+        _step3_is_nonneg = (_s3_cs == 'non_negotiable')
         # Normalize copy_label — preserve ordinal for FIRST/SECOND/THIRD ORIGINAL
         _cl_up = copy_label.upper()
         if _cl_up in ('COP', 'COP.'):
@@ -1387,6 +1402,11 @@ def get_result(job_id: str):
         elif _cl_up.startswith('NON'):
             copy_label = 'NON-NEGOTIABLE'
             copy_status = 'non_negotiable'
+        elif _step3_is_nonneg:
+            # P164 — Step 3 says non_negotiable, keep it regardless of label
+            copy_status = 'non_negotiable'
+            if not copy_label or _cl_up in ('ORIG', 'ORIGINAL'):
+                copy_label = 'NON-NEGOTIABLE'
         elif 'FIRST ORIGINAL' in _cl_up or '1ST ORIGINAL' in _cl_up:
             copy_label = 'FIRST ORIGINAL'
             copy_status = 'original'
