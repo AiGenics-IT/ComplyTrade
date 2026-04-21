@@ -825,6 +825,30 @@ LOOK FOR and capture these if they appear ANYWHERE on any page:
      appears on the page. (P142)
    - Shipment Advice has a "Sent:" date at the top (email header style)
      → dates_found[role=advice_sent_date] AND typed issue_date.
+   - Documentary Remittance / Covering Schedule / Covering Letter /
+     Bill Remittance Letter (P160 — CRITICAL for stale-BL checks):
+       The prominent date-stamp (often rubber-stamped, sometimes
+       rotated/upside-down) on the covering schedule is the
+       RECEIVING / PRESENTATION DATE — the date the negotiating
+       bank received the documents from the beneficiary. This is
+       the key input for the UCP 600 Art 14(c) stale-BL check.
+       Emit:
+         dates_found[role=receiving_date, value=YYYY-MM-DD, raw=...]
+         AND dates_found[role=presentation_date, value=<same>, raw=...]
+         AND typed field receiving_date / presentation_date
+       Do NOT tag it only as issue_date — the bank's receipt stamp is
+       distinct from the DR's own typed issue/print date.
+       Recognise these stamp labels / contexts:
+         • "RECEIVED" / "RECEIVED ON" / "DATE RECEIVED"
+         • a bare date stamp placed near the top or side of the DR
+         • stamps where the text is rotated 90°/180° — MENTALLY
+           rotate and transcribe the date right-side-up (e.g. a
+           stamp visually showing "5202 PES 81" rotated 180° is
+           "18 SEP 2025" → receiving_date = 2025-09-18).
+       If the document has BOTH a prominent stamp date AND a
+       separate typed print date, emit BOTH:
+         • stamp → receiving_date + presentation_date
+         • typed print → issue_date
    - LC issue date referenced (e.g. "DC Date of Issue: 2-Jan-2026") →
      lc_issue_date (distinct from the doc's own issue_date).
    - Proforma invoice date referenced (e.g. "DATED: 28-Nov-2025") → invoice_date with clear raw.
@@ -985,6 +1009,31 @@ Rules:
 - For Draft: include drawer/drawee/payee + amount + tenor.
 - If the document references other documents (LC no, invoice no), record them in lc_reference / invoice_reference / cross_references.
 - Do NOT invent values. Omit fields with no actual data.
+
+MULTI-INSTRUMENT PAGES (P161 — CRITICAL):
+When a single page carries TWO (or more) instances of the same document
+type — typically two Bill of Exchange forms labelled "First of Exchange"
+and "Second of Exchange", or two BL originals side by side — the packet
+summary MUST reflect that:
+  • In "notes" (or "key_clauses"): explicitly state "Two Bills of
+    Exchange on one page (First of Exchange + Second of Exchange), same
+    reference number, tenor duplicates" OR "Two Bills of Lading on one
+    page, different reference numbers" as appropriate.
+  • For tenor-duplicates (same ref, e.g. First + Second of Exchange
+    with same No. RE/017/2025): populate the typed fields ONCE from
+    EITHER copy (they're identical), then note in notes: "Drawn in
+    duplicate — First of Exchange + Second of Exchange both carry
+    the same values". Do NOT double the amount.
+  • For genuinely DIFFERENT instruments on the same page (e.g. BL
+    MAEU123 + BL MAEU456): populate typed fields with the first; list
+    the second's key data (bl_number, date, goods) in "cross_references"
+    or "notes" as a separate block.
+  • Always set the page-level multi-instrument flag (already handled
+    by Step 3a's multiple_instruments_on_page / instrument_count /
+    instrument_references). Those flags propagate into unified_summary.
+  • For verification purposes: the packet still represents ONE
+    submission slot for "tenor duplicates" (First + Second = one draft)
+    but TWO slots for "different instruments on same page".
 
 Only output JSON.
 """

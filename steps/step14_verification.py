@@ -1888,23 +1888,39 @@ CRITICAL RULES (follow strictly):
     This IS the "approximate date of arrival" the LC is asking for → PASS.
     Do NOT use the certificate issuance date or the LC issue date for this.
 
-13z. STALE BL CHECK ON DOCUMENTARY REMITTANCE (CRITICAL):
-    When the condition says "BL must not be stale" and the
-    document_to_check is "Documentary Remittance" (or "Covering
-    Schedule" / "Cover Schedule"), you are NOT looking for a Bill
-    of Lading inside the Documentary Remittance. You are looking
-    for the PRESENTATION DATE on the Documentary Remittance.
-    "Stale" means the BL was presented more than the allowed
-    number of days after the BL date. The formula is:
-      presentation_date (from DR) - shipment_date (from BL/F44C)
-    You may not have the BL date in the DR text — in that case,
-    check if the DR shows a presentation date or "date" field,
-    and compare it against the LC's latest shipment date (F44C)
-    or the F48 presentation period. If you cannot determine
-    whether the document is stale from the DR text alone, mark
-    as REVIEW (not FAIL). Do NOT mark FAIL with "NO BILL OF
-    LADING FOUND" — that is wrong. The DR is not supposed to
-    contain a BL; it's supposed to contain a date.
+13z. STALE BL CHECK — NEW LOGIC (P160 — CRITICAL):
+    A BL is "stale" when too much time has passed between the BL's
+    shipped-on-board date and the date the bank received the
+    documents (the receiving/presentation date stamped on the
+    Documentary Remittance / Covering Schedule).
+    FORMULA:
+      days_elapsed = receiving_date_on_DR − bl_onboard_date
+      STALE if days_elapsed > 30  (default; F48 overrides if set)
+    EXAMPLES:
+      • BL on-board = 12-Feb-2025, DR receiving = 13-Mar-2025 →
+        29 days → NOT stale → PASS.
+      • BL on-board = 12-Feb-2025, DR receiving = 15-Mar-2025 →
+        31 days → STALE → FAIL.
+      • BL on-board = 05-Jan-2025, DR receiving = 20-Mar-2025 →
+        74 days → STALE → FAIL.
+    WHERE TO READ:
+      • receiving_date / presentation_date: on the Documentary
+        Remittance, typically a date STAMP (often rubber-stamped,
+        sometimes rotated/upside-down). Use structured
+        unified_summary.receiving_date or
+        unified_summary.presentation_date. If neither exists,
+        use dates_found[role=receiving_date|presentation_date].
+      • bl_onboard_date: on the Bill of Lading. Use
+        unified_summary.onboard_date /
+        dates_found[role=onboard_date] /
+        bl_subtype.shipped_on_board_status + the BL issue date
+        ("CLEAN ON BOARD <date>").
+    If receiving_date is missing from the DR → REVIEW (cannot
+    confirm). If on-board date is missing from the BL → REVIEW.
+    Only FAIL when BOTH dates are present AND the delta exceeds
+    the threshold. Never FAIL with "No BL found inside DR" — the
+    DR is not supposed to contain a BL; it carries the receipt
+    stamp date.
 
 13a. DATE LABEL ABBREVIATIONS (CRITICAL — do NOT miss these):
     Documents (especially invoices, batch certificates, packing lists)
@@ -4921,9 +4937,153 @@ def run(
     # ------------------------------------------------------------------ #
     pass_count = sum(1 for r in rows if _get(r, "compliance") == "PASS")
     fail_count = sum(1 for r in rows if _get(r, "compliance") == "FAIL")
+    # P160 — Cross-document STALE BL check.
+    # The stale-BL condition compares a date on the Documentary
+    # Remittance (receiving/presentation date) against the BL's
+    # on-board date. Data lives in TWO separate packets, so the
+    # per-packet _deterministic_verify can't see both. Do it here,
+    # after all single-packet verdicts land.
+    def _pick_date(pkts, roles, typed_keys):
+        """Find the first non-empty date in any packet matching the roles/keys."""
+        for _pkt in pkts:
+            _us = (_pkt or {}).get('unified_summary') or {}
+            # Typed scalar fields first
+            for _k in typed_keys:
+                _v = _us.get(_k)
+                if _v and str(_v).strip() and str(_v).strip().lower() != 'unknown':
+                    return str(_v).strip(), _pkt, _k
+            # Structured dates_found array
+            for _item in (_us.get('dates_found') or []):
+                if not isinstance(_item, dict):
+                    continue
+                _r = str(_item.get('role', '') or '').lower()
+                _v = _item.get('value') or _item.get('raw')
+                if _v and any(_rk in _r for _rk in roles):
+                    return str(_v).strip(), _pkt, f"dates_found[role={_r}]"
+        return None, None, None
+
+    def _parse_date(s):
+        """Parse common date formats to datetime.date; None if unparseable."""
+        if not s:
+            return None
+        s = str(s).strip()
+        from datetime import datetime
+        for _fmt in (
+            '%Y-%m-%d', '%Y/%m/%d', '%Y.%m.%d',
+            '%d-%m-%Y', '%d/%m/%Y', '%d.%m.%Y',
+            '%d-%b-%Y', '%d %b %Y', '%d-%B-%Y', '%d %B %Y',
+            '%b %d %Y', '%B %d %Y', '%b %d, %Y', '%B %d, %Y',
+            '%d-%b-%y', '%d %b %y', '%d-%B-%y',
+        ):
+            try:
+                return datetime.strptime(s, _fmt).date()
+            except ValueError:
+                pass
+        # Very loose fallback: find any YYYY-MM-DD-ish substring
+        _m = re.search(r'(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})', s)
+        if _m:
+            try:
+                return datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3))).date()
+            except ValueError:
+                pass
+        _m = re.search(r'(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})', s)
+        if _m:
+            try:
+                return datetime(int(_m.group(3)), int(_m.group(2)), int(_m.group(1))).date()
+            except ValueError:
+                pass
+        return None
+
+    # Resolve stale-threshold: F48 days if set, else 30 days.
+    _stale_days_threshold = 30
+    try:
+        _f48_raw = str(_final_lc_fields.get('48', '') if '_final_lc_fields' in locals() else '').strip()
+        if _f48_raw:
+            _num_m = re.search(r'\d+', _f48_raw)
+            if _num_m:
+                _n = int(_num_m.group(0))
+                if 1 <= _n <= 365:
+                    _stale_days_threshold = _n
+    except Exception:
+        pass
+
+    # Find DR receiving date and BL on-board date from the packet pool
+    _dr_date_str, _dr_pkt, _dr_src = _pick_date(
+        packets,
+        roles=('receiving_date', 'presentation_date', 'received_date'),
+        typed_keys=('receiving_date', 'presentation_date'),
+    )
+    _bl_date_str, _bl_pkt, _bl_src = _pick_date(
+        [p for p in packets if 'bill of lading' in str((p or {}).get('document_type', '')).lower()
+            or 'bl' in str((p or {}).get('document_type', '')).lower()],
+        roles=('onboard_date', 'shipped_on_board', 'on_board'),
+        typed_keys=('onboard_date', 'shipment_date', 'shipped_on_board_date'),
+    )
+    _dr_date = _parse_date(_dr_date_str) if _dr_date_str else None
+    _bl_date = _parse_date(_bl_date_str) if _bl_date_str else None
+
+    for row in rows:
+        try:
+            _cond = (_get(row, 'condition_text', '') or _get(row, 'condition', '')).upper()
+            if 'STALE' not in _cond and 'STALENESS' not in _cond:
+                continue
+            _doc_checked = (_get(row, 'document_checked', '') or '').lower()
+            # Only apply to DR-routed stale checks
+            if _doc_checked and not any(
+                k in _doc_checked for k in (
+                    'documentary remittance', 'covering schedule', 'cover schedule',
+                    'covering letter', 'bill remittance', 'presentation schedule',
+                )
+            ):
+                continue
+            if _dr_date and _bl_date:
+                _delta = (_dr_date - _bl_date).days
+                if _delta > _stale_days_threshold:
+                    _set(row, 'compliance', 'FAIL')
+                    _msg = (
+                        f"BL is STALE. DR receiving date {_dr_date.isoformat()} "
+                        f"minus BL on-board date {_bl_date.isoformat()} = "
+                        f"{_delta} days — exceeds the {_stale_days_threshold}-day "
+                        f"threshold. (P160 deterministic)"
+                    )
+                else:
+                    _set(row, 'compliance', 'PASS')
+                    _msg = (
+                        f"BL is NOT stale. DR receiving date {_dr_date.isoformat()} "
+                        f"minus BL on-board date {_bl_date.isoformat()} = "
+                        f"{_delta} days — within the {_stale_days_threshold}-day "
+                        f"threshold. (P160 deterministic)"
+                    )
+                _set(row, 'findings', _msg)
+                _set(row, 'result', _msg[:200])
+                _set(row, 'verification_notes', f"P160 stale-BL cross-doc deterministic (threshold={_stale_days_threshold}d)")
+                _progress(f"  [P160 stale-BL] {row.get('row_id','?')}: delta={_delta}d threshold={_stale_days_threshold}d → {row.get('compliance')}")
+            else:
+                # Cannot confirm — keep any existing verdict if it was
+                # PASS from LLM, otherwise REVIEW.
+                _cur = _get(row, 'compliance', '').upper()
+                if _cur not in ('PASS', 'COMPLIED'):
+                    _set(row, 'compliance', 'REVIEW')
+                    _missing = []
+                    if not _dr_date:
+                        _missing.append('DR receiving_date')
+                    if not _bl_date:
+                        _missing.append('BL onboard_date')
+                    _set(row, 'findings',
+                         f"Cannot determine staleness deterministically: {', '.join(_missing)} "
+                         f"not available. Manual check required.")
+                    _set(row, 'result', _get(row, 'findings', '')[:200])
+        except Exception as _e:
+            try:
+                print(f"[P160 stale-BL] exception on row {row.get('row_id','?')}: {_e}")
+            except Exception:
+                pass
+
     review_count = sum(1 for r in rows if _get(r, "compliance") == "REVIEW")
     info_count = sum(1 for r in rows if _get(r, "compliance") == "N/A")
     pending_count = sum(1 for r in rows if _get(r, "compliance") == "PENDING")
+    pass_count = sum(1 for r in rows if _get(r, "compliance") == "PASS")
+    fail_count = sum(1 for r in rows if _get(r, "compliance") == "FAIL")
 
     elapsed = time.time() - start_time
     _progress(
