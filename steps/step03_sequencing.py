@@ -129,8 +129,38 @@ Return ONLY JSON:
   "document_type": "exact doc type or heading visible on page",
   "is_continuation": false,
   "confidence": 0.95,
-  "doc_hint": "one-line description"
+  "doc_hint": "one-line description",
+  "multiple_instruments_on_page": false,
+  "instrument_count": 1,
+  "instrument_references": []
 }}
+
+P154 — MULTIPLE INSTRUMENTS ON ONE PAGE (CRITICAL):
+If the page contains TWO OR MORE distinct instruments of the same type
+(e.g. "First of Exchange" + "Second of Exchange" stacked vertically, or
+two Bill of Lading originals laid out side-by-side, or two drafts with
+different reference numbers), set:
+  multiple_instruments_on_page = true
+  instrument_count             = <number of distinct instruments on the page>
+  instrument_references        = [<each instrument's reference/BL no/draft no>]
+Examples:
+  • Page shows BOTH "First of Exchange" and "Second of Exchange" for draft
+    RE/017/2025 → instrument_count=2, instrument_references=["RE/017/2025 (First)", "RE/017/2025 (Second)"].
+    These are tenor-duplicates of the SAME draft — same reference number.
+  • Page shows BL No. VANPAK10 (Original 1/3) stacked above BL No. VANPAK10
+    (Original 2/3) → instrument_count=2, instrument_references=["VANPAK10 (1/3)", "VANPAK10 (2/3)"].
+  • Page shows BL No. MAEU123 and BL No. MAEU456 (different BLs) →
+    instrument_count=2, instrument_references=["MAEU123", "MAEU456"].
+    These are genuinely different instruments.
+  • Page shows only one instrument → leave flags at default
+    (multiple_instruments_on_page=false, instrument_count=1).
+Detection signals:
+  • Multiple "B/L NO." / "BILL OF LADING" / "BILL OF EXCHANGE" headings
+  • Multiple "FIRST OF EXCHANGE" / "SECOND OF EXCHANGE" / "THIRD OF EXCHANGE"
+    blocks on one page (these count as separate instrument forms of the
+    same draft — instrument_count should reflect each block)
+  • Multiple distinct reference numbers in the same document class
+  • Multiple signature blocks where a single instrument would have one
 
 COMMON TYPES (use exact heading when visible):
   LC, Amendment, MT799, MT999, Bill of Lading, Commercial Invoice,
@@ -256,9 +286,9 @@ EXTRACT_MARKINGS_PROMPT = """Look at this page image. List EVERY visual marking 
 
 Return ONLY JSON:
 {
-  "stamps": [{"text": "exact text inside stamp", "type": "rubber_stamp|embossed|printed", "position": "top-right|bottom-left|center|etc"}],
+  "stamps": [{"text": "exact text inside stamp — RIGHT-SIDE-UP", "type": "rubber_stamp|embossed|printed", "position": "top-right|bottom-left|center|etc", "rotation": "upright|90cw|180|90ccw"}],
   "signatures": [{"description": "handwritten signature shape/style", "type": "handwritten|digital", "signatory": "name if readable, else empty"}],
-  "seals": [{"description": "round/oval company seal", "position": "where on page"}],
+  "seals": [{"description": "round/oval company seal", "position": "where on page", "rotation": "upright|90cw|180|90ccw"}],
   "logos": [{"company_name": "name in logo", "position": "top-left|header|etc"}]
 }
 
@@ -269,6 +299,28 @@ Rules:
 - Return empty arrays [] for categories with nothing found.
 - Do NOT classify the document type. Do NOT describe page content outside markings.
 - Only output JSON. No commentary.
+
+ROTATED / UPSIDE-DOWN STAMPS (P159 — CRITICAL):
+Stamps are frequently applied rotated relative to the page. BEFORE
+reading the text inside a stamp, MENTALLY ROTATE the stamp so its
+text is right-side-up, then transcribe the text normally.
+- If the stamp is rotated 180° (upside down), rotate it mentally and
+  read left-to-right as if it were right-side-up. NEVER transcribe
+  characters in reverse or in the wrong order.
+- If the stamp is rotated 90° clockwise (text reads top-to-bottom),
+  rotate mentally 90° counter-clockwise and read normally.
+- If the stamp is rotated 90° counter-clockwise (text reads bottom-
+  to-top), rotate mentally 90° clockwise and read normally.
+- Set the "rotation" field to indicate how the stamp was applied
+  (upright / 90cw / 180 / 90ccw), but the "text" field MUST always
+  contain the right-side-up transcription — NOT the raw pixel order.
+- Example: a stamp that visually reads "5202 TGIS 81" when upside-down
+  is actually "18 SEP 2025" → text="18 SEP 2025", rotation="180".
+- Example: a serial number "50203481" visible on a rotated stamp
+  should still be read as "50203481", not reversed or scrambled.
+- If the stamp is too blurry / cut-off to read even after mental
+  rotation, transcribe whatever IS clearly readable and append
+  "[partial]" to the text field.
 """
 
 
@@ -1443,9 +1495,10 @@ def _vlm_call_json(prompt: str, image_b64: Optional[str],
     last_err = None
     for attempt in range(max_retries):
         try:
-            resp = requests.post(QWEN_VLM_URL, json=payload, timeout=None)
+            resp = requests.post(QWEN_VLM_URL, json=payload, timeout=300)
             if resp.status_code != 200:
                 last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                print(f"[VLM] attempt {attempt+1}: HTTP {resp.status_code}: {resp.text[:200]}")
                 time.sleep(2 * (attempt + 1))
                 continue
             text = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
@@ -1453,11 +1506,14 @@ def _vlm_call_json(prompt: str, image_b64: Optional[str],
             if parsed is not None:
                 return parsed
             last_err = f"could not parse JSON: {text[:200]}"
+            print(f"[VLM] attempt {attempt+1}: parse fail: {text[:200]}")
         except requests.exceptions.Timeout:
             last_err = 'VLM timeout'
+            print(f"[VLM] attempt {attempt+1}: timeout after 300s")
             time.sleep(2 * (attempt + 1))
         except Exception as e:
             last_err = str(e)
+            print(f"[VLM] attempt {attempt+1}: exception {type(e).__name__}: {str(e)[:200]}")
             time.sleep(2 * (attempt + 1))
     return {"_error": last_err or "unknown"}
 
@@ -1504,12 +1560,25 @@ def _classify_doctype_vlm(page_num: int, image_path: str, glm_text: str) -> dict
     prompt = CLASSIFY_DOCTYPE_PROMPT.format(glm_text=_text)
     result = _vlm_call_json(prompt, img_b64, max_tokens=800)
     # Normalize
+    _inst_refs = result.get("instrument_references") or []
+    if not isinstance(_inst_refs, list):
+        _inst_refs = []
+    _inst_count = 1
+    try:
+        _inst_count = int(result.get("instrument_count", 1) or 1)
+    except (ValueError, TypeError):
+        _inst_count = 1
     return {
         "page_number": page_num,
         "document_type": result.get("document_type", "unknown"),
         "is_continuation": bool(result.get("is_continuation", False)),
         "confidence": float(result.get("confidence", 0.0) or 0.0),
         "doc_hint": result.get("doc_hint", "") or "",
+        # P154 — multiple instruments (e.g. First+Second of Exchange, or
+        # two BL originals) on the same scanned page
+        "multiple_instruments_on_page": bool(result.get("multiple_instruments_on_page", False)),
+        "instrument_count": _inst_count,
+        "instrument_references": _inst_refs,
         "_error": result.get("_error"),
     }
 
@@ -1759,6 +1828,11 @@ def _classify_page_vlm_split(page_num: int, image_path: str, glm_text: str) -> d
         "copy_status": copy_result.get("copy_status", "unknown"),
         "copy_label": copy_result.get("copy_label", "") or "",
         "marking_status": copy_result.get("marking_status", "unknown"),
+        # P154 — multi-instrument flag carried from Step 3a through
+        # packet building into unified_summary for the UI + verification.
+        "multiple_instruments_on_page": bool(doctype_result.get("multiple_instruments_on_page", False)),
+        "instrument_count": doctype_result.get("instrument_count", 1),
+        "instrument_references": doctype_result.get("instrument_references", []) or [],
     }
     # Roll up sub-call errors (if any) into a single error field
     errors = [e for e in (doctype_result.get("_error"),
@@ -2083,18 +2157,47 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     # Also detect "Page X of Y" for Fusion multi-page document grouping.
     _swift_preclassified = {}  # page_number -> classification dict
 
+    # P158 — LC detection must require LC-SPECIFIC tags, not generic F20
+    # (which is on every MT message). Previous pattern was firing on
+    # MT734 (Advice of Refusal), MT754 (Advice of Payment), MT730 (Ack),
+    # MT740 (Auth to Reimburse), MT799/999 (Free Format), etc. because
+    # they all have F20. Strict LC signals below: MT-type header OR
+    # F46A (Documents Required) OR F40A (Form of Documentary Credit) OR
+    # F31D (Date & Place of Expiry). F20 or F31C alone is NOT enough.
     _SWIFT_LC_PATTERNS = [
         r'Message\s+type:\s*700',
         r'SWIFT_MT700',
-        r'(?:^|\n)\s*:20:',              # Alliance F20
-        r'(?:^|\n)\s*F20\s*:',           # Fusion F20
-        r'(?:^|\n)\s*:46A:',             # Alliance F46A
+        r'SWIFT_MT\s*700\b',
+        r'(?:^|\n)\s*:46A:',             # Alliance F46A (Documents Required)
         r'(?:^|\n)\s*F46A\s*:',          # Fusion F46A
-        r'(?:^|\n)\s*:31C:',             # Alliance date of issue
-        r'(?:^|\n)\s*F31C\s*:',          # Fusion date of issue
+        r'(?:^|\n)\s*:40A:',             # Alliance F40A (Form of LC)
+        r'(?:^|\n)\s*F40A\s*:',          # Fusion F40A
+        r'(?:^|\n)\s*:31D:',             # Alliance F31D (Expiry)
+        r'(?:^|\n)\s*F31D\s*:',          # Fusion F31D
         r'(?:^|\n)\s*20:\s*Documentary\s+Credit\s+Number',  # Fusion long form
         r'(?:^|\n)\s*40A:\s*Form\s+of\s+Documentary\s+Credit',
-        r'Sender\'?s?\s+Reference\s*\n\s*[A-Z0-9]{5,}',  # Fusion Sender's Reference with value
+        r'(?:^|\n)\s*31D:\s*Date\s+and\s+Place\s+of\s+Expiry',
+        r'(?:^|\n)\s*46A:\s*Documents?\s+Required',
+    ]
+    # P158 — explicit non-LC SWIFT types that contain F20 but are NOT
+    # a Letter of Credit. Must match these BEFORE falling back to the
+    # generic LC pattern.
+    _SWIFT_NON_LC_PATTERNS = [
+        (r'Message\s+type:\s*734|fin\.\s*734|SWIFT_MT\s*734|\bMT[\s_]?734\b|Advice\s+of\s+Refusal', 'MT734'),
+        (r'Message\s+type:\s*754|fin\.\s*754|SWIFT_MT\s*754|\bMT[\s_]?754\b|Advice\s+of\s+Payment', 'MT754'),
+        (r'Message\s+type:\s*752|fin\.\s*752|SWIFT_MT\s*752|\bMT[\s_]?752\b|Authorization\s+to\s+Pay', 'MT752'),
+        (r'Message\s+type:\s*750|fin\.\s*750|SWIFT_MT\s*750|\bMT[\s_]?750\b|Advice\s+of\s+Discrepancy', 'MT750'),
+        (r'Message\s+type:\s*742|fin\.\s*742|SWIFT_MT\s*742|\bMT[\s_]?742\b|Reimbursement\s+Claim', 'MT742'),
+        (r'Message\s+type:\s*740|fin\.\s*740|SWIFT_MT\s*740|\bMT[\s_]?740\b|Authorization\s+to\s+Reimburse', 'MT740'),
+        (r'Message\s+type:\s*730|fin\.\s*730|SWIFT_MT\s*730|\bMT[\s_]?730\b|Acknowledgement', 'MT730'),
+        (r'Message\s+type:\s*720|fin\.\s*720|SWIFT_MT\s*720|\bMT[\s_]?720\b|Transfer\s+of\s+Documentary\s+Credit', 'MT720'),
+        (r'Message\s+type:\s*747|fin\.\s*747|SWIFT_MT\s*747|\bMT[\s_]?747\b', 'MT747'),
+        (r'Message\s+type:\s*756|fin\.\s*756|SWIFT_MT\s*756|\bMT[\s_]?756\b|Advice\s+of\s+Reimbursement', 'MT756'),
+        (r'Message\s+type:\s*760|fin\.\s*760|SWIFT_MT\s*760|\bMT[\s_]?760\b|Guarantee', 'MT760'),
+        (r'Message\s+type:\s*767|fin\.\s*767|SWIFT_MT\s*767|\bMT[\s_]?767\b', 'MT767'),
+        (r'Message\s+type:\s*768|fin\.\s*768|SWIFT_MT\s*768|\bMT[\s_]?768\b', 'MT768'),
+        (r'Message\s+type:\s*769|fin\.\s*769|SWIFT_MT\s*769|\bMT[\s_]?769\b', 'MT769'),
+        (r'Message\s+type:\s*940|fin\.\s*940|SWIFT_MT\s*940|\bMT[\s_]?940\b|Customer\s+Statement', 'MT940'),
     ]
     _SWIFT_LC_CONT_PATTERNS = [
         # MT701 is continuation of MT700 (additional LC pages)
@@ -2295,6 +2398,21 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         is_799 = any(re.search(p, text, re.IGNORECASE) for p in _SWIFT_799_PATTERNS)
         is_999 = any(re.search(p, text, re.IGNORECASE) for p in _SWIFT_999_PATTERNS)
 
+        # P158 — detect non-LC SWIFT messages (MT734 Advice of Refusal,
+        # MT754 Advice of Payment, MT740 Auth to Reimburse, etc.) BEFORE
+        # the generic LC pattern. These messages carry F20 which used to
+        # trigger a false LC classification.
+        _non_lc_mt = None
+        for _pat, _mt_type in _SWIFT_NON_LC_PATTERNS:
+            if re.search(_pat, text, re.IGNORECASE):
+                _non_lc_mt = _mt_type
+                break
+        if _non_lc_mt:
+            # Non-LC SWIFT message — block the LC and amendment matches.
+            is_lc = False
+            is_lc_cont = False
+            is_amendment = False
+
         # P130 — If page looks like a presenting-bank cover letter
         # (Documentary Remittance / Document Presentation), cancel the
         # MT799/MT999 detection — "MT799" appearing as a ROW in the
@@ -2322,7 +2440,11 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         # match _SWIFT_LC_PATTERNS and get the page misclassified as LC.
         # So MT799/MT999 must be checked BEFORE the LC patterns.
         # Same for Amendment vs LC: an MT707 amendment also has F20.
-        if is_799:
+        if _non_lc_mt:
+            # P158 — non-LC SWIFT type (MT734/MT754/MT740/etc.) — classify
+            # as that specific MT type so it doesn't get lumped into LC.
+            _page_swift_type[pg_num] = _non_lc_mt
+        elif is_799:
             _page_swift_type[pg_num] = 'MT799'
         elif is_999:
             _page_swift_type[pg_num] = 'MT999'

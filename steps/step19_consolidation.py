@@ -219,248 +219,29 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
 
     progress_fn(f"Grouped into {len(clause_map)} clause refs")
 
-    # P151 — Targeted overrides for exactly FOUR specific LC patterns
-    # the user has confirmed are being hallucinated as FAIL/REVIEW.
-    # INTENTIONALLY narrow — each branch must match BOTH the condition
-    # fingerprint AND the finding fingerprint, so no other rows are
-    # affected:
-    #   (a) condition "made out to the order of Bank Al Habib" +
-    #       finding "CONSIGNEE DOES NOT SHOW"
-    #   (b) condition "Policy No. 2023008MIPD000453" + finding "not found"
-    #   (c) condition "Policy No. 11/0000118/1024/0-0" + finding "not found"
-    #   (d) condition with "LDPE HP4024N" unit price + P137/P150 OCR note
-    for row in rows:
-        try:
-            _comp = (row.get('compliance') or '').upper().strip()
-            if _comp not in ('FAIL', 'REVIEW', 'NOT COMPLIED', 'REVIEW REQUIRED'):
-                continue
-            _cond_u = (row.get('condition') or row.get('condition_text') or '').upper()
-            _fin_u = ((row.get('findings') or row.get('found_text') or '') +
-                      ' ' + (row.get('result') or '')).upper()
+    # P152 — Root-cause fix lives in step 14 (_deterministic_verify and
+    # the CORE verification prompt), NOT in step 19. Removed the
+    # consolidation-layer overrides (P145, P149, P151) because they were
+    # either duplicating logic that belongs in step 14 or relying on the
+    # LLM's own finding text as evidence — which is circular when the
+    # finding itself mentions the target in a negation phrase.
+    #
+    # The step-14 deterministic fast-path reads the actual document
+    # text and structured facts directly, so it's the only place where
+    # the check can be authoritative.
 
-            # (a) Bank Al Habib consignee
-            if ('BANK AL HABIB' in _cond_u and
-                    ('MADE OUT TO' in _cond_u or 'ORDER OF' in _cond_u) and
-                    'CONSIGNEE' in _fin_u and
-                    ('NOT SHOW' in _fin_u or 'NOT CONTAIN' in _fin_u or
-                     'NOT INCLUDE' in _fin_u or 'DOES NOT' in _fin_u)):
-                row['compliance'] = 'PASS'
-                row['result'] = (
-                    "Consignee matches LC requirement (Bank Al Habib Ltd.) "
-                    "— overridden from LLM hallucination. (P151a)"
-                )[:200]
-                row['findings'] = row['result']
-                continue
-
-            # (b) Policy No. 2023008MIPD000453
-            if '2023008MIPD000453' in _cond_u and (
-                    'NOT FOUND' in _fin_u or 'NOT PRESENT' in _fin_u or
-                    'NOT REFERENCED' in _fin_u):
-                row['compliance'] = 'PASS'
-                row['result'] = (
-                    "Policy No. 2023008MIPD000453 matches cover note "
-                    "reference on document (OCR O/0 variant). (P151b)"
-                )[:200]
-                row['findings'] = row['result']
-                continue
-
-            # (c) Policy No. 11/0000118/1024/0-0
-            if '11/0000118/1024/0-0' in _cond_u and (
-                    'NOT FOUND' in _fin_u or 'NOT PRESENT' in _fin_u or
-                    'NOT REFERENCED' in _fin_u):
-                row['compliance'] = 'PASS'
-                row['result'] = (
-                    "Policy No. 11/0000118/1024/0-0 matches reference on "
-                    "document. (P151c)"
-                )[:200]
-                row['findings'] = row['result']
-                continue
-
-            # (d) LDPE HP4024N / HP4024WN unit-price OCR near-miss
-            if ('LDPE HP4024' in _cond_u and
-                    ('UNIT PRICE' in _cond_u or 'PRICE' in _cond_u) and
-                    ('P137' in _fin_u or 'P150' in _fin_u or
-                     'SINGLE CHARACTER' in _fin_u or 'OCR' in _fin_u)):
-                row['compliance'] = 'PASS'
-                row['result'] = (
-                    "Unit-price product-code difference is a single-character "
-                    "OCR variant — same SABIC product. (P151d)"
-                )[:200]
-                row['findings'] = row['result']
-                continue
-        except Exception:
-            pass
-
-    # P145 — Last-mile safety net at consolidation. Some hallucinations
-    # slip past Step 14's post-checks (e.g. when the LLM's finding doesn't
-    # quote the expected value in recognisable quotes, or when the row
-    # happens to miss the trigger-phrase list). Walk every FAIL row and
-    # if the condition's target value / identifier is clearly present in
-    # any field of the step-14 row's data (found_text, result, or
-    # provided packet text stored elsewhere), flip it to PASS.
-    def _brute_check_hallucinated_fail(row):
-        try:
-            _comp = (row.get('compliance') or '').upper().strip()
-            if _comp not in ('FAIL', 'NOT COMPLIED', 'NON_COMPLIANT', 'DISCREPANT'):
-                return
-            _fin = str(row.get('findings', '') or row.get('found_text', '') or '')
-            _fin_u = _fin.upper()
-            _NEG = (
-                'NOT FOUND', 'NOT PRESENT', 'DOES NOT CONTAIN',
-                'DOES NOT SHOW', 'DOES NOT INCLUDE', "DOESN'T SHOW",
-                'NOT APPEAR', 'NOT DISPLAYED', 'NOT INCLUDED',
-                'NOT REFERENCED', 'NOT QUOTED', 'NOT MENTIONED',
-                'NOT STATED', 'IS MISSING', 'CANNOT FIND',
-                'IS NOT SHOWN', 'NOT LISTED', 'NO MATCH', 'DOES NOT MATCH',
-            )
-            if not any(n in _fin_u for n in _NEG):
-                return
-            _cond = (row.get('condition') or row.get('condition_text') or '')
-            # Quoted strings in finding (LLM often quotes expected value)
-            _targets = []
-            for _m in re.finditer(r"[\'\"“”‘’]([^\'\"“”‘’]{3,120})[\'\"“”‘’]", _fin):
-                _targets.append(_m.group(1))
-            # Identifier-like tokens in condition (require at least one digit
-            # to avoid matching plain English words)
-            for _m in re.finditer(r'[A-Z0-9][A-Z0-9/\-._]{5,}[A-Z0-9]', _cond, re.IGNORECASE):
-                _tok = _m.group(0)
-                if re.search(r'\d', _tok):
-                    _targets.append(_tok)
-            # Bank-name keywords
-            _cu = _cond.upper()
-            for _bkw in ('AL HABIB', 'ALFALAH', 'AL-HABIB', 'AL-FALAH',
-                         'MEEZAN', 'FAYSAL', 'ASKARI', 'MASHREQ', 'MIZUHO',
-                         'SAMBA', 'SABB', 'STANDARD CHARTERED', 'CITIBANK',
-                         'HSBC', 'DEUTSCHE', 'BNP PARIBAS'):
-                if _bkw in _cu:
-                    _targets.append(_bkw)
-            if not _targets:
-                return
-            # Evidence blob — use whatever fields the row carries. Best
-            # case: the packet's refined_text was stashed on the row.
-            _blob = ' '.join([
-                str(row.get('original_clause_text', '') or ''),
-                str(row.get('found_text', '') or ''),
-                str(row.get('result', '') or ''),
-                str(row.get('verification_notes', '') or ''),
-            ])
-            _blob_upper = _blob.upper()
-            # OCR-normalized blob for identifier matching
-            _OCR_SUBS = str.maketrans({'O':'0','I':'1','L':'1','S':'5',
-                                        'B':'8','Z':'2','G':'6','Q':'0'})
-            _blob_norm = ''.join(ch for ch in _blob.upper()
-                                  if ch.isalnum()).translate(_OCR_SUBS)
-            for _t in _targets:
-                _t = _t.strip(' .,:\'""')
-                if not _t or len(_t) < 3:
-                    continue
-                if re.search(r'\d', _t):
-                    _tn = ''.join(ch for ch in _t.upper()
-                                   if ch.isalnum()).translate(_OCR_SUBS)
-                    if len(_tn) >= 4 and _tn in _blob_norm:
-                        row['compliance'] = 'PASS'
-                        row['result'] = (
-                            f"{_t} is present — LLM finding was incorrect "
-                            f"(P145 consolidation override)."
-                        )[:200]
-                        row['findings'] = row['result']
-                        return
-                else:
-                    _tu = re.sub(r'\s+', ' ', _t.upper()).strip()
-                    _bf = re.sub(r'\s+', ' ', _blob_upper)
-                    if _tu in _bf:
-                        row['compliance'] = 'PASS'
-                        row['result'] = (
-                            f"{_t} is present — LLM finding was incorrect "
-                            f"(P145 consolidation override)."
-                        )[:200]
-                        row['findings'] = row['result']
-                        return
-        except Exception:
-            pass
-
-    for row in rows:
-        _brute_check_hallucinated_fail(row)
-
-    # P149 — NUCLEAR BANK-NAME FAILSAFE at the consolidation layer.
-    # Runs AFTER _brute_check_hallucinated_fail. No trigger-phrase check,
-    # no prior-post-check gate. Pure keyword-in-text logic.
-    # If the condition contains a known LC bank keyword AND the same
-    # keyword appears anywhere in ANY field of the row (findings,
-    # result, condition text itself, verification_notes, or any stringified
-    # row data), force PASS for any FAIL or REVIEW verdict.
-    # This is the final, absolute kill-switch for bank-name hallucinations.
-    _NUCLEAR_BANKS = (
-        'AL HABIB', 'AL-HABIB', 'ALHABIB',
-        'ALFALAH', 'AL FALAH', 'AL-FALAH',
-        'MEEZAN', 'FAYSAL', 'ASKARI', 'SUMMIT',
-        'UBL', 'HBL', 'MCB', 'NBP', 'ABL', 'BAF',
-        'STANDARD CHARTERED', 'SCB', 'CITIBANK', 'CITI',
-        'HSBC', 'DEUTSCHE', 'BNP PARIBAS',
-        'MIZUHO', 'MUFG', 'SUMITOMO',
-        'EMIRATES NBD', 'MASHREQ', 'QNB',
-        'COMMERCIAL BANK', 'DOHA BANK', 'RIYAD BANK',
-        'SAMBA', 'SABB', 'NCB', 'BANK AL JAZIRA',
-        'BANK OF CHINA', 'ICBC', 'DBS',
-    )
-    _p149_hits = 0
-    _p149_skipped = 0
-    for row in rows:
-        try:
-            _c = (row.get('compliance') or '').upper().strip()
-            if _c not in ('FAIL', 'NOT COMPLIED', 'NON_COMPLIANT', 'DISCREPANT',
-                          'REVIEW', 'REVIEW REQUIRED', 'REVIEW_REQUIRED'):
-                continue
-            _cond = (row.get('condition') or row.get('condition_text') or '').upper()
-            # Build the widest possible evidence blob from whatever the row carries
-            _row_blob_parts = []
-            for _v in row.values():
-                if isinstance(_v, (str, int, float)):
-                    _row_blob_parts.append(str(_v))
-                elif isinstance(_v, (list, dict)):
-                    _row_blob_parts.append(str(_v))
-            _row_blob_upper = ' '.join(_row_blob_parts).upper()
-            _hit_bk = None
-            for _bk in _NUCLEAR_BANKS:
-                if _bk in _cond and _bk in _row_blob_upper:
-                    _hit_bk = _bk
-                    break
-            if _hit_bk:
-                row['compliance'] = 'PASS'
-                row['result'] = (
-                    f"{_hit_bk} is referenced — LLM claim was incorrect "
-                    f"(P149 nuclear bank failsafe)."
-                )[:200]
-                row['findings'] = row['result']
-                _p149_hits += 1
-                try:
-                    print(f"[P149] OVERRIDE fired on row {row.get('row_id', '?')} "
-                          f"clause={row.get('clause_ref', '?')} bank='{_hit_bk}'")
-                except Exception:
-                    pass
-            else:
-                # Log why no bank keyword matched — useful when the user
-                # reports a FAIL that should have been caught.
-                _cond_has_bank = any(_bk in _cond for _bk in _NUCLEAR_BANKS)
-                if _cond_has_bank:
-                    _p149_skipped += 1
-                    try:
-                        print(f"[P149] SKIPPED row {row.get('row_id', '?')} "
-                              f"clause={row.get('clause_ref', '?')} — "
-                              f"cond has bank keyword but row data doesn't. "
-                              f"cond[:100]={_cond[:100]!r} "
-                              f"blob[:200]={_row_blob_upper[:200]!r}")
-                    except Exception:
-                        pass
-        except Exception as _e:
-            try:
-                print(f"[P149] EXCEPTION on row {row.get('row_id', '?')}: {_e}")
-            except Exception:
-                pass
-    try:
-        progress_fn(f"P149 nuclear bank failsafe: {_p149_hits} rows overridden, {_p149_skipped} skipped")
-    except Exception:
-        pass
+    # P152 REFACTOR — All consolidation-layer overrides (P145, P149,
+    # P151) have been removed. They relied on the LLM's finding text as
+    # evidence which is CIRCULAR: the finding often negates by quoting
+    # the target ("does NOT show BANK AL HABIB") so "BANK AL HABIB"
+    # appears in the row's own data even when the document actually
+    # lacks it. That's a false-positive risk the user explicitly
+    # flagged.
+    #
+    # The authoritative fix is in step 14 where _deterministic_verify
+    # has direct access to the packet's document_text, unified_summary,
+    # and bl_subtype. That's the only place the check can trust its
+    # evidence.
 
     # Step 2: Build ClauseGroups
     clause_groups: Dict[str, ClauseGroup] = {}

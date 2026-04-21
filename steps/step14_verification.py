@@ -698,10 +698,19 @@ ANTI-HALLUCINATION RULES (STRICT — READ CAREFULLY)
    → Hallucination. The document says NOTHING about that clause.
 
    ✅ CORRECT:
-   findings="Document has no mention of Institute Classification Clause.
-   Closest text is '[actual line]'." verdict=FAIL
+   findings="Document has no mention of Institute Classification Clause."
+   verdict=FAIL
 
-4. Prefer STRUCTURED FACTS over re-parsing document text:
+   DO NOT write "the closest text is X" / "the closest match is X" /
+   "the nearest text is X". This system does NOT perform fuzzy matching.
+   Either the value is present (PASS) or it is not (FAIL). "Closest"
+   language misleads the reader into thinking the system considered a
+   partial match. Always say outright what IS on the document, then
+   the verdict. No consolation quotes.
+
+4. STRUCTURED FACTS ARE AUTHORITATIVE. Read them FIRST and TRUST them.
+   They were extracted directly from the document by a pre-pass and are
+   more reliable than your own parsing of DOCUMENT TEXT.
    - Dates → dates_found[role=...]
    - Amounts → amounts_found[role=...]
    - References → references_found[role=...]
@@ -709,6 +718,46 @@ ANTI-HALLUCINATION RULES (STRICT — READ CAREFULLY)
    - BL attributes → bl_subtype.contract_type / signing_type / has_terms_overleaf
    If a structured fact answers the question, cite its role in
    "structured_source". You don't have to re-quote from DOCUMENT TEXT.
+
+   CONSIGNEE / TO-ORDER-OF CHECKS (P152 — CRITICAL, never hallucinate):
+   - Consignee and Notify Party are TWO DIFFERENT FIELDS on a BL. They
+     have DIFFERENT legal meanings under UCP 600. Never substitute one
+     for the other. A bank appearing ONLY in Notify Party does NOT
+     satisfy a "consigned to order of <bank>" requirement.
+   - When the condition asks "consigned to / made out to the order of
+     <BANK or PARTY X>", read the typed field consignee (or
+     parties_found[role=consignee]) ONLY. If it contains the party name
+     of X (ignoring BANK/LTD/LIMITED/LLC/PLC/INC/CORP/COMPANY suffixes,
+     punctuation, and trailing city/country), return PASS with
+     structured_source="unified_summary.consignee".
+   - Example A: LC wants "to the order of Bank Al Habib Ltd., Karachi,
+     Pakistan". Structured consignee = "TO ORDER OF: BANK AL HABIB LTD.,
+     KARACHI". The key tokens "AL HABIB" appear in the consignee → PASS.
+   - Example B (CRITICAL): LC wants "to the order of United Bank Ltd.".
+     Structured consignee = "TO ORDER" (bearer/blank). Notify Party has
+     "UNITED BANK LTD". → FAIL, NOT PASS. "TO ORDER" alone means
+     consigned to shipper's order; the shipper must endorse the BL to
+     UBL for compliance. UBL in the Notify field is irrelevant — notify
+     is not consignee. The correct verdict is FAIL with a finding
+     noting the reverse-side endorsement needs manual check. DO NOT
+     write "consignee matches because UBL appears" — that is a
+     HALLUCINATION confusing consignee with notify.
+   - Example C: Consignee = "DALDA FOODS LIMITED" but LC requires
+     "to order of UBL" → FAIL, different party.
+
+   REFERENCE / IDENTIFIER CHECKS (P152 — CRITICAL, never hallucinate):
+   - When the condition says "must reference / quote / contain / show
+     Policy No. X" (or any identifier), compare character-by-character
+     AFTER OCR-normalising both sides with these substitutions:
+       O ↔ 0, I ↔ 1, L ↔ 1, S ↔ 5, B ↔ 8, Z ↔ 2, G ↔ 6, Q ↔ 0
+     Example: LC wants "2023008MIPD000453" (all digits). Document shows
+     "OPEN POLICY NO.2023008MIPDO00453" (letter O where 0 should be).
+     OCR-normalised both become "2023008M1PD000453" — MATCH → PASS.
+     DO NOT report "policy number not found" when the only difference
+     is an OCR-level character confusion. If the digit-bearing identifier
+     is present in either the typed reference field, references_found[],
+     other_details_found[], or raw DOCUMENT TEXT (after OCR
+     substitutions), return PASS.
 
 5. Do NOT fabricate values that aren't on the document. If the condition asks
    for a value the document doesn't carry, answer REVIEW with findings
@@ -1215,6 +1264,7 @@ def _deterministic_verify(
     unified_summary: dict,
     bl_subtype: dict,
     final_lc: dict,
+    document_text: str = "",
 ) -> Optional[dict]:
     """Return a verdict dict (PASS/FAIL/REVIEW) when the condition can be
     answered deterministically from structured facts. Else None (→ LLM path).
@@ -1393,55 +1443,163 @@ def _deterministic_verify(
                     'structured_source': 'bl_subtype.issuer_type',
                 }
 
-        # P134: "MADE OUT TO THE ORDER OF <BANK>" / "CONSIGNED TO ORDER OF <X>"
-        # Conditions like "Bill of lading must be made out to the order of
-        # Bank Al Habib Ltd, Karachi" are very common. Check the structured
-        # consignee field — if it contains "TO ORDER OF" plus the required
-        # bank/party name, PASS deterministically.
-        if ('TO THE ORDER OF' in cond_up or 'TO ORDER OF' in cond_up or
-                'MADE OUT TO' in cond_up or 'CONSIGNED TO' in cond_up):
-            # Extract the target party name from the condition — text after
-            # "TO (THE) ORDER OF" up to "." / "," / end-of-line.
-            _m = re.search(
-                r'TO\s+(?:THE\s+)?ORDER\s+OF[\s:]+([^.\n,]+?)(?:[.,\n]|$|\s+KARACHI|\s+WITH|\s+FOR|\s+AT)',
-                cond_up,
+    # ── Check 2b (P152 — revised): Consignee / to-order-of match
+    # ──
+    # ── CRITICAL UCP 600 semantics:
+    # ──   "Consignee" and "Notify Party" are TWO DIFFERENT BL fields.
+    # ──   A bank appearing in Notify Party does NOT satisfy a consignee
+    # ──   requirement. Only the CONSIGNEE box counts for "drawn to order
+    # ──   of X". If the consignee shows just "TO ORDER" (bearer/shipper-
+    # ──   order) without naming X, the BL is only compliant if a reverse-
+    # ──   side endorsement names X. Since we don't have OCR for the
+    # ──   reverse side in most cases, the correct verdict when consignee
+    # ──   is "TO ORDER" only is REVIEW (manual endorsement check), not
+    # ──   PASS.
+    # ──
+    # ── Algorithm:
+    # ──   1. Condition shape is "to (the) order of X" / "consigned to X"
+    # ──      / "consignee must be X" → extract target X and derive a
+    # ──      distinctive name-key (strip BANK/LTD/LIMITED/punctuation/
+    # ──      trailing city).
+    # ──   2. Look ONLY at the structured consignee field or
+    # ──      parties_found[role=consignee]. NEVER compare against
+    # ──      notify_party, shipper, or issuing_bank roles.
+    # ──   3. Normalize the consignee string by stripping the
+    # ──      "TO (THE) ORDER OF" prefix so it doesn't leak into matching.
+    # ──   4. If target-key appears in the (prefix-stripped) consignee
+    # ──      text → PASS.
+    # ──   5. If consignee is empty OR is just "TO ORDER" / "TO THE ORDER"
+    # ──      with no party name → scan document_text for an endorsement
+    # ──      block (not usually captured). If none → REVIEW with note
+    # ──      "reverse-side endorsement check required". Never auto-PASS.
+    # ──   6. If consignee names a DIFFERENT party (e.g., Dalda Foods
+    # ──      when LC requires UBL) → FAIL.
+    if unified_summary and (
+        'TO THE ORDER OF' in cond_up or 'TO ORDER OF' in cond_up or
+        'MADE OUT TO' in cond_up or 'CONSIGNED TO' in cond_up or
+        ('CONSIGNEE' in cond_up and ('MUST BE' in cond_up or 'SHOULD BE' in cond_up))
+    ):
+        _target = ''
+        for _pat in (
+            r'TO\s+(?:THE\s+)?ORDER\s+OF[\s:]+([^.\n]+?)(?:[.,\n]|$)',
+            r'CONSIGNED\s+TO[\s:]+([^.\n]+?)(?:[.,\n]|$)',
+            r'CONSIGNEE\s+(?:MUST\s+BE|SHOULD\s+BE|IS|=)[\s:\'""]+([^.\n\'""]+?)(?:[.,\n\'""]|$)',
+            r'MADE\s+OUT\s+TO[\s:]+([^.\n]+?)(?:[.,\n]|$)',
+        ):
+            _m = re.search(_pat, cond_up)
+            if _m:
+                _target = _m.group(1).strip(' .,:\'""')
+                break
+        if _target:
+            # Build distinctive key from the target party name.
+            _key = re.sub(r'[.,;:\'"—–-]+', ' ', _target)
+            _key = re.sub(
+                r'\b(?:PAKISTAN|INDIA|BANGLADESH|SRI\s+LANKA|UAE|SAUDI\s+ARABIA|'
+                r'KARACHI|LAHORE|ISLAMABAD|MUMBAI|DUBAI|RIYADH|DOHA|BEIRUT|'
+                r'HONG\s+KONG|SINGAPORE|LONDON|NEW\s+YORK|GULBERG|CPU\s+\(TRADE\)|'
+                r'CPU|TRADE|PRINTING|STATIONARY|BUILDING|MAI[- ]?KOLACHI|ROAD)\b',
+                '', _key, flags=re.IGNORECASE,
             )
-            _target = (_m.group(1).strip() if _m else '').strip(' .,:')
-            if _target:
-                # Pull consignee text from unified_summary — typed field or
-                # parties_found[role=consignee].
-                _cons_txt = ''
-                if isinstance(unified_summary, dict):
-                    _cons_txt = str(unified_summary.get('consignee', '') or '').upper()
-                    if not _cons_txt:
-                        arr = unified_summary.get('parties_found') or []
-                        for item in (arr if isinstance(arr, list) else []):
-                            if not isinstance(item, dict):
-                                continue
+            _key = re.sub(
+                r'\b(BANK|LTD|LIMITED|LLC|PLC|INC|CORP|CO|PVT|PRIVATE|'
+                r'COMPANY|ENTERPRISES?|GROUP|HOLDINGS?|TRADING|'
+                r'INSURERS?|INSURANCE)\b\.?',
+                ' ', _key, flags=re.IGNORECASE,
+            )
+            _key = re.sub(r'\s+', ' ', _key).strip().upper()
+
+            if _key and len(_key) >= 4 and (' ' in _key or len(_key) >= 3):
+                # Read ONLY the consignee field — NEVER notify/shipper/etc.
+                _cons_txt = str(unified_summary.get('consignee', '') or '').upper()
+                if not _cons_txt:
+                    for item in (unified_summary.get('parties_found') or []):
+                        if isinstance(item, dict):
                             role = str(item.get('role', '')).lower()
-                            if 'consignee' in role:
+                            if role == 'consignee' or role == 'second_consignee':
                                 _cons_txt = (
                                     str(item.get('name', '') or '').upper() + ' ' +
                                     str(item.get('raw', '') or '').upper()
                                 )
                                 break
-                # Match rule: consignee text must contain "TO ORDER" and the
-                # target bank's key word(s). "Bank Al Habib" → look for
-                # "AL HABIB" (skip the common word "BANK").
-                _target_key = re.sub(r'\bBANK\b', '', _target).strip()
-                _target_key = re.sub(r'\s+(LTD|LIMITED|LLC|PLC|INC|CORP|CO)\b\.?', '', _target_key).strip()
-                if (_cons_txt and 'TO ORDER' in _cons_txt and _target_key and
-                        _target_key in _cons_txt):
+
+                # Strip the "TO (THE) ORDER OF" prefix so only the party
+                # name (if any) remains in the comparison text.
+                _cons_clean = re.sub(
+                    r'^\s*(?:CONSIGNEE\s*[:\-]?\s*)?'
+                    r'(?:TO\s+(?:THE\s+)?ORDER(?:\s+OF)?)[:\s]*',
+                    '', _cons_txt,
+                )
+                _cons_clean = _cons_clean.strip(' .,:-')
+                # Also detect if consignee is ONLY the bearer phrase.
+                _is_bearer_only = bool(re.fullmatch(
+                    r'\s*(?:CONSIGNEE\s*[:\-]?\s*)?'
+                    r'(?:TO\s+(?:THE\s+)?ORDER(?:\s+OF)?)\s*[.,:-]*\s*',
+                    _cons_txt,
+                ))
+
+                if _is_bearer_only or not _cons_clean:
+                    # Consignee is "TO ORDER" only — no named party. Under
+                    # UCP 600 Art 14(e), a blank-endorsable BL is acceptable
+                    # only if the reverse side carries the proper
+                    # endorsement. We can't confirm that from the OCR'd
+                    # face text alone.
+                    _has_endorsement = False
+                    if document_text:
+                        _dt_u = document_text.upper()
+                        # Rough endorsement signals on the face (rare but
+                        # possible with stamps/annotations).
+                        if (('ENDORSED' in _dt_u and _key in _dt_u) or
+                                ('FOR AND ON BEHALF OF' in _dt_u and _key in _dt_u)):
+                            _has_endorsement = True
+                    if _has_endorsement:
+                        return {
+                            'verdict': 'PASS',
+                            'quote': f"Endorsement naming {_key} found in doc text",
+                            'findings': (
+                                f"Consignee is 'TO ORDER'; face text shows "
+                                f"endorsement referencing '{_key}' — compliant."
+                            ),
+                            'confidence': 0.85,
+                            'structured_source': 'document_text.endorsement',
+                        }
+                    return {
+                        'verdict': 'FAIL',
+                        'quote': f"consignee = {_cons_txt[:120] or '(empty)'}",
+                        'findings': (
+                            f"Consignee shows '{_cons_txt.strip() or 'TO ORDER'}' "
+                            f"only — LC requires 'TO ORDER OF {_key}'. "
+                            f"No reverse-side endorsement visible in document "
+                            f"text. Manual check of BL reverse side required "
+                            f"to confirm endorsement; without it the BL is "
+                            f"non-compliant."
+                        ),
+                        'confidence': 0.9,
+                        'structured_source': 'unified_summary.consignee',
+                    }
+
+                # Consignee names a party. Does it contain the target key?
+                if _key in _cons_clean:
                     return {
                         'verdict': 'PASS',
                         'quote': f"consignee = {_cons_txt[:200]}",
                         'findings': (
-                            f"BL consigned 'TO ORDER OF {_target_key}' per "
-                            f"structured consignee field."
+                            f"Structured consignee contains '{_key}' — "
+                            f"requirement satisfied."
                         ),
                         'confidence': 0.95,
                         'structured_source': 'unified_summary.consignee',
                     }
+                # Consignee names a DIFFERENT party — FAIL (not a match).
+                return {
+                    'verdict': 'FAIL',
+                    'quote': f"consignee = {_cons_txt[:200]}",
+                    'findings': (
+                        f"Consignee is '{_cons_clean[:120]}' but LC requires "
+                        f"'TO ORDER OF {_key}'. Different party — non-compliant."
+                    ),
+                    'confidence': 0.9,
+                    'structured_source': 'unified_summary.consignee',
+                }
 
     # ── Check 3: Beneficiary name change ("currently known as") ──
     # If the draft/invoice has a drawer/beneficiary showing renamed entity,
@@ -2537,6 +2695,7 @@ def _call_vlm(
             unified_summary=unified_summary or {},
             bl_subtype=bl_subtype or {},
             final_lc=final_lc_fields or {},
+            document_text=document_text or "",
         )
         if _det is not None:
             return {
@@ -3007,220 +3166,96 @@ def _call_vlm(
         except Exception:
             pass
 
-        # P141 — UNIVERSAL LAST-RESORT: If LLM returned FAIL with any
-        # "not found / missing / does not show" phrasing, do a final
-        # brute-force scan: extract every proper-noun chunk and every
-        # identifier-like token from the condition. If ALL of them
-        # appear (after OCR normalization) in the combined blob of
-        # document_text + unified_summary + bl_subtype, override to
-        # PASS. This is a belt-and-suspenders check because LLMs
-        # repeatedly claim "not present" on data that clearly is.
+        # P155 — STRICT identifier-only override (replaces P141/P143/P144).
+        # Only overrides FAIL to PASS when a specific identifier from the
+        # CONDITION is literally present in the ACTUAL DOCUMENT TEXT
+        # (after OCR character-confusion normalization). No fuzzy word
+        # matching, no finding-text extraction (finding often contains
+        # "closest text is X" which would wrongly match), no proper-noun
+        # approximations. Exact value match or nothing.
         try:
             _comp_final = str(parsed.get("compliance", "")).lower().strip()
             _fin_final = str(parsed.get("findings", "")).upper()
             _NEG_PHRASES = (
                 'NOT FOUND', 'NOT PRESENT', 'DOES NOT CONTAIN',
-                'DOES NOT SHOW', 'DOES NOT INCLUDE', 'DOESN\'T SHOW',
-                'NOT APPEAR', 'NOT DISPLAYED', 'NOT INCLUDED',
+                'DOES NOT SHOW', 'DOES NOT INCLUDE',
                 'NOT REFERENCED', 'NOT QUOTED', 'NOT MENTIONED',
-                'NOT STATED', 'IS MISSING', 'CANNOT FIND', 'CAN NOT FIND',
-                'IS NOT SHOWN', 'NOT LISTED', 'NOT PRESENTED',
-                'NO MATCH', 'DOES NOT MATCH',
+                'NOT STATED', 'IS MISSING', 'CANNOT FIND',
+                'IS NOT SHOWN', 'NOT LISTED',
             )
             if (_comp_final in ('fail', 'not_complied', 'non_compliant', 'discrepant')
                     and any(p in _fin_final for p in _NEG_PHRASES)
-                    and parsed.get("_post_check") is None):  # not already overridden
-                _cond_tokens = []
-                # P144 FIRST — Bank/party keyword brute force (most reliable).
-                # Bank names like "Bank Al Habib", "Bank Alfalah" etc. are
-                # the most commonly hallucinated-FAIL targets. Check if any
-                # known bank keyword appears in the condition (any case).
-                _BANK_KEYWORDS_EARLY = (
-                    'AL HABIB', 'AL-HABIB', 'ALHABIB',
-                    'ALFALAH', 'AL FALAH', 'AL-FALAH',
-                    'MEEZAN', 'FAYSAL', 'ASKARI', 'SUMMIT',
-                    'UBL', 'HBL', 'MCB', 'NBP', 'ABL', 'BAF',
-                    'STANDARD CHARTERED', 'SCB',
-                    'CITIBANK', 'CITI', 'HSBC', 'DEUTSCHE',
-                    'BNP PARIBAS', 'MIZUHO', 'MUFG', 'SUMITOMO',
-                    'EMIRATES NBD', 'MASHREQ', 'QNB',
-                    'COMMERCIAL BANK', 'DOHA BANK', 'RIYAD BANK',
-                    'SAMBA', 'SABB', 'NCB', 'BANK AL JAZIRA',
-                    'BANK OF CHINA', 'ICBC', 'DBS',
-                )
-                _cond_upper_local = (condition_text or '').upper()
-                for _bkw in _BANK_KEYWORDS_EARLY:
-                    if _bkw in _cond_upper_local:
-                        _cond_tokens.append(_bkw)
-                # Quoted strings in the CONDITION and the FINDING — the
-                # LLM's own finding frequently quotes the expected value
-                # (e.g. "CONSIGNEE DOES NOT SHOW 'BANK AL HABIB LTD'").
-                for _src in (condition_text or '', parsed.get('findings', '') or ''):
-                    for _m in re.finditer(r"[\'\"“”‘’]([^\'\"“”‘’]{3,120})[\'\"“”‘’]",
-                                            _src):
-                        _cond_tokens.append(_m.group(1))
-                # Identifier-like tokens (numeric/alphanum refs) — MUST
-                # contain at least one digit to avoid matching plain
-                # English words.
+                    and parsed.get("_post_check") is None):
+                # Extract identifier-like tokens ONLY from the CONDITION.
+                # Must contain at least one digit (policy numbers, HS
+                # codes, LC refs, NTN numbers, etc.). Plain-text tokens
+                # are NOT considered — use the LLM verdict for those.
+                _cond_ids = []
                 for _m in re.finditer(
-                    r'[A-Z0-9][A-Z0-9/\-._]{5,}[A-Z0-9]',
+                    r'[A-Z0-9][A-Z0-9/\-._]{4,}[A-Z0-9]',
                     condition_text or '', flags=re.IGNORECASE,
                 ):
                     _tok = _m.group(0)
                     if re.search(r'\d', _tok):
-                        _cond_tokens.append(_tok)
-                # Multi-word proper-noun chunks from the condition
-                # (e.g. "Bank Al Habib Ltd", "Noor-Ud-Din And Sons") —
-                # uppercased phrases or title-cased runs of 2+ words.
-                for _m in re.finditer(
-                    r'\b(?:[A-Z][A-Za-z\-]+(?:\s+(?:AND|&|OF|THE|AL|DE|DU|LA|EL))?\s+){1,6}[A-Z][A-Za-z\-]+(?:\s+(?:LTD|LIMITED|PLC|INC|CO|PVT|CORP|LLC|LLP))?',
-                    condition_text or '',
-                ):
-                    _chunk = _m.group(0).strip()
-                    if len(_chunk) >= 6 and _chunk.upper() != _chunk:
-                        # Title-cased phrase — likely a name
-                        _cond_tokens.append(_chunk)
-                # Build the evidence blob
-                _blob_raw = (document_text or '') + ' ' + str(unified_summary or '') + ' ' + str(bl_subtype or '')
-                _blob_norm = _normalize_id(_blob_raw)
-                _blob_upper = _blob_raw.upper()
+                        _cond_ids.append(_tok)
 
-                def _token_in_blob(tok):
-                    tok = tok.strip(' .,:\'""')
-                    if not tok or len(tok) < 3:
-                        return False
-                    # Numeric / id-like: OCR-tolerant match
-                    if re.search(r'\d', tok):
-                        _n = _normalize_id(tok)
-                        return len(_n) >= 4 and _n in _blob_norm
-                    # Text: case-insensitive substring, allowing the
-                    # target text's words to match even with whitespace
-                    # differences.
-                    _flat = re.sub(r'\s+', ' ', tok.upper()).strip()
-                    _blob_flat = re.sub(r'\s+', ' ', _blob_upper)
-                    if _flat in _blob_flat:
-                        return True
-                    # Fall back to "all words of token appear somewhere"
-                    _words = [w for w in _flat.split() if len(w) >= 3]
-                    return _words and all(w in _blob_flat for w in _words)
-
-                # Find any condition-quoted or condition-identifier token
-                # that IS present in the evidence blob.
-                _hit_tok = None
-                for _t in _cond_tokens:
-                    if _token_in_blob(_t):
-                        _hit_tok = _t
-                        break
-                # P143 — if no quoted/id token matched, try raw phrase
-                # extraction from the FINDING itself. Any 2-4-word all-caps
-                # sequence in the finding that isn't just "NOT FOUND" etc.
-                # is probably the subject the LLM was looking for.
-                if not _hit_tok:
-                    _finding_caps = re.findall(
-                        r'\b([A-Z][A-Z\-]{2,}(?:\s+[A-Z][A-Z\-0-9]*){1,5})\b',
-                        parsed.get('findings', '') or '',
-                    )
-                    _STOPWORDS_CAPS = {
-                        'NOT FOUND', 'NOT PRESENT', 'DOES NOT', 'DOES NOT SHOW',
-                        'DOES NOT CONTAIN', 'DOES NOT INCLUDE', 'NOT APPEAR',
-                        'NOT DISPLAYED', 'NOT INCLUDED', 'IS MISSING',
-                        'NOT QUOTED', 'CANNOT FIND', 'NO MATCH',
-                        'THE DOCUMENT', 'THE BL', 'THE INVOICE', 'THE CONSIGNEE',
-                        'THE POLICY', 'THE REQUIRED',
-                    }
-                    for _phrase in _finding_caps:
-                        _ph = _phrase.strip()
-                        if any(sw in _ph for sw in _STOPWORDS_CAPS):
-                            continue
-                        if len(_ph) < 6:
-                            continue
-                        if _token_in_blob(_ph):
-                            _hit_tok = _ph
+                if _cond_ids:
+                    _doc_norm = _normalize_id(document_text or '')
+                    _hit_tok = None
+                    for _tok in _cond_ids:
+                        _tn = _normalize_id(_tok)
+                        if len(_tn) >= 5 and _tn in _doc_norm:
+                            _hit_tok = _tok
                             break
-
-                # P144 — SPECIFIC BANK-NAME BRUTE FORCE. If the condition
-                # references a well-known Pakistani/Middle-East LC bank
-                # and the bank's distinctive name appears anywhere in the
-                # evidence blob, that is sufficient proof. This handles
-                # the stubborn "consignee does not show" hallucinations
-                # when BL clearly has "TO ORDER OF: BANK AL HABIB".
-                if not _hit_tok:
-                    _BANK_KEYWORDS = [
-                        'AL HABIB', 'ALHABIB', 'AL-HABIB',
-                        'ALFALAH', 'AL FALAH', 'AL-FALAH',
-                        'MEEZAN', 'FAYSAL', 'ASKARI',
-                        'UBL', 'HBL', 'MCB', 'NBP', 'ABL', 'BAF', 'JS BANK',
-                        'STANDARD CHARTERED', 'CITIBANK', 'HSBC',
-                        'DEUTSCHE BANK', 'BNP PARIBAS',
-                        'MIZUHO', 'MUFG', 'SUMITOMO',
-                        'EMIRATES NBD', 'MASHREQ', 'QNB',
-                        'COMMERCIAL BANK', 'DOHA BANK', 'RIYAD BANK',
-                        'SAMBA', 'SABB', 'NCB',
-                        'BANK OF CHINA', 'ICBC',
-                    ]
-                    _cond_upper = (condition_text or '').upper()
-                    for _bkw in _BANK_KEYWORDS:
-                        if _bkw in _cond_upper:
-                            # The condition names this bank. Is the bank
-                            # name present anywhere in the evidence blob?
-                            _bkw_flat = re.sub(r'\s+', ' ', _bkw)
-                            _blob_flat = re.sub(r'\s+', ' ', _blob_upper)
-                            if _bkw_flat in _blob_flat:
-                                _hit_tok = _bkw
-                                break
-
-                if _hit_tok:
-                    parsed["compliance"] = "pass"
-                    parsed["verdict"] = "PASS"
-                    parsed["findings"] = (
-                        f"The value '{_hit_tok}' IS present in document / "
-                        f"structured facts. LLM's '{_fin_final[:80]}' claim "
-                        f"was incorrect. (P141 universal override)"
-                    )
-                    parsed["result"] = parsed["findings"][:200]
-                    parsed["_post_check"] = "P141_universal_override"
-        except Exception:
-            pass
-
-        # P148 — HARD FAILSAFE for bank name hallucinations. Run
-        # unconditionally (regardless of other post-checks) on FAIL/REVIEW
-        # verdicts. If the condition mentions ANY known LC bank keyword
-        # and that keyword appears ANYWHERE in the evidence blob
-        # (document_text + unified_summary + bl_subtype), force PASS.
-        # This is the last line of defense — nothing should reach the
-        # report with a bank-name hallucination after this runs.
-        try:
-            _c_final = str(parsed.get("compliance", "")).lower().strip()
-            if _c_final in ('fail', 'review', 'not_complied', 'non_compliant',
-                             'discrepant', 'review required', 'review_required'):
-                _cond_u = (condition_text or '').upper()
-                _blob_all = (
-                    (document_text or '') + ' ' +
-                    str(unified_summary or '') + ' ' +
-                    str(bl_subtype or '')
-                ).upper()
-                _banks = (
-                    'AL HABIB', 'AL-HABIB', 'ALHABIB',
-                    'ALFALAH', 'AL FALAH', 'AL-FALAH',
-                    'MEEZAN', 'FAYSAL', 'ASKARI',
-                    'UBL', 'HBL ', 'HBL,', 'HBL.', ' MCB ',
-                    'STANDARD CHARTERED', 'CITIBANK',
-                    'HSBC', 'MIZUHO', 'MASHREQ',
-                    'SAMBA', 'SABB', 'BANK AL JAZIRA',
-                )
-                for _bk in _banks:
-                    _bk_clean = _bk.strip()
-                    if _bk_clean in _cond_u and _bk_clean in _blob_all:
+                    if _hit_tok:
                         parsed["compliance"] = "pass"
                         parsed["verdict"] = "PASS"
                         parsed["findings"] = (
-                            f"'{_bk_clean}' is present in the document "
-                            f"(hard failsafe). LLM claim was incorrect. "
-                            f"(P148 bank failsafe)"
+                            f"'{_hit_tok}' is present in the document "
+                            f"(identifier match). Requirement satisfied."
                         )
                         parsed["result"] = parsed["findings"][:200]
-                        parsed["_post_check"] = "P148_bank_failsafe"
-                        break
+                        parsed["_post_check"] = "P155_identifier_match"
+        except Exception:
+            pass
+
+        # P148 REMOVED — The bank-name failsafe was matching the bank
+        # name in Notify Party or LC-parties blob and wrongly flipping
+        # consignee FAILs to PASS. Consignee checks now live entirely in
+        # _deterministic_verify (Check 2b) where they read ONLY the
+        # consignee field, never notify. No generic failsafe here.
+
+        # P156 — Clean up LLM findings language: strip "closest text is X"
+        # / "the closest match is X" which clutters the report and is
+        # misleading (the system is not doing fuzzy matching — either the
+        # value is there or it isn't).
+        try:
+            _fin = str(parsed.get("findings", "") or "")
+            if _fin:
+                # Remove sentences starting with "The closest text/match..."
+                _fin2 = re.sub(
+                    r'(?:^|\.\s*)(?:The\s+)?closest\s+(?:text|match|wording|phrase)[^.]*\.',
+                    '.', _fin, flags=re.IGNORECASE,
+                )
+                # Remove " — closest text is X" / ", closest match is Y"
+                _fin2 = re.sub(
+                    r'[\s,;—–-]+(?:The\s+)?closest\s+(?:text|match|wording|phrase)[^.]*',
+                    '', _fin2, flags=re.IGNORECASE,
+                )
+                _fin2 = re.sub(r'\s+\.', '.', _fin2).strip()
+                _fin2 = re.sub(r'\.{2,}', '.', _fin2).strip()
+                if _fin2 and _fin2 != _fin:
+                    parsed["findings"] = _fin2
+                    # Keep result in sync
+                    if parsed.get("result") == _fin[:200]:
+                        parsed["result"] = _fin2[:200]
+                    else:
+                        _res = str(parsed.get("result", "") or "")
+                        _res = re.sub(
+                            r'[\s,;—–-]+(?:The\s+)?closest\s+(?:text|match|wording|phrase)[^.]*',
+                            '', _res, flags=re.IGNORECASE,
+                        )
+                        parsed["result"] = _res.strip()[:200]
         except Exception:
             pass
 
@@ -3681,37 +3716,51 @@ def _build_tasks(
         # code or NTN, so fan-out checks against them produce false
         # fails.
         _ALLDOC_FANOUT_EXCLUDE = (
-            'documentary remittance',
-            'covering letter', 'covering schedule', 'cover schedule',
+            'documentary remittance', 'document remittance',
+            'covering letter', 'cover letter',
+            'covering schedule', 'cover schedule',
             'l/c bills schedule', 'lc bills schedule', 'bills schedule',
             'export dc document presentation schedule',
             'export dc presentation schedule',
             'document presentation schedule', 'presentation schedule',
+            'document presentation',
             'schedule of documents', 'letter of transmittal',
             'document arrival notice', 'arrival notice',
             'forwarding letter',
             'remittance letter', 'export letter',
             'fax', 'email',
-            # P92: structural / non-content page types
+            # P153 — structural / non-content page types (blanks, T&C, etc.)
+            # NEVER fan-out "all documents" checks to these — they have no
+            # content to verify against LC requirements and produce
+            # spurious "missing LC number / missing date" REVIEW rows.
             'header page', 'blank page', 'endorsement page',
-            'back page', 'terms and conditions',
+            'back page', 'back cover', 'reverse page',
+            'terms and conditions', 'terms overleaf',
+            'bl conditions of carriage', 'conditions of carriage',
+            'cover page', 'title page',
             'unknown', 'unidentified', 'supporting document',
-            # Agent's certificate is a specific doc, should be checked
-            # separately — but NOT for HS codes / NTN fan-outs.
-            # However we keep it in the fan-out for now since the LC
-            # says "ALL DOCUMENTS". If it causes false fails, add it
-            # to the exclude list.
         )
 
-        def _is_excluded_from_alldoc_fanout(pt: str) -> bool:
+        def _is_excluded_from_alldoc_fanout(pt: str, pkt=None) -> bool:
             if not pt:
                 return True  # unknown — skip
-            ptl = pt.lower()
+            ptl = pt.lower().strip()
             if 'lc' == ptl or 'letter of credit' in ptl:
                 return True
             for _ex in _ALLDOC_FANOUT_EXCLUDE:
                 if _ex in ptl:
                     return True
+            # P153 — also skip packets whose refined/cleaned text is too
+            # short to possibly carry LC numbers / dates / amounts. Blank
+            # or near-blank pages that slipped past classification get
+            # caught here.
+            if pkt is not None:
+                try:
+                    _txt = (_pkt_text(pkt) or '').strip()
+                    if len(_txt) < 80:
+                        return True
+                except Exception:
+                    pass
             return False
 
         # For "all" documents: send each shipping doc as a separate task (deduped)
@@ -3721,8 +3770,10 @@ def _build_tasks(
                 if not pkt:
                     continue
                 pt = _pkt_type(pkt)
-                # Skip LC pages, transmission docs, only check shipping docs
-                if _is_excluded_from_alldoc_fanout(pt):
+                # Skip LC pages, transmission docs, blank pages, T&C — only
+                # check real shipping docs. Now passes the packet so the
+                # exclusion check can also drop near-empty packets.
+                if _is_excluded_from_alldoc_fanout(pt, pkt):
                     continue
                 found_any = True
                 images = _pkt_images(pkt)
@@ -3760,7 +3811,7 @@ def _build_tasks(
                     if not pkt:
                         continue
                     pt = _pkt_type(pkt)
-                    if _is_excluded_from_alldoc_fanout(pt):
+                    if _is_excluded_from_alldoc_fanout(pt, pkt):
                         continue
                     # If "except X", skip X documents
                     except_match = re.search(r'except\s+(.*)', dt_lower)
@@ -4049,15 +4100,38 @@ def run(
                 try:
                     result = future.result()
                 except Exception as exc:
-                    result = {
-                        "row_id": row_id,
-                        "findings": "Nil",
-                        "result": f"Thread error: {str(exc)[:40]}",
-                        "compliance": "review",
-                        "confidence": 0.0,
-                        "reasoning": str(exc)[:200],
-                        "elapsed": 0.0,
-                    }
+                    # P157 — on any thread exception, retry once
+                    # synchronously before giving up. If retry also
+                    # fails, return REVIEW with a clean message (no raw
+                    # exception text in the user-facing finding).
+                    print(f"[Step 14] row {row_id} thread exception: {type(exc).__name__}: {str(exc)[:300]}")
+                    try:
+                        result = _call_vlm(
+                            task["row_id"],
+                            task["condition_text"],
+                            task["clause_ref"],
+                            task["lc_field_value"],
+                            task["f47a_context"],
+                            task["document_type"],
+                            task["document_text"],
+                            task.get("image_path"),
+                            task.get("visual_metadata", ""),
+                            task.get("lc_parties", ""),
+                            task.get("unified_summary"),
+                            task.get("bl_subtype"),
+                            _final_lc_fields,
+                        )
+                    except Exception as exc2:
+                        print(f"[Step 14] row {row_id} retry also failed: {type(exc2).__name__}: {str(exc2)[:300]}")
+                        result = {
+                            "row_id": row_id,
+                            "findings": "Unable to verify this condition automatically — requires manual review.",
+                            "result": "Unable to verify automatically — manual review required.",
+                            "compliance": "review",
+                            "confidence": 0.0,
+                            "reasoning": f"{type(exc).__name__}: {str(exc)[:200]}",
+                            "elapsed": 0.0,
+                        }
 
                 compliance_val = (result.get("compliance", "review") or "review").upper()
                 result["compliance"] = compliance_val
