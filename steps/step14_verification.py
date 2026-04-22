@@ -992,8 +992,105 @@ and then fabricate a finding.
     ✅ CORRECT: FAIL — "Required document missing: Courier Receipt.
         No courier dispatch receipt present in the submission."
 
+─── EXAMPLE 7: INCOMPLETE SHIPPING DOCUMENTS — "TO FOLLOW IN NEXT LOT" ─
+Some banks split a presentation into multiple lots. If the Documentary
+Remittance / Covering Schedule explicitly states that specific
+documents will follow in a later lot (e.g. "Bill of Lading and
+Certificate of Origin will follow in the 2nd lot"), the missing
+documents in THIS lot are NOT a discrepancy. Mark the clause as
+PASS with a clear finding referencing the cover-letter statement.
+ONLY mark FAIL if the cover letter does not defer the missing docs.
+
+  Trigger phrases (any satisfies):
+    "to follow in 2nd lot" / "will follow in the next lot"
+    "remaining documents will be sent in the 2nd presentation"
+    "balance documents to be presented separately"
+
+  Example:
+    LC: "Full set of shipping documents must be presented."
+    Covering Schedule: "CERTIFICATE OF ORIGIN AND BILL OF LADING
+                        WILL FOLLOW IN THE 2ND LOT."
+    ✅ CORRECT: PASS — "Cover letter defers CoO and BL to the 2nd
+        lot; incomplete set in this lot is not a discrepancy."
+
+─── EXAMPLE 8: SECOND PRESENTATION — "FULL AND FINAL" COVER LETTER ───
+When a 2nd or subsequent presentation's Covering Schedule declares
+the submitted set is "Full and Final" (or "No further lots will
+follow"), treat it as the closing presentation. Any earlier deferred
+documents MUST now be present; if still missing → FAIL.
+
+  Example:
+    Covering Schedule (2nd lot): "WE HEREBY CONFIRM THAT THESE ARE
+        THE FULL AND FINAL SHIPPING DOCUMENTS. NO FURTHER LOTS."
+    ✅ CORRECT: PASS the cover-letter declaration check itself. For
+        any doc that was deferred in lot 1 but still missing in lot
+        2 — FAIL ("expected in final lot but still absent").
+
+─── EXAMPLE 9: PAYMENT ON LANDED WEIGHT / QUALITY BASIS ──────────────
+If F47A carries "PAYMENT OF THIS L/C IS SUBJECT TO LANDED WEIGHT
+AND QUALITY BASIS" (or equivalent), the Commercial Invoice amount
+and quantity are provisional — final payment depends on the
+landing-port weight/quality survey. For amount / quantity checks
+against such LCs, return REVIEW (not PASS or FAIL) with a finding
+explaining that the value is provisional.
+
+  Example:
+    LC F47A: "PAYMENT OF THIS L/C IS SUBJECT TO LANDED WEIGHT
+              AND QUALITY BASIS."
+    Condition: "Commercial Invoice amount must not exceed LC amount."
+    CI: "Invoice USD 255,000.00 (provisional, subject to landing)."
+    ❌ WRONG: PASS — "Amount within LC amount".
+    ✅ CORRECT: REVIEW — "Invoice amount is provisional; final payment
+        amount is determined by discharge-port landed weight/quality
+        per F47A. Manual reconciliation required after landing
+        survey."
+
+─── EXAMPLE 10: SECOND PRESENTATION — OVERDRAW vs REMAINING BALANCE ──
+When the condition explicitly provides a running LC balance ("prior
+drawings USD X, remaining available USD Y"), the current Commercial
+Invoice must fit within the REMAINING balance, not the original LC
+amount. Overdraw against remaining balance → FAIL even if within
+the original LC ceiling.
+
+  Example:
+    Condition: "2nd presentation must not exceed remaining LC
+                balance of USD 55,000."
+    CI amount: "USD 70,000.00"
+    ❌ WRONG: PASS because 70,000 < original LC of 255,000.
+    ✅ CORRECT: FAIL — "Invoice USD 70,000 overdraws the remaining
+        LC balance of USD 55,000."
+
+─── EXAMPLE 11: CROSS-DOCUMENT CONFLICT (BL vs CI vs PL) ─────────────
+If the condition requires consistency across shipping documents
+(weights, quantities, marks, dates, container numbers, vessel
+name, port names) and two documents in the SAME presentation show
+CONFLICTING values for the same field, return FAIL naming both
+documents and the specific field that disagrees.
+
+  Example:
+    Condition: "BL net weight must match Commercial Invoice net weight."
+    CI:  "Net Weight: 249,500 KG"
+    BL:  "Net Weight: 248,100 KG"
+    ❌ WRONG: PASS / REVIEW because "both docs show a weight".
+    ✅ CORRECT: FAIL — "CI net weight 249,500 KG conflicts with BL
+        net weight 248,100 KG. UCP 600 Art 14(e) requires consistency
+        between documents."
+
+─── EXAMPLE 12: AMENDMENT APPLIED BETWEEN PRESENTATIONS ──────────────
+When F47A / context shows an MT707 amendment between presentations
+(e.g. "amount increased from X to Y"), verify against the AMENDED
+value, not the original. Treat amendments as the new source of
+truth unless the LC condition explicitly references the original.
+
+  Example:
+    F47A: "MT707 AMENDMENT 001 INCREASED F32B AMOUNT FROM
+           USD 255,000 TO USD 350,000."
+    CI:   "USD 120,000 (2nd presentation)"
+    ✅ CORRECT: PASS — "CI USD 120,000 is within amended LC ceiling
+        of USD 350,000. Amendment 001 supersedes the original amount."
+
 ────────────────────────────────────────────────────────────────────
-These six modes are where LLM verification traditionally breaks.
+These twelve modes are where LLM verification traditionally breaks.
 Read the example that matches your condition BEFORE forming a
 verdict. If in doubt, FAIL with clear evidence is always better
 than a hallucinated PASS.
