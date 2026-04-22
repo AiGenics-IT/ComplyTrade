@@ -3373,236 +3373,118 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                 'page_image_path': page.get('page_image_path', ''),
             }
 
-    # Rule 3: Group multi-page reports by "Page X of Y" within their text
-    # Documents like Alfred H Knight reports have "Page 1 of 3", "Page 2 of 3"
-    # in their footer. Group packets from the same report type + same issuer.
-    _report_groups = {}  # key: (doc_type_normalized, issuer) -> list of packet indices
+    # Rule 3 (P198d) — Group multi-page documents purely on the
+    # "Page X of Y" axis + PDF-page adjacency.
+    #
+    # A document spanning Y pages carries the same "Page X of Y"
+    # footer on every page (e.g. "Page 1 of 3", "Page 2 of 3",
+    # "Page 3 of 3"). That footer is the one reliable signal for
+    # multi-page grouping — doc_type labels drift (the VLM may
+    # classify page 1 as "Full Loading Survey Report" and page 2 as
+    # the bare label "REPORT"), and issuer detection based on
+    # hardcoded company-name lists is brittle and carrier-specific.
+    #
+    # So we ignore doc_type and issuer here. Grouping rule:
+    #   * Same Y value
+    #   * PDF pages near-adjacent (within Y+2 positions of each
+    #     other — allows for interleaved stamps / blank pages)
+    #   * X values form a monotonic sequence (either 1..Y or Y..1,
+    #     since scans are sometimes in reverse order)
+    #
+    # This never merges two genuinely different Y-page documents
+    # that happen to sit next to each other — the X sequence breaks
+    # at the boundary (e.g. 1,2,3,1,2,3) and that starts a new group.
+    _report_groups = {}  # key: Y → list of (packet_idx, pdf_page, X)
     for i, pkt in enumerate(merged_packets):
         dt = pkt.document_type.lower().strip()
         if dt in _skip_merge or dt in _bl_types or dt in _bl_tc_types:
             continue
-        # Check if any page has "Page X of Y" with Y > 1
         for pg_cls in pkt.pages:
-            hint = pg_cls.get('doc_hint', '') if isinstance(pg_cls, dict) else ''
-            # Look for multi-page indicator in the page text
             pg_num = pg_cls.get('page_number', 0) if isinstance(pg_cls, dict) else 0
             pg_text = page_text_map.get(pg_num, {}).get('cleaned_text', '') if pg_num else ''
             _pxy = re.search(r'Page\s+(\d+)\s+of\s+(\d+)', pg_text, re.IGNORECASE)
             if _pxy and int(_pxy.group(2)) > 1:
                 _page_x = int(_pxy.group(1))
                 _page_y = int(_pxy.group(2))
-
-                # Skip if this is a BAHL report pagination (large Y like "Page 1 of 7"
-                # or "Page 1 of 43") AND the document is a SWIFT type — those are
-                # report-level pagination, not document-level.
-                if _page_y > 5 and dt in ('lc', 'amendment', 'mt799', 'mt999', 'mt730',
-                                            'mt754', 'mt940', 'mt740', 'mt747'):
-                    break  # Don't use report-level pagination for SWIFT merging
-
-                # Extract issuer from first 500 chars (covers letterhead + subheading)
-                _issuer = ''
-                _header = pg_text[:500].upper()
-                if 'ALFRED H KNIGHT' in _header or 'AHK' in _header:
-                    _issuer = 'AHK'
-                elif 'INTERTEK' in _header:
-                    _issuer = 'INTERTEK'
-                elif 'SGS' in _header:
-                    _issuer = 'SGS'
-                elif 'BUREAU VERITAS' in _header:
-                    _issuer = 'BV'
-                elif 'COTECNA' in _header:
-                    _issuer = 'COTECNA'
-                elif 'CALEB BRETT' in _header:
-                    _issuer = 'CB'
-                elif 'SAYBOLT' in _header:
-                    _issuer = 'SAYBOLT'
-                elif 'OLAM' in _header:
-                    _issuer = 'OLAM'
-                elif 'NATIONAL CHEMICAL' in _header or 'NCC' in _header:
-                    _issuer = 'NCC'
-                elif 'STANDARD CHARTERED' in _header:
-                    _issuer = 'SCB'
-                elif 'VITOL' in _header:
-                    _issuer = 'VITOL'
-                elif 'TRAFIGURA' in _header:
-                    _issuer = 'TRAFIGURA'
-                elif 'PETRONAS' in _header:
-                    _issuer = 'PETRONAS'
-                elif 'GUNVOR' in _header:
-                    _issuer = 'GUNVOR'
-                else:
-                    # Fallback: use first 4+ letter word as issuer identifier
-                    _words = re.findall(r'[A-Z]{4,}', _header)
-                    _issuer = _words[0] if _words else 'UNK'
-
-                _norm_type = re.sub(r'\s*\(.*?\)', '', dt).strip()
-
-                # Normalize surveyor report variants to a common type
-                # VLM may classify different pages of the same report with
-                # different names (e.g., "Quality / Analysis" vs "Loading
-                # Inspection Report" vs "Full Loading Survey Report" — all
-                # from Alfred H Knight). Group them by normalized type.
-                _SURVEYOR_REPORT_ALIASES = {
-                    'quality / analysis': 'survey_report',
-                    'quality/analysis': 'survey_report',
-                    'quality analysis': 'survey_report',
-                    'quality certificate': 'survey_report',
-                    'products quality certificate': 'survey_report',
-                    'loading inspection report': 'survey_report',
-                    'full loading survey report': 'survey_report',
-                    'survey report': 'survey_report',
-                    'survey report certificate': 'survey_report',
-                    'inspection report': 'survey_report',
-                    'certificate of quality': 'survey_report',
-                    'certificate of weight': 'survey_report',
-                    'certificate of quality and weight': 'survey_report',
-                    'certificate of quality and weight ascertained': 'survey_report',
-                    'certificate of quality and weight ascertained at port of loading': 'survey_report',
-                    'certificate of quality and weight ascertained at port of discharge': 'survey_report',
-                    'certificate of analysis': 'survey_report',
-                    'certificate of inspection': 'survey_report',
-                    'inspection certificate': 'survey_report',
-                    'pre-shipment inspection report': 'survey_report',
-                    'pre-shipment inspection certificate': 'survey_report',
-                    'draught survey report': 'survey_report',
-                    'loading report': 'survey_report',
-                    'discharge report': 'survey_report',
-                    # P198c — generic "report" / "continuation" labels.
-                    # The VLM classifier occasionally emits a bare
-                    # "REPORT" or "REPORT CONTINUATION" label for the
-                    # middle page of a 3-page Alfred H Knight / SGS /
-                    # BV survey (page 2 of 3 loses the title). Rule 3
-                    # keys on (normalized_type, issuer, total_y), so
-                    # mapping these generics onto "survey_report"
-                    # merges the sandwiched page with pages 1 and 3
-                    # of the SAME issuer + SAME total_y group. Pages
-                    # with different issuers or Y values stay in
-                    # their own groups, so this doesn't over-merge.
-                    'report': 'survey_report',
-                    'report continuation': 'survey_report',
-                    'survey': 'survey_report',
-                    'continuation': 'survey_report',
-                    'continuation sheet': 'survey_report',
-                    'quantity certificate': 'quantity_report',
-                    'products quantity certificate': 'quantity_report',
-                    'certificate of quantity': 'quantity_report',
-                    'certificate of receipted quantity': 'quantity_report',
-                    'weight certificate': 'weight_report',
-                    'weight / quality certificate': 'weight_report',
-                    'weight/quality certificate': 'weight_report',
-                }
-                _norm_type = _SURVEYOR_REPORT_ALIASES.get(_norm_type, _norm_type)
-
-                _key = (_norm_type, _issuer, str(_page_y))
-
-                if _key not in _report_groups:
-                    _report_groups[_key] = []
-                # Store (packet_index, page_x, first_page_number) for ordering
-                _report_groups[_key].append((i, _page_x, pkt.page_numbers[0]))
+                # Report-level pagination on BAHL / SWIFT bundles uses
+                # huge Y values ("Page 1 of 43"); those page markers
+                # span the WHOLE document bundle, not one instrument.
+                # Skip them for SWIFT packet types.
+                if _page_y > 5 and dt in ('lc', 'amendment', 'mt799', 'mt999',
+                                          'mt730', 'mt754', 'mt940', 'mt740', 'mt747'):
+                    break
+                _report_groups.setdefault(_page_y, []).append(
+                    (i, pkt.page_numbers[0] if pkt.page_numbers else 0, _page_x)
+                )
                 break
 
-    # Merge multi-page report groups
-    for _key, pkt_entries in _report_groups.items():
-        if len(pkt_entries) <= 1:
-            continue
-
-        # Check: number of packets should match or be close to total pages
-        _total_y = int(_key[2])
-        # Detect multiple copies: if any page_x appears more than once,
-        # we have separate copies (e.g., two packets both claiming "Page 1 of 3")
-        _page_x_values = [e[1] for e in pkt_entries]
-        _has_duplicate_pages = len(_page_x_values) != len(set(_page_x_values))
-        if len(pkt_entries) > _total_y or _has_duplicate_pages:
-            # Multiple copies of the same N-page report. Assign each orphan
-            # (Page 2, Page 3, ...) to the NEAREST PRECEDING Page-1 anchor
-            # that doesn't already own that page number.
-            # Previous algorithm iterated Page-1 anchors in order and greedily
-            # grabbed far-away pages — it would give an anchor at page 18 the
-            # Page-3 at page 26 (distance 8) instead of the anchor at page 24
-            # (distance 2). Fixed: for each orphan, pick the closest preceding
-            # anchor that still needs that page number.
-            _sorted = sorted(pkt_entries, key=lambda x: x[2])  # sort by first page number
-            anchors = {}  # anchor_first_pg -> [entries]
-            _orphan_queue = []
-            for _entry in _sorted:
-                if _entry[1] == 1:
-                    anchors[_entry[2]] = [_entry]
+    # Greedy clustering: for each Y value, walk the entries in PDF-page
+    # order and split into groups whenever adjacency or X-sequence
+    # breaks. This is the "smart" part the user asked for — no hard-
+    # coded issuers, no long alias maps.
+    _report_clusters = []  # list of list of (packet_idx, pdf_page, X)
+    for _Y, entries in _report_groups.items():
+        entries = sorted(entries, key=lambda e: e[1])  # by pdf_page
+        _cur = []
+        _dir = None  # +1 for ascending X, -1 for descending
+        for ent in entries:
+            _idx, _pg, _X = ent
+            if not _cur:
+                _cur = [ent]; _dir = None
+                continue
+            _last = _cur[-1]
+            _gap = _pg - _last[1]
+            # Adjacency: require pdf pages within Y+2 of each other,
+            # and strictly increasing (scan direction goes forward).
+            if _gap <= 0 or _gap > (_Y + 2):
+                if len(_cur) > 1:
+                    _report_clusters.append(_cur)
+                _cur = [ent]; _dir = None
+                continue
+            # X sequence: ascending or descending, step 1 preferred.
+            _step = _X - _last[2]
+            if _dir is None:
+                if _step in (+1, -1):
+                    _dir = _step
+                    _cur.append(ent)
+                elif _step in (+2, -2):
+                    _dir = 1 if _step > 0 else -1
+                    _cur.append(ent)  # tolerate one missing X
                 else:
-                    _orphan_queue.append(_entry)
+                    if len(_cur) > 1:
+                        _report_clusters.append(_cur)
+                    _cur = [ent]; _dir = None
+            else:
+                if _step == _dir or _step == 2 * _dir:
+                    _cur.append(ent)
+                else:
+                    if len(_cur) > 1:
+                        _report_clusters.append(_cur)
+                    _cur = [ent]; _dir = None
+        if len(_cur) > 1:
+            _report_clusters.append(_cur)
 
-            # Assign each orphan to its best-matching anchor (nearest preceding
-            # anchor that hasn't already absorbed this page number). If none
-            # fit, fall back to the nearest anchor regardless of direction.
-            for _orphan in _orphan_queue:
-                _o_idx, _o_x, _o_pg = _orphan
-                _best_anchor_pg = None
-                _best_dist = 999
-                # Prefer anchors that come BEFORE the orphan in page order
-                for _a_pg, _a_group in anchors.items():
-                    _a_xs = {e[1] for e in _a_group}
-                    if _o_x in _a_xs:
-                        continue  # this anchor already has a Page _o_x
-                    _dist = _o_pg - _a_pg
-                    if _dist < 0:
-                        continue  # orphan must be after the anchor
-                    if _dist <= _total_y * 3 and _dist < _best_dist:
-                        _best_anchor_pg = _a_pg
-                        _best_dist = _dist
-                # Fallback: accept anchor AFTER the orphan if no preceding one
-                if _best_anchor_pg is None:
-                    for _a_pg, _a_group in anchors.items():
-                        _a_xs = {e[1] for e in _a_group}
-                        if _o_x in _a_xs:
-                            continue
-                        _dist = abs(_o_pg - _a_pg)
-                        if _dist <= _total_y * 3 and _dist < _best_dist:
-                            _best_anchor_pg = _a_pg
-                            _best_dist = _dist
-                if _best_anchor_pg is not None:
-                    anchors[_best_anchor_pg].append(_orphan)
-
-            _groups = [g for g in anchors.values() if len(g) > 1]
-            # Track entries that found a home so we don't double-merge
-            _used_ids = set()
-            for g in _groups:
-                for e in g:
-                    _used_ids.add(id(e))
-            # Orphans without any preceding anchor stay as their own packets
-
-            # Merge each proximity group
-            for _group in _groups:
-                if len(_group) <= 1:
-                    continue
-                _sorted_group = sorted(_group, key=lambda x: x[1])  # sort by page_x
-                primary_idx = _sorted_group[0][0]
-                primary = merged_packets[primary_idx]
-                for _entry in _sorted_group[1:]:
-                    other_idx = _entry[0]
-                    other = merged_packets[other_idx]
-                    if other_idx not in _consumed:
-                        primary.page_numbers.extend(other.page_numbers)
-                        primary.pages.extend(other.pages)
-                        primary.stamps.extend(other.stamps)
-                        primary.signatures.extend(other.signatures)
-                        primary.seals.extend(other.seals)
-                        _consumed.add(other_idx)
-                        _progress(f"  Merged {other.packet_id} (pg {other.page_numbers}) into {primary.packet_id} ({_key[0]}, copy group)")
-        else:
-            # Exact match — merge all into one
-            _sorted = sorted(pkt_entries, key=lambda x: x[1])  # sort by page_x
-            primary_idx = _sorted[0][0]
-            primary = merged_packets[primary_idx]
-            for _entry in _sorted[1:]:
-                other_idx = _entry[0]
-                other = merged_packets[other_idx]
-                if other_idx not in _consumed:
-                    primary.page_numbers.extend(other.page_numbers)
-                    primary.pages.extend(other.pages)
-                    primary.stamps.extend(other.stamps)
-                    primary.signatures.extend(other.signatures)
-                    primary.seals.extend(other.seals)
-                    _consumed.add(other_idx)
-                    _progress(f"  Merged {other.packet_id} (pg {other.page_numbers}) into {primary.packet_id} ({_key[0]}, {_key[1]}, {_key[2]} pages)")
+    # Merge each cluster found by the Page-X-of-Y axis above.
+    # Primary packet is the one with the smallest X in the cluster
+    # (i.e. Page 1 of Y); the rest get absorbed into it.
+    for _cluster in _report_clusters:
+        if len(_cluster) <= 1:
+            continue
+        _sorted_by_x = sorted(_cluster, key=lambda e: e[2])
+        primary_idx = _sorted_by_x[0][0]
+        primary = merged_packets[primary_idx]
+        for _entry in _sorted_by_x[1:]:
+            other_idx = _entry[0]
+            if other_idx == primary_idx or other_idx in _consumed:
+                continue
+            other = merged_packets[other_idx]
+            primary.page_numbers.extend(other.page_numbers)
+            primary.pages.extend(other.pages)
+            primary.stamps.extend(other.stamps)
+            primary.signatures.extend(other.signatures)
+            primary.seals.extend(other.seals)
+            _consumed.add(other_idx)
+            _progress(f"  Merged {other.packet_id} (pg {other.page_numbers}) into {primary.packet_id} (Page-X-of-Y axis, Y={len(_sorted_by_x)})")
 
     # Remove consumed packets
     final_packets = [p for i, p in enumerate(merged_packets) if i not in _consumed]
