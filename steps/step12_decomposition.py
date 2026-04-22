@@ -104,6 +104,39 @@ DECOMPOSITION_SYSTEM_PROMPT = """You are a senior trade finance examiner special
 Your task: decompose an LC clause into individual, checkable conditions that a document checker can verify against the presented shipping documents.
 
 ═══════════════════════════════════════════════════════════════
+ABSOLUTE TOP RULE — DO NOT COPY EXAMPLE TEXT AS OUTPUT
+═══════════════════════════════════════════════════════════════
+
+This prompt contains MANY illustrative examples (marked with phrases
+like "WORKED EXAMPLE", "CORRECT decomposition", "WRONG decomposition",
+"CONCRETE WORKED EXAMPLE"). These examples are EDUCATIONAL SHAPES —
+they teach you HOW to decompose, not WHAT to decompose.
+
+Your actual decomposition MUST come from the clause text supplied to
+you in the user message (under "Clause #N:"). Every `condition_text`
+field in your output MUST reference words, parties, amounts, goods
+names, countries, dates, H.S. codes, L/C numbers, or other specifics
+that ACTUALLY APPEAR in the given clause — NOT phrases you saw in
+any example above.
+
+Concrete anti-hallucinations:
+  * If the clause says "INDONESIA ORIGIN", your condition must
+    mention Indonesia. Do NOT emit "multiple countries of origin"
+    because you saw that phrasing in an example.
+  * If the clause says "H.S. CODE 4803.0000", quote 4803.0000 — do
+    NOT reuse an H.S. code you saw in a sample.
+  * If the clause specifies CENTURY INSURANCE as the addressee, use
+    CENTURY INSURANCE — do not substitute a party name from an
+    example.
+  * If the clause does NOT mention something, do NOT invent it just
+    because similar clauses in other LCs often contain it.
+
+Every LC you decompose is a DIFFERENT document with its own text,
+parties, goods, and countries. Treat each input as the source of
+truth. Examples below are only to show decomposition patterns; the
+specifics you output are taken from the actual clause.
+
+═══════════════════════════════════════════════════════════════
 CRITICAL: UNDERSTAND THE CLAUSE BEFORE DECOMPOSING
 ═══════════════════════════════════════════════════════════════
 
@@ -834,14 +867,22 @@ Beneficiary's Certificate clause are part of the Beneficiary's
 Certificate requirement — they do NOT mean route to Documentary
 Remittance.
 
-Finally, do NOT emit logically-equivalent sub-conditions. For a clause
-like "INVOICES MUST MENTION MULTIPLE COUNTRIES OF ORIGIN. INVOICES
-STATING ALTERNATE OR SINGLE COUNTRY OF ORIGIN ARE NOT ACCEPTABLE",
-emit ONE positive requirement ("Commercial Invoice must mention
-multiple countries of origin covering the shipment") plus, if truly
-distinct, one row for the "alternate countries" prohibition. Do NOT
-emit a third row saying "must not state a single country" — that is
-the same check as the positive requirement, phrased as its contrapositive.
+Finally, do NOT emit logically-equivalent sub-conditions. When an LC
+clause contains a positive requirement AND its negative phrasing
+(e.g. "X is required. Otherwise-X is not acceptable"), emit ONE
+positive condition. Do NOT emit a second row for the negation — that
+is just the contrapositive.
+
+CRITICAL — DO NOT COPY EXAMPLE TEXT AS OUTPUT:
+The above rule is GUIDANCE only. Your `condition_text` output MUST be
+generated from the ACTUAL clause text you were given at the top of
+this prompt. Do NOT copy phrases from any example in this prompt
+into your output. Do NOT emit "multiple countries of origin" or any
+other sample phrasing unless the actual LC clause you're decomposing
+literally contains those words. If the clause says "INDONESIA ORIGIN",
+your output condition must reference Indonesia — not multiple
+countries. If the clause says "MALAYSIAN OR INDONESIAN", say that.
+Quote the clause's own words.
 
 Return a JSON array of conditions."""
 
