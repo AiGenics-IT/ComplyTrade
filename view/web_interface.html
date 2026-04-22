@@ -277,6 +277,33 @@ let currentResults = null;
 let jobFileNames = []; // persistent list of all filenames in this job
 let timerInterval = null;
 
+// Resume-by-URL: when jumping here from /jobs with "+ Upload" we get
+// ?job_id=<id> — pick it up, show the progress UI and start polling.
+try {
+    const _qs = new URLSearchParams(window.location.search);
+    const _qJob = _qs.get('job_id');
+    if (_qJob) {
+        currentJobId = _qJob;
+        window.addEventListener('DOMContentLoaded', () => {
+            try {
+                const _status = document.getElementById('statusMessage');
+                if (_status) _status.textContent = 'Resuming job ' + _qJob.substring(0, 8) + '… pipeline running, live progress below.';
+                const _cancel = document.getElementById('cancelBtn');
+                if (_cancel) _cancel.style.display = 'inline-block';
+                // Hide the initial upload pane, show progress panel
+                const _upload = document.getElementById('uploadSection') || document.querySelector('.upload-area');
+                if (_upload) _upload.style.display = 'none';
+                const _progress = document.getElementById('statusCard');
+                if (_progress) _progress.style.display = 'block';
+            } catch (_e) { /* best-effort — fall through */ }
+            // Start polling /api/status as if the job was just uploaded
+            if (!statusCheckInterval) statusCheckInterval = setInterval(checkStatus, 1000);
+            // Kick one immediate check so the UI updates without a 1s wait
+            if (typeof checkStatus === 'function') checkStatus();
+        });
+    }
+} catch (_e) { /* non-fatal */ }
+
 // SWIFT message type → human-readable labels (global for reuse)
 const _SWIFT_TYPE_LABELS = {
     'free_format_message': 'Free Format Message',

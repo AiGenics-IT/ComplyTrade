@@ -171,6 +171,39 @@
     </div>
 </div>
 
+<!-- Upload-to-Job Modal -->
+<div class="modal-overlay" id="upload-modal" onclick="if(event.target===this)closeUploadModal()">
+    <div class="modal-box" style="max-width:560px">
+        <h3 style="color:var(--primary);margin-bottom:4px">Upload Additional Documents</h3>
+        <p style="margin:0 0 10px;font-size:.82em;color:var(--muted)">Add amendments or presentation lots to an existing job. The pipeline will re-run with the combined document set.</p>
+        <p style="margin:0 0 14px;font-size:.72em;color:#94a3b8">Job ID: <span id="upload-job-id" style="font-family:monospace"></span></p>
+        <div style="display:flex;flex-direction:column;gap:12px">
+            <div>
+                <label style="display:block;font-size:.8em;font-weight:600;color:#334155;margin-bottom:4px">Document type</label>
+                <select id="upload-kind" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:.85em;background:#fff">
+                    <option value="amendment">Amendment (MT707 / MT720)</option>
+                    <option value="presentation_1">1st Presentation (shipping docs)</option>
+                    <option value="presentation_2">2nd Presentation</option>
+                    <option value="presentation_3">3rd Presentation</option>
+                    <option value="presentation_4">4th Presentation</option>
+                    <option value="lc">Base LC (MT700) — additional pages</option>
+                    <option value="misc">Other</option>
+                </select>
+            </div>
+            <div>
+                <label style="display:block;font-size:.8em;font-weight:600;color:#334155;margin-bottom:4px">PDF file(s)</label>
+                <input type="file" id="upload-files" multiple accept=".pdf" style="width:100%;padding:6px 0;font-size:.82em">
+                <p style="margin:4px 0 0;font-size:.72em;color:#94a3b8">You can select multiple PDFs at once. They will all be attached under the selected type.</p>
+            </div>
+            <div id="upload-status" style="font-size:.82em;color:#475569;min-height:18px"></div>
+        </div>
+        <div class="modal-actions" style="margin-top:14px">
+            <button class="mbtn mbtn-cancel" onclick="closeUploadModal()">Cancel</button>
+            <button class="mbtn" id="upload-btn" onclick="submitUpload()" style="background:var(--primary);color:#fff">Upload & Re-run</button>
+        </div>
+    </div>
+</div>
+
 <!-- Steps Info Modal -->
 <div class="modal-overlay" id="steps-modal" onclick="if(event.target===this)this.classList.remove('active')">
     <div class="modal-box" style="max-width:640px;max-height:85vh;overflow-y:auto">
@@ -349,6 +382,7 @@ function renderJobs(jobs) {
         }
         actions += `<a class="abtn text" href="/extracted-text?job_id=${j.job_id}">Text</a>`;
         actions += `<button class="abtn" style="background:#6d28d9" onclick="showDocs('${j.job_id}')">Docs</button>`;
+        actions += `<button class="abtn" style="background:#f59e0b" onclick="openUploadModal('${j.job_id}')" title="Add amendments or presentation lots to this job. Pipeline will re-run with combined document set.">+ Upload</button>`;
         actions += `<button class="abtn" style="background:#0d9488" onclick="clearVerification('${j.job_id}')" title="Delete only verification stage results (step12-step20). Pre-verification stages stay so re-running is fast.">Clear Verif</button>`;
         actions += `<button class="abtn pdf" onclick="deleteJob('${j.job_id}')">Delete</button>`;
 
@@ -568,6 +602,70 @@ function saveNote() {
             renderJobs(allJobs);
         } else showToast('Failed to save', false);
     }).catch(() => showToast('Failed to save', false));
+}
+
+// ───────── Upload additional documents to an existing job ─────────
+let _uploadJobId = null;
+function openUploadModal(jobId) {
+    _uploadJobId = jobId;
+    document.getElementById('upload-job-id').textContent = jobId;
+    document.getElementById('upload-files').value = '';
+    document.getElementById('upload-kind').value = 'amendment';
+    document.getElementById('upload-status').textContent = '';
+    document.getElementById('upload-btn').disabled = false;
+    document.getElementById('upload-btn').textContent = 'Upload & Re-run';
+    document.getElementById('upload-modal').classList.add('active');
+}
+function closeUploadModal() {
+    document.getElementById('upload-modal').classList.remove('active');
+    _uploadJobId = null;
+}
+async function submitUpload() {
+    if (!_uploadJobId) return;
+    const files = document.getElementById('upload-files').files;
+    const kind = document.getElementById('upload-kind').value;
+    const statusEl = document.getElementById('upload-status');
+    const btn = document.getElementById('upload-btn');
+    if (!files || !files.length) {
+        statusEl.textContent = 'Please select at least one PDF file.';
+        statusEl.style.color = '#dc2626';
+        return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Uploading…';
+    statusEl.style.color = '#475569';
+    statusEl.textContent = `Uploading ${files.length} file(s)…`;
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    fd.append('kind', kind);
+    try {
+        const r = await fetch(`${API}/api/upload/${_uploadJobId}`, {
+            method: 'POST',
+            body: fd,
+        });
+        if (!r.ok) {
+            const errTxt = await r.text();
+            throw new Error(`HTTP ${r.status}: ${errTxt}`);
+        }
+        const data = await r.json();
+        statusEl.style.color = '#059669';
+        statusEl.innerHTML = `Uploaded: ${(data.files_added || []).join(', ')}. Opening live progress…`;
+        btn.textContent = 'Opening…';
+        // Open the main page with ?job_id=X so the user sees the exact same
+        // live-progress panel they saw after the initial upload.
+        const jobUrl = `/?job_id=${encodeURIComponent(_uploadJobId)}`;
+        // Open in a new tab so the jobs list stays open in this one.
+        setTimeout(() => {
+            window.open(jobUrl, '_blank');
+            closeUploadModal();
+            if (typeof loadJobs === 'function') loadJobs();
+        }, 600);
+    } catch (ex) {
+        statusEl.style.color = '#dc2626';
+        statusEl.textContent = `Failed: ${ex.message}`;
+        btn.disabled = false;
+        btn.textContent = 'Retry';
+    }
 }
 
 async function showDocs(jobId) {
