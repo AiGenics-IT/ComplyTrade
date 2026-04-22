@@ -388,6 +388,47 @@ def _find_matching_docs(doc_to_check: str, packets: list) -> list:
                 matches.append(pkt if isinstance(pkt, dict) else asdict(pkt))
                 break
 
+    # P197 — Shipping Company Certificate issuer guard.
+    # A "Certificate from Shipping Company or their Authorized Agents"
+    # must be issued by a carrier / shipping line / shipping agent.
+    # Step 3a's classifier sometimes mis-labels inspection / survey /
+    # agricultural-services certificates (Alfred H Knight, SGS, BV,
+    # Intertek, Cotecna, Control Union, Geo-Chem, etc.) as "Shipping
+    # Company Certificate" because the layout and some phrasing can
+    # overlap. When the requirement asks for an SCC, drop any
+    # candidate whose issuer is a known inspection firm — if nothing
+    # is left, return empty so the caller reports the document as
+    # missing instead of failing against a wrong doc.
+    if matches and ('shipping company' in target
+                    or 'shipping certificate' in target
+                    or 'agent certificate' in target
+                    or "agent's certificate" in target
+                    or 'carrier certificate' in target
+                    or "carrier's certificate" in target):
+        _INSPECTION_ISSUER_TOKENS = (
+            'alfred h knight', 'ahk', 'sgs', 'bureau veritas', 'intertek',
+            'cotecna', 'control union', 'geo-chem', 'geo chem', 'geochem',
+            'inspectorate', 'saybolt', 'alex stewart', 'camspec',
+            'survey services', 'inspection services',
+            'agriculture services', 'agri services', 'agricultural services',
+            'laboratory services', 'testing services', 'analytical services',
+            'quality services',
+        )
+        def _issued_by(p):
+            if isinstance(p, dict):
+                return (p.get('issued_by') or '').lower()
+            return (getattr(p, 'issued_by', '') or '').lower()
+        _filtered = [
+            p for p in matches
+            if not any(tok in _issued_by(p) for tok in _INSPECTION_ISSUER_TOKENS)
+        ]
+        # Only replace if the filter actually removed some AHK-style
+        # noise AND a plausible real SCC remains. If every candidate
+        # is an inspection firm, drop them all — the real SCC is
+        # missing from the submission.
+        if len(_filtered) != len(matches):
+            matches = _filtered
+
     return matches
 
 
