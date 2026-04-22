@@ -951,17 +951,20 @@ def _build_implicit_conditions(field_tag: str, clause_text: str) -> List[Conditi
     elif implicit_type == 'beneficiary_check':
         _bene = (clause_text or '').strip()
         _bene_short = _bene.split('\n')[0].strip() if _bene else ''
+        # P198x — strict shipper-vs-beneficiary rule. F47A's
+        # "third-party documents acceptable except invoice/draft"
+        # governs document ISSUANCE, not the shipper/consignor
+        # identity printed on the BL face. A BL whose shipper is
+        # not the beneficiary is a discrepancy regardless of F47A.
         _cond = (
             "Shipper / Consignor in the Bill of Lading must match the "
             "Beneficiary named in LC F59"
             + (f" ('{_bene_short}')" if _bene_short else "")
-            + ". If the shipper differs from the beneficiary AND F47A "
-            "says 'THIRD PARTY DOCUMENTS ARE ACCEPTABLE' (with or "
-            "without the exception for Invoice and Draft), the "
-            "mismatch is ACCEPTABLE for the BL and the verdict is "
-            "PASS with a note explaining the third-party shipper. "
-            "If F47A does NOT permit third-party documents, the "
-            "mismatch is a discrepancy and the verdict is FAIL."
+            + ". If the shipper printed on the BL face is different "
+            "from the LC beneficiary, the verdict is FAIL — this is "
+            "a strict match requirement and F47A's third-party rule "
+            "does NOT override it (F47A governs document issuance, "
+            "not the shipper field)."
         )
         conditions.append(Condition(
             condition_text=_cond,

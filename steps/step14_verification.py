@@ -815,19 +815,20 @@ TOP RULE 2 — LC PROHIBITION WORDING IS NOT EVIDENCE:
     RIGHT: "The BL document text shows a full T&C page attached,
       therefore this is NOT a Short Form BL -> PASS."
 
-TOP RULE 3 — "THIRD PARTY DOCUMENTS ACCEPTABLE EXCEPT X" MEANS X
-            MUST COME FROM THE BENEFICIARY (NOT that X is forbidden):
+TOP RULE 3 — "THIRD PARTY DOCUMENTS ACCEPTABLE EXCEPT INVOICE AND
+            DRAFT" GOVERNS DOCUMENT ISSUANCE ONLY, NOT SHIPPER MATCH:
   When F47A says "THIRD PARTY DOCUMENTS ARE ACCEPTABLE EXCEPT FOR
-  INVOICE AND DRAFT" (or any variant of "acceptable except Y"), read
-  it as two rules:
+  INVOICE AND DRAFT" (or any variant of "acceptable except Y"), the
+  rule is about WHO ISSUED the document, not about the shipper /
+  consignor printed inside the document. Read it as:
     (a) For every doc OTHER than the excepted ones, third-party
-        issuance is ALLOWED. PASS a BL / Packing List / Beneficiary
+        ISSUANCE is ALLOWED. PASS a Packing List / Beneficiary
         Certificate / shipping-company certificate / etc. whose
-        shipper or issuer is NOT the beneficiary — F47A permits it.
-    (b) The EXCEPTED doc types (e.g. Invoice, Draft) MUST BE ISSUED
-        BY THE BENEFICIARY (not by a third party). A Commercial
-        Invoice issued by the beneficiary SATISFIES this rule.
-        Only a Commercial Invoice issued by a third party FAILS it.
+        ISSUER is a third party — F47A permits it.
+    (b) The EXCEPTED doc types (Invoice, Draft) MUST BE ISSUED BY
+        THE BENEFICIARY (not by a third party). A Commercial Invoice
+        issued by the beneficiary SATISFIES this rule. Only a
+        Commercial Invoice issued by a third party FAILS it.
 
   Common inversion to avoid (this has been a repeat false FAIL):
     Condition: "Third party documents acceptable except for Invoice
@@ -839,15 +840,21 @@ TOP RULE 3 — "THIRD PARTY DOCUMENTS ACCEPTABLE EXCEPT X" MEANS X
       beneficiary. The invoice is from APEX (beneficiary) ->
       PASS."
 
-  Same inversion for BL shipper-vs-beneficiary when F47A permits
-  third-party BLs:
+  SHIPPER / CONSIGNOR ON THE BL IS A SEPARATE CHECK:
+  Even when F47A permits third-party docs, a requirement that
+  "Shipper / Consignor on the Bill of Lading must match the
+  Beneficiary" is STRICT and NOT overridden by F47A. F47A's third-
+  party clause governs the ISSUER of the BL (carrier / agent /
+  multimodal operator), not the shipper/consignor field printed on
+  the BL face. If the shipper-on-BL differs from the LC beneficiary,
+  that is a discrepancy to FLAG regardless of F47A wording. Do NOT
+  apply F47A's third-party rule to excuse a shipper-vs-beneficiary
+  mismatch.
     Condition: "Shipper in BL must match the beneficiary."
     F47A:      "Third party documents acceptable except invoice & draft."
     Shipper:   PT PINDO DELI (not beneficiary), Beneficiary: APEX.
-    WRONG: "Shipper differs from beneficiary -> FAIL."
-    RIGHT: "Shipper differs from beneficiary, but F47A permits
-      third-party docs for the BL -> PASS with note (third-party
-      shipper is acceptable under F47A)."
+    RIGHT: "Shipper PT PINDO DELI differs from beneficiary APEX ->
+      FAIL. F47A does not apply to the shipper/consignor field."
 
 ════════════════════════════════════════════════════════════════════════
 ANTI-HALLUCINATION RULES (STRICT — READ CAREFULLY)
