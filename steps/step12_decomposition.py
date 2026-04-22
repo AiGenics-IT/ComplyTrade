@@ -923,12 +923,32 @@ def _build_implicit_conditions(field_tag: str, clause_text: str) -> List[Conditi
         ))
 
     # 5. F59 - Beneficiary
+    #    P198o: route this through the LLM (is_implicit=False). The
+    #    LLM compares the BL shipper/consignor against the LC F59
+    #    beneficiary and applies F47A third-party acceptability.
+    #    Setting is_implicit=False means step 14 sends this row to
+    #    the verifier LLM directly instead of dispatching to the
+    #    disabled deterministic `beneficiary` check.
     elif implicit_type == 'beneficiary_check':
+        _bene = (clause_text or '').strip()
+        _bene_short = _bene.split('\n')[0].strip() if _bene else ''
+        _cond = (
+            "Shipper / Consignor in the Bill of Lading must match the "
+            "Beneficiary named in LC F59"
+            + (f" ('{_bene_short}')" if _bene_short else "")
+            + ". If the shipper differs from the beneficiary AND F47A "
+            "says 'THIRD PARTY DOCUMENTS ARE ACCEPTABLE' (with or "
+            "without the exception for Invoice and Draft), the "
+            "mismatch is ACCEPTABLE for the BL and the verdict is "
+            "PASS with a note explaining the third-party shipper. "
+            "If F47A does NOT permit third-party documents, the "
+            "mismatch is a discrepancy and the verdict is FAIL."
+        )
         conditions.append(Condition(
-            condition_text="Shipper/Exporter in Bill of Lading must match the Beneficiary mentioned in LC.",
+            condition_text=_cond,
             document_to_check="Bill of Lading",
-            look_for_value=clause_text.strip(),
-            is_implicit=True,
+            look_for_value=_bene_short or clause_text.strip(),
+            is_implicit=False,
             implicit_type='beneficiary_check',
         ))
 
@@ -1367,6 +1387,43 @@ def run(structured_lc: dict, output_dir: str = None, progress_callback=None) -> 
                 })
     else:
         clauses = _extract_clauses(_inner)
+
+    # P198o — Inject key-term implicit clauses that aren't in
+    # CLAUSE_FIELDS but MUST be checked (Shipper vs Beneficiary for
+    # every BL, etc.). Without this the 13 key-term implicit rows
+    # in IMPLICIT_CHECK_FIELDS are defined but never generated
+    # because their field_tags (50 / 59 / 52A / 32B / 42C / 44C /
+    # etc.) aren't clause-type fields.
+    _sf = _inner.get('standalone_fields') or {}
+    if not isinstance(_sf, dict):
+        _sf = {}
+    def _field_text(tag):
+        v = _sf.get(tag) or {}
+        if isinstance(v, dict):
+            return str(v.get('value') or v.get('field_value') or '').strip()
+        if isinstance(v, str):
+            return v.strip()
+        return ''
+
+    # Start with F59 (beneficiary check). Add F50 / F52A etc. here
+    # when you want those rows generated too.
+    _injected_key_terms = ('59',)
+    _existing_refs = {c.get('clause_ref') for c in clauses}
+    for _kt in _injected_key_terms:
+        if _kt in IMPLICIT_CHECK_FIELDS:
+            _txt = _field_text(_kt)
+            if not _txt:
+                continue
+            _ref = f"F{_kt}-1"
+            if _ref in _existing_refs:
+                continue
+            clauses.append({
+                'clause_ref': _ref,
+                'field_tag': _kt,
+                'clause_number': 1,
+                'text': _txt,
+            })
+
     _progress(f"Found {len(clauses)} clauses to decompose")
 
     decomposed: List[DecomposedClause] = []
