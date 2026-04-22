@@ -622,36 +622,20 @@ conditions for each distinct requirement:
                   N working days after shipment."
 
   2. EACH ADDRESSEE SEPARATELY: If the clause says "TO [Party A]
-     AND TO [Party B]", create TWO separate conditions. CRITICAL:
-     whenever the LC also requires a "BENEFICIARY CERTIFICATE TO THIS
-     EFFECT TO ACCOMPANY ORIGINAL DOCUMENTS" (or any accompanying
-     Beneficiary Certificate), the addressed-to check may be satisfied
-     by EITHER the Shipment Advice itself OR the Beneficiary
-     Certificate that certifies it. Use a pipe-separated
-     `document_to_check` so the verifier sees both and applies OR
-     semantics (PASS if either doc carries the addressee).
-
-     a) document_to_check = "Shipment Advice | Beneficiary Certificate"
-        condition = "Shipment Advice OR Beneficiary Certificate must be
-                     addressed to [Party A full name and address]."
-     b) document_to_check = "Shipment Advice | Beneficiary Certificate"
-        condition = "Shipment Advice OR Beneficiary Certificate must
-                     also be addressed to the Applicant
-                     [ACTUAL APPLICANT NAME from F50]."
+     AND TO [Party B]", create TWO separate conditions, both against
+     the Shipment Advice only:
+     a) document_to_check = "Shipment Advice"
+        condition = "Shipment Advice must be addressed to
+                     [Party A full name and address]."
+     b) document_to_check = "Shipment Advice"
+        condition = "Shipment Advice must also be addressed to
+                     the Applicant [ACTUAL APPLICANT NAME from F50]."
      IMPORTANT: When the clause says "AND TO THE APPLICANT", you
      MUST replace "THE APPLICANT" with the actual applicant name
      from the LC context (F50). For example if F50 is "GETZ PHARMA
      (PVT) LTD", the condition should say "must also be addressed
      to GETZ PHARMA (PVT) LTD" — NOT just "to the Applicant".
-     This allows the verifier to check the actual name on either
-     the Shipment Advice or the Beneficiary Certificate.
-
-     If the LC does NOT require an accompanying Beneficiary Certificate,
-     drop the BC from the pipe and keep `document_to_check = "Shipment
-     Advice"` only.
-
-     Do NOT combine the two addressees (Party A and Party B) into one
-     row — the verifier will check the first and skip the second.
+     Do NOT combine the two addressees into one row.
 
   3. POLICY/REFERENCE: "referring to their Policy No. XXX" →
      document_to_check = "Shipment Advice"
@@ -670,70 +654,17 @@ conditions for each distinct requirement:
   6. EMAIL/FAX: If the clause specifies an email address or fax for
      the notification, create a condition checking the email address.
 
-  7. BENEFICIARY-CERTIFICATE CO-EVIDENCE (CRITICAL — MUST APPLY):
-     Whenever the LC clause itself or the F47A additional-conditions
-     block says anything like "BENEFICIARY CERTIFICATE TO THIS EFFECT
-     TO ACCOMPANY ORIGINAL DOCUMENTS", "COPY OF SHIPMENT ADVICE MUST
-     ACCOMPANY THE ORIGINAL DOCUMENTS" together with a Beneficiary
-     Certificate elsewhere, or an "INSURANCE COVERED BY APPLICANT"
-     block that ends with the BC-accompanying requirement — the
-     Beneficiary Certificate is legally VALID EVIDENCE under UCP/ISBP
-     that the Shipment Advice reached each named addressee.
-
-     For every CONTENT condition on the Shipment Advice in this clause
-     (addressed-to X, addressed-to Applicant, must reference Policy /
-     Cover Note No., must mention vessel / port / BL number / shipped
-     on board date / amount / credit number), emit the condition with
-     a pipe-separated `document_to_check` listing BOTH docs, NOT just
-     the Shipment Advice:
-
-         document_to_check = "Shipment Advice | Beneficiary Certificate"
-
-     The verifier will then check BOTH docs' texts and PASS if EITHER
-     shows the info. This avoids false FAILs where the Shipment Advice
-     is physically addressed only to one party (e.g. the insurer) and
-     the Beneficiary Certificate separately certifies it was also sent
-     to the other party (e.g. the applicant via email).
-
-     CONCRETE WORKED EXAMPLE — APPLY THIS EXACTLY:
-       LC clause:
-         "INSURANCE COVERED BY THE APPLICANT. ALL SHIPMENT UNDER THIS
-          CREDIT MUST BE ADVISED BY THE BENEFICIARY AFTER SHIPMENT DATE
-          DIRECT TO CENTURY INSURANCE COMPANY LIMITED, OFFICE 504 AND
-          505 ... BY EMAIL AT INFO(AT)CICL.COM.PK AND TO THE APPLICANT
-          BY EMAIL FINANCE(AT)BIKIYA.COM REFERRING TO THEIR COVER NOTE
-          NO.C/08/MN/00037802/21 MENTIONING THE DETAIL OF SHIPMENT.
-          COPY OF SUCH SHIPMENT ADVICE MUST ACCOMPANY THE ORIGINAL
-          DOCUMENTS."
-
-       CORRECT decomposition — content rows routed through BOTH docs:
-         1. doc = "Shipment Advice | Beneficiary Certificate"
-            cond = "Shipment Advice OR Beneficiary Certificate must be
-                    addressed to Century Insurance Company Limited,
-                    Office 504 and 505, 5th Floor, Marine Point, DC-1,
-                    Block-9, Clifton, Karachi, Pakistan."
-         2. doc = "Shipment Advice | Beneficiary Certificate"
-            cond = "Shipment Advice OR Beneficiary Certificate must
-                    also be addressed to <APPLICANT NAME from F50>."
-         3. doc = "Shipment Advice | Beneficiary Certificate"
-            cond = "Shipment Advice OR Beneficiary Certificate must
-                    reference Cover Note No. C/08/MN/00037802/21."
-         4. doc = "Shipment Advice | Beneficiary Certificate"
-            cond = "Shipment Advice OR Beneficiary Certificate must
-                    mention details of shipment (vessel name, port of
-                    shipment, shipped-on-board date, invoice value)."
-         5. doc = "Shipment Advice"
-            cond = "Shipment Advice must be sent after the shipment date."
-         6. doc = "Shipment Advice"
-            cond = "A copy of the Shipment Advice must accompany the
-                    original documents."
-         7. doc = "Beneficiary Certificate"
-            cond = "Beneficiary Certificate must accompany the original
-                    documents."
-         (Do NOT emit Email-Evidence rows when the LC only says 'by
-          email' — the email address appears on the Shipment Advice
-          itself and is covered by rows 1-4. Adding Email Evidence as
-          a separate doc type produces false 'document missing'.)
+  7. SHIPMENT ADVICE IS THE SOLE CONTENT DOC — DO NOT CROSS-CHECK TO BC:
+     Even when the LC also requires a "BENEFICIARY CERTIFICATE TO THIS
+     EFFECT TO ACCOMPANY ORIGINAL DOCUMENTS", the CONTENT checks
+     (addressed-to X, references Policy/Cover Note No., vessel / BL
+     / shipment details) remain on the Shipment Advice ONLY. The
+     Beneficiary Certificate is verified separately ONLY as a presence
+     check (Rule D-2 elsewhere in this prompt): "Beneficiary Certificate
+     must accompany the original documents."
+     Do NOT emit pipe-separated `document_to_check = "Shipment Advice
+     | Beneficiary Certificate"` rows. Keep Shipment Advice content
+     checks on the Shipment Advice only.
 
 CLAUSE STRUCTURE — READ CAREFULLY:
   • "INSURANCE COVERED BY APPLICANT, BENEFICIARY SHIPMENT ADVICE QUOTING [items] SHOULD BE SENT TO [address]"
