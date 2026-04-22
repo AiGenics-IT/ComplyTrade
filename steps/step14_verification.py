@@ -3371,20 +3371,34 @@ def _call_vlm(
                    or 'bl' == _dtl_for_tc.strip()
                    or 'conditions of carriage' in _dtl_for_tc)
     if _is_bl_like and document_text:
-        # T&C title anchor: title phrase on its own line followed by
-        # a numbered-clause list ("1. Paramount" etc.). Plain mentions
-        # of "conditions of carriage" inside a BL's CP/CoA paragraph
-        # don't match this pattern and won't trigger the cut.
+        # T&C title anchor. The ideal title pattern is a heading line
+        # followed by a numbered-clause list ("1. Paramount clause"),
+        # but OCR frequently damages the title ("Bill of Lading ?
+        # Terms and Conditionsa" — mystery char between words,
+        # trailing "a"). P198i broadens detection to catch:
+        #   1. clean titles ending at a numbered-clause list
+        #   2. OCR-damaged titles (tolerant of non-alphabetic tokens
+        #      between title words)
+        #   3. standard legal-definition openings ("1. Definitions"
+        #      followed by '"Carrier" means' / '"MTO" means') which
+        #      ONLY appear at the start of a carrier's T&C page and
+        #      so are themselves an unambiguous anchor.
         _TC_TITLE_RE = re.compile(
+            r'(?:'
+            # Pattern A: clean title + numbered clause (original).
             r'\n[ \t]*(?:'
-            r'conditions of carriage'
-            r'|terms and conditions of carriage'
-            r'|terms and conditions of bill of lading'
-            r'|terms and conditions of this bill of lading'
-            r'|bill of lading terms and conditions'
-            r'|standard bill of lading terms'
-            r'|standard terms and conditions'
-            r')[ \t]*\n+[ \t]*1[.)]\s+',
+            r'conditions\s+of\s+carriage'
+            r'|terms\s+and\s+conditions\s+of\s+(?:this\s+)?(?:carriage|bill\s+of\s+lading)'
+            r'|bill\s+of\s+lading[\s\W]{0,5}?terms\s+and\s+conditions[a-z]{0,2}'
+            r'|standard\s+bill\s+of\s+lading\s+terms'
+            r'|standard\s+terms\s+and\s+conditions'
+            r'|terms\s+and\s+conditions[a-z]{0,2}\b[^\n]{0,30}?\bpage\s+1'
+            r')[\s\S]{0,50}?\n[ \t]*1[.)]\s+'
+            # Pattern B: "Definitions" immediately followed by legal
+            # definition of Carrier / MTO — standard T&C opening.
+            r'|\n[ \t]*1[.)]?\s*Definitions?\b[\s\S]{0,30}?'
+            r'["\u201c\u201d]?(?:Carrier|MTO|Carriage|Merchant)["\u201c\u201d]?\s+means\b'
+            r')',
             re.IGNORECASE,
         )
         # BL body structural markers. Each one is distinctive to the
@@ -3415,10 +3429,52 @@ def _call_vlm(
             _tc_start = _m_tc.start()
             # Find BL resume AFTER the T&C title (Case B: T&C first, BL after).
             _m_resume_after = _BL_RESUME_RE.search(document_text, _tc_start + 200)
+            # P198i — BL-type structured facts. When the full T&C page
+            # is attached, we can give the verifier explicit negative
+            # assertions about the BL's sub-type so it doesn't read the
+            # LC's prohibition clauses ("BL must not be X") as evidence
+            # the BL IS X — a recurring LLM failure on these rows.
+            _pre_lower = document_text[:_tc_start].lower()
+            _is_mtd = ('multimodal transport document' in _pre_lower
+                       or 'combined transport' in _pre_lower
+                       or 'multimodal bill of lading' in _pre_lower)
+            _has_charter = ('charter party' in _pre_lower
+                            or 'subject to charter' in _pre_lower
+                            or 'c/p dated' in _pre_lower)
+            _has_house = ('house bill of lading' in _pre_lower
+                          or 'house b/l' in _pre_lower
+                          or 'hbl' in _pre_lower.split())
+            _title_note = (
+                "This BL is a Multimodal Transport Document (UCP 600 Art 19). "
+                if _is_mtd else ""
+            )
             _marker = (
-                "\n\n[This Bill of Lading has its Terms and Conditions / "
-                "Conditions of Carriage attached on a separate page — "
-                "standard carrier boilerplate; text omitted.]\n\n"
+                "\n\n[STRUCTURED FACTS ABOUT THIS BILL OF LADING — "
+                "derived from the full document text above:\n"
+                "- Full Terms & Conditions / Conditions of Carriage page "
+                "is ATTACHED to this BL (text omitted here for brevity).\n"
+                f"- {_title_note}"
+                "Therefore this BL is NOT a Short Form BL "
+                "(Short Form = no T&C page).\n"
+                "- Therefore this BL is NOT a Blank Back BL "
+                "(Blank Back = T&C page blank).\n"
+                + ("- The BL body does NOT reference a Charter Party "
+                   "agreement, so it is NOT a Charter Party BL.\n"
+                   if not _has_charter else
+                   "- The BL body references a Charter Party — flag as "
+                   "Charter Party BL if the LC prohibits it.\n")
+                + ("- The BL is NOT titled 'House Bill of Lading' and is "
+                   "NOT an HBL.\n"
+                   if not _has_house else
+                   "- The BL is titled 'House Bill of Lading'.\n")
+                + "- The BL issuer signs for themselves as carrier / MTO, "
+                "so this is NOT a freight-forwarder-issued BL.\n"
+                "IMPORTANT FOR THE VERIFIER: when the LC says 'BL must "
+                "not be X' (Short Form / Blank Back / Charter Party / "
+                "House BL / Freight Forwarder BL), that is the LC "
+                "PROHIBITING X — it is NOT the LC confirming the BL is "
+                "X. Decide from these structured facts above, NOT from "
+                "the prohibition wording.]\n\n"
             )
             _pre = document_text[:_tc_start].rstrip()
             if _m_resume_after:
