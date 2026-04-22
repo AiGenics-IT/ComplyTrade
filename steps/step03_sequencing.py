@@ -2662,9 +2662,24 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         # MT754 Advice of Payment, MT740 Auth to Reimburse, etc.) BEFORE
         # the generic LC pattern. These messages carry F20 which used to
         # trigger a false LC classification.
+        #
+        # P198r — Match non-LC MT pre-classification on the PAGE HEADER
+        # only (first 1000 chars), not the full body. That covers:
+        #   * Real MT754/MT760/etc. FIRST pages (header at top of page)
+        #   * SWIFT continuation pages (which are separately handled by
+        #     _SWIFT_CONTINUATION_PATTERNS below and marked as
+        #     _swift_continuation — they inherit their MT type from the
+        #     adjacent first page in post-processing)
+        # and AVOIDS the false positives:
+        #   * Covering schedules listing "MT754" / "MT760" in their
+        #     attached-docs TABLE (body, not header)
+        #   * Draft BoE back pages with "PAY TO THE ORDER OF" / GUARANTEE
+        #     stamps (no SWIFT header at all, they'd only match if we
+        #     looked at body text — which we no longer do)
         _non_lc_mt = None
+        _text_head = text[:1000]  # header region only, not body
         for _pat, _mt_type in _SWIFT_NON_LC_PATTERNS:
-            if re.search(_pat, text, re.IGNORECASE):
+            if re.search(_pat, _text_head, re.IGNORECASE):
                 _non_lc_mt = _mt_type
                 break
         if _non_lc_mt:
