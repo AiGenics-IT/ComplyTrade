@@ -2250,13 +2250,23 @@ _DOC_TYPE_SYNONYMS = {
         'shipment advice', 'advice of shipment', 'cargo advice',
         'shipping advice',
     ],
+    # P198aa — "Covering Letter" / "Cover Letter" / "Transmittal Letter"
+    # are all aliases of the negotiating bank's cover letter which is
+    # the same instrument as a "Documentary Remittance" / "Covering
+    # Schedule" / "L/C Bills Schedule". Having them as two separate
+    # canonical types meant step 3 did not merge adjacent pages of
+    # the same physical document when the VLM alternated between
+    # "Covering Letter" and "Documentary Remittance" across pages.
+    # Fold them all into one canonical name.
     'Document Remittance': [
         'document remittance', 'documentary remittance',
         'l/c bills schedule', 'lc bills schedule', 'covering schedule',
         'document presentation', 'export dc document presentation schedule',
         'export documentary credit document presentation schedule',
+        'covering letter', 'cover letter', 'transmittal letter',
+        'letter of transmittal', 'bill remittance letter',
+        'remittance letter', 'forwarding letter',
     ],
-    'Covering Letter': ['covering letter', 'cover letter', 'transmittal letter'],
     'Letter of Indemnity': ['letter of indemnity', 'loi', 'indemnity letter'],
     'Letter of Authority': ['letter of authority', 'authority letter'],
     'Notice of Readiness': ['notice of readiness', 'nor'],
