@@ -2419,22 +2419,34 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     # P158 — explicit non-LC SWIFT types that contain F20 but are NOT
     # a Letter of Credit. Must match these BEFORE falling back to the
     # generic LC pattern.
+    #
+    # P198p — Removed loose keyword alternatives (|Guarantee,
+    # |Advice of Payment, |Authorization to Reimburse, |Acknowledgement,
+    # |Customer Statement, etc.). These keywords appear in many
+    # legitimate non-SWIFT documents: "Guarantee" on a draft BoE
+    # endorsement ("I GUARANTEE payment..."), "Advice of Payment" as
+    # a row in a Documentary Remittance's attached-docs table,
+    # "Acknowledgement" anywhere a bank replies. An actual SWIFT
+    # message ALWAYS carries one of the format identifiers — the
+    # "Message type:" header, the "fin.XXX" identifier, the
+    # SWIFT_MTXXX legacy tag, or a standalone "MT XXX" header. We
+    # require one of those; keyword-only matches are not enough.
     _SWIFT_NON_LC_PATTERNS = [
-        (r'Message\s+type:\s*734|fin\.\s*734|SWIFT_MT\s*734|\bMT[\s_]?734\b|Advice\s+of\s+Refusal', 'MT734'),
-        (r'Message\s+type:\s*754|fin\.\s*754|SWIFT_MT\s*754|\bMT[\s_]?754\b|Advice\s+of\s+Payment', 'MT754'),
-        (r'Message\s+type:\s*752|fin\.\s*752|SWIFT_MT\s*752|\bMT[\s_]?752\b|Authorization\s+to\s+Pay', 'MT752'),
-        (r'Message\s+type:\s*750|fin\.\s*750|SWIFT_MT\s*750|\bMT[\s_]?750\b|Advice\s+of\s+Discrepancy', 'MT750'),
-        (r'Message\s+type:\s*742|fin\.\s*742|SWIFT_MT\s*742|\bMT[\s_]?742\b|Reimbursement\s+Claim', 'MT742'),
-        (r'Message\s+type:\s*740|fin\.\s*740|SWIFT_MT\s*740|\bMT[\s_]?740\b|Authorization\s+to\s+Reimburse', 'MT740'),
-        (r'Message\s+type:\s*730|fin\.\s*730|SWIFT_MT\s*730|\bMT[\s_]?730\b|Acknowledgement', 'MT730'),
-        (r'Message\s+type:\s*720|fin\.\s*720|SWIFT_MT\s*720|\bMT[\s_]?720\b|Transfer\s+of\s+Documentary\s+Credit', 'MT720'),
+        (r'Message\s+type:\s*734|fin\.\s*734|SWIFT_MT\s*734|\bMT[\s_]?734\b', 'MT734'),
+        (r'Message\s+type:\s*754|fin\.\s*754|SWIFT_MT\s*754|\bMT[\s_]?754\b', 'MT754'),
+        (r'Message\s+type:\s*752|fin\.\s*752|SWIFT_MT\s*752|\bMT[\s_]?752\b', 'MT752'),
+        (r'Message\s+type:\s*750|fin\.\s*750|SWIFT_MT\s*750|\bMT[\s_]?750\b', 'MT750'),
+        (r'Message\s+type:\s*742|fin\.\s*742|SWIFT_MT\s*742|\bMT[\s_]?742\b', 'MT742'),
+        (r'Message\s+type:\s*740|fin\.\s*740|SWIFT_MT\s*740|\bMT[\s_]?740\b', 'MT740'),
+        (r'Message\s+type:\s*730|fin\.\s*730|SWIFT_MT\s*730|\bMT[\s_]?730\b', 'MT730'),
+        (r'Message\s+type:\s*720|fin\.\s*720|SWIFT_MT\s*720|\bMT[\s_]?720\b', 'MT720'),
         (r'Message\s+type:\s*747|fin\.\s*747|SWIFT_MT\s*747|\bMT[\s_]?747\b', 'MT747'),
-        (r'Message\s+type:\s*756|fin\.\s*756|SWIFT_MT\s*756|\bMT[\s_]?756\b|Advice\s+of\s+Reimbursement', 'MT756'),
-        (r'Message\s+type:\s*760|fin\.\s*760|SWIFT_MT\s*760|\bMT[\s_]?760\b|Guarantee', 'MT760'),
+        (r'Message\s+type:\s*756|fin\.\s*756|SWIFT_MT\s*756|\bMT[\s_]?756\b', 'MT756'),
+        (r'Message\s+type:\s*760|fin\.\s*760|SWIFT_MT\s*760|\bMT[\s_]?760\b', 'MT760'),
         (r'Message\s+type:\s*767|fin\.\s*767|SWIFT_MT\s*767|\bMT[\s_]?767\b', 'MT767'),
         (r'Message\s+type:\s*768|fin\.\s*768|SWIFT_MT\s*768|\bMT[\s_]?768\b', 'MT768'),
         (r'Message\s+type:\s*769|fin\.\s*769|SWIFT_MT\s*769|\bMT[\s_]?769\b', 'MT769'),
-        (r'Message\s+type:\s*940|fin\.\s*940|SWIFT_MT\s*940|\bMT[\s_]?940\b|Customer\s+Statement', 'MT940'),
+        (r'Message\s+type:\s*940|fin\.\s*940|SWIFT_MT\s*940|\bMT[\s_]?940\b', 'MT940'),
     ]
     _SWIFT_LC_CONT_PATTERNS = [
         # MT701 is continuation of MT700 (additional LC pages)
@@ -2668,7 +2680,36 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             # Force: this is a Document Remittance, not MT799/MT999.
             is_799 = False
             is_999 = False
+            # P198p — also suppress _non_lc_mt detection. An MT-type
+            # identifier appearing as a ROW in the cover letter's
+            # attached-docs table (e.g. "MT760 Guarantee  1 original")
+            # is NOT the page's own type — it's a list of what is
+            # being sent. Without this, a Documentary Remittance
+            # whose attachment list mentions "MT760" gets classified
+            # as MT760 itself.
+            if _non_lc_mt:
+                _non_lc_mt = None
             _progress(f"  Page {pg_num}: overriding SWIFT MT detection — cover letter signals present (Document Remittance)")
+
+        # P198p — a Draft / Bill of Exchange ENDORSEMENT back page
+        # carries only bank stamps ("PAY TO THE ORDER OF", "WITHOUT
+        # RECOURSE", "FOR M/S <Bank>") and short signature text.
+        # Those pages should not be captured by the SWIFT non-LC
+        # pattern on the rare chance the OCR text contains a stray
+        # "MT 760" or similar substring. Detect endorsement-only
+        # content and clear _non_lc_mt.
+        _txt_stripped = text.strip()
+        _has_endorse_signal = bool(
+            re.search(r'\bPAY\s+(?:TO\s+)?THE\s+ORDER\s+OF\b', text, re.IGNORECASE)
+            or re.search(r'\bWITHOUT\s+RECOURSE\b', text, re.IGNORECASE)
+        )
+        _has_swift_header = any(re.search(p, text, re.IGNORECASE)
+                                 for p in (r'Message\s+type:', r'fin\.\s*\d{3}',
+                                           r'SWIFT_MT\s*\d{3}'))
+        if (_non_lc_mt and _has_endorse_signal and not _has_swift_header
+                and len(_txt_stripped) < 500):
+            _non_lc_mt = None
+            _progress(f"  Page {pg_num}: overriding SWIFT MT detection — endorsement-only back page")
         is_swift_cont = any(re.search(p, text, re.IGNORECASE) for p in _SWIFT_CONTINUATION_PATTERNS)
         is_fusion_header = any(re.search(p, text, re.IGNORECASE) for p in _FUSION_HEADER_PATTERNS)
 
