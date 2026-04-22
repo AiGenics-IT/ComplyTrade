@@ -369,15 +369,43 @@ def _find_matching_docs(doc_to_check: str, packets: list) -> list:
     # the VLM classifier assigns a generic/unexpected document_type
     # (e.g. "Certificate" instead of "Batch Certificate") but the
     # page text clearly contains "FORM 7" or "CERTIFICATE OF ANALYSIS".
+    #
+    # P198e — EXCLUDE transmission / covering-letter packets from
+    # this tier. A Documentary Remittance / covering schedule LISTS
+    # every document in the bundle by name, so Tier 4 otherwise
+    # spuriously matches those packets for ANY missing doc and the
+    # LLM then evaluates the requirement against the cover letter —
+    # producing a false FAIL instead of the correct "document
+    # missing" verdict.
+    _TRANSMISSION_DOC_TOKENS = (
+        'documentary remittance', 'document remittance',
+        'covering letter', 'cover letter',
+        'covering schedule', 'cover schedule',
+        'l/c bills schedule', 'lc bills schedule', 'bills schedule',
+        'export dc document presentation schedule',
+        'export dc presentation schedule',
+        'document presentation schedule', 'presentation schedule',
+        'document presentation',
+        'schedule of documents', 'letter of transmittal',
+        'document arrival notice', 'arrival notice',
+        'forwarding letter',
+        'remittance letter', 'export letter',
+        'fax', 'email',
+    )
     _text_search_terms = set(target_aliases)
-    # Also add the original target with common variations
     _text_search_terms.add(target)
+    # If the target IS a transmission doc, skip the exclusion — we
+    # actually want to find the covering letter in that case.
+    _target_is_transmission = any(tok in target for tok in _TRANSMISSION_DOC_TOKENS)
     for pkt in packets:
         if not pkt:
             continue
         pkt_type = _get_pkt_type(pkt)
         if pkt_type and ("lc" == pkt_type or "letter of credit" in pkt_type):
             continue
+        if not _target_is_transmission and pkt_type:
+            if any(tok in pkt_type for tok in _TRANSMISSION_DOC_TOKENS):
+                continue  # don't let covering letter masquerade as the missing doc
         pkt_text = _pkt_text(pkt if isinstance(pkt, dict) else asdict(pkt)).lower()
         if not pkt_text or len(pkt_text) < 20:
             continue
