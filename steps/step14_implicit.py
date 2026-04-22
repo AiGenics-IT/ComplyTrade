@@ -557,6 +557,12 @@ def _parse_amount(amount_str: str) -> Optional[float]:
     m = re.search(r'(\d{2,}\.\d{2})\b', s)
     if m:
         return float(m.group(1))
+    # P198ab: comma-formatted integer "48,182,508" or "192,730,032"
+    # Common for JPY/YEN which have no sub-units. Must have ≥ 2 comma
+    # groups so we don't collide with Priority 4 (European "1,23").
+    m = re.search(r'(\d{1,3}(?:,\d{3}){2,})(?!\d)', s)
+    if m:
+        return float(m.group(1).replace(',', ''))
     # Priority 4: European format "516000,00" (comma as decimal)
     m = re.search(r'(\d+),(\d{2})\b', s)
     if m:
@@ -565,12 +571,52 @@ def _parse_amount(amount_str: str) -> Optional[float]:
     m = re.search(r'(\d{4,})', s)
     if m:
         return float(m.group(1))
+    # P198ab: short comma-formatted integer "4,500" (1 comma group)
+    m = re.search(r'(\d{1,3}(?:,\d{3})+)(?!\d)', s)
+    if m:
+        return float(m.group(1).replace(',', ''))
     return None
 
 
+_CURRENCY_SYNONYMS = {
+    # Japanese yen — docs often say YEN but SWIFT F32B uses JPY
+    'YEN': 'JPY', 'JPY': 'JPY', 'JAPANESE YEN': 'JPY',
+    # US dollar variants
+    'USD': 'USD', 'US': 'USD', 'US DOLLAR': 'USD', 'US DOLLARS': 'USD',
+    'DOLLARS': 'USD',
+    # Euro
+    'EUR': 'EUR', 'EURO': 'EUR', 'EUROS': 'EUR',
+    # Pound / Pakistani rupee
+    'GBP': 'GBP', 'POUND': 'GBP', 'POUNDS': 'GBP',
+    'PKR': 'PKR', 'RUPEES': 'PKR', 'RS': 'PKR',
+    # CNY / CNH
+    'CNY': 'CNY', 'RMB': 'CNY', 'RENMINBI': 'CNY', 'YUAN': 'CNY',
+}
+
+
+def _normalize_currency(code: str) -> str:
+    """Map document currency variants to SWIFT 3-letter ISO codes
+    (e.g. YEN→JPY, RMB→CNY, US DOLLAR→USD). Returns the input
+    unchanged if it's already a 3-letter code not in the synonym map."""
+    if not code:
+        return ''
+    c = str(code).upper().strip()
+    return _CURRENCY_SYNONYMS.get(c, c)
+
+
 def _extract_currency(s: str) -> str:
-    m = re.search(r'\b([A-Z]{3})\b', str(s))
-    return m.group(1) if m else ''
+    s_up = str(s).upper()
+    # Check long-form names first (e.g. "US DOLLAR", "YEN")
+    for _k in ('JAPANESE YEN', 'US DOLLAR', 'US DOLLARS',
+               'RENMINBI', 'EURO', 'EUROS', 'POUND', 'POUNDS',
+               'YEN', 'DOLLARS', 'RUPEES', 'YUAN', 'RMB'):
+        if re.search(r'\b' + re.escape(_k) + r'\b', s_up):
+            return _normalize_currency(_k)
+    # Then standard 3-letter codes
+    m = re.search(r'\b([A-Z]{3})\b', s_up)
+    if m:
+        return _normalize_currency(m.group(1))
+    return ''
 
 
 def _call_vlm(prompt: str, doc_text: str, image_path: str = None) -> Dict:
@@ -753,8 +799,118 @@ def _hybrid_amount_check(lc_amount: float, lc_currency: str, tol_plus: float, to
     doc_text = _get_doc_text(pkt)
     image_path = (pkt.get('page_image_paths', [None]) or [None])[0]
 
-    # Try Step 9 extracted amount first
-    doc_amt_str = pkt.get('document_amount', '') or (pkt.get('extracted_fields', {}) or {}).get('amount', '')
+    # P198ac: for cover / schedule / remittance docs we prefer
+    # unified_summary.amounts_found[role=documents_value|documents_amount]
+    # over pkt.document_amount. The packet-level document_amount is
+    # frequently the LC face amount (F32B) copied from the cover
+    # header instead of the actual documents-value line, which would
+    # cause false "cover/invoice mismatch" FAILs.
+    _dt_lo_pre = str(doc_type).lower()
+    _is_cover_pre = (
+        'remittance' in _dt_lo_pre or
+        'covering' in _dt_lo_pre or
+        'schedule' in _dt_lo_pre or
+        'cover' in _dt_lo_pre
+    )
+    doc_amt_str = ''
+    if _is_cover_pre:
+        _us_pre = pkt.get('unified_summary') or {}
+        if isinstance(_us_pre, dict):
+            for _role in ('documents_value', 'documents_amount',
+                          'total_payable'):
+                for _item in (_us_pre.get('amounts_found') or []):
+                    if not isinstance(_item, dict):
+                        continue
+                    if str(_item.get('role', '') or '').lower() != _role:
+                        continue
+                    _v = _item.get('value') or _item.get('raw') or ''
+                    if _v and _parse_amount(str(_v).strip()):
+                        _ccy = str(_item.get('currency', '') or '').strip()
+                        doc_amt_str = (
+                            f"{_ccy} {_v}".strip() if _ccy else str(_v).strip()
+                        )
+                        break
+                if doc_amt_str:
+                    break
+
+    # Try Step 9 extracted amount next
+    if not doc_amt_str:
+        doc_amt_str = pkt.get('document_amount', '') or (pkt.get('extracted_fields', {}) or {}).get('amount', '')
+
+    # P198ab: fall back to unified_summary before hitting the VLM.
+    # Step 3 already extracts amounts_found[] with role labels; use
+    # those so we don't pay for an LLM round-trip (and so JPY-style
+    # integer amounts that live only in amounts_found get picked up).
+    if not doc_amt_str or not _parse_amount(doc_amt_str):
+        _us = pkt.get('unified_summary') or {}
+        if isinstance(_us, dict):
+            _dt_lo = str(doc_type).lower()
+            _is_inv = 'invoice' in _dt_lo
+            _is_draft_doc = (
+                'draft' in _dt_lo or
+                'bill of exchange' in _dt_lo or
+                _dt_lo.strip() == 'boe'
+            )
+            _is_cover = (
+                'remittance' in _dt_lo or
+                'covering' in _dt_lo or
+                'schedule' in _dt_lo or
+                'cover' in _dt_lo
+            )
+            if _is_inv:
+                _preferred_roles = (
+                    'invoice_total', 'total_amount', 'total',
+                    'invoice_amount', 'document_amount', 'amount',
+                    'line_item_amount',
+                )
+            elif _is_draft_doc:
+                _preferred_roles = (
+                    'draft_amount', 'face_value', 'amount',
+                    'document_amount',
+                )
+            elif _is_cover:
+                _preferred_roles = (
+                    'documents_value', 'documents_amount',
+                    'total_payable', 'total_amount', 'total',
+                    'lc_amount', 'amount',
+                )
+            else:
+                _preferred_roles = (
+                    'total', 'total_amount', 'invoice_total',
+                    'document_amount', 'amount',
+                )
+            _found = ''
+            for _role in _preferred_roles:
+                for _item in (_us.get('amounts_found') or []):
+                    if not isinstance(_item, dict):
+                        continue
+                    _r = str(_item.get('role', '') or '').lower()
+                    if _r != _role:
+                        continue
+                    _v = (
+                        _item.get('value') or _item.get('raw') or
+                        _item.get('amount') or ''
+                    )
+                    if _v and _parse_amount(str(_v).strip()):
+                        _ccy = str(_item.get('currency', '') or '').strip()
+                        _found = (
+                            f"{_ccy} {_v}".strip() if _ccy else str(_v).strip()
+                        )
+                        break
+                if _found:
+                    break
+            # Typed top-level keys as a secondary fallback
+            if not _found:
+                for _k in (
+                    'document_amount', 'draft_amount',
+                    'invoice_amount', 'total_amount', 'amount',
+                ):
+                    _v = _us.get(_k)
+                    if _v and _parse_amount(str(_v).strip()):
+                        _found = str(_v).strip()
+                        break
+            if _found:
+                doc_amt_str = _found
 
     if not doc_amt_str or not _parse_amount(doc_amt_str):
         extracted = _call_vlm_extract(
@@ -764,6 +920,8 @@ def _hybrid_amount_check(lc_amount: float, lc_currency: str, tol_plus: float, to
 
     doc_amount = _parse_amount(doc_amt_str)
     doc_currency = _extract_currency(doc_amt_str)
+    # P198ac — Normalise LC currency for comparison (YEN vs JPY, etc.)
+    lc_currency = _normalize_currency(lc_currency) if lc_currency else lc_currency
 
     # P184 — DRAFT TENOR DUPLICATE correction.
     # If the document is a Draft / Bill of Exchange and the extracted

@@ -1325,6 +1325,32 @@ Minor wording variations are acceptable if the PRODUCT is clearly the same.
 Grade/variety descriptors (No.1, GMO, non-GMO, in bulk) are supplementary.
 Core product name match → PASS.
 
+ABSOLUTE ANTI-HALLUCINATION RULE (CRITICAL):
+Before you write "doesn't match" / "broader category" / "doesn't specify",
+search the invoice's STRUCTURED FACTS and DOCUMENT TEXT for the LC's
+primary commodity term VERBATIM. Two authoritative sources to check:
+  1) unified_summary.goods_description (typed field extracted by Step 3)
+  2) document_text line containing the commodity word
+
+If the LC F45A primary term (e.g. "SOYBEANS", "COTTON YARN", "RICE",
+"WHEAT") appears as a WHOLE WORD on the invoice — whether in the
+goods_description field, a line item, or the body text — you MUST
+verdict PASS and quote that line. You may not claim "doesn't match"
+or "broader category" when the exact commodity word is printed on
+the invoice.
+
+Worked example (SOYBEANS):
+  LC F45A primary term: "SOYBEANS"
+  Invoice goods_description: "Soybeans"
+  Invoice body: "Origin: Brazil" and "BRAZIL ORIGIN."
+  → The word "Soybeans" appears verbatim. Verdict = PASS.
+  → FAIL with "broader category" is hallucination — the invoice
+    literally shows the commodity.
+
+"Doesn't specify origin" is a SEPARATE check (46A origin-certification)
+and must NOT be conflated with the 45A goods-description check. Keep
+them distinct: 45A = product identity; 46A = origin statement.
+
 ════════════════════════════════════════════════════════════════════════
 DECISION ORDER
 ════════════════════════════════════════════════════════════════════════
@@ -2590,7 +2616,7 @@ CRITICAL RULES (follow strictly):
       • "For and on behalf of [BENEFICIARY NAME]" → issued by beneficiary
       • Letterhead shows beneficiary's company name → issued by beneficiary
       • Signed by an employee of the beneficiary → issued by beneficiary
-9. CERTIFICATION: If the condition asks for origin certification and the document says "We certify the goods are of [COUNTRY] origin" or similar statement, that IS a valid certification = PASS. Do not fail just because the exact word "CERTIFICATE" is not used — any statement certifying origin, quality, weight, etc. is a certification.
+9. CERTIFICATION: If the condition asks for origin certification and the document says "We certify the goods are of [COUNTRY] origin" or similar statement, that IS a valid certification = PASS. Do not fail just because the exact word "CERTIFICATE" is not used — any statement certifying origin, quality, weight, etc. is a certification. ALSO ACCEPT: a plain "Origin: [COUNTRY]" line, a "[COUNTRY] ORIGIN." sentence, or "COUNTRY OF ORIGIN: [COUNTRY]" field — any of these constitutes the origin statement required by 46A. Do NOT write "does not specify origin" when the word "Origin" appears next to a country name on the invoice.
 10. DOCUMENT VERIFICATION: If the document text does NOT look like the expected document type (e.g., the condition checks a "Phytosanitary Certificate" but the document text looks like a quality certificate or inspection report), mark as REVIEW with "Document type may be misclassified".
 11. PASS / FAIL / REVIEW — DECISION RULES (CRITICAL — read this twice):
     REVIEW is NOT a "when in doubt" escape hatch. REVIEW is reserved
@@ -5590,12 +5616,30 @@ def run(
             'ALL PRESENTED DOCUMENTS', 'ALL SUBMITTED DOCUMENTS',
         ))
         if _is_universal:
-            _fail_docs = [r.get("document_type", "?") for r in results
-                          if r.get("compliance") == "FAIL"]
-            _review_docs = [r.get("document_type", "?") for r in results
-                            if r.get("compliance") == "REVIEW"]
-            _pass_docs = [r.get("document_type", "?") for r in results
-                          if r.get("compliance") == "PASS"]
+            # P198ag — Group per-packet results by document_type so
+            # that back-side / endorsement / copy pages of the same
+            # doc don't produce a spurious FAIL when the FRONT page
+            # already carries the required value. The rule "DRAFTS
+            # AND ALL OTHER DOCUMENTS MUST SHOW OUR LC NUMBER"
+            # applies once per logical DOCUMENT (not per page or per
+            # copy). A Draft typically comes as First-of-Exchange +
+            # Second-of-Exchange copies; the first page carries the
+            # LC#, the second is the endorsement side. If the first
+            # PASSes, the document-class has satisfied the rule.
+            _by_type: Dict[str, list] = {}
+            for r in results:
+                _dt = r.get("document_type", "?")
+                _by_type.setdefault(_dt, []).append(r)
+            _pass_types = []
+            _fail_types = []
+            _review_types = []
+            for _dt, _bucket in _by_type.items():
+                if any(x.get("compliance") == "PASS" for x in _bucket):
+                    _pass_types.append(_dt)
+                elif any(x.get("compliance") == "REVIEW" for x in _bucket):
+                    _review_types.append(_dt)
+                else:
+                    _fail_types.append(_dt)
             _per_doc_lines = []
             for r in results:
                 _dt = r.get("document_type", "?")
@@ -5605,32 +5649,33 @@ def run(
                     _rs = _rs[:117] + "..."
                 _per_doc_lines.append(f"{_dt}: {_cv}" + (f" — {_rs}" if _rs else ""))
             _per_doc_block = " | ".join(_per_doc_lines)
-            if _fail_docs:
+            if _fail_types:
                 agg_compliance = "FAIL"
-                _missing = ", ".join(_fail_docs)
+                _missing = ", ".join(_fail_types)
                 combined_findings = (
                     f"Required value missing on: {_missing}. "
-                    f"Present on: {', '.join(_pass_docs) or '(none)'}. "
+                    f"Present on: {', '.join(_pass_types) or '(none)'}. "
                     f"Per-doc: {_per_doc_block}"
                 )
-                combined_result = f"Missing on {len(_fail_docs)} doc(s): {_missing}"
-            elif _review_docs:
+                combined_result = f"Missing on {len(_fail_types)} doc(s): {_missing}"
+            elif _review_types:
                 agg_compliance = "REVIEW"
                 combined_findings = (
-                    f"Requirement unclear on: {', '.join(_review_docs)}. "
-                    f"Present on: {', '.join(_pass_docs) or '(none)'}. "
+                    f"Requirement unclear on: {', '.join(_review_types)}. "
+                    f"Present on: {', '.join(_pass_types) or '(none)'}. "
                     f"Per-doc: {_per_doc_block}"
                 )
-                combined_result = f"Unclear on {len(_review_docs)} doc(s)"
+                combined_result = f"Unclear on {len(_review_types)} doc(s)"
             else:
                 agg_compliance = "PASS"
                 combined_findings = (
-                    f"Requirement satisfied on all {len(_pass_docs)} checked "
-                    f"documents: {', '.join(_pass_docs)}. Per-doc: {_per_doc_block}"
+                    f"Requirement satisfied on all {len(_pass_types)} "
+                    f"document class(es): {', '.join(_pass_types)}. "
+                    f"Per-doc: {_per_doc_block}"
                 )
                 combined_result = (
-                    f"Present on all {len(_pass_docs)} doc(s): "
-                    f"{', '.join(_pass_docs)}"
+                    f"Present on all {len(_pass_types)} doc(s): "
+                    f"{', '.join(_pass_types)}"
                 )[:200]
             avg_conf = round(
                 sum(r.get("confidence", 0.0) for r in results) / max(len(results), 1),
@@ -6675,6 +6720,60 @@ def run(
                 )
                 if not _is_pre_dated_check:
                     continue
+                # P198ad — Prohibition vs permission. The same "DATED PRIOR"
+                # wording appears both in prohibitions ("… NOT ACCEPTABLE")
+                # and permissions ("… ARE ACCEPTABLE / ARE ALLOWED / ARE
+                # PERMITTED"). Only run the pre-date FAIL path when the
+                # condition explicitly prohibits pre-dating. When the LC
+                # says pre-dating IS permitted, pre-dated docs must PASS
+                # (or be informational) — a pre-dated doc then IS in
+                # compliance with the LC's own rule.
+                _permissive_markers = (
+                    'ARE ACCEPTABLE', 'IS ACCEPTABLE',
+                    'ARE PERMITTED', 'IS PERMITTED',
+                    'ARE ALLOWED', 'IS ALLOWED',
+                    'ACCEPTABLE.', 'ACCEPTABLE ',
+                )
+                _prohibition_markers = (
+                    'NOT ACCEPTABLE', 'NOT PERMITTED',
+                    'NOT ALLOWED', 'UNACCEPTABLE',
+                    'MUST NOT', 'WILL NOT BE ACCEPT',
+                )
+                _is_prohibited = any(m in _cond for m in _prohibition_markers)
+                _is_permitted = (
+                    (not _is_prohibited)
+                    and any(m in _cond for m in _permissive_markers)
+                )
+                # If the LC language is permissive, pre-dated docs
+                # conform to the LC rule. Emit PASS/informational and
+                # skip the FAIL branch.
+                if _is_permitted:
+                    _set(row, 'compliance', 'PASS')
+                    _listing = (
+                        '; '.join(
+                            f"{n} dated {d.isoformat()}"
+                            for n, d in _pre_dated.items()
+                        )
+                        if _pre_dated else ''
+                    )
+                    _msg = (
+                        f"LC explicitly permits pre-dated documents. "
+                        f"{len(_pre_dated)} pre-dated doc(s) found — "
+                        f"compliant with LC rule"
+                        + (f": {_listing}" if _listing else '')
+                        + ". (P198ad permissive)"
+                    )
+                    _set(row, 'findings', _msg)
+                    _set(row, 'result', _msg[:200])
+                    _set(row, 'verification_notes',
+                         f"P198ad permissive pre-dated rule "
+                         f"(F31C={_lc_issue_date.isoformat()})")
+                    _progress(
+                        f"  [P198ad pre-dated permissive] "
+                        f"{row.get('row_id','?')}: PASS "
+                        f"({len(_pre_dated)} pre-dated, LC permits)"
+                    )
+                    continue
                 if _pre_dated:
                     _set(row, 'compliance', 'FAIL')
                     _listing = '; '.join(
@@ -6925,6 +7024,14 @@ def run(
             _pattern = r'\b' + r'\s+'.join(re.escape(w) for w in _words) + r'\b'
             return bool(re.search(_pattern, _doc_norm))
 
+        # P198ac — Aggregate per-row across multiple packet tasks so
+        # that ANY packet satisfying the addressing requirement keeps
+        # the row as PASS. Previously this loop processed each task
+        # independently and flipped the row to FAIL based on a packet
+        # that didn't carry the party, even when another packet for
+        # the same row (e.g. a second Shipment Advice page addressed
+        # to a different required party) did.
+        _addr_per_row: Dict[str, list] = {}
         for task in vlm_tasks:
             row = task["row"]
             row_id = task.get("row_id", "?")
@@ -7057,28 +7164,174 @@ def run(
                     if not _phrase_in_doc(_phrase, _doc_text_up):
                         _missing_targets.append((_lbl, _name, _phrase))
 
-                if _missing_targets:
-                    _set(row, "compliance", "FAIL")
-                    _missing_summary = '; '.join(
-                        f"{_lbl} '{_name}'"
-                        for _lbl, _name, _phrase in _missing_targets
-                    )
-                    _set(row, "findings",
-                         f"Document is not addressed to the required "
-                         f"party/parties: {_missing_summary}.")
-                    _set(row, "result", _get(row, "findings", "")[:200])
-                    _set(row, "verification_notes",
-                         "P174/P178/P179 addressed-to deterministic: "
-                         + '; '.join(
-                             f"{lbl}='{nm}' (phrase='{ph}' not found)"
-                             for lbl, nm, ph in _missing_targets
-                         ))
-                    _progress(f"  [P174/P178/P179 addressed-to] {row_id}: PASS->FAIL ({_missing_summary})")
+                # P198ac — Don't flip immediately; accumulate the
+                # per-task outcome and decide once we've seen every
+                # task that belongs to this row_id.
+                _addr_per_row.setdefault(row_id, []).append({
+                    "row": row,
+                    "document_type": task.get("document_type", "?"),
+                    "missing": _missing_targets,
+                    "targets": list(_targets),
+                })
             except Exception as _e:
                 try:
                     print(f"[P174/P178 addressed-to] exception on row {row_id}: {_e}")
                 except Exception:
                     pass
+
+        # P198ac — Apply the aggregated verdict per row. If ANY packet
+        # for this row has zero missing targets (i.e. the required
+        # party/parties are all present on that doc), keep PASS. Only
+        # flip to FAIL when EVERY packet is missing at least one
+        # required target.
+        for row_id, _entries in _addr_per_row.items():
+            try:
+                if not _entries:
+                    continue
+                row = _entries[0]["row"]
+                _any_satisfied = any(
+                    not _e.get("missing") for _e in _entries
+                )
+                if _any_satisfied:
+                    _progress(
+                        f"  [P174/P178/P179 addressed-to] {row_id}: "
+                        f"PASS retained (satisfied on at least one of "
+                        f"{len(_entries)} doc(s))"
+                    )
+                    continue
+                # All packets missing — combine findings from the packet
+                # with the SMALLEST missing set (most-relevant FAIL).
+                _best = min(
+                    _entries,
+                    key=lambda e: len(e.get("missing") or [])
+                )
+                _missing_targets = _best["missing"]
+                _doc_lbl = _best.get("document_type") or "?"
+                _set(row, "compliance", "FAIL")
+                _missing_summary = '; '.join(
+                    f"{_lbl} '{_name}'"
+                    for _lbl, _name, _phrase in _missing_targets
+                )
+                _set(row, "findings",
+                     f"Document is not addressed to the required "
+                     f"party/parties: {_missing_summary}.")
+                _set(row, "result", _get(row, "findings", "")[:200])
+                _set(row, "verification_notes",
+                     f"P174/P178/P179 addressed-to deterministic "
+                     f"(checked {len(_entries)} packet(s); "
+                     f"best={_doc_lbl}): "
+                     + '; '.join(
+                         f"{lbl}='{nm}' (phrase='{ph}' not found)"
+                         for lbl, nm, ph in _missing_targets
+                     ))
+                _progress(
+                    f"  [P174/P178/P179 addressed-to] {row_id}: "
+                    f"PASS->FAIL — all {len(_entries)} packet(s) missing"
+                    f" ({_missing_summary})"
+                )
+            except Exception as _e:
+                try:
+                    print(f"[P198ac addressed-to aggregate] exception on row {row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # P198ae — Shipper "on behalf of beneficiary" rescue.
+    # When the BL shipper field reads "<AGENT> ON BEHALF OF <BENEFICIARY>"
+    # (or similar agency wording — "FOR ACCOUNT OF", "C/O", "PER",
+    # "AS AGENT FOR"), the beneficiary IS named on the BL face. Under
+    # standard commodity-trade practice (UCP 600 / ISBP 821) this
+    # agency construction is acceptable — the BL identifies the
+    # beneficiary as the principal for whom the agent is shipping.
+    # The LLM often reads these literally and FAILs the row; this
+    # check flips those cases back to PASS when the beneficiary
+    # name is unambiguously present in the shipper field.
+    try:
+        _bene_for_rescue = str(
+            _final_lc_fields.get('59', '') or _final_lc_fields.get('F59', '') or ''
+        ).split('\n')[0].strip()
+        if _bene_for_rescue:
+            # Distinctive tokens — strip corporate suffixes, common words
+            def _name_core(s):
+                s = str(s or '').upper()
+                s = re.sub(r'\([^)]*\)', ' ', s)
+                s = re.sub(
+                    r'\b(LTD|LIMITED|LLC|PLC|INC|CORP|CO|PVT|PRIVATE|'
+                    r'COMPANY|S\.?A\.?|S\.?L\.?|B\.?V\.?|N\.?V\.?|'
+                    r'GMBH|AG|AB|OY|HOLDINGS?|GROUP|TRADING)\b\.?',
+                    ' ', s,
+                )
+                s = re.sub(r'[^A-Z0-9 ]+', ' ', s)
+                s = re.sub(r'\s+', ' ', s).strip()
+                return s
+            _bene_core = _name_core(_bene_for_rescue)
+            _bene_tokens = [t for t in _bene_core.split() if len(t) >= 3]
+            _AGENCY_MARKERS = (
+                'ON BEHALF OF', 'O/B/O', 'O/B',
+                'FOR ACCOUNT OF', 'F/A/O', 'FOR A/C OF',
+                'FOR THE ACCOUNT OF',
+                'AS AGENT FOR', 'AS AGENTS FOR', 'AGENT FOR',
+                'AGENTS FOR', 'ON ACCOUNT OF', 'C/O', 'CARE OF',
+                'PER ', 'BY ORDER OF',
+            )
+            for task in vlm_tasks:
+                row = task["row"]
+                _row_id = task.get("row_id", "?")
+                try:
+                    _comp_now = _get(row, "compliance", "").upper()
+                    if _comp_now != "FAIL":
+                        continue
+                    _cond_u = (task.get("condition_text") or "").upper()
+                    # Only apply to shipper-vs-beneficiary checks
+                    if not ('SHIPPER' in _cond_u and
+                            ('BENEFICIARY' in _cond_u or 'F59' in _cond_u)):
+                        continue
+                    _doc_type_lc = (task.get("document_type") or '').lower()
+                    if 'bill of lading' not in _doc_type_lc:
+                        continue
+                    _doc_text_up = (task.get("document_text") or "").upper()
+                    if not _doc_text_up or not _bene_tokens:
+                        continue
+                    # Does the BL text contain an agency marker AND
+                    # the beneficiary's distinctive tokens within a
+                    # reasonable window after the marker?
+                    _has_agency = any(m in _doc_text_up for m in _AGENCY_MARKERS)
+                    if not _has_agency:
+                        continue
+                    # Strict match: beneficiary tokens appear in a
+                    # contiguous phrase somewhere on the BL.
+                    _doc_norm = re.sub(r'[^A-Z0-9]+', ' ', _doc_text_up)
+                    _doc_norm = re.sub(r'\s+', ' ', _doc_norm)
+                    _pattern = r'\b' + r'\s+'.join(
+                        re.escape(t) for t in _bene_tokens
+                    ) + r'\b'
+                    _bene_on_bl = bool(re.search(_pattern, _doc_norm))
+                    if not _bene_on_bl:
+                        continue
+                    # Flip FAIL -> PASS
+                    _set(row, "compliance", "PASS")
+                    _findings = (
+                        f"Beneficiary '{_bene_for_rescue}' is named on the "
+                        f"BL shipper field via an agency construction "
+                        f"(e.g. 'on behalf of' / 'for account of'). "
+                        f"Under UCP 600 / ISBP 821 this identifies the "
+                        f"beneficiary as principal — acceptable."
+                    )
+                    _set(row, "findings", _findings)
+                    _set(row, "result", _findings[:200])
+                    _set(row, "verification_notes",
+                         "P198ae shipper-agency rescue: beneficiary "
+                         "named on BL via agency wording")
+                    _progress(
+                        f"  [P198ae shipper-agency] {_row_id}: "
+                        f"FAIL->PASS (beneficiary named via agency)"
+                    )
+                except Exception as _e:
+                    try:
+                        print(f"[P198ae shipper-agency] exception on row {_row_id}: {_e}")
+                    except Exception:
+                        pass
     except Exception:
         pass
 
