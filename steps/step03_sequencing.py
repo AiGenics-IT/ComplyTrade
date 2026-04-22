@@ -1268,6 +1268,73 @@ A page from a negotiating bank (e.g. Standard Chartered, BIDV, BNP Paribas) show
 maturity, and instructions is a "Documentary Remittance" (also known as Covering
 Schedule, L/C Bills Schedule, or Document Presentation).
 
+━━━ BL CONTINUATION PAGE (CRITICAL — NEVER classify as "unknown") ━━━
+Many Bills of Lading have an accompanying CONTINUATION PAGE that carries the
+container / seal table, goods description, or additional notify-party details.
+Recognise these pages by ANY of these signals:
+  • Header reads "CONTINUATION PAGE  BILL OF LADING - <BL number>" (the BL
+    number is usually upper-right, e.g. "TYOS26019167").
+  • Header reads "CONTINUATION SHEET" or "ATTACHED SHEET" with BL fields below.
+  • Body has a CONTAINER TABLE (container no / seal / type / weight / volume /
+    packages) together with shipper/consignor, consignee, notify party, port
+    of loading, port of discharge fields — but no "BILL OF LADING" title
+    because the title is on the MAIN BL page that immediately follows/precedes.
+  • Your own reasoning ("continuation page of a Bill of Lading showing detailed
+    container table") fits — if that description is accurate, the document_type
+    MUST be "Bill of Lading" with is_continuation=true.
+RULE: the document_type field MUST be "Bill of Lading" (NOT "unknown",
+"continuation", or "Continuation Sheet"), and is_continuation=true. The packet
+merger downstream will glue this page onto the main BL page that neighbours it.
+If you can SEE the BL structure (shipper / consignee / container / notify / port)
+on the page, it is a Bill of Lading even without a "BILL OF LADING" title.
+
+━━━ BILL OF EXCHANGE BACK PAGE → "Endorsement Page" (NEVER "MT760" OR "Draft Bill of Exchange") ━━━
+A Draft / Bill of Exchange is typically followed by its BACK PAGE which carries
+only bank ENDORSEMENT STAMPS ("PAY TO THE ORDER OF <BANK>", "WITHOUT RECOURSE",
+"FOR M/S <Bank>"), signatures, and possibly a stamp chain from the presenting /
+negotiating / issuing banks. These pages almost never have a SWIFT header.
+
+A real Draft / Bill of Exchange (the FRONT) always has ALL of these on the page:
+  • "FOR <CCY> <AMOUNT>" header or "EXCHANGE FOR USD X,XXX.XX" legend,
+  • "AT SIGHT" / "AT XX DAYS AFTER SIGHT" tenor text,
+  • "PAY TO THE ORDER OF <BENEFICIARY OR BANK>" followed by the SUM IN WORDS,
+  • Drawer / Drawee / "DRAWN UNDER L/C NO" block,
+  • The beneficiary's signature line.
+
+An Endorsement Page (the BACK) has NONE of those face-of-instrument elements —
+only stacked stamps like "PAY TO THE ORDER OF Bank X", "WITHOUT RECOURSE", and
+signatures / dates. The OCR text for a BACK page is therefore SHORT (usually
+under 400 characters) and consists mainly of stamp text.
+
+RULE: classify a page as "Endorsement Page" (with is_continuation=true) when
+it carries stacked endorsement stamps but is MISSING the face-of-instrument
+fields (no "FOR USD X,XXX.XX" header, no "AT SIGHT" tenor, no drawer/drawee
+block, no "DRAWN UNDER L/C"). Do NOT classify such a page as another "Draft
+Bill of Exchange" even though the endorsement stamps reference the draft.
+It is NEVER MT760 just because the word "Guarantee" or a bank stamp appears —
+MT760 requires an actual SWIFT header ("Message type: 760", "fin.760", or
+":76X:" field tags).
+
+━━━ FREE FORMAT / BANK-TO-BANK → "MT799" (NEVER MT754 / MT760 / MT740) ━━━
+Any page whose SWIFT identifier is fin.799 / fin.999, whose expansion says
+"Free Format Message" / "Bank-to-Bank Message", or whose body uses the F79 /
+:79: narrative field is an MT799 (or MT999). Do NOT classify these as MT754
+/ MT760 / MT740 / MT730 even if the narrative body mentions "advice of
+payment", "guarantee", "reimbursement", or "acknowledgement" — those are
+TOPICS discussed inside the free-format narrative, not the SWIFT message type.
+The message type is determined by the SWIFT header / identifier, not by
+keywords inside the body.
+
+━━━ DO NOT EMIT "unknown" IF ANY DOCUMENT STRUCTURE IS VISIBLE ━━━
+"unknown" is reserved ONLY for pages that are genuinely blank, a scanner
+artefact, or a random divider. If the page has ANY recognisable structure
+(BL fields, invoice line items, endorsement stamps, SWIFT header, covering-
+letter text, a table with cargo rows, a "CONTINUATION PAGE" marker, etc.),
+pick the best matching specific type — NEVER "unknown". Your own free-text
+reasoning (doc_hint) must always be CONSISTENT with document_type: if your
+doc_hint says "continuation page of a Bill of Lading", document_type cannot
+be "unknown".
+
 P130 — DOCUMENT PRESENTATION vs MT799 (CRITICAL — common misclassification):
 A cover letter whose TITLE says "Document Presentation" and which lists attached
 documents in a TABLE is ALWAYS a "Document Remittance" (aka Documentary
@@ -2826,145 +2893,6 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
 
     # Sort by page number
     classifications.sort(key=lambda c: c.get('page_number', 0))
-
-    # ── Phase 1-rescue (P198j): deterministic post-classification rescue ──
-    # The VLM classifier emits `document_type` and a free-text `doc_hint`
-    # that describes the page in its own words. Observed on multiple
-    # jobs: the doc_hint is correct ("continuation page of a Bill of
-    # Lading", "presentation schedule for remittance", "endorsement on
-    # back of Draft") while document_type is wrong ("unknown", "MT754",
-    # "MT760"). Rescue by inspecting the page OCR text + doc_hint and
-    # flipping document_type when the signal is unambiguous.
-    #
-    # Rules applied AFTER VLM classification, BEFORE packet grouping:
-    #   R1. "CONTINUATION PAGE / BILL OF LADING - <ref>" header OR
-    #       doc_hint contains "bill of lading" AND is_continuation=True
-    #       AND text has B/L-ish fields -> "Bill of Lading" continuation.
-    #   R2. Draft-BoE back page: endorsement stamps / "PAY TO THE ORDER
-    #       OF" / empty-ish text on page N+1 where page N is Bill of
-    #       Exchange -> "Endorsement Page" with is_continuation=True.
-    #   R3. Cover letter patterns (Covering Schedule / L/C Bills Schedule
-    #       / Document Presentation Schedule / Remittance Letter) that
-    #       were mis-tagged as MT754/MT760/MT799 -> "Documentary Remittance".
-    #   R4. Generic fallback: if VLM returned "unknown" but the page
-    #       clearly has BL or invoice structure, reclassify.
-    import re as _re_resc
-    _BL_HEADER_RE = _re_resc.compile(
-        r'\b(?:BILL\s+OF\s+LADING|B/?L\s*NO\.?|CONTINUATION\s+PAGE\b.{0,60}?\bBILL\s+OF\s+LADING)',
-        _re_resc.IGNORECASE,
-    )
-    _BL_FIELDS_RE = _re_resc.compile(
-        r'\b(SHIPPER|CONSIGNOR|CONSIGNEE|NOTIFY\s+PARTY|NOTIFY\s+ADDRESS|'
-        r'PORT\s+OF\s+LOADING|PORT\s+OF\s+DISCHARGE|PLACE\s+OF\s+RECEIPT|'
-        r'PLACE\s+OF\s+DELIVERY|CONTAINER\s+NO|SEAL\s+NO|VESSEL)\b',
-        _re_resc.IGNORECASE,
-    )
-    _ENDORSE_RE = _re_resc.compile(
-        r'\b(PAY(?:\s+TO)?\s+THE\s+ORDER\s+OF|WITHOUT\s+RECOURSE|'
-        r'ENDORSED|ENDORSEMENT)\b',
-        _re_resc.IGNORECASE,
-    )
-    _COVER_LETTER_RE = _re_resc.compile(
-        r'\b(COVERING\s+SCHEDULE|COVER\s+SCHEDULE|L/?C\s+BILLS\s+SCHEDULE|'
-        r'DOCUMENT\s+PRESENTATION\s+SCHEDULE|PRESENTATION\s+SCHEDULE|'
-        r'EXPORT\s+DC\s+DOCUMENT\s+PRESENTATION|SCHEDULE\s+OF\s+DOCUMENTS|'
-        r'LETTER\s+OF\s+TRANSMITTAL|BILL\s+REMITTANCE\s+LETTER|'
-        r'REMITTANCE\s+LETTER|FORWARDING\s+LETTER)\b',
-        _re_resc.IGNORECASE,
-    )
-    _MT799_HINT_RE = _re_resc.compile(
-        r'\b(FREE\s+FORMAT\s+MESSAGE|BANK[- ]TO[- ]BANK\s+MESSAGE|fin\.?\s*799|MT\s*799)\b',
-        _re_resc.IGNORECASE,
-    )
-    # Build a page_number -> raw/cleaned text lookup, and track BoE pages
-    # so we can detect a BoE back page (=endorsement) by position.
-    _page_text_by_num: dict = {}
-    for _pn, _ip, _tx in all_page_data:
-        _page_text_by_num[_pn] = (_tx or '')
-    _boe_pages = set()
-    for _cls in classifications:
-        _dt_lower = str(_cls.get('document_type') or '').lower().strip()
-        if ('bill of exchange' in _dt_lower or 'draft' in _dt_lower
-                or 'boe' == _dt_lower):
-            _boe_pages.add(_cls.get('page_number', 0))
-
-    _rescued_count = 0
-    for _cls in classifications:
-        _pn = _cls.get('page_number', 0)
-        _dt = str(_cls.get('document_type') or '').strip()
-        _dt_lower = _dt.lower()
-        _hint = str(_cls.get('doc_hint') or '').lower()
-        _is_cont = bool(_cls.get('is_continuation'))
-        _txt_upper = (_page_text_by_num.get(_pn, '') or '').upper()
-
-        _new_dt = None
-        _reason = ''
-
-        # R3 — Covering / remittance schedule. Fires FIRST because it
-        # also nukes any wrong MT754/MT760 pre-classification.
-        if _COVER_LETTER_RE.search(_txt_upper) or 'presentation schedule' in _hint \
-                or 'covering schedule' in _hint or 'remittance' in _hint \
-                or 'covering letter' in _hint:
-            # Only rescue if current type is NOT already a remittance / cover letter
-            if _dt_lower not in ('documentary remittance', 'document remittance',
-                                 'covering letter', 'cover letter',
-                                 'covering schedule', 'cover schedule',
-                                 'documentary remittance / covering letter'):
-                # Don't overwrite a clear SWIFT LC/Amendment page
-                if _dt_lower not in ('lc', 'amendment', 'mt700', 'mt707', 'mt701'):
-                    _new_dt = 'Documentary Remittance'
-                    _reason = 'cover/presentation-schedule pattern'
-
-        # R2 — Draft BoE endorsement back page. Fires when the
-        # immediately preceding page is a BoE and this page has
-        # endorsement stamps or is very short.
-        if _new_dt is None and (_pn - 1) in _boe_pages:
-            _is_endorsement = False
-            if _ENDORSE_RE.search(_txt_upper):
-                _is_endorsement = True
-            elif len(_txt_upper.strip()) < 400 and _dt_lower not in (
-                    'bill of exchange', 'draft bill of exchange', 'draft', 'boe'):
-                _is_endorsement = True
-            if _is_endorsement and _dt_lower not in (
-                    'endorsement page', 'bill of exchange', 'draft bill of exchange'):
-                _new_dt = 'Endorsement Page'
-                _reason = 'back page of Draft/BoE'
-
-        # R1 — BL continuation page.
-        if _new_dt is None:
-            _hint_says_bl_cont = (
-                'continuation' in _hint and 'bill of lading' in _hint
-            ) or ('continuation page' in _txt_upper.lower()
-                  and 'bill of lading' in _txt_upper.lower())
-            _looks_like_bl = (
-                _BL_HEADER_RE.search(_txt_upper) and _BL_FIELDS_RE.search(_txt_upper)
-            )
-            if (_hint_says_bl_cont or (_is_cont and 'bill of lading' in _hint)) \
-                    and _dt_lower in ('unknown', '', 'continuation', 'continuation sheet'):
-                _new_dt = 'Bill of Lading'
-                _reason = 'BL continuation page (hint says BL / text has CONTINUATION+BL)'
-            elif _looks_like_bl and _dt_lower == 'unknown':
-                _new_dt = 'Bill of Lading'
-                _reason = 'unknown page with BL header + BL fields'
-
-        # R5 — MT799 hint mis-tagged as MT754/MT760/etc.
-        if _new_dt is None:
-            if _dt_lower in ('mt754', 'mt760', 'mt740', 'mt730') and (
-                    _MT799_HINT_RE.search(_txt_upper) or 'free format' in _hint
-                    or 'mt799' in _hint or 'bank-to-bank' in _hint):
-                _new_dt = 'MT799'
-                _reason = 'free-format / bank-to-bank content — not ' + _dt
-
-        if _new_dt and _new_dt != _dt:
-            _cls['previous_document_type'] = _dt
-            _cls['document_type'] = _new_dt
-            if _new_dt in ('Bill of Lading', 'Endorsement Page'):
-                _cls['is_continuation'] = True
-            _rescued_count += 1
-            _progress(f"  [rescue] pg {_pn}: {_dt!r} -> {_new_dt!r} ({_reason})")
-
-    if _rescued_count:
-        _progress(f"Phase 1-rescue: reclassified {_rescued_count} page(s)")
 
     # ── Phase 1a: Copy status detection from OCR text ──
     # The VLM is the SOLE classifier for document type — we trust it completely.

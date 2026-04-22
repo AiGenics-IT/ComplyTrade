@@ -670,6 +670,71 @@ conditions for each distinct requirement:
   6. EMAIL/FAX: If the clause specifies an email address or fax for
      the notification, create a condition checking the email address.
 
+  7. BENEFICIARY-CERTIFICATE CO-EVIDENCE (CRITICAL — MUST APPLY):
+     Whenever the LC clause itself or the F47A additional-conditions
+     block says anything like "BENEFICIARY CERTIFICATE TO THIS EFFECT
+     TO ACCOMPANY ORIGINAL DOCUMENTS", "COPY OF SHIPMENT ADVICE MUST
+     ACCOMPANY THE ORIGINAL DOCUMENTS" together with a Beneficiary
+     Certificate elsewhere, or an "INSURANCE COVERED BY APPLICANT"
+     block that ends with the BC-accompanying requirement — the
+     Beneficiary Certificate is legally VALID EVIDENCE under UCP/ISBP
+     that the Shipment Advice reached each named addressee.
+
+     For every CONTENT condition on the Shipment Advice in this clause
+     (addressed-to X, addressed-to Applicant, must reference Policy /
+     Cover Note No., must mention vessel / port / BL number / shipped
+     on board date / amount / credit number), emit the condition with
+     a pipe-separated `document_to_check` listing BOTH docs, NOT just
+     the Shipment Advice:
+
+         document_to_check = "Shipment Advice | Beneficiary Certificate"
+
+     The verifier will then check BOTH docs' texts and PASS if EITHER
+     shows the info. This avoids false FAILs where the Shipment Advice
+     is physically addressed only to one party (e.g. the insurer) and
+     the Beneficiary Certificate separately certifies it was also sent
+     to the other party (e.g. the applicant via email).
+
+     CONCRETE WORKED EXAMPLE — APPLY THIS EXACTLY:
+       LC clause:
+         "INSURANCE COVERED BY THE APPLICANT. ALL SHIPMENT UNDER THIS
+          CREDIT MUST BE ADVISED BY THE BENEFICIARY AFTER SHIPMENT DATE
+          DIRECT TO CENTURY INSURANCE COMPANY LIMITED, OFFICE 504 AND
+          505 ... BY EMAIL AT INFO(AT)CICL.COM.PK AND TO THE APPLICANT
+          BY EMAIL FINANCE(AT)BIKIYA.COM REFERRING TO THEIR COVER NOTE
+          NO.C/08/MN/00037802/21 MENTIONING THE DETAIL OF SHIPMENT.
+          COPY OF SUCH SHIPMENT ADVICE MUST ACCOMPANY THE ORIGINAL
+          DOCUMENTS."
+
+       CORRECT decomposition — content rows routed through BOTH docs:
+         1. doc = "Shipment Advice | Beneficiary Certificate"
+            cond = "Shipment Advice OR Beneficiary Certificate must be
+                    addressed to Century Insurance Company Limited,
+                    Office 504 and 505, 5th Floor, Marine Point, DC-1,
+                    Block-9, Clifton, Karachi, Pakistan."
+         2. doc = "Shipment Advice | Beneficiary Certificate"
+            cond = "Shipment Advice OR Beneficiary Certificate must
+                    also be addressed to <APPLICANT NAME from F50>."
+         3. doc = "Shipment Advice | Beneficiary Certificate"
+            cond = "Shipment Advice OR Beneficiary Certificate must
+                    reference Cover Note No. C/08/MN/00037802/21."
+         4. doc = "Shipment Advice | Beneficiary Certificate"
+            cond = "Shipment Advice OR Beneficiary Certificate must
+                    mention details of shipment (vessel name, port of
+                    shipment, shipped-on-board date, invoice value)."
+         5. doc = "Shipment Advice"
+            cond = "Shipment Advice must be sent after the shipment date."
+         6. doc = "Shipment Advice"
+            cond = "A copy of the Shipment Advice must accompany the
+                    original documents."
+         7. doc = "Beneficiary Certificate"
+            cond = "Beneficiary Certificate must accompany the original
+                    documents."
+         (Do NOT emit Email-Evidence rows when the LC only says 'by
+          email' — the email address appears on the Shipment Advice
+          itself and is covered by rows 1-4. Adding Email Evidence as
+          a separate doc type produces false 'document missing'.)
+
 CLAUSE STRUCTURE — READ CAREFULLY:
   • "INSURANCE COVERED BY APPLICANT, BENEFICIARY SHIPMENT ADVICE QUOTING [items] SHOULD BE SENT TO [address]"
     → This clause is about the SHIPMENT ADVICE, not insurance or BL.
@@ -1145,15 +1210,69 @@ def _extract_lc_context(structured_lc: dict) -> dict:
     so it can resolve references in clauses like "NOTIFY APPLICANT" or
     "TO ORDER OF ISSUING BANK".
     """
-    fields = structured_lc.get('consolidated_fields', structured_lc)
+    # P198k — step 12 is called with step07's `structured_lc`, which
+    # stores each SWIFT tag under `standalone_fields` as
+    #   {'field_name': '50', 'value': 'BIKIYA INDUSTRIES...', 'source_step': 7}
+    # NOT as a flat string. Also search `all_clauses` for clause-type
+    # fields (F45A / F47A / F46A) which step07 stores as a list of
+    # clause dicts. Try the most-structured source first and fall back.
+    _sf = structured_lc.get('standalone_fields')
+    if not isinstance(_sf, dict):
+        _sf = {}
+    _cf = structured_lc.get('consolidated_fields')
+    if not isinstance(_cf, dict):
+        _cf = {}
+    _top = structured_lc if isinstance(structured_lc, dict) else {}
+    _all_clauses = structured_lc.get('all_clauses') or []
+
+    def _unwrap(v):
+        """Return the string value from step07's {'field_name','value'} shape,
+        or the string itself if already a string, or stringified dict."""
+        if v is None:
+            return ''
+        if isinstance(v, str):
+            return v
+        if isinstance(v, dict):
+            return str(v.get('value') or v.get('field_value') or v.get('text') or '')
+        if isinstance(v, list):
+            parts = []
+            for item in v:
+                s = _unwrap(item)
+                if s:
+                    parts.append(s.strip())
+            return '\n'.join(parts)
+        return str(v)
+
+    def _lookup(k):
+        """Try standalone_fields, consolidated_fields, then top-level."""
+        for src in (_sf, _cf, _top):
+            if isinstance(src, dict) and k in src:
+                v = _unwrap(src[k])
+                if v:
+                    return v
+        # Fallback: search all_clauses for a clause with this field_tag
+        if isinstance(_all_clauses, list):
+            parts = []
+            for cl in _all_clauses:
+                if isinstance(cl, dict):
+                    tag = cl.get('field_tag') or cl.get('tag') or ''
+                    if tag == k:
+                        parts.append(str(cl.get('clause_text') or cl.get('text') or '').strip())
+            if parts:
+                return '\n'.join(p for p in parts if p)
+        return ''
 
     def _get(keys):
         """Try multiple possible key names — field naming varies between SWIFT formats."""
         for k in keys:
-            v = fields.get(k)
+            v = _lookup(k)
             if v:
                 return v if isinstance(v, str) else str(v)
         return 'N/A'
+
+    # Use the merged fields dict for clause_text helper below (keeps old
+    # interface working for F47A / F45A list-of-clauses payloads).
+    fields = _cf if _cf else structured_lc
 
     def _clause_text(keys):
         """
@@ -1161,25 +1280,43 @@ def _extract_lc_context(structured_lc: dict) -> dict:
         a single readable string so the decomposer can see the whole
         body when it decides things like "does F47A allow third-party
         documents?" or "what are the Incoterms?".
+        P198k — now also scans step07's `all_clauses` list by field_tag.
         """
         for k in keys:
-            v = fields.get(k)
-            if not v:
-                continue
-            if isinstance(v, str):
-                return v.strip()
-            if isinstance(v, list):
+            # Try direct field dicts first
+            for src in (_sf, _cf, _top):
+                v = src.get(k) if isinstance(src, dict) else None
+                if v is None:
+                    continue
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+                if isinstance(v, dict):
+                    s = _unwrap(v)
+                    if s and s.strip():
+                        return s.strip()
+                if isinstance(v, list):
+                    parts = []
+                    for item in v:
+                        if isinstance(item, str):
+                            parts.append(item.strip())
+                        elif isinstance(item, dict):
+                            parts.append(str(item.get('text') or item.get('clause_text')
+                                             or item.get('value') or '').strip())
+                        else:
+                            parts.append(str(item).strip())
+                    joined = '\n'.join(p for p in parts if p)
+                    if joined.strip():
+                        return joined.strip()
+            # Fall back to all_clauses by field_tag
+            if isinstance(_all_clauses, list):
                 parts = []
-                for item in v:
-                    if isinstance(item, str):
-                        parts.append(item.strip())
-                    elif isinstance(item, dict):
-                        parts.append(str(item.get('text') or item.get('clause_text') or '').strip())
-                    else:
-                        parts.append(str(item).strip())
-                joined = '\n'.join(p for p in parts if p)
-                return joined.strip()
-            return str(v).strip()
+                for cl in _all_clauses:
+                    if isinstance(cl, dict):
+                        tag = cl.get('field_tag') or cl.get('tag') or ''
+                        if tag == k:
+                            parts.append(str(cl.get('clause_text') or cl.get('text') or '').strip())
+                if parts:
+                    return '\n'.join(p for p in parts if p)
         return ''
 
     return {
