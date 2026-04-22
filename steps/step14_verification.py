@@ -3435,7 +3435,7 @@ def _call_vlm(
         if "result" not in parsed:
             # Use findings as the short status; truncate for UI display
             _f = parsed.get("findings") or ""
-            parsed["result"] = _f[:200] if _f else parsed.get("compliance", "review")
+            parsed["result"] = _f[:600] if _f else parsed.get("compliance", "review")
         if "reasoning" not in parsed:
             _src = parsed.get("structured_source") or ""
             _q = parsed.get("quote") or ""
@@ -3494,7 +3494,7 @@ def _call_vlm(
                             f"{_findings.rstrip('. ')}. Arithmetic post-check: "
                             f"{_actual:,.2f} is NOT greater than {_limit:,.2f} — within tolerance (P133 override)."
                         )
-                        parsed["result"] = parsed["findings"][:200]
+                        parsed["result"] = parsed["findings"][:600]
                         parsed["_post_check"] = "P133_arithmetic_override"
                 if _says_less and len(_vals) >= 2:
                     _actual = _vals[0]
@@ -3506,7 +3506,7 @@ def _call_vlm(
                             f"{_findings.rstrip('. ')}. Arithmetic post-check: "
                             f"{_actual:,.2f} is NOT less than {_limit:,.2f} — within tolerance (P133 override)."
                         )
-                        parsed["result"] = parsed["findings"][:200]
+                        parsed["result"] = parsed["findings"][:600]
                         parsed["_post_check"] = "P133_arithmetic_override"
         except Exception:
             pass  # never let the sanity check break the pipeline
@@ -3586,7 +3586,7 @@ def _call_vlm(
                             f"Structured consignee contains '{_target_key}' "
                             f"(consignee='{_cons_txt[:150]}'). (P134 override)"
                         )
-                        parsed["result"] = parsed["findings"][:200]
+                        parsed["result"] = parsed["findings"][:600]
                         parsed["_post_check"] = "P134_consignee_override"
                     elif _target_key and document_text:
                         # Fallback: scan raw document text for "TO ORDER OF"
@@ -3610,7 +3610,7 @@ def _call_vlm(
                                 f"alongside consignee/'TO ORDER' marker — "
                                 f"requirement satisfied. (P134 doc-text override)"
                             )
-                            parsed["result"] = parsed["findings"][:200]
+                            parsed["result"] = parsed["findings"][:600]
                             parsed["_post_check"] = "P134_doc_text_override"
         except Exception:
             pass
@@ -3675,7 +3675,7 @@ def _call_vlm(
                             f"— treating as same product with OCR variant. "
                             f"(P150 OCR near-miss override)"
                         )
-                        parsed["result"] = parsed["findings"][:200]
+                        parsed["result"] = parsed["findings"][:600]
                         parsed["_post_check"] = "P150_unit_price_ocr_pass"
         except Exception:
             pass
@@ -3731,7 +3731,7 @@ def _call_vlm(
                             f"OCR character-confusion handling (O↔0, I↔1, etc.). "
                             f"(P135 override)"
                         )
-                        parsed["result"] = parsed["findings"][:200]
+                        parsed["result"] = parsed["findings"][:600]
                         parsed["_post_check"] = "P135_reference_found_override"
                         break
         except Exception:
@@ -3859,7 +3859,7 @@ def _call_vlm(
                         f"document carries the full legal name). "
                         f"(P165 prefix/truncation override)"
                     )
-                    parsed["result"] = parsed["findings"][:200]
+                    parsed["result"] = parsed["findings"][:600]
                     parsed["_post_check"] = "P165_name_prefix_match"
         except Exception:
             pass
@@ -3933,7 +3933,7 @@ def _call_vlm(
                         f"(from {_src}). LLM's 'no date found' was incorrect. "
                         f"(P138 override)"
                     )
-                    parsed["result"] = parsed["findings"][:200]
+                    parsed["result"] = parsed["findings"][:600]
                     parsed["_post_check"] = "P138_date_found_override"
         except Exception:
             pass
@@ -3986,7 +3986,7 @@ def _call_vlm(
                             f"'{_hit_tok}' is present in the document "
                             f"(identifier match). Requirement satisfied."
                         )
-                        parsed["result"] = parsed["findings"][:200]
+                        parsed["result"] = parsed["findings"][:600]
                         parsed["_post_check"] = "P155_identifier_match"
         except Exception:
             pass
@@ -4020,14 +4020,14 @@ def _call_vlm(
                     parsed["findings"] = _fin2
                     # Keep result in sync
                     if parsed.get("result") == _fin[:200]:
-                        parsed["result"] = _fin2[:200]
+                        parsed["result"] = _fin2[:600]
                     else:
                         _res = str(parsed.get("result", "") or "")
                         _res = re.sub(
                             r'[\s,;—–-]+(?:The\s+)?closest\s+(?:text|match|wording|phrase)[^.]*',
                             '', _res, flags=re.IGNORECASE,
                         )
-                        parsed["result"] = _res.strip()[:200]
+                        parsed["result"] = _res.strip()[:600]
         except Exception:
             pass
 

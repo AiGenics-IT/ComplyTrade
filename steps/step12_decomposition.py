@@ -772,6 +772,41 @@ Additional LC context:
 - Beneficiary: {beneficiary}
 - Issuing Bank: {issuing_bank}
 - Currency/Amount: {currency_amount}
+- Partial Shipments (F43P): {f43p_partial_shipments}
+- Transshipment (F43T): {f43t_transshipment}
+- Latest Shipment (F44C): {f44c_latest_shipment}
+
+Goods Description (F45A/F45B):
+{f45a_goods_description}
+
+F47A Additional Conditions (complete, applies to the whole LC):
+{f47a_additional_conditions}
+
+READ THE F47A BLOCK BEFORE YOU DECOMPOSE. If F47A says
+"THIRD PARTY DOCUMENTS ARE ACCEPTABLE EXCEPT DRAFT AND INVOICE"
+(or similar), the beneficiary-issued rule applies ONLY to draft and
+invoice — do NOT generate "issued by beneficiary" / "shipper must be
+beneficiary" conditions for Bill of Lading, Beneficiary's Certificate,
+Shipping Advice, Packing List, Certificate of Origin, Inspection
+Certificate, or any other document.
+
+Also keep the decomposition consistent with the clause's OWN document:
+if the clause opens with "BENEFICIARY'S CERTIFICATE CERTIFYING THAT ..."
+every sub-condition inherits document_to_check = "Beneficiary Certificate"
+unless the sub-condition itself explicitly names a different document
+type. Phrases like "evidence must accompany the documents" inside a
+Beneficiary's Certificate clause are part of the Beneficiary's
+Certificate requirement — they do NOT mean route to Documentary
+Remittance.
+
+Finally, do NOT emit logically-equivalent sub-conditions. For a clause
+like "INVOICES MUST MENTION MULTIPLE COUNTRIES OF ORIGIN. INVOICES
+STATING ALTERNATE OR SINGLE COUNTRY OF ORIGIN ARE NOT ACCEPTABLE",
+emit ONE positive requirement ("Commercial Invoice must mention
+multiple countries of origin covering the shipment") plus, if truly
+distinct, one row for the "alternate countries" prohibition. Do NOT
+emit a third row saying "must not state a single country" — that is
+the same check as the positive requirement, phrased as its contrapositive.
 
 Return a JSON array of conditions."""
 
@@ -994,6 +1029,11 @@ def _call_vlm_decompose(clause_ref: str, field_tag: str, clause_number: int,
             beneficiary=lc_context.get('beneficiary', 'N/A'),
             issuing_bank=lc_context.get('issuing_bank', 'N/A'),
             currency_amount=lc_context.get('currency_amount', 'N/A'),
+            f47a_additional_conditions=(lc_context.get('f47a_additional_conditions') or '(none)'),
+            f45a_goods_description=(lc_context.get('f45a_goods_description') or '(none)'),
+            f43t_transshipment=(lc_context.get('f43t_transshipment') or 'N/A'),
+            f43p_partial_shipments=(lc_context.get('f43p_partial_shipments') or 'N/A'),
+            f44c_latest_shipment=(lc_context.get('f44c_latest_shipment') or 'N/A'),
         )
 
         payload = {
@@ -1076,11 +1116,48 @@ def _extract_lc_context(structured_lc: dict) -> dict:
                 return v if isinstance(v, str) else str(v)
         return 'N/A'
 
+    def _clause_text(keys):
+        """
+        Flatten a SWIFT clause-type field (F47A / F46A / F45A etc.) into
+        a single readable string so the decomposer can see the whole
+        body when it decides things like "does F47A allow third-party
+        documents?" or "what are the Incoterms?".
+        """
+        for k in keys:
+            v = fields.get(k)
+            if not v:
+                continue
+            if isinstance(v, str):
+                return v.strip()
+            if isinstance(v, list):
+                parts = []
+                for item in v:
+                    if isinstance(item, str):
+                        parts.append(item.strip())
+                    elif isinstance(item, dict):
+                        parts.append(str(item.get('text') or item.get('clause_text') or '').strip())
+                    else:
+                        parts.append(str(item).strip())
+                joined = '\n'.join(p for p in parts if p)
+                return joined.strip()
+            return str(v).strip()
+        return ''
+
     return {
         'applicant': _get(['Applicant', 'Applicant_Name', '50']),
         'beneficiary': _get(['Beneficiary', 'Beneficiary_Name', '59']),
         'issuing_bank': _get(['Issuing_Bank', 'Issuing_Bank_Details', 'Sending_Institution', '52A']),
         'currency_amount': _get(['Amount', 'Currency_Amount', 'LC_Amount', '32B']),
+        # P197c — full F47A / F45A bodies so each clause's decomposer
+        # sees the cross-clause context (third-party rule, Incoterms,
+        # goods description) instead of hallucinating defaults.
+        'f47a_additional_conditions': _clause_text(['47A', '47A_Additional_Conditions',
+                                                    'Additional_Conditions']),
+        'f45a_goods_description': _clause_text(['45A', '45B', '45A_Description_of_Goods',
+                                                'Goods_Description']),
+        'f44c_latest_shipment': _get(['44C', 'Latest_Date_of_Shipment']),
+        'f43t_transshipment': _get(['43T', 'Transshipment']),
+        'f43p_partial_shipments': _get(['43P', 'Partial_Shipments']),
     }
 
 
