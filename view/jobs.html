@@ -180,7 +180,7 @@
         <div style="display:flex;flex-direction:column;gap:12px">
             <div>
                 <label style="display:block;font-size:.8em;font-weight:600;color:#334155;margin-bottom:4px">Document type</label>
-                <select id="upload-kind" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:.85em;background:#fff">
+                <select id="upload-kind" onchange="onUploadKindChange()" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:.85em;background:#fff">
                     <option value="amendment">Amendment (MT707 / MT720)</option>
                     <option value="presentation_1">1st Presentation (shipping docs)</option>
                     <option value="presentation_2">2nd Presentation</option>
@@ -190,10 +190,25 @@
                     <option value="misc">Other</option>
                 </select>
             </div>
+            <div id="upload-kind-custom-wrap" style="display:none">
+                <label style="display:block;font-size:.8em;font-weight:600;color:#334155;margin-bottom:4px">Custom type name</label>
+                <input type="text" id="upload-kind-custom" placeholder="e.g. insurance_claim, addendum, bank_guarantee" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:.85em;background:#fff" maxlength="40">
+                <p style="margin:4px 0 0;font-size:.72em;color:#94a3b8">Letters, digits, and underscores only. This label will be attached to the filename.</p>
+            </div>
             <div>
                 <label style="display:block;font-size:.8em;font-weight:600;color:#334155;margin-bottom:4px">PDF file(s)</label>
-                <input type="file" id="upload-files" multiple accept=".pdf" style="width:100%;padding:6px 0;font-size:.82em">
-                <p style="margin:4px 0 0;font-size:.72em;color:#94a3b8">You can select multiple PDFs at once. They will all be attached under the selected type.</p>
+                <div id="upload-dropzone"
+                     onclick="document.getElementById('upload-files').click()"
+                     ondragover="onDropzoneDragOver(event)"
+                     ondragleave="onDropzoneDragLeave(event)"
+                     ondrop="onDropzoneDrop(event)"
+                     style="border:2px dashed #cbd5e1;border-radius:8px;padding:18px;text-align:center;cursor:pointer;background:#f8fafc;transition:.15s;font-size:.82em;color:#64748b">
+                    <div style="font-size:1.5em;line-height:1;margin-bottom:6px">📥</div>
+                    <div><b>Drag &amp; drop PDFs here</b> or click to browse</div>
+                    <div id="upload-file-list" style="margin-top:8px;font-size:.75em;color:#0d9488;word-break:break-all"></div>
+                </div>
+                <input type="file" id="upload-files" multiple accept="application/pdf,.pdf" style="display:none" onchange="onUploadFilesPicked()">
+                <p style="margin:4px 0 0;font-size:.72em;color:#94a3b8">You can attach multiple PDFs at once. They'll all be grouped under the selected type.</p>
             </div>
             <div id="upload-status" style="font-size:.82em;color:#475569;min-height:18px"></div>
         </div>
@@ -606,11 +621,53 @@ function saveNote() {
 
 // ───────── Upload additional documents to an existing job ─────────
 let _uploadJobId = null;
+let _uploadFiles = [];   // the files the user has selected (input + drag-drop)
+function _refreshUploadFileList() {
+    const el = document.getElementById('upload-file-list');
+    if (!_uploadFiles.length) {
+        el.textContent = '';
+        return;
+    }
+    const names = _uploadFiles.map(f => `${f.name} (${Math.round(f.size/1024)} KB)`);
+    el.innerHTML = `<b>${_uploadFiles.length} file(s) ready:</b><br>${names.join('<br>')}`;
+}
+function onUploadFilesPicked() {
+    const fs = document.getElementById('upload-files').files;
+    _uploadFiles = Array.from(fs || []).filter(f => /\.pdf$/i.test(f.name));
+    _refreshUploadFileList();
+}
+function onDropzoneDragOver(ev) {
+    ev.preventDefault();
+    ev.currentTarget.style.background = '#e0f2fe';
+    ev.currentTarget.style.borderColor = '#0284c7';
+}
+function onDropzoneDragLeave(ev) {
+    ev.currentTarget.style.background = '#f8fafc';
+    ev.currentTarget.style.borderColor = '#cbd5e1';
+}
+function onDropzoneDrop(ev) {
+    ev.preventDefault();
+    ev.currentTarget.style.background = '#f8fafc';
+    ev.currentTarget.style.borderColor = '#cbd5e1';
+    const dropped = Array.from(ev.dataTransfer.files || []).filter(f => /\.pdf$/i.test(f.name));
+    if (!dropped.length) {
+        document.getElementById('upload-status').style.color = '#dc2626';
+        document.getElementById('upload-status').textContent = 'Only PDF files are accepted.';
+        return;
+    }
+    _uploadFiles = _uploadFiles.concat(dropped);
+    _refreshUploadFileList();
+    document.getElementById('upload-status').textContent = '';
+}
 function openUploadModal(jobId) {
     _uploadJobId = jobId;
+    _uploadFiles = [];
     document.getElementById('upload-job-id').textContent = jobId;
     document.getElementById('upload-files').value = '';
+    document.getElementById('upload-file-list').textContent = '';
     document.getElementById('upload-kind').value = 'amendment';
+    document.getElementById('upload-kind-custom').value = '';
+    document.getElementById('upload-kind-custom-wrap').style.display = 'none';
     document.getElementById('upload-status').textContent = '';
     document.getElementById('upload-btn').disabled = false;
     document.getElementById('upload-btn').textContent = 'Upload & Re-run';
@@ -620,12 +677,39 @@ function closeUploadModal() {
     document.getElementById('upload-modal').classList.remove('active');
     _uploadJobId = null;
 }
+function onUploadKindChange() {
+    const sel = document.getElementById('upload-kind').value;
+    const wrap = document.getElementById('upload-kind-custom-wrap');
+    if (sel === 'misc') {
+        wrap.style.display = 'block';
+        setTimeout(() => document.getElementById('upload-kind-custom').focus(), 50);
+    } else {
+        wrap.style.display = 'none';
+    }
+}
 async function submitUpload() {
     if (!_uploadJobId) return;
-    const files = document.getElementById('upload-files').files;
-    const kind = document.getElementById('upload-kind').value;
+    const files = _uploadFiles;
+    let kind = document.getElementById('upload-kind').value;
     const statusEl = document.getElementById('upload-status');
     const btn = document.getElementById('upload-btn');
+    // If "Other" is selected, use the custom text the user typed.
+    // Sanitize to letters/digits/underscores only so the filename tag is safe.
+    if (kind === 'misc') {
+        const raw = (document.getElementById('upload-kind-custom').value || '').trim();
+        if (!raw) {
+            statusEl.textContent = 'Please enter a custom type name, or pick a standard type.';
+            statusEl.style.color = '#dc2626';
+            return;
+        }
+        const cleaned = raw.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+        if (!cleaned) {
+            statusEl.textContent = 'Custom type must contain letters, digits, or underscores.';
+            statusEl.style.color = '#dc2626';
+            return;
+        }
+        kind = cleaned;
+    }
     if (!files || !files.length) {
         statusEl.textContent = 'Please select at least one PDF file.';
         statusEl.style.color = '#dc2626';
