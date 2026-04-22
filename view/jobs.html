@@ -192,8 +192,8 @@
             </div>
             <div id="upload-kind-custom-wrap" style="display:none">
                 <label style="display:block;font-size:.8em;font-weight:600;color:#334155;margin-bottom:4px">Custom type name</label>
-                <input type="text" id="upload-kind-custom" placeholder="e.g. insurance_claim, addendum, bank_guarantee" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:.85em;background:#fff" maxlength="40">
-                <p style="margin:4px 0 0;font-size:.72em;color:#94a3b8">Letters, digits, and underscores only. This label will be attached to the filename.</p>
+                <input type="text" id="upload-kind-custom" placeholder="e.g. insurance claim, addendum, bank guarantee" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:.85em;background:#fff" maxlength="60">
+                <p style="margin:4px 0 0;font-size:.72em;color:#94a3b8">Any text — spaces are fine. This label is attached to the file for downstream routing.</p>
             </div>
             <div>
                 <label style="display:block;font-size:.8em;font-weight:600;color:#334155;margin-bottom:4px">PDF file(s)</label>
@@ -693,8 +693,10 @@ async function submitUpload() {
     let kind = document.getElementById('upload-kind').value;
     const statusEl = document.getElementById('upload-status');
     const btn = document.getElementById('upload-btn');
-    // If "Other" is selected, use the custom text the user typed.
-    // Sanitize to letters/digits/underscores only so the filename tag is safe.
+    // If "Other" is selected, pass the user's custom text as-is (spaces,
+    // punctuation etc. are fine). The server sanitizes it for the
+    // filename tag while keeping the original in the presentation
+    // history.
     if (kind === 'misc') {
         const raw = (document.getElementById('upload-kind-custom').value || '').trim();
         if (!raw) {
@@ -702,13 +704,7 @@ async function submitUpload() {
             statusEl.style.color = '#dc2626';
             return;
         }
-        const cleaned = raw.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
-        if (!cleaned) {
-            statusEl.textContent = 'Custom type must contain letters, digits, or underscores.';
-            statusEl.style.color = '#dc2626';
-            return;
-        }
-        kind = cleaned;
+        kind = raw;
     }
     if (!files || !files.length) {
         statusEl.textContent = 'Please select at least one PDF file.';

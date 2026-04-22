@@ -1072,7 +1072,12 @@ async def upload_additional(
     if not files_field:
         raise HTTPException(400, "No file uploaded")
 
-    kind = (form.get('kind') or 'amendment').strip().lower()
+    import re as _re_k
+    # Keep the human-readable kind the user typed (e.g. "insurance claim")
+    # for history, and derive a filename-safe slug for the __tag suffix.
+    kind_raw = (form.get('kind') or 'amendment').strip() or 'amendment'
+    kind_slug = _re_k.sub(r'[^a-z0-9]+', '_', kind_raw.lower()).strip('_') or 'amendment'
+
     job_dir = os.path.join(UPLOAD_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
     saved = []
@@ -1082,9 +1087,9 @@ async def upload_additional(
         # distinguish them by filename pattern alone.
         stem, dot, ext = name.rpartition('.')
         if dot:
-            tagged = f"{stem}__{kind}.{ext}"
+            tagged = f"{stem}__{kind_slug}.{ext}"
         else:
-            tagged = f"{name}__{kind}"
+            tagged = f"{name}__{kind_slug}"
         path = os.path.join(job_dir, tagged)
         with open(path, 'wb') as out:
             out.write(await f.read())
@@ -1111,15 +1116,17 @@ async def upload_additional(
     # Record the upload in the job's presentation history.
     job = _jobs[job_id]
     job.setdefault('presentations', []).append({
-        'kind': kind,
+        'kind': kind_raw,        # human label as typed
+        'kind_slug': kind_slug,  # filename-safe derivation
         'files': saved,
         'uploaded_at': datetime.now().isoformat(),
     })
     job['status'] = 'uploaded'
     job['current_step'] = 0
+    _label = kind_raw if kind_raw == kind_slug else f"{kind_raw} (slug={kind_slug})"
     job['progress'].append(
         f"[{datetime.now().strftime('%H:%M:%S')}] +{len(saved)} file(s) "
-        f"added (kind={kind}): {', '.join(saved)}. Re-running pipeline."
+        f"added (kind={_label}): {', '.join(saved)}. Re-running pipeline."
     )
 
     # Re-kick the pipeline so OCR / classification / verification all
@@ -1129,7 +1136,8 @@ async def upload_additional(
     return {
         "status": "processing",
         "job_id": job_id,
-        "kind": kind,
+        "kind": kind_raw,
+        "kind_slug": kind_slug,
         "files_added": saved,
         "presentations": job['presentations'],
     }
