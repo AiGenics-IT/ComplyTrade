@@ -180,6 +180,17 @@ RETURN EMPTY ARRAY [] FOR THESE CLAUSE TYPES:
     BANK MUST SEND/ADVISE/TRANSMIT VIA SWIFT..." — these are
     instructions between banks, NOT verifiable from shipping documents.
     Return EMPTY ARRAY [].
+    Also included here are action-prohibitions on the negotiating
+    bank that cannot be evidenced from any submitted document:
+      • "NEGOTIATION UNDER RESERVE/GUARANTEE NOT ALLOWED"
+      • "NEGOTIATION UNDER RESERVE NOT ACCEPTABLE"
+      • "NEGOTIATION UNDER GUARANTEE NOT ALLOWED"
+      • "NEGOTIATION WITHOUT DOCUMENTS NOT ALLOWED"
+    These forbid the negotiating bank from negotiating in a certain
+    mode. They are policy, not documentary evidence. Return EMPTY
+    ARRAY []. Do NOT attempt to verify this against invoice / BL /
+    packing list — those documents never say anything about the
+    negotiating bank's negotiation mode.
   • Document forwarding/courier instructions: "ALL DOCUMENTS TO BE
     FORWARDED TO US BY COURIER AT OUR ADDRESS...", "DOCUMENTS TO BE
     SENT BY COURIER TO...", "FORWARD ALL DOCUMENTS BY COURIER" — these
@@ -828,7 +839,12 @@ Respond ONLY with a JSON array. Each element:
 }"""
 
 
-# User prompt template — fills in the specific clause and LC context
+# User prompt template — fills in the specific clause and LC context.
+# P198u: reverted to the original 4-field form. The decomposer's job
+# is to decompose THE ONE CLAUSE it was given; it does NOT need F47A
+# / F45A / F43T / F43P / F44C / Incoterms / goods-description. The
+# VERIFIER (step 14) already has that cross-clause context via
+# f47a_context and final_lc_fields when it checks each row.
 DECOMPOSITION_USER_TEMPLATE = """Decompose this LC clause into individual checkable conditions.
 
 LC Field: {field_tag}
@@ -840,49 +856,11 @@ Additional LC context:
 - Beneficiary: {beneficiary}
 - Issuing Bank: {issuing_bank}
 - Currency/Amount: {currency_amount}
-- Partial Shipments (F43P): {f43p_partial_shipments}
-- Transshipment (F43T): {f43t_transshipment}
-- Latest Shipment (F44C): {f44c_latest_shipment}
 
-Goods Description (F45A/F45B):
-{f45a_goods_description}
-
-F47A Additional Conditions (complete, applies to the whole LC):
-{f47a_additional_conditions}
-
-READ THE F47A BLOCK BEFORE YOU DECOMPOSE. If F47A says
-"THIRD PARTY DOCUMENTS ARE ACCEPTABLE EXCEPT DRAFT AND INVOICE"
-(or similar), the beneficiary-issued rule applies ONLY to draft and
-invoice — do NOT generate "issued by beneficiary" / "shipper must be
-beneficiary" conditions for Bill of Lading, Beneficiary's Certificate,
-Shipping Advice, Packing List, Certificate of Origin, Inspection
-Certificate, or any other document.
-
-Also keep the decomposition consistent with the clause's OWN document:
-if the clause opens with "BENEFICIARY'S CERTIFICATE CERTIFYING THAT ..."
-every sub-condition inherits document_to_check = "Beneficiary Certificate"
-unless the sub-condition itself explicitly names a different document
-type. Phrases like "evidence must accompany the documents" inside a
-Beneficiary's Certificate clause are part of the Beneficiary's
-Certificate requirement — they do NOT mean route to Documentary
-Remittance.
-
-Finally, do NOT emit logically-equivalent sub-conditions. When an LC
-clause contains a positive requirement AND its negative phrasing
-(e.g. "X is required. Otherwise-X is not acceptable"), emit ONE
-positive condition. Do NOT emit a second row for the negation — that
-is just the contrapositive.
-
-CRITICAL — DO NOT COPY EXAMPLE TEXT AS OUTPUT:
-The above rule is GUIDANCE only. Your `condition_text` output MUST be
-generated from the ACTUAL clause text you were given at the top of
-this prompt. Do NOT copy phrases from any example in this prompt
-into your output. Do NOT emit "multiple countries of origin" or any
-other sample phrasing unless the actual LC clause you're decomposing
-literally contains those words. If the clause says "INDONESIA ORIGIN",
-your output condition must reference Indonesia — not multiple
-countries. If the clause says "MALAYSIAN OR INDONESIAN", say that.
-Quote the clause's own words.
+Your `condition_text` output MUST come from the actual clause text
+above. Do NOT invent requirements that are not literally in the
+clause. Do NOT copy phrasing from any example in the system prompt.
+Quote the clause's own words when they describe a requirement.
 
 Return a JSON array of conditions."""
 
@@ -1117,6 +1095,8 @@ def _call_vlm_decompose(clause_ref: str, field_tag: str, clause_number: int,
     start = time.time()
     try:
         # Fill in the user prompt template with clause-specific data
+        # P198u — back to the original 4 fields. No cross-clause
+        # F47A/F45A/F43/F44 context passed to the decomposer.
         user_msg = DECOMPOSITION_USER_TEMPLATE.format(
             field_tag=field_tag,
             clause_number=clause_number,
@@ -1125,11 +1105,6 @@ def _call_vlm_decompose(clause_ref: str, field_tag: str, clause_number: int,
             beneficiary=lc_context.get('beneficiary', 'N/A'),
             issuing_bank=lc_context.get('issuing_bank', 'N/A'),
             currency_amount=lc_context.get('currency_amount', 'N/A'),
-            f47a_additional_conditions=(lc_context.get('f47a_additional_conditions') or '(none)'),
-            f45a_goods_description=(lc_context.get('f45a_goods_description') or '(none)'),
-            f43t_transshipment=(lc_context.get('f43t_transshipment') or 'N/A'),
-            f43p_partial_shipments=(lc_context.get('f43p_partial_shipments') or 'N/A'),
-            f44c_latest_shipment=(lc_context.get('f44c_latest_shipment') or 'N/A'),
         )
 
         payload = {
@@ -1311,21 +1286,24 @@ def _extract_lc_context(structured_lc: dict) -> dict:
                     return '\n'.join(p for p in parts if p)
         return ''
 
+    # P198u — Decomposer reverted to pre-P198 context. It now sees
+    # ONLY the bare minimum needed to resolve "ISSUING BANK" /
+    # "APPLICANT" / "BENEFICIARY" / "AMOUNT" references inside the
+    # current clause. Cross-clause context (F47A third-party rule,
+    # F45A goods description, F43T transshipment, F43P partial
+    # shipments, F44C latest shipment) is INTENTIONALLY NOT passed
+    # here — the VERIFIER (step 14) already receives all of those
+    # via its own f47a_context / lc_parties / final_lc_fields
+    # plumbing. Pushing them into the decomposer produced rich but
+    # noisy decompositions (213+ conditions per LC) and created
+    # copy-paste contamination from worked examples. Keeping the
+    # decomposer lean restores the pre-P198 throughput (~80-100
+    # conditions/LC, ~11-22 min verification).
     return {
         'applicant': _get(['Applicant', 'Applicant_Name', '50']),
         'beneficiary': _get(['Beneficiary', 'Beneficiary_Name', '59']),
         'issuing_bank': _get(['Issuing_Bank', 'Issuing_Bank_Details', 'Sending_Institution', '52A']),
         'currency_amount': _get(['Amount', 'Currency_Amount', 'LC_Amount', '32B']),
-        # P197c — full F47A / F45A bodies so each clause's decomposer
-        # sees the cross-clause context (third-party rule, Incoterms,
-        # goods description) instead of hallucinating defaults.
-        'f47a_additional_conditions': _clause_text(['47A', '47A_Additional_Conditions',
-                                                    'Additional_Conditions']),
-        'f45a_goods_description': _clause_text(['45A', '45B', '45A_Description_of_Goods',
-                                                'Goods_Description']),
-        'f44c_latest_shipment': _get(['44C', 'Latest_Date_of_Shipment']),
-        'f43t_transshipment': _get(['43T', 'Transshipment']),
-        'f43p_partial_shipments': _get(['43P', 'Partial_Shipments']),
     }
 
 
