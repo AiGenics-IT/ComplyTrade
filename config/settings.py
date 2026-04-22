@@ -48,7 +48,7 @@ BUILD_TAG = "2026-04-21-P195"
 
 # ── Processing ──
 MAX_CONCURRENT_OCR = 8
-MAX_CONCURRENT_VLM = 2   # lowered for 4-bit AWQ endpoint (72.255.9.104:8085) — better quality per call
+MAX_CONCURRENT_VLM = 8
 # Timeouts disabled per user request — rely on the LLM/VLM to complete
 # however long it needs. Setting to a very high value (7 days) rather
 # than None so all call sites that pass this into requests.post(timeout=)
