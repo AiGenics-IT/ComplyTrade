@@ -3165,6 +3165,14 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         dtl = (dt or '').lower().strip()
         if not dtl:
             return False
+        # P197 — reject already-merged BL+T&C packets. Rule 1 tags the
+        # combined unit with "+ Conditions of Carriage" / "+ Terms and
+        # Conditions"; without this exclusion a later BL in the same
+        # loop would re-absorb the completed unit as if it were a pure
+        # T&C (because the substring match below sees "conditions of
+        # carriage" in the annotated label).
+        if '+ conditions of carriage' in dtl or '+ terms and conditions' in dtl:
+            return False
         if dtl in _bl_tc_types:
             return True
         # Substring fallback — "Terms and Conditions of Yang Ming's
@@ -3305,6 +3313,12 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                 continue
             odt = other.document_type.lower().strip()
             if _is_bl(odt):
+                # P197 — enforce 1:1 BL ↔ attached-list pairing: if the
+                # candidate BL already has an attached list annotation,
+                # don't stack another one onto it. An unpaired orphan
+                # attach list should stay separate.
+                if '+ attached list' in odt:
+                    continue
                 _bl_max_pg = max(other.page_numbers) if other.page_numbers else 0
                 _bl_min_pg = min(other.page_numbers) if other.page_numbers else 9999
                 # Accept both: attach list AFTER BL (typical) or
