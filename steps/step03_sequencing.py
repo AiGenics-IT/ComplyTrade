@@ -1585,7 +1585,7 @@ def _vlm_call_json(prompt: str, image_b64: Optional[str],
     last_err = None
     for attempt in range(max_retries):
         try:
-            resp = requests.post(QWEN_VLM_URL, json=payload, timeout=300)
+            resp = requests.post(QWEN_VLM_URL, json=payload, timeout=None)
             if resp.status_code != 200:
                 last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
                 print(f"[VLM] attempt {attempt+1}: HTTP {resp.status_code}: {resp.text[:200]}")

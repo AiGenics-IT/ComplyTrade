@@ -26,13 +26,13 @@ if _env_path.exists():
 
 # ── Model Endpoints (all from .env or environment variables) ──
 
-# Step 1: GLM-OCR
-GLM_OCR_URL = _os.environ.get("GLM_OCR_URL", "http://34.171.200.116/api/ocr")
+# Step 1: GLM-OCR — now at 72.255.9.104:8001
+GLM_OCR_URL = _os.environ.get("GLM_OCR_URL", "http://72.255.9.104:8001/api/ocr")
 GLM_OCR_MODEL = _os.environ.get("GLM_OCR_MODEL", "glm-ocr")
 
-# Steps 2-9: Qwen VLM (vision)
-QWEN_VLM_URL = _os.environ.get("QWEN_VLM_URL", "http://35.192.15.206/vllm/v1/chat/completions")
-QWEN_VLM_MODEL = _os.environ.get("QWEN_VLM_MODEL", "Qwen2.5-VL-72B-Instruct-AWQ")
+# Steps 2-9: Qwen VLM (vision) — AWQ 4-bit 72B at 72.255.9.104:8085
+QWEN_VLM_URL = _os.environ.get("QWEN_VLM_URL", "http://72.255.9.104:8085/v1/chat/completions")
+QWEN_VLM_MODEL = _os.environ.get("QWEN_VLM_MODEL", "/home/aigenics/AI_MODELS/Qwen2.5-VL-72B-Instruct-AWQ")
 
 # Steps 6, 12, 14: Qwen Text LLM (text-only, no vision)
 QWEN_TEXT_LLM_URL = _os.environ.get("QWEN_TEXT_LLM_URL", "http://34.61.17.191/vllm/v1/chat/completions")
@@ -48,9 +48,13 @@ BUILD_TAG = "2026-04-21-P195"
 
 # ── Processing ──
 MAX_CONCURRENT_OCR = 8
-MAX_CONCURRENT_VLM = 8
-OCR_TIMEOUT = 600       # seconds per page
-VLM_TIMEOUT = 1200      # seconds per VLM call (20 min — large docs need time)
+MAX_CONCURRENT_VLM = 2   # lowered for 4-bit AWQ endpoint (72.255.9.104:8085) — better quality per call
+# Timeouts disabled per user request — rely on the LLM/VLM to complete
+# however long it needs. Setting to a very high value (7 days) rather
+# than None so all call sites that pass this into requests.post(timeout=)
+# keep working without code changes.
+OCR_TIMEOUT = 604800    # 7 days — effectively no timeout
+VLM_TIMEOUT = 604800    # 7 days — effectively no timeout
 CONFIDENCE_THRESHOLD = 0.70  # Below this → REVIEW status. Same threshold for both 7B and 72B for now.
 
 # ── Database ──
