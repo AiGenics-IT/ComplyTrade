@@ -815,6 +815,40 @@ TOP RULE 2 — LC PROHIBITION WORDING IS NOT EVIDENCE:
     RIGHT: "The BL document text shows a full T&C page attached,
       therefore this is NOT a Short Form BL -> PASS."
 
+TOP RULE 3 — "THIRD PARTY DOCUMENTS ACCEPTABLE EXCEPT X" MEANS X
+            MUST COME FROM THE BENEFICIARY (NOT that X is forbidden):
+  When F47A says "THIRD PARTY DOCUMENTS ARE ACCEPTABLE EXCEPT FOR
+  INVOICE AND DRAFT" (or any variant of "acceptable except Y"), read
+  it as two rules:
+    (a) For every doc OTHER than the excepted ones, third-party
+        issuance is ALLOWED. PASS a BL / Packing List / Beneficiary
+        Certificate / shipping-company certificate / etc. whose
+        shipper or issuer is NOT the beneficiary — F47A permits it.
+    (b) The EXCEPTED doc types (e.g. Invoice, Draft) MUST BE ISSUED
+        BY THE BENEFICIARY (not by a third party). A Commercial
+        Invoice issued by the beneficiary SATISFIES this rule.
+        Only a Commercial Invoice issued by a third party FAILS it.
+
+  Common inversion to avoid (this has been a repeat false FAIL):
+    Condition: "Third party documents acceptable except for Invoice
+                and Draft."
+    Doc:       Commercial Invoice issued by beneficiary (APEX).
+    WRONG: "Since the Invoice is issued by the Beneficiary, it does
+      not meet the condition -> FAIL."
+    RIGHT: "The condition REQUIRES the invoice to come from the
+      beneficiary. The invoice is from APEX (beneficiary) ->
+      PASS."
+
+  Same inversion for BL shipper-vs-beneficiary when F47A permits
+  third-party BLs:
+    Condition: "Shipper in BL must match the beneficiary."
+    F47A:      "Third party documents acceptable except invoice & draft."
+    Shipper:   PT PINDO DELI (not beneficiary), Beneficiary: APEX.
+    WRONG: "Shipper differs from beneficiary -> FAIL."
+    RIGHT: "Shipper differs from beneficiary, but F47A permits
+      third-party docs for the BL -> PASS with note (third-party
+      shipper is acceptable under F47A)."
+
 ════════════════════════════════════════════════════════════════════════
 ANTI-HALLUCINATION RULES (STRICT — READ CAREFULLY)
 ════════════════════════════════════════════════════════════════════════
@@ -3768,10 +3802,52 @@ def _call_vlm(
         # and any re.* usage BEFORE this line (e.g. the T&C strip regex
         # compiled around line 3354) then raises
         # `UnboundLocalError: cannot access local variable 're'`.
+        #
+        # P198w — tolerant JSON parser. The Qwen VLM routinely emits
+        # otherwise-valid JSON where a string value contains literal
+        # newlines / tabs / control chars (e.g. a `quote` field that
+        # preserves the source document's line breaks). Strict JSON
+        # rejects those, causing `json.loads()` to raise and the row
+        # to default to REVIEW. Try strict parse first; on failure
+        # attempt a lenient parse that escapes whitespace chars inside
+        # string literals only.
+        def _lenient_json_loads(s):
+            try:
+                return json.loads(s)
+            except json.JSONDecodeError:
+                pass
+            # Escape bare newlines / carriage returns / tabs that appear
+            # INSIDE a JSON string value. Walk the text character by
+            # character, track whether we're inside a string, and
+            # replace raw control chars with their escaped equivalents.
+            out = []
+            in_str = False
+            escape = False
+            for ch in s:
+                if escape:
+                    out.append(ch); escape = False; continue
+                if ch == '\\' and in_str:
+                    out.append(ch); escape = True; continue
+                if ch == '"':
+                    in_str = not in_str
+                    out.append(ch); continue
+                if in_str and ch == '\n':
+                    out.append('\\n'); continue
+                if in_str and ch == '\r':
+                    out.append('\\r'); continue
+                if in_str and ch == '\t':
+                    out.append('\\t'); continue
+                out.append(ch)
+            try:
+                return json.loads(''.join(out))
+            except json.JSONDecodeError:
+                return None
+
         json_match = re.search(r"\{.*\}", raw_content, re.DOTALL)
+        parsed = None
         if json_match:
-            parsed = json.loads(json_match.group(0))
-        else:
+            parsed = _lenient_json_loads(json_match.group(0))
+        if not parsed:
             parsed = {
                 "findings": raw_content[:300],
                 "result": "VLM response not JSON",
