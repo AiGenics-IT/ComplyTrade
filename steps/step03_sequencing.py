@@ -1325,15 +1325,26 @@ TOPICS discussed inside the free-format narrative, not the SWIFT message type.
 The message type is determined by the SWIFT header / identifier, not by
 keywords inside the body.
 
+━━━ BLANK PAGE → "Blank Page" (NEVER "unknown") ━━━
+A page that is genuinely empty — no text, no form fields, no stamps, no
+signatures, no logos, no images beyond whitespace — is a "Blank Page".
+Also a page that shows only a faint scan artefact, a page number alone,
+or "THIS PAGE INTENTIONALLY LEFT BLANK" is a "Blank Page". ALWAYS emit
+document_type = "Blank Page" for these. Do NOT use "unknown" for blank
+pages. Blank pages are filtered out of downstream checks automatically;
+"unknown" is NOT filtered and causes downstream noise.
+
 ━━━ DO NOT EMIT "unknown" IF ANY DOCUMENT STRUCTURE IS VISIBLE ━━━
-"unknown" is reserved ONLY for pages that are genuinely blank, a scanner
-artefact, or a random divider. If the page has ANY recognisable structure
-(BL fields, invoice line items, endorsement stamps, SWIFT header, covering-
-letter text, a table with cargo rows, a "CONTINUATION PAGE" marker, etc.),
-pick the best matching specific type — NEVER "unknown". Your own free-text
-reasoning (doc_hint) must always be CONSISTENT with document_type: if your
-doc_hint says "continuation page of a Bill of Lading", document_type cannot
-be "unknown".
+"unknown" is reserved for a TRULY unclassifiable page with SOME content
+(text, stamps, etc.) that doesn't fit any known category. It is NOT for
+blank pages (use "Blank Page") and NOT for pages that clearly show BL /
+invoice / endorsement / SWIFT / covering-letter structure. If the page
+has ANY recognisable structure (BL fields, invoice line items, endorsement
+stamps, SWIFT header, covering-letter text, a table with cargo rows, a
+"CONTINUATION PAGE" marker, etc.), pick the best matching specific type.
+Your own free-text reasoning (doc_hint) must always be CONSISTENT with
+document_type: if your doc_hint says "continuation page of a Bill of
+Lading", document_type cannot be "unknown".
 
 P130 — DOCUMENT PRESENTATION vs MT799 (CRITICAL — common misclassification):
 A cover letter whose TITLE says "Document Presentation" and which lists attached
