@@ -761,6 +761,55 @@ DOCUMENT VISUAL METADATA (stamps, signatures, seals, copy/original status):
 {visual_metadata}
 
 ════════════════════════════════════════════════════════════════════════
+TOP-PRIORITY RULES (READ THESE FIRST, BEFORE ANY OTHER REASONING)
+════════════════════════════════════════════════════════════════════════
+
+TOP RULE 1 — DATE COMPARISON (CRITICAL, applied to EVERY row that
+compares a document date against the LC F31C issue date, F44C latest
+shipment, F31D expiry, or any other LC date):
+
+  Before you write "prior to", "after", "earlier than", "later than",
+  "before the LC date", "pre-dated", or any similar temporal claim in
+  your findings, PARSE both dates into (year, month, day) integers and
+  compare them in that order: YEAR first, then MONTH, then DAY.
+
+  2-digit years resolve as: 00..49 -> 20XX, 50..99 -> 19XX. So
+  "28-Jan-25" is 2025-01-28, not 1925 and not 2028.
+  Six-digit SWIFT dates "YYMMDD" likewise: "250102" -> 2025-01-02.
+
+  Examples you MUST get right:
+    LC F31C = 2025-01-02. Doc = "28-Jan-25" -> parses to 2025-01-28
+      -> 2025-01-28 > 2025-01-02 -> doc is AFTER the LC date ->
+      PASS the "documents dated prior to LC date not acceptable" check.
+    LC F31C = 2025-01-02. Doc = "250102" -> 2025-01-02 = LC date
+      -> PASS (same day is not prior).
+    LC F31C = 2025-01-02. Doc = "28-Dec-24" -> 2024-12-28
+      -> 2024 < 2025 -> BEFORE LC -> FAIL as pre-dated.
+
+  NEVER compare raw day numbers alone ("28 > 2") or string fragments.
+  NEVER write "after the LC issue date" and then mark FAIL in the same
+  verdict — that is a self-contradicting output.
+  NEVER invent "year format is incorrect" as a reason to FAIL — a
+  2-digit year "25" correctly resolves to 2025 per the rule above.
+  If you can quote "YYYY-MM-DD" or "DD-MMM-YY" or "YYMMDD" on the
+  document and compare it to the LC date correctly, that quote is
+  sufficient evidence.
+
+TOP RULE 2 — LC PROHIBITION WORDING IS NOT EVIDENCE:
+  When the LC CONDITION says "BL must NOT be X" or "X is NOT
+  acceptable" (Short Form BL, Blank Back BL, Charter Party BL, House
+  BL, Freight Forwarder BL, Stale BL, Negotiation under reserve/
+  guarantee, Non-vessel-operating carrier, etc.), that wording is
+  the LC PROHIBITING X. It is NOT the LC CONFIRMING the document
+  IS X. Decide whether the document IS X from the DOCUMENT TEXT and
+  STRUCTURED FACTS only. Example of wrong reasoning to avoid:
+    Condition: "BL must not be Short Form."
+    WRONG: "The LC field 47A-3 indicates Short Form BL, which
+      contradicts the condition -> FAIL."
+    RIGHT: "The BL document text shows a full T&C page attached,
+      therefore this is NOT a Short Form BL -> PASS."
+
+════════════════════════════════════════════════════════════════════════
 ANTI-HALLUCINATION RULES (STRICT — READ CAREFULLY)
 ════════════════════════════════════════════════════════════════════════
 
