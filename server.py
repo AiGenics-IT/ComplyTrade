@@ -1037,20 +1037,102 @@ async def upload(background_tasks: BackgroundTasks, request: Request):
 
 
 @app.post("/api/upload/{job_id}")
-async def upload_additional(job_id: str, request: Request):
-    """Upload additional files to an existing job (e.g., adding shipping documents later)."""
-    if job_id not in _jobs:
+async def upload_additional(
+    job_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """Upload additional files to an existing job.
+
+    Real-world LC workflow:
+      1. Base LC (MT700) → `POST /api/upload`                (creates job)
+      2. Amendment(s) (MT707) → `POST /api/upload/{job_id}`  (kind=amendment)
+      3. 1st presentation shipping docs                      (kind=presentation_1)
+      4. 2nd presentation shipping docs                      (kind=presentation_2)
+      ... etc.
+
+    Form fields:
+      files   : one or more PDFs
+      kind    : optional string; one of
+                  "lc" | "amendment" | "presentation_1" | "presentation_2" | "misc"
+                Defaults to "amendment" if not supplied.
+
+    On success the pipeline is re-kicked so every downstream step sees
+    the combined document set. The client should poll `/api/status/{job_id}`
+    as usual.
+    """
+    _results_dir = os.path.join(RESULTS_DIR, job_id)
+    if job_id not in _jobs and not os.path.isdir(_results_dir):
         raise HTTPException(404, "Job not found")
+
     form = await request.form()
     files_field = form.getlist('files')
     if not files_field and 'file' in form:
         files_field = [form['file']]
+    if not files_field:
+        raise HTTPException(400, "No file uploaded")
+
+    kind = (form.get('kind') or 'amendment').strip().lower()
     job_dir = os.path.join(UPLOAD_DIR, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    saved = []
     for f in files_field:
-        path = os.path.join(job_dir, f.filename or "extra.pdf")
+        name = f.filename or f"extra_{datetime.now().strftime('%H%M%S')}.pdf"
+        # Stamp the file name with its role so downstream logic can
+        # distinguish them by filename pattern alone.
+        stem, dot, ext = name.rpartition('.')
+        if dot:
+            tagged = f"{stem}__{kind}.{ext}"
+        else:
+            tagged = f"{name}__{kind}"
+        path = os.path.join(job_dir, tagged)
         with open(path, 'wb') as out:
             out.write(await f.read())
-    return {"status": "ok", "files_added": len(files_field)}
+        saved.append(tagged)
+
+    # Hydrate job entry if it was wiped on a server restart.
+    if job_id not in _jobs:
+        # Reconstruct the minimum shape so _process_pipeline can restart.
+        primary = None
+        for _f in os.listdir(job_dir):
+            if _f.lower().endswith('.pdf'):
+                primary = _f
+                break
+        _jobs[job_id] = {
+            'status': 'uploaded',
+            'filename': primary or saved[0],
+            'pdf_path': os.path.join(job_dir, primary or saved[0]),
+            'progress': [], 'current_step': 0, 'total_steps': 20,
+            'result': None, 'created_at': datetime.now().isoformat(),
+            'step_results': {},
+            'presentations': [],
+        }
+
+    # Record the upload in the job's presentation history.
+    job = _jobs[job_id]
+    job.setdefault('presentations', []).append({
+        'kind': kind,
+        'files': saved,
+        'uploaded_at': datetime.now().isoformat(),
+    })
+    job['status'] = 'uploaded'
+    job['current_step'] = 0
+    job['progress'].append(
+        f"[{datetime.now().strftime('%H:%M:%S')}] +{len(saved)} file(s) "
+        f"added (kind={kind}): {', '.join(saved)}. Re-running pipeline."
+    )
+
+    # Re-kick the pipeline so OCR / classification / verification all
+    # include the newly-uploaded documents.
+    background_tasks.add_task(_process_pipeline, job_id)
+
+    return {
+        "status": "processing",
+        "job_id": job_id,
+        "kind": kind,
+        "files_added": saved,
+        "presentations": job['presentations'],
+    }
 
 
 @app.get("/api/status/{job_id}")
@@ -2727,6 +2809,59 @@ def _process_pipeline(job_id: str):
     def _p(msg):
         """Append timestamped progress message to job progress log."""
         job['progress'].append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+
+    # ── P196 — Merge all uploaded PDFs for this job before OCR ──
+    # Real-world LC flow has MT700 uploaded first, then amendments,
+    # then presentation 1, then presentation 2. We combine all of them
+    # into a single PDF for the pipeline so step01 OCR, step03
+    # classification and downstream verification see every page at
+    # once. Filenames carry a "__kind" tag (lc/amendment/
+    # presentation_N) added by `/api/upload/{job_id}`; kind order drives
+    # the merge sequence so SWIFT pages come first and shipping docs
+    # come last.
+    try:
+        job_dir = os.path.dirname(pdf_path)
+        all_pdfs = []
+        for _f in sorted(os.listdir(job_dir)):
+            if not _f.lower().endswith('.pdf'):
+                continue
+            if _f.startswith('_combined'):
+                continue  # skip any previous merge artifact
+            all_pdfs.append(os.path.join(job_dir, _f))
+        if len(all_pdfs) > 1:
+            _KIND_ORDER = {
+                'lc': 0, 'mt700': 0, 'amendment': 1, 'mt707': 1,
+                'presentation_1': 2, 'presentation_2': 3,
+                'presentation_3': 4, 'presentation_4': 5,
+                'misc': 9,
+            }
+            def _kind_key(p):
+                name = os.path.basename(p).lower()
+                for k, v in _KIND_ORDER.items():
+                    if f"__{k}." in name or f"__{k}__" in name:
+                        return (v, name)
+                # Untagged files (initial upload before multi-upload was
+                # introduced) are assumed to be the base LC — sort first.
+                return (0, name)
+            all_pdfs.sort(key=_kind_key)
+
+            import fitz as _fitz
+            merged = _fitz.open()
+            for src in all_pdfs:
+                try:
+                    with _fitz.open(src) as sub:
+                        merged.insert_pdf(sub)
+                except Exception as _merr:
+                    _p(f"WARN: could not merge {os.path.basename(src)}: {_merr}")
+            combined_path = os.path.join(job_dir, '_combined.pdf')
+            merged.save(combined_path, deflate=True, garbage=3)
+            merged.close()
+            pdf_path = combined_path
+            job['pdf_path'] = combined_path
+            _p(f"Merged {len(all_pdfs)} uploaded PDFs into _combined.pdf "
+               f"for pipeline: {[os.path.basename(p) for p in all_pdfs]}")
+    except Exception as _e:
+        _p(f"WARN: PDF merge skipped: {_e}")
 
     try:
         job['status'] = 'processing'
