@@ -3238,10 +3238,37 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                     _progress(f"  Page {pg_num}: has Page {_x} of {_y} — skipping inheritance, will use multi-page grouping")
             else:
                 # No "Page X of Y" — safe to inherit previous page's type
-                if doc_type_lower != _prev_type.lower():
+                # P198z — only inherit when the previous page has a
+                # CONCRETE type. If _prev_type is "unknown" / "blank
+                # page" / empty, inheriting would turn a VLM-classified
+                # continuation page (e.g. "BILL OF LADING") BACK into
+                # "unknown" because the preceding page happened to be
+                # a blank divider. Trust the VLM's own classification
+                # in that case.
+                _BAD_PREV = ('unknown', 'blank page', '', 'continuation',
+                             'unidentified', 'blank', 'header page',
+                             'back page', 'reverse page')
+                _prev_is_usable = _prev_type and _prev_type.lower().strip() not in _BAD_PREV
+                _this_is_unknown = doc_type_lower in ('unknown', 'continuation', 'continuation sheet', '')
+                if _prev_is_usable and _this_is_unknown:
+                    # VLM produced unknown on a continuation — inherit.
                     _progress(f"  Page {pg_num}: CONTINUATION type fix: '{doc_type}' → '{_prev_type}' (inherits from previous page)")
                     cls['document_type'] = _prev_type
-                # Keep _prev_type unchanged (the inherited type)
+                elif _prev_is_usable and doc_type_lower != _prev_type.lower():
+                    # VLM gave it a different concrete type — still
+                    # inherit because is_continuation=True means the
+                    # VLM itself said this page continues the prior.
+                    _progress(f"  Page {pg_num}: CONTINUATION type fix: '{doc_type}' → '{_prev_type}' (inherits from previous page)")
+                    cls['document_type'] = _prev_type
+                else:
+                    # _prev_type is unknown/blank — TRUST the VLM's
+                    # classification for this page. Update _prev_type
+                    # forward so subsequent real continuations inherit
+                    # from this concrete type, not from the blank that
+                    # preceded it.
+                    if doc_type and not _this_is_unknown:
+                        _progress(f"  Page {pg_num}: CONTINUATION keeps VLM type '{doc_type}' (previous was '{_prev_type}', not usable as inheritance source)")
+                        _prev_type = doc_type
         else:
             # Not a continuation — this becomes the new "previous type"
             _prev_type = doc_type
