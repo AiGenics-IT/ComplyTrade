@@ -47,7 +47,7 @@ SERVER_PORT = int(_os.environ.get("SERVER_PORT", "8082"))
 BUILD_TAG = "2026-04-23-P198ah"
 
 # ── Processing ──
-MAX_CONCURRENT_OCR = 8
+MAX_CONCURRENT_OCR = 5
 MAX_CONCURRENT_VLM = 8
 # Timeouts disabled per user request — rely on the LLM/VLM to complete
 # however long it needs. Setting to a very high value (7 days) rather

@@ -31,10 +31,12 @@ MODEL:
     config/settings.py — that switch only affects Qwen VLM steps (2–14).
 
 STRATEGY:
-    1. Try sending the entire PDF at once (fastest, fewer API calls)
-    2. If that fails, fall back to sending pages in batches of 5
-    3. Each page is also rendered to a 300 DPI PNG image for use by the
-       Vision Language Model (VLM) in later steps (Steps 3, 5, 8, 9)
+    1. Split the PDF into N single-page PDFs in memory (preserves text layers).
+    2. Submit every page in parallel to GLM (ThreadPoolExecutor, MAX_CONCURRENT_OCR).
+    3. Each page gets up to 3 attempts with escalating per-request timeouts
+       [60s, 180s, 300s] — a hung GLM request cannot block the job forever.
+    4. Each page is also rendered to a 300 DPI PNG image for use by the
+       Vision Language Model (VLM) in later steps (Steps 3, 5, 8, 9).
 """
 
 import os
@@ -143,30 +145,53 @@ def _save_page_image(img_bytes: bytes, output_dir: str, page_num: int) -> str:
     return path
 
 
-def _ocr_single_page_glm(pdf_path: str, page_num: int, prompt: str) -> dict:
+def _extract_single_page_pdf(pdf_path: str, page_num: int) -> bytes:
     """
-    Send a single page to the GLM-OCR API and return the extracted text.
+    Extract a single page (1-based) as a one-page PDF in memory.
 
-    The API accepts the full PDF file plus a 'pages' parameter specifying
-    which page(s) to process. This avoids needing to split the PDF into
-    individual files. The prompt tells the OCR model to look for trade
-    finance-specific elements (stamps, signatures, F-tags, etc.).
+    Uses PyMuPDF's insert_pdf which preserves the original text layer — critical
+    because GLM reads embedded text directly on native-digital pages (Bills of
+    Lading, invoices, etc.) and falls back to image OCR only when no text layer
+    exists. Rasterizing to PNG loses that text layer and drops content on
+    digitally-native pages.
+    """
+    src = fitz.open(pdf_path)
+    out = fitz.open()
+    out.insert_pdf(src, from_page=page_num - 1, to_page=page_num - 1)
+    data = out.write()
+    out.close()
+    src.close()
+    return data
 
-    Returns a dict with 'page', 'text', 'confidence', 'elapsed', and
-    optionally 'error' if something went wrong.
+
+# Per-page retry ladder: each failed timeout is its own backoff, no extra sleep.
+# Max wall time per page = sum = 900s (15 min), after which the page is reported
+# empty and the pipeline continues — step02 VLM fallback handles empty text.
+_OCR_RETRY_TIMEOUTS = [180, 300, 420]
+
+
+def _ocr_single_page_glm(pdf_bytes: bytes, page_num: int, prompt: str, timeout_s: int) -> dict:
+    """
+    Send a single-page PDF blob to the GLM-OCR API and return the extracted text.
+
+    The PDF contains exactly one page so 'pages' is always '1'. page_num is
+    only used for logging and response tagging. timeout_s is the hard ceiling
+    on this one request — caller decides retry policy.
+
+    Returns a dict with 'page', 'text', 'confidence', 'elapsed', and optionally
+    'error' if something went wrong.
     """
     try:
         start = time.time()
-        with open(pdf_path, 'rb') as f:
-            files = {'file': (os.path.basename(pdf_path), f, 'application/pdf')}
-            data = {
-                'model': GLM_OCR_MODEL,
-                'mode': 'per-page',
-                'format_output': 'false',
-                'pages': str(page_num),
-                'prompt': prompt,
-            }
-            resp = requests.post(GLM_OCR_URL, files=files, data=data, timeout=None)
+        files = {'file': (f'page_{page_num:03d}.pdf', io.BytesIO(pdf_bytes), 'application/pdf')}
+        data = {
+            'model': GLM_OCR_MODEL,
+            'mode': 'per-page',
+            'format_output': 'false',
+            'pages': '1',
+            'prompt': prompt,
+        }
+        resp = requests.post(GLM_OCR_URL, files=files, data=data, timeout=timeout_s)
         elapsed = time.time() - start
 
         if resp.status_code != 200:
@@ -202,9 +227,30 @@ def _ocr_single_page_glm(pdf_path: str, page_num: int, prompt: str) -> dict:
         return {'page': page_num, 'text': text, 'confidence': confidence, 'elapsed': elapsed}
 
     except requests.exceptions.Timeout:
-        return {'page': page_num, 'text': '', 'confidence': 0.0, 'error': 'timeout', 'elapsed': OCR_TIMEOUT}
+        return {'page': page_num, 'text': '', 'confidence': 0.0, 'error': f'timeout@{timeout_s}s', 'elapsed': timeout_s}
     except Exception as e:
         return {'page': page_num, 'text': '', 'confidence': 0.0, 'error': str(e), 'elapsed': 0}
+
+
+def _ocr_page_with_retries(pdf_bytes: bytes, page_num: int, prompt: str, progress) -> dict:
+    """
+    Call GLM for one page up to 3 times with escalating timeouts [60s, 180s, 300s].
+
+    The first success short-circuits. If all three attempts fail, returns the
+    final result dict (with 'error' field populated). Total max wall time per
+    page is the sum of the timeouts (540s).
+    """
+    result = None
+    for attempt_idx, tmo in enumerate(_OCR_RETRY_TIMEOUTS, start=1):
+        result = _ocr_single_page_glm(pdf_bytes, page_num, prompt, timeout_s=tmo)
+        if not result.get('error'):
+            if attempt_idx > 1:
+                progress(f"  Page {page_num}: recovered on attempt {attempt_idx} ({tmo}s budget)")
+            return result
+        more = attempt_idx < len(_OCR_RETRY_TIMEOUTS)
+        progress(f"  Page {page_num}: attempt {attempt_idx}/{len(_OCR_RETRY_TIMEOUTS)} "
+                 f"failed ({result['error']}) — {'retrying' if more else 'giving up'}")
+    return result
 
 
 def run(pdf_path: str, output_dir: str = None, progress_callback=None) -> dict:
@@ -241,77 +287,38 @@ def run(pdf_path: str, output_dir: str = None, progress_callback=None) -> dict:
     _progress(f"PDF has {total_pages} pages. Starting GLM-OCR extraction...")
 
     # --- OCR Strategy ---
-    # First attempt: send the entire PDF at once (most efficient).
-    # If that fails (e.g., PDF too large, timeout), fall back to
-    # sending pages in batches of 5 (more reliable but slower).
-    raw_pages = []
-    ocr_elapsed = 0.0
+    # Split the PDF into per-page blobs (preserves text layer), then submit each
+    # page in parallel with per-request timeouts. A hung GLM request on any
+    # single page cannot block the job forever — it aborts at its timeout and
+    # retries with a larger budget up to 3 times, then gives up for that page.
+    _progress(f"Splitting {total_pages} single-page PDFs and submitting to GLM-OCR "
+              f"(concurrency={MAX_CONCURRENT_OCR}, retries={_OCR_RETRY_TIMEOUTS}s)...")
+    page_pdfs = {pg: _extract_single_page_pdf(pdf_path, pg) for pg in range(1, total_pages + 1)}
 
-    # Attempt 1: Full PDF submission
-    _progress(f"Sending full PDF to GLM-OCR ({total_pages} pages)...")
-    _full_success = False
-    try:
-        ocr_start = time.time()
-        with open(pdf_path, 'rb') as f:
-            files = {'file': (os.path.basename(pdf_path), f, 'application/pdf')}
-            data = {
-                'model': GLM_OCR_MODEL,
-                'mode': 'per-page',
-                'format_output': 'false',
-                'pages': '',
-                'prompt': GLM_OCR_PROMPT,
-            }
-            resp = requests.post(GLM_OCR_URL, files=files, data=data, timeout=None)
-        ocr_elapsed = time.time() - ocr_start
-
-        if resp.status_code == 200:
-            result = resp.json()
-            raw_pages = result if isinstance(result, list) else result.get('pages', result.get('results', []))
-            _full_success = True
-            _progress(f"GLM-OCR returned {len(raw_pages)} pages in {ocr_elapsed:.1f}s ({ocr_elapsed/max(len(raw_pages),1):.1f}s/page)")
-        else:
-            _progress(f"GLM-OCR full PDF failed: HTTP {resp.status_code}. Falling back to page-by-page...")
-
-    except Exception as e:
-        _progress(f"GLM-OCR full PDF failed: {e}. Falling back to page-by-page...")
-
-    # Attempt 2 (fallback): send pages in batches of 5
-    # This is more resilient for large PDFs or unreliable connections
-    if not _full_success or not raw_pages:
-        _progress("Sending pages in batches of 5...")
-        ocr_start = time.time()
-        batch_size = 5
-        for batch_start in range(1, total_pages + 1, batch_size):
-            batch_end = min(batch_start + batch_size - 1, total_pages)
-            pages_range = f"{batch_start}-{batch_end}"
-            _progress(f"  Batch: pages {pages_range}...")
+    ocr_start = time.time()
+    raw_pages_by_num: dict = {}
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_OCR) as executor:
+        futures = {
+            executor.submit(_ocr_page_with_retries, page_pdfs[pg], pg, GLM_OCR_PROMPT, _progress): pg
+            for pg in range(1, total_pages + 1)
+        }
+        for future in as_completed(futures):
+            pg = futures[future]
             try:
-                with open(pdf_path, 'rb') as f:
-                    files = {'file': (os.path.basename(pdf_path), f, 'application/pdf')}
-                    data = {
-                        'model': GLM_OCR_MODEL,
-                        'mode': 'per-page',
-                        'format_output': 'false',
-                        'pages': pages_range,
-                        'prompt': GLM_OCR_PROMPT,
-                    }
-                    resp = requests.post(GLM_OCR_URL, files=files, data=data, timeout=None)
-                if resp.status_code == 200:
-                    result = resp.json()
-                    batch_pages = result if isinstance(result, list) else result.get('pages', result.get('results', []))
-                    raw_pages.extend(batch_pages)
-                    _progress(f"  Batch pages {pages_range}: {len(batch_pages)} pages extracted")
-                else:
-                    _progress(f"  Batch pages {pages_range}: HTTP {resp.status_code}")
-                    # Add empty pages for failed batch
-                    for pg in range(batch_start, batch_end + 1):
-                        raw_pages.append({'page': pg, 'text': '', 'confidence': 0.0})
+                raw_pages_by_num[pg] = future.result()
             except Exception as e:
-                _progress(f"  Batch pages {pages_range} failed: {e}")
-                for pg in range(batch_start, batch_end + 1):
-                    raw_pages.append({'page': pg, 'text': '', 'confidence': 0.0})
-        ocr_elapsed = time.time() - ocr_start
-        _progress(f"Page-by-page OCR complete: {len(raw_pages)} pages in {ocr_elapsed:.1f}s")
+                raw_pages_by_num[pg] = {'page': pg, 'text': '', 'confidence': 0.0, 'error': str(e), 'elapsed': 0}
+            r = raw_pages_by_num[pg]
+            if r.get('error'):
+                _progress(f"  Page {pg}: FAILED ({r['error']})")
+            else:
+                _progress(f"  Page {pg}: {len(r.get('text',''))} chars in {r.get('elapsed',0):.1f}s")
+
+    ocr_elapsed = time.time() - ocr_start
+    raw_pages = [raw_pages_by_num[pg] for pg in range(1, total_pages + 1)]
+    ok = sum(1 for r in raw_pages if not r.get('error'))
+    _progress(f"GLM-OCR complete: {ok}/{total_pages} pages OK in {ocr_elapsed:.1f}s "
+              f"({ocr_elapsed/max(total_pages,1):.1f}s/page wall)")
 
     if not raw_pages:
         _progress("GLM-OCR failed completely — no pages extracted")
