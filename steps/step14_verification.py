@@ -3317,8 +3317,97 @@ def _call_vlm(
     except Exception:
         pass
 
-    # Truncate document text to avoid exceeding token limits
-    max_chars = 6500
+    # P198b — Strip the Conditions-of-Carriage / Terms-and-Conditions
+    # page from a merged BL packet before sending to the verifier. When
+    # step03 merges a standalone T&C page into its BL packet (per P191's
+    # "+ Conditions of Carriage" annotation), the aggregated refined_text
+    # contains both the BL form page AND the full T&C boilerplate
+    # (Paramount / Hague Rules / General Average / Arbitration, etc.).
+    # That boilerplate is identical across every BL from the same
+    # carrier and has no verification value — so we cut the T&C block
+    # out and replace it with a single-line marker telling the LLM the
+    # T&C exists. ALL BL data (shipper, consignee, notify party,
+    # vessel, ports, cargo, marks, freight, HS code, LC no, NTN, stamps,
+    # signatures, number of originals, place and date of issue) is
+    # preserved.
+    #
+    # Two page orderings occur in practice:
+    #   A) BL page first, T&C page second — splice removes the tail.
+    #   B) T&C page first, BL page second (scan order reversed) —
+    #      splice removes the head and keeps the tail.
+    # We handle both by finding (1) the T&C title anchor and (2) any
+    # strong BL form marker outside the T&C block, then keep everything
+    # outside the T&C zone.
+    _dtl_for_tc = (document_type or '').lower()
+    _is_bl_like = ('bill of lading' in _dtl_for_tc
+                   or 'bl' == _dtl_for_tc.strip()
+                   or 'conditions of carriage' in _dtl_for_tc)
+    if _is_bl_like and document_text:
+        # T&C title anchor: title phrase on its own line followed by
+        # a numbered-clause list ("1. Paramount" etc.). Plain mentions
+        # of "conditions of carriage" inside a BL's CP/CoA paragraph
+        # don't match this pattern and won't trigger the cut.
+        _TC_TITLE_RE = re.compile(
+            r'\n[ \t]*(?:'
+            r'conditions of carriage'
+            r'|terms and conditions of carriage'
+            r'|terms and conditions of bill of lading'
+            r'|terms and conditions of this bill of lading'
+            r'|bill of lading terms and conditions'
+            r'|standard bill of lading terms'
+            r'|standard terms and conditions'
+            r')[ \t]*\n+[ \t]*1[.)]\s+',
+            re.IGNORECASE,
+        )
+        # BL body structural markers. Each one is distinctive to the
+        # BL FORM (a field label terminated by colon, or a title line
+        # in all caps) — these never appear inside T&C clause prose,
+        # so they can be used as resume anchors without false
+        # positives on defined terms like "notify party" or "shipper".
+        _BL_RESUME_RE = re.compile(
+            r'(?:'
+            r'\n[ \t]*BILL OF LADING[ \t]*\n'  # form title
+            r'|\bshipped\s+in\s+apparent\s+good\s+order\b'
+            r'|\bb/l\s*no\.?\s*:'
+            r'|\bbill\s+of\s+lading\s+no\.?\s*:'
+            r'|\bbooking\s+no\.?\s*:'
+            r'|\bconsignee\s+or\s+order\s*:'
+            r'|\bnotify\s+party/address\s*:'
+            r'|\bnotify\s+party\s*:'
+            r'|\bport\s+of\s+loading\s*:'
+            r'|\bport\s+of\s+discharge\s*:'
+            r'|\bplace\s+of\s+receipt\s*:'
+            r'|\bplace\s+of\s+delivery\s*:'
+            r'|\bonboard\s+the\s+vessel\b'
+            r')',
+            re.IGNORECASE,
+        )
+        _m_tc = _TC_TITLE_RE.search(document_text)
+        if _m_tc and (len(document_text) - _m_tc.start()) >= 1500:
+            _tc_start = _m_tc.start()
+            # Find BL resume AFTER the T&C title (Case B: T&C first, BL after).
+            _m_resume_after = _BL_RESUME_RE.search(document_text, _tc_start + 200)
+            _marker = (
+                "\n\n[This Bill of Lading has its Terms and Conditions / "
+                "Conditions of Carriage attached on a separate page — "
+                "standard carrier boilerplate; text omitted.]\n\n"
+            )
+            _pre = document_text[:_tc_start].rstrip()
+            if _m_resume_after:
+                _post = document_text[_m_resume_after.start():].lstrip()
+                document_text = (_pre + _marker + _post) if _pre else (_marker.lstrip() + _post)
+            else:
+                # Case A: T&C at the tail with nothing after — just
+                # keep the pre-T&C BL content and the marker.
+                document_text = _pre + _marker
+
+    # Truncate document text to avoid exceeding token limits.
+    # After the T&C strip above, a BL packet is normally well under the
+    # cap — so the BL header, parties, cargo description, dates, marks,
+    # stamps and signatures all pass through intact. Raised from 6500
+    # → 10000 so the largest clean BL bodies (multi-page merged BLs
+    # with attached schedules) also fit in one prompt.
+    max_chars = 10000
     if len(document_text) > max_chars:
         document_text = document_text[:max_chars] + "\n... [truncated]"
 
