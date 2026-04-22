@@ -3441,11 +3441,12 @@ def _call_vlm(
             _has_charter = ('charter party' in _pre_lower
                             or 'subject to charter' in _pre_lower
                             or 'c/p dated' in _pre_lower)
-            _has_house = ('house bill of lading' in _pre_lower
-                          or 'house b/l' in _pre_lower
-                          or 'hbl' in _pre_lower.split())
+            _has_house_title = ('house bill of lading' in _pre_lower
+                                or 'house b/l' in _pre_lower
+                                or '\nhbl' in _pre_lower)
             _title_note = (
-                "This BL is a Multimodal Transport Document (UCP 600 Art 19). "
+                "This BL is titled a Multimodal Transport Document "
+                "(potentially falls under UCP 600 Art 19). "
                 if _is_mtd else ""
             )
             _marker = (
@@ -3463,18 +3464,30 @@ def _call_vlm(
                    if not _has_charter else
                    "- The BL body references a Charter Party — flag as "
                    "Charter Party BL if the LC prohibits it.\n")
-                + ("- The BL is NOT titled 'House Bill of Lading' and is "
-                   "NOT an HBL.\n"
-                   if not _has_house else
-                   "- The BL is titled 'House Bill of Lading'.\n")
-                + "- The BL issuer signs for themselves as carrier / MTO, "
-                "so this is NOT a freight-forwarder-issued BL.\n"
+                + ("- The BL is titled 'House Bill of Lading' — treat as "
+                   "a House BL.\n"
+                   if _has_house_title else
+                   "- House BL / Forwarder's BL status: DO NOT assume. "
+                   "Decide by reading the ISSUER and SIGNATURE CAPACITY "
+                   "on the BL body above. A House / Forwarder's BL is "
+                   "issued by a freight forwarder / NVOCC / logistics "
+                   "operator acting for the merchant (typical signals: "
+                   "signer identified as 'Agent', 'Freight Forwarder', "
+                   "'MTO acting for Merchant', or the issuer is a "
+                   "logistics firm with no vessels). A carrier-issued BL "
+                   "is signed 'For / on behalf of the Carrier' by the "
+                   "named carrier or its named agent. Use the actual "
+                   "text above; do not default either way.\n")
+                + "- Freight Forwarder / NVOCC status: likewise decide "
+                "from the issuer identity and signature capacity shown "
+                "on the BL body above. Do NOT default to either "
+                "outcome — quote the relevant line from the document.\n"
                 "IMPORTANT FOR THE VERIFIER: when the LC says 'BL must "
                 "not be X' (Short Form / Blank Back / Charter Party / "
                 "House BL / Freight Forwarder BL), that is the LC "
                 "PROHIBITING X — it is NOT the LC confirming the BL is "
-                "X. Decide from these structured facts above, NOT from "
-                "the prohibition wording.]\n\n"
+                "X. Decide from the BL body and these structured facts, "
+                "NOT from the prohibition wording.]\n\n"
             )
             _pre = document_text[:_tc_start].rstrip()
             if _m_resume_after:
