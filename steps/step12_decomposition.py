@@ -622,22 +622,36 @@ conditions for each distinct requirement:
                   N working days after shipment."
 
   2. EACH ADDRESSEE SEPARATELY: If the clause says "TO [Party A]
-     AND TO [Party B]", create TWO separate conditions:
-     a) document_to_check = "Shipment Advice"
-        condition = "Shipment Advice must be addressed to
-                     [Party A full name and address]."
-     b) document_to_check = "Shipment Advice"
-        condition = "Shipment Advice must also be addressed to
-                     the Applicant [ACTUAL APPLICANT NAME from F50]."
+     AND TO [Party B]", create TWO separate conditions. CRITICAL:
+     whenever the LC also requires a "BENEFICIARY CERTIFICATE TO THIS
+     EFFECT TO ACCOMPANY ORIGINAL DOCUMENTS" (or any accompanying
+     Beneficiary Certificate), the addressed-to check may be satisfied
+     by EITHER the Shipment Advice itself OR the Beneficiary
+     Certificate that certifies it. Use a pipe-separated
+     `document_to_check` so the verifier sees both and applies OR
+     semantics (PASS if either doc carries the addressee).
+
+     a) document_to_check = "Shipment Advice | Beneficiary Certificate"
+        condition = "Shipment Advice OR Beneficiary Certificate must be
+                     addressed to [Party A full name and address]."
+     b) document_to_check = "Shipment Advice | Beneficiary Certificate"
+        condition = "Shipment Advice OR Beneficiary Certificate must
+                     also be addressed to the Applicant
+                     [ACTUAL APPLICANT NAME from F50]."
      IMPORTANT: When the clause says "AND TO THE APPLICANT", you
      MUST replace "THE APPLICANT" with the actual applicant name
      from the LC context (F50). For example if F50 is "GETZ PHARMA
      (PVT) LTD", the condition should say "must also be addressed
      to GETZ PHARMA (PVT) LTD" — NOT just "to the Applicant".
-     This allows the verifier to check the actual name on the
-     Shipment Advice.
-     Do NOT combine them into one row — the VLM will check the
-     first addressee and skip the second.
+     This allows the verifier to check the actual name on either
+     the Shipment Advice or the Beneficiary Certificate.
+
+     If the LC does NOT require an accompanying Beneficiary Certificate,
+     drop the BC from the pipe and keep `document_to_check = "Shipment
+     Advice"` only.
+
+     Do NOT combine the two addressees (Party A and Party B) into one
+     row — the verifier will check the first and skip the second.
 
   3. POLICY/REFERENCE: "referring to their Policy No. XXX" →
      document_to_check = "Shipment Advice"

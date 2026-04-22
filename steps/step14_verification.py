@@ -3530,8 +3530,12 @@ def _call_vlm(
         body = resp.json()
         raw_content = body["choices"][0]["message"]["content"].strip()
 
-        # Extract JSON from response (VLM may wrap it in markdown or text)
-        import re
+        # Extract JSON from response (VLM may wrap it in markdown or text).
+        # Uses module-level `re` (imported at top of file). Do NOT re-import
+        # here — a local `import re` makes `re` function-local in Python,
+        # and any re.* usage BEFORE this line (e.g. the T&C strip regex
+        # compiled around line 3354) then raises
+        # `UnboundLocalError: cannot access local variable 're'`.
         json_match = re.search(r"\{.*\}", raw_content, re.DOTALL)
         if json_match:
             parsed = json.loads(json_match.group(0))
@@ -6586,6 +6590,19 @@ def run(
                     continue  # only catch false PASSes
                 _cond_u = (task.get("condition_text") or "").upper()
                 if 'ADDRESSED TO' not in _cond_u and 'MARKED TO' not in _cond_u:
+                    continue
+                # P198h — Skip OR-routed rows. When step 12 emitted a
+                # pipe-separated `document_to_check` (e.g. "Shipment
+                # Advice | Beneficiary Certificate"), step 14's OR
+                # handler built a single combined task that fed both
+                # docs' text to the LLM with OR-aware guidance. The LLM
+                # has already evaluated all candidates; overriding its
+                # verdict from a single-doc deterministic view would
+                # flip a correct PASS to FAIL when the required party
+                # is addressed on the OTHER doc in the OR (e.g. the
+                # Beneficiary Certificate that certifies the Shipment
+                # Advice was sent to the Applicant).
+                if task.get("or_docs") or ' OR ' in (task.get("document_type") or ''):
                     continue
 
                 # P178 — Multi-party "addressed to X AND Y" support.
