@@ -2572,6 +2572,47 @@ CRITICAL RULES (follow strictly):
     DR is not supposed to contain a BL; it carries the receipt
     stamp date.
 
+13y. DATE COMPARISON RULES (CRITICAL — prevent every false "prior to LC date" FAIL):
+    Trade documents carry dates in many formats. The LC's F31C issue
+    date is usually ISO "YYYY-MM-DD" or SWIFT six-digit "YYMMDD".
+    Documents carry dates like "28-Jan-25", "28-JAN-2025", "Jan 28,
+    2025", "28.01.2025", "250128", "28/01/2025", or even "28-1-25".
+    Before comparing ANY two dates:
+      1. Parse each date into (year, month, day). For a 2-digit year,
+         interpret 00..49 as 20XX and 50..99 as 19XX. So "28-Jan-25"
+         is 2025-01-28, NOT 1925 and NOT 2028. "250128" is 2025-01-28.
+         "25-01-2028" is 2028-01-25.
+      2. Compare in order: YEAR first, then MONTH, then DAY. Never
+         compare day numbers alone. "28 is greater than 2" does NOT
+         mean the date 28-Jan-2025 is later than 2-Jan-2025 in some
+         other month or year — it's only correct HERE because both
+         are January 2025.
+      3. "ON OR AFTER LC DATE" → doc_date >= LC_date → PASS.
+         "BEFORE LC DATE" / "PRIOR TO LC DATE" → doc_date < LC_date
+         → FAIL. Equal → PASS (same day = not prior).
+
+    WORKED EXAMPLE (must get right on first pass):
+      LC F31C = 2025-01-02 (January 2, 2025).
+      Commercial Invoice dated "28-Jan-25".
+      Parse invoice: 2025-01-28.
+      Compare 2025-01-28 vs 2025-01-02: year equal, month equal,
+      day 28 > day 2 → invoice date is LATER than LC date.
+      → PASS the "documents dated prior to LC date not acceptable"
+      check. (The invoice is 26 days AFTER the LC issue date.)
+
+    WORKED EXAMPLE 2:
+      LC F31C = 2025-01-02. Doc dated "250102" (six-digit YYMMDD).
+      Parse doc: 2025-01-02. Equal to LC → PASS (same day, not prior).
+
+    WORKED EXAMPLE 3:
+      LC F31C = 2025-01-02. Doc dated "28 Dec 2024".
+      Parse doc: 2024-12-28. 2024 < 2025 → doc is BEFORE LC →
+      FAIL as pre-dated.
+
+    DO NOT confuse yourself by reading the DD-MMM-YY format and
+    comparing string fragments — always parse to (year, month, day)
+    integers and compare those.
+
 13a. DATE LABEL ABBREVIATIONS (CRITICAL — do NOT miss these):
     Documents (especially invoices, batch certificates, packing lists)
     use many abbreviated date labels. ALL of the following mean the

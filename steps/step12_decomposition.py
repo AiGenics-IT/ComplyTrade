@@ -1553,11 +1553,35 @@ def run(structured_lc: dict, output_dir: str = None, progress_callback=None) -> 
                 continue
 
             # General permissive pattern: clause ends with "TO BE ACCEPTABLE" or "ACCEPTABLE"
-            # and the entire clause is about acceptability, not about requirements
+            # and the entire clause is about acceptability, not about requirements.
+            # P198m — three fixes:
+            #   1. Normalize whitespace before checking "NOT ACCEPTABLE" so a
+            #      line-wrapped "...NOT\nACCEPTABLE." still registers as a
+            #      prohibition, not as a permissive ending-in-ACCEPTABLE.
+            #   2. Skip this filter entirely if the condition's OWN text is
+            #      clearly prohibitive ("not acceptable" / "must not" /
+            #      "shall not" / "prohibited"). The filter only protects
+            #      truly permissive clauses; a prohibitive condition
+            #      decomposed from any clause MUST survive.
+            #   3. Also inspect each condition's look_for_value for the
+            #      same prohibition markers in case the condition text
+            #      is paraphrased.
+            _original_norm_ws = re.sub(r'\s+', ' ', original_upper)
+            _cond_upper_all = (
+                (cond.condition_text or '').upper() + ' ' +
+                (cond.look_for_value or '').upper()
+            )
+            _cond_is_prohibitive = bool(
+                re.search(r'\bNOT\s+ACCEPTABLE\b|\bNOT\s+ACCEPTED\b|\bMUST\s+NOT\b|'
+                          r'\bSHALL\s+NOT\b|\bPROHIBITED\b|\bFORBIDDEN\b',
+                          _cond_upper_all)
+            )
             if (dc.field_tag == '47A'
                     and re.search(r'(TO\s+BE\s+)?ACCEPTABLE\.?\s*$', original_upper)
-                    and 'NOT ACCEPTABLE' not in original_upper
-                    and not re.search(r'MUST|SHALL|REQUIRED|SHOULD APPEAR', original_upper)):
+                    and 'NOT ACCEPTABLE' not in _original_norm_ws
+                    and 'NOT ACCEPTED' not in _original_norm_ws
+                    and not re.search(r'MUST|SHALL|REQUIRED|SHOULD APPEAR', original_upper)
+                    and not _cond_is_prohibitive):
                 _progress(f"  {dc.clause_ref}: FILTERED permissive F47A clause: {cond.condition_text[:80]}")
                 continue
 
