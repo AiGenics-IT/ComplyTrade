@@ -3768,12 +3768,21 @@ def _call_vlm(
 
     # P63: text-only verification. document_text + visual_metadata already
     # Text-only LLM — no images needed for verification.
+    # P198y — max_tokens raised from 500 -> 900. The lenient JSON
+    # parser handles unescaped newlines, but it cannot recover a
+    # JSON object that was TRUNCATED mid-value because the model
+    # ran out of output budget. Long quotes from docs like the
+    # Shipment Advice (with multi-line addresses) routinely exceeded
+    # 500 tokens and the response stopped inside the `quote` field,
+    # yielding "VLM response not JSON" -> REVIEW. 900 gives enough
+    # headroom for the longest quotes while keeping response time
+    # reasonable.
     payload = {
         "model": QWEN_TEXT_LLM_MODEL,
         "messages": [
             {"role": "user", "content": prompt_text},
         ],
-        "max_tokens": 500,
+        "max_tokens": 900,
         "temperature": 0.1,
     }
 
@@ -3854,6 +3863,26 @@ def _call_vlm(
         parsed = None
         if json_match:
             parsed = _lenient_json_loads(json_match.group(0))
+        if not parsed:
+            # P198y — last-chance fallback for truncated responses.
+            # When the model runs out of tokens mid-JSON, there is no
+            # closing "}" and json.loads fails completely. Extract
+            # verdict / findings / confidence via regex instead of
+            # losing the whole row to REVIEW.
+            _m_verdict = re.search(r'"verdict"\s*:\s*"([^"]+)"', raw_content, re.IGNORECASE)
+            _m_findings = re.search(r'"findings"\s*:\s*"([^"]+)"', raw_content, re.IGNORECASE)
+            _m_quote = re.search(r'"quote"\s*:\s*"([^"]{0,500})', raw_content, re.IGNORECASE | re.DOTALL)
+            _m_conf = re.search(r'"confidence"\s*:\s*([0-9.]+)', raw_content, re.IGNORECASE)
+            if _m_verdict:
+                parsed = {
+                    "verdict": _m_verdict.group(1),
+                    "compliance": _m_verdict.group(1).lower(),
+                    "findings": (_m_findings.group(1) if _m_findings
+                                 else (_m_quote.group(1).replace('\n', ' ')[:250] if _m_quote else raw_content[:250])),
+                    "quote": _m_quote.group(1) if _m_quote else "",
+                    "confidence": float(_m_conf.group(1)) if _m_conf else 0.7,
+                    "reasoning": "Recovered from truncated VLM JSON via regex fallback.",
+                }
         if not parsed:
             parsed = {
                 "findings": raw_content[:300],
