@@ -4581,12 +4581,37 @@ def _build_tasks(
         doc_types_to_check = []
         key_map = _KEY_TERM_DOC_MAP.get(field_tag)
 
+        # P198f — DISJUNCTIVE (OR) document routing. Step 12 emits
+        # a pipe-separated document_to_check for "X OR Y" LC clauses
+        # (e.g. "Bill of Lading | Shipping Company Certificate" for
+        # "B/L OR SCC MUST SHOW 21 DAYS FREE TIME"). Split on "|" /
+        # " or " / ", OR " and mark the row so we later send a
+        # SINGLE combined-text task to the verifier instead of
+        # fanning out into N rows that each independently fail.
+        _is_or_condition = False
+        _or_doc_types = []
+        if doc_checked and not (key_map and "all" in key_map):
+            _raw = doc_checked.strip()
+            if '|' in _raw:
+                _or_doc_types = [s.strip() for s in _raw.split('|') if s.strip()]
+            else:
+                _m = re.split(r'\s+or\s+|\s*,\s*or\s+', _raw, flags=re.IGNORECASE)
+                if len(_m) > 1 and all(len(p.strip()) >= 3 for p in _m):
+                    # Only treat as OR if every fragment looks like a doc name
+                    # (avoids splitting strings like "Bill of Exchange").
+                    _or_doc_types = [p.strip() for p in _m]
+            if len(_or_doc_types) >= 2:
+                _is_or_condition = True
+
         if key_map and "all" in key_map:
             # F31C (Date of Issue) checks ALL documents
             doc_types_to_check = ["all"]
         elif key_map and len(key_map) > 1:
             # Multiple doc types (e.g. F32B -> invoice + draft)
             doc_types_to_check = key_map
+        elif _is_or_condition:
+            # P198f — One virtual "or-combined" task, not a fan-out.
+            doc_types_to_check = ["__or_combined__"]
         elif doc_checked:
             doc_types_to_check = [doc_checked]
         elif key_map:
@@ -4687,6 +4712,59 @@ def _build_tasks(
                     "reason": "no_shipping_docs",
                     "prefilled": dict(_DOC_MISSING_RESULT),
                 })
+            continue
+
+        # P198f — OR-combined virtual target. Assemble one task that
+        # bundles the text of every candidate doc behind the "or" and
+        # tells the verifier: pass if ANY of them shows the requirement.
+        if doc_types_to_check == ["__or_combined__"]:
+            _or_sections = []
+            _or_found_any = False
+            _or_images = []
+            for _ord in _or_doc_types:
+                _ord_pkts = _find_matching_docs(_ord, deduped_packets)
+                if not _ord_pkts:
+                    _or_sections.append(
+                        f"=== {_ord} ===\n[Document not present in the submission.]"
+                    )
+                    continue
+                _or_found_any = True
+                for _p in _ord_pkts:
+                    _ptxt = _pkt_text(_p)
+                    _pmeta = _pkt_visual_metadata(_p)
+                    _or_sections.append(
+                        f"=== {_ord} (type={_pkt_type(_p)}) ===\n"
+                        f"{_pmeta}\n{_ptxt}"
+                    )
+                    _imgs = _pkt_images(_p)
+                    if _imgs:
+                        _or_images.extend(_imgs)
+            _combined = "\n\n".join(_or_sections)
+            _or_preamble = (
+                f"OR-CONDITION: The LC requires the information to appear on "
+                f"AT LEAST ONE of {', '.join(_or_doc_types)}. "
+                f"PASS if ANY section below shows the required information. "
+                f"FAIL only if NONE of the sections shows it. "
+                f"Do not fail just because one section lacks it while another "
+                f"section has it — that's the whole point of the OR.\n\n"
+            )
+            tasks.append({
+                "row": row,
+                "skip": False,
+                "row_id": row_id,
+                "condition_text": (_or_preamble + condition_text)
+                                   if not _or_found_any
+                                   else condition_text,
+                "clause_ref": clause_ref,
+                "lc_field_value": lc_field_value,
+                "f47a_context": f47a_context,
+                "document_type": " OR ".join(_or_doc_types),
+                "document_text": _or_preamble + _combined,
+                "visual_metadata": "",
+                "image_path": _or_images[0] if _or_images else None,
+                "multi_doc": False,
+                "or_docs": _or_doc_types,
+            })
             continue
 
         # For each target document type, find matching packet(s)

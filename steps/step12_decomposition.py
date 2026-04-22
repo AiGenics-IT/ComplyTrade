@@ -564,6 +564,31 @@ presentation — the applicant arranged the cover separately. Creating
 an Insurance row guarantees a false "REQUIRED DOCUMENT MISSING"
 discrepancy on every run.
 
+DISJUNCTIVE ("X OR Y") DOCUMENT CLAUSES — CRITICAL:
+When a clause says "<Document A> OR <Document B> must show / must state
+<thing>", the requirement is satisfied if EITHER document carries the
+info — it does NOT require both. Examples:
+  • "B/L OR SHIPPING COMPANY CERTIFICATE TO SHOW 21 DAYS FREE TIME OF
+     CONTAINER DETENTION ALLOWED AT PORT OF DESTINATION"
+  • "BILL OF LADING OR FORWARDER'S CARGO RECEIPT MUST EVIDENCE
+     SHIPMENT ON BOARD"
+  • "COMMERCIAL INVOICE OR PACKING LIST MUST SHOW NET AND GROSS WEIGHT"
+
+For these clauses you MUST emit EXACTLY ONE condition row with a
+pipe-separated `document_to_check`:
+    document_to_check = "Bill of Lading | Shipping Company Certificate"
+    condition_text    = "Bill of Lading OR Shipping Company Certificate
+                         must show 21 days free time of container
+                         detention allowed at port of destination."
+    look_for_value    = "21 days free time of container detention"
+
+Do NOT emit two separate rows (one per doc). Two separate rows cause
+the verifier to fail whichever document happens not to carry the info,
+producing a false FAIL even when the OTHER document satisfies it.
+
+If more than two docs are OR'd, pipe-separate all of them:
+    document_to_check = "Bill of Lading | Air Waybill | Forwarder's Cargo Receipt"
+
 DOCUMENT IDENTIFICATION:
   • "SHIPMENT ADVICE" or "BENEFICIARY SHIPMENT ADVICE" = document type "Shipment Advice"
   • "CERTIFICATE FROM SHIPPING COMPANY OR THEIR AUTHORIZED AGENTS" = "Shipping Company Certificate"

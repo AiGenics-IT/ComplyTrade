@@ -434,11 +434,26 @@ def _parse_date(date_str: str) -> Optional[datetime]:
         except ValueError:
             pass
 
+    # ── Pass 1b (P198g): ISO format YYYY-MM-DD must be parsed
+    # year-first with an EXPLICIT year-month-day order. Handing it to
+    # dateutil with dayfirst=True causes "2025-01-02" to be read as
+    # "01 day / 02 month / 2025 year" → Feb 1, which produces catastrophic
+    # F31C comparisons (LC date "2025-01-02" parsed as Feb 1 makes every
+    # January-dated document look like it was issued before the LC).
+    # Handle ISO separators (-, /, .) explicitly here.
+    _iso = re.match(r'^(\d{4})[\-./](\d{1,2})[\-./](\d{1,2})(?:[T ]\d.*)?$', s)
+    if _iso:
+        try:
+            return datetime(int(_iso.group(1)), int(_iso.group(2)), int(_iso.group(3)))
+        except ValueError:
+            pass
+
     # ── Pass 2: dateutil (handles the majority of common formats) ──
     if _HAS_DATEUTIL:
         # Trade finance LCs are international — most use DD/MM/YYYY, so
-        # dayfirst=True is the safer default. dateutil will still pick MDY
-        # when day > 12 makes DMY impossible.
+        # dayfirst=True is the safer default for formats where the year
+        # is LAST. When the year is first (ISO-like), Pass 1b above has
+        # already returned; anything reaching here is year-last.
         try:
             d = _du_parser.parse(s, dayfirst=True, fuzzy=True)
             return datetime(d.year, d.month, d.day)
