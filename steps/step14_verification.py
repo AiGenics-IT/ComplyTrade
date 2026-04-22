@@ -746,6 +746,12 @@ LC FIELD VALUE: {lc_field_value}
 LC PARTIES (for resolving "APPLICANT", "BENEFICIARY", "ISSUING BANK", etc.):
 {lc_parties}
 
+KEY LC FIELDS (use these when the condition references LC dates, amount,
+LC number, ports, transshipment/partial-shipment flags, drafts-at, or any
+field below; these are the authoritative LC values — do NOT say "the LC
+date is not provided" if F31C is listed here):
+{key_lc_fields}
+
 F47A ADDITIONAL CONDITIONS (READ FIRST — these can override the condition):
 {f47a_context}
 
@@ -1696,6 +1702,69 @@ def _build_structured_facts(unified_summary: dict, bl_subtype: dict) -> str:
     return "\n".join(lines)
 
 
+def _format_key_lc_fields(final_lc_fields: dict) -> str:
+    """Build a compact KEY LC FIELDS block for the verifier prompt.
+
+    P198v — previously the verifier only saw F47A / LC parties / the
+    current clause's value. Other key SWIFT fields (LC number, issue
+    date, expiry, amount, partial / transshipment flags, latest
+    shipment) lived only inside `final_lc_fields` which was consumed
+    by deterministic post-checks but NEVER labelled for the LLM. As
+    a result the verifier would mark a row REVIEW with reasoning
+    like "LC issue date is not provided in structured facts" even
+    though it WAS in the pipeline, just hidden.
+
+    This helper extracts those fields (and unwraps step07's
+    `{field_name, value}` shape) into a short, labelled block the
+    prompt surfaces explicitly.
+    """
+    if not isinstance(final_lc_fields, dict) or not final_lc_fields:
+        return "(key LC fields not available)"
+
+    def _unwrap(v):
+        if v is None:
+            return ''
+        if isinstance(v, str):
+            return v.strip()
+        if isinstance(v, dict):
+            return str(v.get('value') or v.get('field_value') or '').strip()
+        if isinstance(v, list):
+            parts = [ _unwrap(x) for x in v ]
+            return '\n'.join(p for p in parts if p)
+        return str(v).strip()
+
+    def _get(*keys):
+        for k in keys:
+            if k in final_lc_fields:
+                s = _unwrap(final_lc_fields[k])
+                if s:
+                    return s
+        return ''
+
+    pairs = [
+        ("LC Number (F20)",                 _get('20', 'F20', 'LC_Number', 'Documentary_Credit_Number')),
+        ("LC Issue Date (F31C)",            _get('31C', 'F31C', 'Date_of_Issue')),
+        ("LC Expiry (F31D)",                _get('31D', 'F31D', 'Date_and_Place_of_Expiry')),
+        ("Amount (F32B)",                   _get('32B', 'F32B', 'Amount', 'Currency_Code_Amount')),
+        ("Available With (F41D)",           _get('41D', 'F41D', '41A')),
+        ("Drafts at (F42C)",                _get('42C', 'F42C', 'Drafts_at')),
+        ("Drawee (F42A/D)",                 _get('42A', '42D', 'F42A', 'Drawee')),
+        ("Partial Shipments (F43P)",        _get('43P', 'F43P', 'Partial_Shipments')),
+        ("Transshipment (F43T)",            _get('43T', 'F43T', 'Transshipment')),
+        ("Port of Loading (F44E)",          _get('44E', 'F44E', 'Port_of_Loading')),
+        ("Port of Discharge (F44F)",        _get('44F', 'F44F', 'Port_of_Discharge')),
+        ("Latest Shipment (F44C)",          _get('44C', 'F44C', 'Latest_Date_of_Shipment')),
+        ("Presentation Period (F48)",       _get('48', 'F48', 'Period_for_Presentation')),
+        ("Applicant (F50)",                 _get('50', 'F50', 'Applicant').split('\n')[0] if _get('50', 'F50', 'Applicant') else ''),
+        ("Beneficiary (F59)",               _get('59', 'F59', 'Beneficiary').split('\n')[0] if _get('59', 'F59', 'Beneficiary') else ''),
+        ("Issuing Bank (F52A)",             _get('52A', '52D', 'F52A', 'Issuing_Bank').split('\n')[0] if _get('52A', '52D', 'F52A', 'Issuing_Bank') else ''),
+    ]
+    lines = [f"- {label}: {val}" for label, val in pairs if val]
+    if not lines:
+        return "(key LC fields not available)"
+    return "\n".join(lines)
+
+
 def _build_verification_prompt_v2(
     condition_text: str,
     clause_ref: str,
@@ -1707,15 +1776,18 @@ def _build_verification_prompt_v2(
     visual_metadata: str,
     unified_summary: dict,
     bl_subtype: dict,
+    final_lc_fields: dict = None,
 ) -> str:
     """Compose the CORE + family-pack prompt for one (condition, doc) verification."""
     family_pack = _pick_family_pack(document_type)
     structured_facts = _build_structured_facts(unified_summary or {}, bl_subtype or {})
+    key_lc_fields = _format_key_lc_fields(final_lc_fields or {})
     return CORE_VERIFICATION_PROMPT.format(
         condition_text=condition_text or "(not provided)",
         clause_ref=clause_ref or "(n/a)",
         lc_field_value=lc_field_value or "(n/a)",
         lc_parties=lc_parties or "(Not available)",
+        key_lc_fields=key_lc_fields,
         f47a_context=f47a_context or "(none)",
         document_type=document_type or "(unknown)",
         structured_facts=structured_facts,
@@ -3638,6 +3710,7 @@ def _call_vlm(
             visual_metadata=visual_metadata or "(No visual metadata available)",
             unified_summary=unified_summary or {},
             bl_subtype=bl_subtype or {},
+            final_lc_fields=final_lc_fields or {},
         )
     else:
         # Legacy fallback path
