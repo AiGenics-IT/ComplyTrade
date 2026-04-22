@@ -3467,6 +3467,22 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                     'draught survey report': 'survey_report',
                     'loading report': 'survey_report',
                     'discharge report': 'survey_report',
+                    # P198c — generic "report" / "continuation" labels.
+                    # The VLM classifier occasionally emits a bare
+                    # "REPORT" or "REPORT CONTINUATION" label for the
+                    # middle page of a 3-page Alfred H Knight / SGS /
+                    # BV survey (page 2 of 3 loses the title). Rule 3
+                    # keys on (normalized_type, issuer, total_y), so
+                    # mapping these generics onto "survey_report"
+                    # merges the sandwiched page with pages 1 and 3
+                    # of the SAME issuer + SAME total_y group. Pages
+                    # with different issuers or Y values stay in
+                    # their own groups, so this doesn't over-merge.
+                    'report': 'survey_report',
+                    'report continuation': 'survey_report',
+                    'survey': 'survey_report',
+                    'continuation': 'survey_report',
+                    'continuation sheet': 'survey_report',
                     'quantity certificate': 'quantity_report',
                     'products quantity certificate': 'quantity_report',
                     'certificate of quantity': 'quantity_report',
