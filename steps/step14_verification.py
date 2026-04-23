@@ -1454,6 +1454,56 @@ BL field lookups (prefer structured_facts):
 - Freight: amounts_found[role=freight_amount] OR "FREIGHT PREPAID / COLLECT"
 - Number of originals: doc text "Three (3)" / "3/THREE" / similar
 - Shipped-on-board note: "CLEAN ON BOARD" / "LADEN ON BOARD" in doc text
+
+NVOCC / FIATA / FREIGHT FORWARDER — DISTINGUISH DEFINITION FROM EVIDENCE
+(P198bv — CRITICAL):
+Nearly every carrier BL prints a GLOSSARY / DEFINITIONS block on its
+reverse-side Terms & Conditions. Typical text:
+    "NVOCC" means Non Vessel Operating Common Carrier.
+    "FIATA" means the International Federation of Freight Forwarders.
+    "HOUSE BILL OF LADING" means a BL issued by a freight forwarder.
+These glossary definitions are BOILERPLATE on the BL body. They are
+NOT evidence that the BL itself is an NVOCC / FIATA / House / FF BL.
+The BL is actually that type ONLY when the prohibited term appears in:
+  • The ISSUER / CARRIER letterhead or identification block.
+  • The SIGNATURE block (e.g. "SIGNED AS FREIGHT FORWARDER",
+    "AS NVOCC", "FIATA member" printed in the issuer line).
+  • The STAMP / SEAL identifying the BL type on the face.
+  • An explicit BL-class marking like "HOUSE BILL OF LADING" printed
+    as the BL title (not just as a definition).
+
+Decision rules for a prohibitive condition "FF / NVOCC / FIATA / House
+BL NOT ACCEPTABLE":
+  • If the ONLY place the term appears is inside a "<TERM>" MEANS ...
+    sentence or a DEFINITIONS / GLOSSARY block → PASS (boilerplate,
+    not evidence).
+  • If the term appears in the issuer line, signature block, or as the
+    BL's printed title → FAIL.
+  • If the issuer is clearly a real ocean carrier (Maersk, MSC, CMA
+    CGM, COSCO, OOCL, Hapag-Lloyd, ONE, Evergreen, Pacific
+    International Lines, Yang Ming, ZIM, PIL, HMM, APL, etc.) AND
+    the token appears only in the T&C definitions → PASS.
+
+Example — the same BL carries BOTH the glossary ("NVOCC" means ...)
+AND an issuer line "PACIFIC INTERNATIONAL LINES (PRIVATE) LIMITED",
+signed "AS AGENT FOR AND ON BEHALF OF THE MASTER". Here the issuer
+is a real ocean carrier and the NVOCC token is glossary-only →
+verdict is PASS against a "not NVOCC" prohibition. Do NOT write
+"the BL is issued by a non-vessel operating carrier" unless the
+issuer letterhead / signature block actually says so.
+
+CONSIGNEE "TO ORDER" WITHOUT A NAMED BANK (P198bw — CRITICAL):
+When the LC requires the BL to be made out "TO THE ORDER OF <BANK>"
+and the BL consignee field shows just "TO ORDER" (bearer / blank
+endorsable) with no named party AND no explicit endorsement phrase
+to <BANK> is visible on the BL face, the verdict is FAIL — NOT
+REVIEW. A bare "TO ORDER" without the named party / endorsement is
+a strict UCP 600 Art 14(e) discrepancy. Only return PASS when you
+can see an EXPLICIT endorsement line to <BANK> on the BL face
+("TO THE ORDER OF <BANK>", "ENDORSED TO <BANK>", "PAY TO THE
+ORDER OF <BANK>", or similar — with the bank's distinctive name
+in the SAME line as the endorsement phrase, not elsewhere like
+notify party).
 """
 
 
