@@ -8416,15 +8416,54 @@ def run(
                     continue
                 # Collect every prohibited token applicable to this
                 # row, and check whether ANY token is present on BL.
+                # P198bn — only count a match as "real evidence" if it
+                # is NOT inside a definition / boilerplate clause. BL
+                # standard terms frequently carry a glossary like
+                #     "NVOCC" MEANS NON VESSEL OPERATING COMMON CARRIER.
+                # Such text mentions the prohibited type without the BL
+                # itself being one. We check the 80 chars preceding each
+                # match for definition markers; if one is present, the
+                # token is treated as boilerplate, not evidence.
+                _DEFINITION_MARKERS = (
+                    'MEANS ', 'MEAN ', 'SHALL MEAN', 'INCLUDES ',
+                    'DEFINED AS', 'DEFINITION OF', 'REFERS TO',
+                    'INTERPRETED AS', 'DEFINED HEREIN',
+                    '"NVOCC"', '"NVOCG"', "'NVOCC'",
+                    'DEFINITIONS', 'GLOSSARY',
+                )
+
+                def _has_real_context_match(text_up, tok):
+                    """Return True if `tok` appears in `text_up` at least
+                    once OUTSIDE of a definition/glossary context. False
+                    if every occurrence is inside boilerplate wording."""
+                    idx = 0
+                    while True:
+                        pos = text_up.find(tok, idx)
+                        if pos < 0:
+                            return False
+                        pre = text_up[max(0, pos - 80): pos]
+                        # Inside a definition block?
+                        if any(m in pre for m in _DEFINITION_MARKERS):
+                            idx = pos + 1
+                            continue
+                        # Adjacent "<TOKEN>" MEANS ... pattern?
+                        if '"' in pre[-40:] and 'MEANS' in text_up[pos:pos + 80]:
+                            idx = pos + 1
+                            continue
+                        # Real context — this is a genuine hit.
+                        return True
+
                 _tokens_present = []
                 _tokens_checked = []
                 for _key in _named_prohibitions:
                     for _tok in _BL_PROHIB_TOKENS.get(_key, ()):
                         _tokens_checked.append(_tok)
                         if _tok in _doc_text_up:
-                            _tokens_present.append(_tok)
+                            if _has_real_context_match(_doc_text_up, _tok):
+                                _tokens_present.append(_tok)
                 if _tokens_present:
-                    # BL actually has prohibited marker(s) — leave FAIL
+                    # BL actually has prohibited marker(s) in non-boiler
+                    # -plate context — leave FAIL.
                     continue
                 if not _tokens_checked:
                     continue
