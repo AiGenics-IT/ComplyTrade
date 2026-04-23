@@ -5663,8 +5663,35 @@ def run(
             # generic "Document not found in submission" — gives the
             # reviewer a clear "what is missing" without having to trace
             # the row back to its decomposition.
-            _named_findings = f"{doc_target} not found in submission"
-            _named_result   = f"Required document missing: {doc_target}"
+            #
+            # P198bd — when the condition clearly names a SPECIFIC
+            # sub-certificate (e.g. "certificate from owner of the vessel
+            # that vessel's age ≤ 15 years"), prefer that label over the
+            # generic mapped doc_target. Otherwise the reviewer sees
+            # "Shipping Company Certificate not found" even when an SCC
+            # IS submitted — the real miss is the distinct sub-cert.
+            _disp_doc = doc_target
+            try:
+                _cond_for_label = (
+                    (_get(row, 'condition_text', '') or '') + ' ' +
+                    (_get(row, 'look_for_value', '') or '')
+                ).upper()
+                if ('OWNER OF THE VESSEL' in _cond_for_label
+                        or 'VESSEL OWNER' in _cond_for_label
+                        or "VESSELS AGE" in _cond_for_label
+                        or "VESSEL'S AGE" in _cond_for_label
+                        or '15 YEARS' in _cond_for_label):
+                    _disp_doc = "Vessel Age Certificate"
+                elif ('SHELF LIFE' in _cond_for_label
+                        and 'CERTIFICATE' in _cond_for_label):
+                    _disp_doc = "Shelf Life Certificate"
+                elif ('DIRECT SAILING' in _cond_for_label
+                        or 'SAIL DIRECT' in _cond_for_label):
+                    _disp_doc = "Direct Sailing Certificate"
+            except Exception:
+                pass
+            _named_findings = f"{_disp_doc} not found in submission"
+            _named_result   = f"Required document missing: {_disp_doc}"
             # Set document_checked to the target so the report's
             # Document column shows the actual name (was previously "N/A"
             # when the row was created with doc_to_check empty).
@@ -8346,6 +8373,289 @@ def run(
             except Exception as _e:
                 try:
                     print(f"[P198ar BL-prohibited] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # P198bb — Permissive "X is acceptable / permitted / allowed" conditions
+    # are carve-outs that grant an allowance; by construction they cannot
+    # produce a FAIL. The LLM sometimes FAILs these by reading the adjacent
+    # prohibitive text inside the same compound LC clause (e.g. 47A-3
+    # "SHORT FORM, BLANK BACK ... NOT ACCEPTABLE. ... BLANK BACK /
+    # CHARTER PARTY B/L IS ACCEPTABLE.") — the permissive sentence
+    # overrides, so the prohibition does not apply. Any FAIL verdict on
+    # such a condition is a hallucination. Flip to PASS.
+    _PERMISSIVE_RE = re.compile(
+        r'\b(?:is|are|to\s+be)\s+'
+        r'(?:acceptable|permissible|permitted|allowed|allowable)\b',
+        flags=re.IGNORECASE,
+    )
+    _PERMISSIVE_NEG_RE = re.compile(
+        r'\b(?:not|no|never|must\s+not|shall\s+not|cannot)\s+'
+        r'(?:be\s+)?(?:acceptable|permissible|permitted|allowed)\b',
+        flags=re.IGNORECASE,
+    )
+    try:
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                _comp_now = _get(row, "compliance", "").upper()
+                if _comp_now != "FAIL":
+                    continue
+                _cond = (task.get("condition_text") or "").strip()
+                if not _cond:
+                    continue
+                # Must be permissive AND not contain a prohibition.
+                if not _PERMISSIVE_RE.search(_cond):
+                    continue
+                if _PERMISSIVE_NEG_RE.search(_cond):
+                    continue
+                # Flip FAIL → PASS with a clear note.
+                _msg = (
+                    f"Permissive LC allowance — the condition states "
+                    f"'{_cond[:120]}'. A permissive carve-out grants an "
+                    f"allowance and cannot produce a discrepancy. "
+                    f"Treated as PASS."
+                )
+                _set(row, "compliance", "PASS")
+                _set(row, "findings", _msg)
+                _set(row, "result", _msg[:200])
+                _set(row, "verification_notes",
+                     "P198bb permissive-cant-fail: "
+                     "acceptable/permitted/allowed statement cannot FAIL")
+                _progress(
+                    f"  [P198bb permissive] {_row_id}: FAIL->PASS "
+                    f"(permissive condition, prohibition does not apply)"
+                )
+            except Exception as _e:
+                try:
+                    print(f"[P198bb permissive] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # P198bc — BL Terms & Conditions synonym detection. A Bill of Lading
+    # that carries Terms & Conditions printed on the reverse (or attached
+    # as a contract of carriage page) is NOT a "blank back" BL. The LLM
+    # sometimes labels such a BL as blank back because it cannot see the
+    # reverse side in a scanned image, or because the T&C text is terse.
+    # These are all recognized headings for the Terms & Conditions page:
+    #   • B/L Terms and Conditions
+    #   • Carrier's Standard Terms
+    #   • Contract of Carriage
+    #   • Terms of Transport
+    #   • Reverse Side Terms
+    #   • Standard Trading Conditions (STC)
+    #   • Charter Party Terms
+    #   • Tariff Provisions
+    # If any of these tokens appear on the BL text, the BL is NOT blank
+    # back — rescue any FAIL tied to a blank-back prohibition/permission.
+    _BL_TERMS_TOKENS = (
+        'TERMS AND CONDITIONS',
+        "TERMS & CONDITIONS",
+        "B/L TERMS",
+        "BL TERMS",
+        "BILL OF LADING TERMS",
+        "CARRIER'S STANDARD TERMS",
+        "CARRIERS STANDARD TERMS",
+        "CARRIER STANDARD TERMS",
+        'CONTRACT OF CARRIAGE',
+        'TERMS OF TRANSPORT',
+        'REVERSE SIDE TERMS',
+        'TERMS ON REVERSE',
+        'STANDARD TRADING CONDITIONS',
+        'CHARTER PARTY TERMS',
+        'TARIFF PROVISIONS',
+        'CONDITIONS OF CARRIAGE',
+        'CONDITIONS ON REVERSE',
+        'SEE OVERLEAF',
+        'SEE REVERSE',
+        'CLAUSES PRINTED ON THE REVERSE',
+    )
+    try:
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                _comp_now = _get(row, "compliance", "").upper()
+                if _comp_now != "FAIL":
+                    continue
+                _doc_type_lc = (task.get("document_type") or '').lower()
+                if 'bill of lading' not in _doc_type_lc:
+                    continue
+                _cond_u = (task.get("condition_text") or "").upper()
+                if 'BLANK BACK' not in _cond_u and 'BLANK-BACK' not in _cond_u:
+                    continue
+                _doc_text_up = (task.get("document_text") or "").upper()
+                if not _doc_text_up:
+                    continue
+                _found_terms = [
+                    t for t in _BL_TERMS_TOKENS if t in _doc_text_up
+                ]
+                if not _found_terms:
+                    continue
+                _msg = (
+                    f"BL carries Terms & Conditions on reverse / attached — "
+                    f"not a blank-back BL. Evidence on document: "
+                    f"{', '.join(_found_terms[:3])}. Under UCP 600 a BL "
+                    f"with terms printed overleaf or attached as a "
+                    f"contract of carriage is a long-form / full-form BL."
+                )
+                _set(row, "compliance", "PASS")
+                _set(row, "findings", _msg)
+                _set(row, "result", _msg[:200])
+                _set(row, "verification_notes",
+                     f"P198bc BL-terms-present: found {_found_terms[:5]}")
+                _progress(
+                    f"  [P198bc BL-terms] {_row_id}: "
+                    f"FAIL->PASS (T&C tokens found: {_found_terms[:3]})"
+                )
+            except Exception as _e:
+                try:
+                    print(f"[P198bc BL-terms] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # P198be — Deterministic BL freight-wording match. When the LC
+    # condition tells the BL to carry a specific freight clause
+    # ("FREIGHT PREPAID", "FREIGHT COLLECT", "FREIGHT PAYABLE AS PER
+    # CHARTER PARTY", "FREIGHT FORWARD"), the BL face must literally
+    # carry a matching wording. The LLM sometimes hallucinates either
+    # way (PASS when the wording is missing, or FAIL when the wording
+    # is plainly present). This deterministic check compares the
+    # required freight wording from the condition to the BL document
+    # text and overrides the verdict accordingly.
+    # Equivalence: when the LC says just "FREIGHT PAYABLE" (generic),
+    # ANY of the specific payable wordings on the BL satisfies it
+    # (incl. "AS PER CHARTER PARTY", "AT DESTINATION", "PREPAID",
+    # "COLLECT"). The more specific the LC requirement, the tighter
+    # the matcher. The alternates below are consulted in order — the
+    # first match on the BL wins.
+    _FREIGHT_WORDINGS = {
+        'FREIGHT PREPAID':        (
+            'FREIGHT PREPAID', 'FRT PREPAID', 'FREIGHT PAID',
+            'PREPAID FREIGHT',
+        ),
+        'FREIGHT COLLECT':        (
+            'FREIGHT COLLECT', 'FRT COLLECT', 'COLLECT FREIGHT',
+            'FREIGHT TO COLLECT',
+        ),
+        'FREIGHT FORWARD':        (
+            'FREIGHT FORWARD', 'FREIGHT TO BE FORWARDED', 'FRT FORWARD',
+        ),
+        # Generic "FREIGHT PAYABLE" — ANY payability wording qualifies.
+        'FREIGHT PAYABLE':        (
+            'FREIGHT PAYABLE',
+            'FREIGHT PAYABLE AS PER CHARTER PARTY',
+            'FREIGHT AS PER CHARTER PARTY',
+            'FREIGHT PAYABLE AS PER C/P',
+            'FREIGHT PAYABLE AT DESTINATION',
+            'FREIGHT PAYABLE AT PORT OF DISCHARGE',
+            'FREIGHT PREPAID', 'PREPAID FREIGHT', 'FREIGHT PAID',
+            'FREIGHT COLLECT', 'COLLECT FREIGHT',
+            'FRT PAYABLE',
+        ),
+        'FREIGHT PAYABLE AT DESTINATION': (
+            'FREIGHT PAYABLE AT DESTINATION',
+            'FREIGHT PAYABLE AT PORT OF DISCHARGE',
+            'FREIGHT PAYABLE AT DESTINATION PORT',
+            'FREIGHT COLLECT', 'COLLECT FREIGHT',
+        ),
+        'FREIGHT PAYABLE AS PER CHARTER PARTY': (
+            'FREIGHT PAYABLE AS PER CHARTER PARTY',
+            'FREIGHT AS PER CHARTER PARTY',
+            'FREIGHT PER CHARTER PARTY',
+            'FREIGHT PAYABLE AS PER C/P',
+            'FREIGHT AS PER C/P',
+            'FREIGHT PAYABLE',  # generic payable is compatible
+        ),
+    }
+    try:
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                _doc_type_lc = (task.get("document_type") or '').lower()
+                if 'bill of lading' not in _doc_type_lc:
+                    continue
+                _cond_u = (task.get("condition_text") or "").upper()
+                if 'FREIGHT' not in _cond_u:
+                    continue
+                # Figure out which freight wording is required.
+                _required_key = None
+                # Order matters — check the longest/most-specific first
+                _priority = [
+                    'FREIGHT PAYABLE AS PER CHARTER PARTY',
+                    'FREIGHT PAYABLE AT DESTINATION',
+                    'FREIGHT PREPAID',
+                    'FREIGHT COLLECT',
+                    'FREIGHT FORWARD',
+                    'FREIGHT PAYABLE',
+                ]
+                for k in _priority:
+                    if k in _cond_u:
+                        _required_key = k
+                        break
+                if not _required_key:
+                    continue
+                _alts = _FREIGHT_WORDINGS.get(_required_key, ())
+                _doc_text_up = (task.get("document_text") or "").upper()
+                if not _doc_text_up:
+                    continue
+                _present = [t for t in _alts if t in _doc_text_up]
+                _comp_now = _get(row, "compliance", "").upper()
+                # Avoid double-overriding a row already updated by an
+                # earlier check (P198ao / P198ar / P198bb / P198bc) with
+                # an explicit rescue — those rescues apply to different
+                # concerns and should not be clobbered. If the row has
+                # already been set to PASS by one of those, we skip FAIL
+                # overrides here.
+                _prior_notes = (_get(row, "verification_notes", "") or "").lower()
+                _prior_rescue = any(tag in _prior_notes for tag in (
+                    'p198ao', 'p198ar', 'p198bb', 'p198bc',
+                ))
+                if _present:
+                    # Wording IS on BL. If LLM said FAIL → flip to PASS.
+                    if _comp_now == 'FAIL':
+                        _msg = (
+                            f"Required freight wording '{_required_key}' "
+                            f"is present on the BL (matched: "
+                            f"'{_present[0]}'). Condition satisfied."
+                        )
+                        _set(row, "compliance", "PASS")
+                        _set(row, "findings", _msg)
+                        _set(row, "result", _msg[:200])
+                        _set(row, "verification_notes",
+                             f"P198be freight-wording-present: required='{_required_key}' matched='{_present[0]}'")
+                        _progress(
+                            f"  [P198be freight-wording] {_row_id}: "
+                            f"FAIL->PASS ('{_required_key}' present)"
+                        )
+                else:
+                    # Wording NOT on BL. If LLM said PASS → flip to FAIL.
+                    if _comp_now == 'PASS' and not _prior_rescue:
+                        _msg = (
+                            f"Required freight wording '{_required_key}' "
+                            f"is NOT present on the BL. LC condition "
+                            f"requires the BL to carry this exact wording."
+                        )
+                        _set(row, "compliance", "FAIL")
+                        _set(row, "findings", _msg)
+                        _set(row, "result", _msg[:200])
+                        _set(row, "verification_notes",
+                             f"P198be freight-wording-missing: required='{_required_key}' none of {_alts} present")
+                        _progress(
+                            f"  [P198be freight-wording] {_row_id}: "
+                            f"PASS->FAIL ('{_required_key}' missing on BL)"
+                        )
+            except Exception as _e:
+                try:
+                    print(f"[P198be freight-wording] exception on row {_row_id}: {_e}")
                 except Exception:
                     pass
     except Exception:
