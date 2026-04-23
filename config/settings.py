@@ -44,7 +44,7 @@ VLM_MODEL_SIZE = _os.environ.get("VLM_MODEL_SIZE", "72B").upper()
 # ── Server ──
 SERVER_HOST = _os.environ.get("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(_os.environ.get("SERVER_PORT", "8082"))
-BUILD_TAG = "2026-04-23-P198ao"
+BUILD_TAG = "2026-04-23-P198ap"
 
 # ── Processing ──
 MAX_CONCURRENT_OCR = 5
@@ -56,6 +56,29 @@ MAX_CONCURRENT_VLM = 8
 OCR_TIMEOUT = 604800    # 7 days — effectively no timeout
 VLM_TIMEOUT = 604800    # 7 days — effectively no timeout
 CONFIDENCE_THRESHOLD = 0.70  # Below this → REVIEW status. Same threshold for both 7B and 72B for now.
+
+# ── F45A goods-description fan-out toggle ──
+# Default: False — F45A (goods description, quantity, unit price,
+# Incoterms, proforma citation) is checked ONLY on the Commercial
+# Invoice, per UCP 600 Art 18(c). Other documents (BL, Packing List,
+# Certificates) fall under UCP 600 Art 14(e) — goods description may
+# be in general terms not conflicting with the credit, so strict
+# match is not required.
+#
+# When set to True, the step12 decomposer CLONES every F45A condition
+# targeting "Commercial Invoice" and adds a parallel condition
+# targeting "Packing List" (same condition_text and look_for_value).
+# Useful when the LC or bank examiner policy expects the Packing
+# List to carry the same goods-description values as the invoice.
+#
+# Risks when enabled:
+#   - Packing List typically lists goods differently (weight /
+#     packages / carton counts), so strict-match checks may produce
+#     false FAILs on descriptions / unit price / Incoterms that
+#     Packing Lists don't normally carry.
+#   - Turn ON only when a specific LC or operating policy requires
+#     it, and monitor for false FAILs.
+F45A_CHECK_PACKING_LIST = False
 
 # ── Database ──
 DB_HOST = "localhost"

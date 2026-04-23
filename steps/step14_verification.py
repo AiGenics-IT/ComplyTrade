@@ -5271,6 +5271,76 @@ def _build_tasks(
                     "bl_subtype": _bl_st if isinstance(_bl_st, dict) else None,
                 })
 
+    # P198ap — Optional F45A fan-out to Packing List.
+    # When config.F45A_CHECK_PACKING_LIST is True, every 45A row that
+    # targets "Commercial Invoice" is cloned to also check the
+    # Packing List. The clone is added ONLY if a Packing List packet
+    # is actually present in the submission — if none exists, we do
+    # nothing (no "Packing List missing" FAIL is produced, as this
+    # check is OPT-IN for already-present PL docs only).
+    #
+    # Default: OFF. Turn on via config.settings.F45A_CHECK_PACKING_LIST
+    # = True. See settings.py for rationale.
+    #
+    # The clone mirrors the original task's condition_text and
+    # look_for_value so the verifier performs the same comparison
+    # against the Packing List's refined_text. Aggregation rules
+    # (P198ag universal / existential best-case) determine how the
+    # combined verdict rolls up: if the LC intent is UNIVERSAL
+    # (all docs must show X), both CI + PL are required to PASS;
+    # if EXISTENTIAL (any matches), ANY pass suffices.
+    try:
+        from config import settings as _cfg
+        if getattr(_cfg, 'F45A_CHECK_PACKING_LIST', False):
+            _pl_matches = _find_matching_docs('Packing List', deduped_packets)
+            if _pl_matches:
+                # Collect original tasks that (a) target Commercial
+                # Invoice and (b) belong to a 45A-family row.
+                _clone_source = []
+                for _t in tasks:
+                    if _t.get('skip'):
+                        continue
+                    _dt = (_t.get('document_type') or '').lower()
+                    if 'invoice' not in _dt or 'proforma' in _dt:
+                        continue
+                    _cref = (_t.get('clause_ref') or '').upper()
+                    if '45A' not in _cref:
+                        continue
+                    _clone_source.append(_t)
+
+                # Deduplicate by row_id so we only clone once per row
+                _seen_row_ids = set()
+                _clones = []
+                for _t in _clone_source:
+                    _rid = _t.get('row_id', '')
+                    if _rid in _seen_row_ids:
+                        continue
+                    _seen_row_ids.add(_rid)
+                    for _pl in _pl_matches:
+                        _imgs = _pkt_images(_pl)
+                        _pl_us = _pl.get('unified_summary') if isinstance(_pl, dict) else None
+                        _clones.append({
+                            "row": _t.get("row"),
+                            "skip": False,
+                            "row_id": _rid,
+                            "condition_text": _t.get("condition_text", ""),
+                            "clause_ref": _t.get("clause_ref", ""),
+                            "lc_field_value": _t.get("lc_field_value", ""),
+                            "f47a_context": _t.get("f47a_context", ""),
+                            "document_type": _pkt_type(_pl),
+                            "document_text": _pkt_text(_pl),
+                            "visual_metadata": _pkt_visual_metadata(_pl),
+                            "image_path": _imgs[0] if _imgs else None,
+                            "multi_doc": True,  # fan-out forces multi-doc
+                            "unified_summary": _pl_us if isinstance(_pl_us, dict) else None,
+                            "bl_subtype": None,
+                        })
+                if _clones:
+                    tasks.extend(_clones)
+    except Exception:
+        # Optional fan-out must never break task building. Swallow.
+        pass
+
     return tasks
 
 
