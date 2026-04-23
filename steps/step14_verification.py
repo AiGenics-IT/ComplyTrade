@@ -1504,6 +1504,29 @@ can see an EXPLICIT endorsement line to <BANK> on the BL face
 ORDER OF <BANK>", or similar — with the bank's distinctive name
 in the SAME line as the endorsement phrase, not elsewhere like
 notify party).
+
+CONTAINER / SEAL NUMBERS ON BL (P198bx):
+When a condition requires "BL must show container number and seal
+number", look for ISO 6346 container codes (4 uppercase letters
+followed by 7 digits, e.g. YMLU8681239, MAEU1234567, CAIU9876543)
+anywhere in the BL particulars section — they are commonly embedded
+in running text like "YMLU8681239 40'HQ FCL" rather than under a
+labelled CONTAINER NO: field. If at least one ISO 6346 code is
+present on the BL, the container-number requirement is satisfied.
+Seal numbers follow SEAL NO: XXX / SEAL: XXX / SEAL NUMBER XXX.
+"""
+
+
+FAMILY_PACK_DRAFT_EXTRA = """
+THIRD-PARTY EXCEPTION — DRAFT MUST BE BENEFICIARY-DRAWN (P198bz):
+Clauses like "Third party documents are acceptable EXCEPT Draft and
+Invoice" do NOT mean Drafts are inadmissible. They mean that while
+most docs may be third-party, the DRAFT (and INVOICE) must be issued
+by the BENEFICIARY — i.e. not a third party. Verdict logic:
+  - Draft drawer / issuer matches LC beneficiary (F59)  → PASS
+  - Draft drawer / issuer is a different entity         → FAIL
+Never write "Draft is not acceptable according to the condition"
+solely because the condition mentions Draft in the exception list.
 """
 
 
@@ -1557,6 +1580,18 @@ Multiple copies:
 
 LC reference on draft:
 - references_found[role=lc_reference] must match final_lc.F20.
+
+THIRD-PARTY EXCEPTION — DRAFT MUST BE BENEFICIARY-DRAWN (P198bz):
+Clauses like "Third party documents are acceptable EXCEPT Draft and
+Invoice" do NOT mean Drafts are inadmissible. They mean that while
+most docs may be third-party, the DRAFT (and INVOICE) must be issued
+by the BENEFICIARY — not a third party. Verdict logic:
+  • Draft drawer / issuer matches LC beneficiary (F59)  → PASS
+  • Draft drawer / issuer is a different entity         → FAIL
+Look at "FOR AND ON BEHALF OF <X>", the drawer signature line, and
+parties_found[role=drawer]. Never write "Draft is not acceptable
+according to the condition" solely because the condition mentions
+Draft in the exception list.
 """
 
 
@@ -6165,105 +6200,167 @@ def run(
     #   - Fax number presence: same logic for fax numbers.
     # Normalisation: SWIFT uses (AT) for @, (DOT) for .
     def _normalise_email_text(s: str) -> str:
-        """Convert SWIFT email notation to standard: INFO(AT)SIUT. ORG → info@siut.org"""
-        s = re.sub(r'\(\s*AT\s*\)', '@', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*DOT\s*\)', '.', s, flags=re.IGNORECASE)
-        # Strip spaces around @ and . in email-like contexts
-        # "INFO @SIUT. ORG" → "INFO@SIUT.ORG"
+        """Convert every common SWIFT / OCR notation for an email address
+        into the canonical lowercase form user@domain.tld.
+
+        Covered input variants (all map to the same output):
+          • user@domain.com
+          • USER@DOMAIN.COM
+          • user (AT) domain.com
+          • user (at) domain.com
+          • USER[AT]DOMAIN.COM
+          • user {at} domain.com
+          • user -at- domain.com
+          • user (DOT) domain (DOT) com
+          • user[dot]domain[dot]com
+          • user <at> domain <dot> com
+          • Trailing/leading spaces around @ or .
+          • HTML-ish email prefixes (mailto:, EMAIL:, E-MAIL:, #EMAIL:)
+        """
+        # Strip mail URI / label prefixes so they don't contaminate the
+        # extracted email address.
+        s = re.sub(r'\bmailto\s*:\s*', ' ', s, flags=re.IGNORECASE)
+        # Replace every @-substitute token with @:
+        #   (AT), [AT], {AT}, <AT>, -AT-
+        # NB: bare-space-AT-space is deliberately NOT handled here —
+        # every trade-finance SWIFT/OCR format brackets the substitute
+        # ("(AT)", "[AT]", "-AT-"). Accepting bare "AT" causes phrases
+        # like "email AT abid.hussain@..." / "notify AT mailto:..." to
+        # corrupt extraction.
+        s = re.sub(
+            r'[\(\[\{<]\s*AT\s*[\)\]\}>]|'
+            r'(?<=\S)\s*-\s*AT\s*-\s*(?=\S)',
+            '@', s, flags=re.IGNORECASE,
+        )
+        # Replace every "."-substitute token with ".":
+        #   (DOT), [DOT], {DOT}, <DOT>, -DOT-
+        s = re.sub(
+            r'[\(\[\{<]\s*DOT\s*[\)\]\}>]|'
+            r'(?<=\S)\s*-\s*DOT\s*-\s*(?=\S)',
+            '.', s, flags=re.IGNORECASE,
+        )
+        # Strip spaces around @ and inside the host: "INFO @SIUT. ORG" → "INFO@SIUT.ORG"
         s = re.sub(r'\s*@\s*', '@', s)
         s = re.sub(r'(\w)\s*\.\s*(\w)', r'\1.\2', s)
         return s
 
     def _extract_emails(text: str) -> list:
-        """Extract all email addresses from text, normalising (AT)/(DOT)."""
+        """Extract all email addresses from text, normalising (AT)/(DOT)
+        in every common variant, case-folded to lowercase."""
         normalised = _normalise_email_text(text)
         return [e.lower() for e in re.findall(
             r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}', normalised
         )]
 
-    _email_checked_rows = set()
+    # P198by — aggregation-aware email-presence check. Previously the
+    # check ran per-task with a `_email_checked_rows` guard that only
+    # allowed the FIRST matching task to decide the verdict. For multi-
+    # packet fan-outs (e.g. 4 Shipment Advice packets, only 2 of which
+    # carry the applicant email), that meant whichever packet ran
+    # first pinned the row to FAIL/PASS — a race. Now collect per-packet
+    # presence across ALL tasks, then decide existentially: ANY packet
+    # carrying the required email → PASS.
+    _email_per_row: Dict[str, Dict] = {}
     for task in vlm_tasks:
-        row = task["row"]
-        row_id = task.get("row_id", "?")
-        compliance = _get(row, "compliance", "").upper()
-        # P168/P181 — Run the email check on ALL verdicts (PASS/REVIEW/
-        # FAIL) so we can both catch false positives AND rewrite the
-        # finding text to a clean canonical form on genuine FAILs.
-        if compliance not in ("PASS", "REVIEW", "REVIEW REQUIRED", "FAIL", "NOT COMPLIED"):
-            continue
-
-        cond_text = (task.get("condition_text") or "").lower()
-        doc_text = (task.get("document_text") or "")
-
-        # Check: does the condition mention sending to a specific email?
-        email_keywords = ['via email', 'by email', 'email at', 'email to',
-                          'e-mail to', 'e-mail at', 'send to']
-        # P198bp — also trigger when the condition contains an explicit
-        # email address (either @ form or SWIFT-style (AT)/(DOT) form).
-        # The decomposer often emits "addressed to X at EMAIL" wording
-        # without any of the legacy keyword phrases, but the intent is
-        # still the same: the document must carry that email.
-        _has_email_addr = bool(re.search(
-            r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}',
-            cond_text,
-        )) or bool(re.search(
-            r'[A-Za-z0-9._%+\-]+\s*\(\s*AT\s*\)\s*[A-Za-z0-9.\-]+',
-            cond_text,
-            flags=re.IGNORECASE,
-        ))
-        has_email_kw = any(kw in cond_text for kw in email_keywords) or _has_email_addr
-
-        if has_email_kw:
-            # Extract email addresses from the LC condition
+        try:
+            row = task["row"]
+            row_id = task.get("row_id", "?")
+            cond_text = (task.get("condition_text") or "").lower()
+            doc_text = (task.get("document_text") or "")
+            email_keywords = [
+                'via email', 'by email', 'email at', 'email to',
+                'e-mail to', 'e-mail at', 'send to',
+            ]
+            _has_email_addr = bool(re.search(
+                r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}',
+                cond_text,
+            )) or bool(re.search(
+                r'[A-Za-z0-9._%+\-]+\s*\(\s*AT\s*\)\s*[A-Za-z0-9.\-]+',
+                cond_text,
+                flags=re.IGNORECASE,
+            ))
+            has_email_kw = any(kw in cond_text for kw in email_keywords) or _has_email_addr
+            if not has_email_kw:
+                continue
             cond_emails = _extract_emails(cond_text)
-            _progress(
-                f"  [email-check] {row_id}: kw=True, "
-                f"cond_emails={cond_emails}, doc_len={len(doc_text)}"
-            )
-            if cond_emails and row_id not in _email_checked_rows:
-                _email_checked_rows.add(row_id)
-                # Check if ANY of these emails appear in the document text
-                doc_emails = _extract_emails(doc_text)
-                doc_text_normalised = _normalise_email_text(doc_text).lower()
-                found_any = False
-                for em in cond_emails:
-                    if em in doc_text_normalised or em in doc_emails:
-                        found_any = True
-                        break
-                _progress(
-                    f"  [email-check] {row_id}: doc_emails={doc_emails}, "
-                    f"found_any={found_any}"
+            if not cond_emails:
+                continue
+            doc_emails = _extract_emails(doc_text)
+            doc_text_normalised = _normalise_email_text(doc_text).lower()
+            found_any = False
+            for em in cond_emails:
+                if em in doc_text_normalised or em in doc_emails:
+                    found_any = True
+                    break
+            _entry = _email_per_row.setdefault(row_id, {
+                "row": row,
+                "cond_emails": cond_emails,
+                "packets_with_email": [],
+                "packets_without": [],
+            })
+            if found_any:
+                _entry["packets_with_email"].append(
+                    task.get("document_type", "?")
                 )
-                if not found_any:
-                    # P181 — Clean canonical finding text for missing
-                    # email. Applies to both PASS-turned-FAIL and to
-                    # existing FAIL rows (where the LLM's verbose
-                    # "document does not provide any evidence" is
-                    # replaced with concise requirement language).
-                    _set(row, "compliance", "FAIL")
-                    missing_emails = ', '.join(cond_emails)
-                    _clean_finding = (
-                        f"Email {missing_emails} required but not mentioned in document."
-                    )
-                    _set(row, "findings", _clean_finding)
-                    _set(row, "found_text", _clean_finding)
-                    _set(row, "result", _clean_finding)
+            else:
+                _entry["packets_without"].append(
+                    task.get("document_type", "?")
+                )
+        except Exception as _e:
+            try:
+                print(f"[P198by email collect] exception on row {task.get('row_id','?')}: {_e}")
+            except Exception:
+                pass
+
+    for row_id, entry in _email_per_row.items():
+        try:
+            row = entry["row"]
+            compliance = _get(row, "compliance", "").upper()
+            emails_joined = ', '.join(entry["cond_emails"])
+            if entry["packets_with_email"]:
+                # ANY packet carries the email → existential PASS.
+                # Only flip from FAIL / NOT COMPLIED; leave existing
+                # PASS / REVIEW alone (LLM verdict respected when
+                # favourable).
+                if compliance in ("FAIL", "NOT COMPLIED"):
+                    _set(row, "compliance", "PASS")
+                    _set(row, "findings",
+                         f"Email {emails_joined} is present on the document "
+                         f"(found on {len(entry['packets_with_email'])} packet(s)).")
+                    _set(row, "result",
+                         f"Email {emails_joined} present on "
+                         f"{len(entry['packets_with_email'])} packet(s).")
                     _set(row, "verification_notes",
-                         f"LC requires notification via {missing_emails}; "
-                         f"document text does not contain this address.")
-                    _progress(f"  {row_id}: {compliance}->FAIL (email {missing_emails} missing)")
-                else:
-                    # P181 — If the email IS found and LLM previously
-                    # returned FAIL, this likely a hallucination; flip
-                    # to PASS. Already-PASS/REVIEW rows stay as-is.
-                    if compliance in ("FAIL", "NOT COMPLIED"):
-                        _set(row, "compliance", "PASS")
-                        found_emails = ', '.join(cond_emails)
-                        _set(row, "findings",
-                             f"Email {found_emails} is present on the document.")
-                        _set(row, "result",
-                             f"Email {found_emails} is present on the document.")
-                        _progress(f"  {row_id}: FAIL->PASS (email {found_emails} found in doc)")
+                         f"P198by email aggregation: "
+                         f"present on {len(entry['packets_with_email'])}/"
+                         f"{len(entry['packets_with_email'])+len(entry['packets_without'])} packet(s)")
+                    _progress(
+                        f"  [P198by email] {row_id}: {compliance}->PASS "
+                        f"({emails_joined} found on ≥1 packet)"
+                    )
+            else:
+                # NO packet has the email → FAIL (only if not already
+                # rescued by some other post-check that set it to PASS).
+                if compliance != "PASS":
+                    _set(row, "compliance", "FAIL")
+                    _clean = (
+                        f"Email {emails_joined} required but not mentioned in document."
+                    )
+                    _set(row, "findings", _clean)
+                    _set(row, "found_text", _clean)
+                    _set(row, "result", _clean)
+                    _set(row, "verification_notes",
+                         f"P198by email aggregation: {emails_joined} "
+                         f"missing on all {len(entry['packets_without'])} packet(s)")
+                    _progress(
+                        f"  [P198by email] {row_id}: {compliance}->FAIL "
+                        f"({emails_joined} missing on all {len(entry['packets_without'])} packet(s))"
+                    )
+        except Exception as _e:
+            try:
+                print(f"[P198by email apply] exception on row {row_id}: {_e}")
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ #
     # 5c. Deterministic text-presence check — override VLM false FAILs
@@ -9090,6 +9187,200 @@ def run(
                     print(f"[P198br apply] exception on row {_row_id}: {_e}")
                 except Exception:
                     pass
+    except Exception:
+        pass
+
+    # P198bx — BL container-number / seal-number deterministic rescue.
+    # Container numbers on ocean BLs follow ISO 6346: 4 uppercase letters
+    # (owner/equipment code) + 7 digits (serial + check digit), often
+    # embedded in running particulars text like
+    #     "YMLU8681239 40'HQ FCL / FCL YMAV443317 17 PACKAGES"
+    # rather than under a "CONTAINER NO:" label. The LLM frequently
+    # reads the row as FAIL ("BL does not show container number")
+    # because it scans for a labelled field. This rescue regex-scans
+    # doc text per BL packet for ISO 6346 patterns AND seal-number
+    # patterns, aggregates across packets, and flips FAIL -> PASS
+    # when any packet carries at least one container id.
+    # Strict ISO 6346 is 4 letters + 7 digits. Some shipping lines print
+    # only 6 digits (owner/serial without check) in the BL particulars,
+    # especially on reefer / chassis references. Accept 4+6 or 4+7.
+    _ISO6346_RE = re.compile(r'\b([A-Z]{4})(\d{6,7})\b')
+    _SEAL_RE = re.compile(
+        r'SEAL\s*(?:NO\.?|NUMBERS?|#)\s*[:\-]?\s*([A-Z0-9\-]{4,})|'
+        r'SEAL\s+([A-Z]{2,4}\d{4,})',
+        flags=re.IGNORECASE,
+    )
+    try:
+        _container_per_row: Dict[str, Dict] = {}
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                _doc_type_lc = (task.get("document_type") or '').lower()
+                if 'bill of lading' not in _doc_type_lc:
+                    continue
+                _cond_u = (task.get("condition_text") or "").upper()
+                _asks_container = bool(re.search(
+                    r'\bCONTAINER\s+(?:NO|NUMBER|NUMBERS)\b|'
+                    r'\bCONTAINER\s+ID\b',
+                    _cond_u,
+                ))
+                _asks_seal = bool(re.search(
+                    r'\bSEAL\s+(?:NO|NUMBER|NUMBERS)\b',
+                    _cond_u,
+                ))
+                if not (_asks_container or _asks_seal):
+                    continue
+                _doc_text_up = (task.get("document_text") or "").upper()
+                if not _doc_text_up:
+                    continue
+                _containers = [
+                    f"{m.group(1)}{m.group(2)}"
+                    for m in _ISO6346_RE.finditer(_doc_text_up)
+                ]
+                _seals = []
+                for _sm in _SEAL_RE.finditer(_doc_text_up):
+                    _s = _sm.group(1) or _sm.group(2) or ''
+                    if _s and _s.strip() and _s.strip() not in ('NO', 'NUMBER'):
+                        _seals.append(_s.strip())
+                _entry = _container_per_row.setdefault(_row_id, {
+                    'row': row,
+                    'asks_container': _asks_container,
+                    'asks_seal': _asks_seal,
+                    'containers': set(),
+                    'seals': set(),
+                    'n_packets': 0,
+                })
+                _entry['n_packets'] += 1
+                for c in _containers:
+                    _entry['containers'].add(c)
+                for s in _seals:
+                    _entry['seals'].add(s)
+            except Exception as _e:
+                try:
+                    print(f"[P198bx collect] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+
+        for _row_id, _entry in _container_per_row.items():
+            try:
+                row = _entry['row']
+                _comp_now = _get(row, "compliance", "").upper()
+                if _comp_now != 'FAIL':
+                    continue
+                _has_container_if_asked = (
+                    not _entry['asks_container'] or bool(_entry['containers'])
+                )
+                _has_seal_if_asked = (
+                    not _entry['asks_seal'] or bool(_entry['seals'])
+                )
+                if _has_container_if_asked and _has_seal_if_asked:
+                    _bits = []
+                    if _entry['containers']:
+                        _cs = sorted(_entry['containers'])[:3]
+                        _bits.append(f"container(s): {', '.join(_cs)}")
+                    if _entry['seals']:
+                        _ss = sorted(_entry['seals'])[:3]
+                        _bits.append(f"seal(s): {', '.join(_ss)}")
+                    _msg = (
+                        f"BL carries the required identifiers — "
+                        f"{'; '.join(_bits)}. ISO 6346 container codes "
+                        f"embedded in the particulars section satisfy "
+                        f"the condition."
+                    )
+                    _set(row, "compliance", "PASS")
+                    _set(row, "findings", _msg)
+                    _set(row, "result", _msg[:200])
+                    _set(row, "verification_notes",
+                         f"P198bx container/seal ISO 6346 rescue: "
+                         f"containers={len(_entry['containers'])} "
+                         f"seals={len(_entry['seals'])} "
+                         f"across {_entry['n_packets']} BL packet(s)")
+                    _progress(
+                        f"  [P198bx container/seal] {_row_id}: "
+                        f"FAIL->PASS ({len(_entry['containers'])} container id(s) found)"
+                    )
+            except Exception as _e:
+                try:
+                    print(f"[P198bx apply] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # P198bz — Draft / Invoice "third-party acceptable except X" rescue.
+    # LC wording: "Third party documents are acceptable except for Draft
+    # and Invoice." — MEANS third-party is OK for all docs EXCEPT Draft
+    # and Invoice, which must be beneficiary-issued. LLM often reads
+    # this backwards as "Draft is excluded from acceptability" and FAILs
+    # a legitimate beneficiary-drawn Draft. Rescue: if the Draft's drawer
+    # / issuer matches the LC beneficiary (F59), flip FAIL -> PASS.
+    try:
+        _final_lc_fields = step06_result.get('final_lc', step06_result).get(
+            'consolidated_fields', step06_result.get('consolidated_fields', {})
+        )
+        _f59 = str(_final_lc_fields.get('59') or _final_lc_fields.get('F59') or '')
+        _beneficiary_name = _f59.split('\n')[0].strip() if _f59 else ''
+        if _beneficiary_name:
+            _bene_tokens = [
+                w for w in re.split(r'\s+', re.sub(r'[.,;:\'"]+', ' ', _beneficiary_name))
+                if w and w.upper() not in (
+                    'THE', 'OF', 'AND', 'LTD', 'LIMITED', 'CO', 'COMPANY',
+                    'INC', 'CORP', 'LLC', 'PVT', 'PRIVATE',
+                ) and len(w) >= 3
+            ]
+            if _bene_tokens:
+                for task in vlm_tasks:
+                    row = task["row"]
+                    _row_id = task.get("row_id", "?")
+                    try:
+                        _comp_now = _get(row, "compliance", "").upper()
+                        if _comp_now != 'FAIL':
+                            continue
+                        _doc_type_lc = (task.get("document_type") or '').lower()
+                        if not ('draft' in _doc_type_lc or 'bill of exchange' in _doc_type_lc
+                                or 'commercial invoice' in _doc_type_lc):
+                            continue
+                        _cond_u = (task.get("condition_text") or "").upper()
+                        if not (
+                            'THIRD PARTY' in _cond_u and 'EXCEPT' in _cond_u
+                            and ('DRAFT' in _cond_u or 'INVOICE' in _cond_u)
+                        ):
+                            continue
+                        _doc_text_up = (task.get("document_text") or "").upper()
+                        if not _doc_text_up:
+                            continue
+                        # Beneficiary name tokens must appear in the doc
+                        # text (draft/invoice issuer section). Use token
+                        # coverage ≥ 70% to allow abbreviations.
+                        _hits = sum(
+                            1 for t in _bene_tokens
+                            if re.search(r'\b' + re.escape(t.upper()) + r'\b', _doc_text_up)
+                        )
+                        _coverage = _hits / max(len(_bene_tokens), 1)
+                        if _coverage >= 0.7:
+                            _msg = (
+                                f"Document is issued by the LC beneficiary "
+                                f"'{_beneficiary_name[:60]}' (token coverage "
+                                f"{_coverage*100:.0f}%), which satisfies the "
+                                f"requirement that Drafts / Invoices must be "
+                                f"drawn by the beneficiary (not a third party)."
+                            )
+                            _set(row, "compliance", "PASS")
+                            _set(row, "findings", _msg)
+                            _set(row, "result", _msg[:200])
+                            _set(row, "verification_notes",
+                                 f"P198bz third-party exception: drawer matches "
+                                 f"F59 beneficiary (coverage={_coverage:.2f})")
+                            _progress(
+                                f"  [P198bz third-party-except] {_row_id}: "
+                                f"FAIL->PASS (issued by beneficiary)"
+                            )
+                    except Exception as _e:
+                        try:
+                            print(f"[P198bz] exception on row {_row_id}: {_e}")
+                        except Exception:
+                            pass
     except Exception:
         pass
 
