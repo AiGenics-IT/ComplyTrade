@@ -3870,6 +3870,30 @@ def _call_vlm(
                 err_body = (resp.text or "")[:300].replace("\n", " ").replace("\r", " ")
             except Exception:
                 pass
+            # P198bu — when the upstream returns a gateway error (502/504)
+            # or HTML from an NGINX/Apache error page, don't dump the
+            # raw HTML into the user-facing finding. Keep the status
+            # code + a short canonical message so the report stays
+            # readable. The real payload is still logged via server_log.
+            _is_html = '<html' in err_body.lower() or '<body' in err_body.lower() or '<h1' in err_body.lower()
+            _is_gateway = resp.status_code in (502, 503, 504)
+            if _is_html or _is_gateway:
+                _clean = (
+                    f"Model service temporarily unavailable "
+                    f"(HTTP {resp.status_code}). Retry the verification."
+                )
+                return {
+                    "row_id": row_id,
+                    "findings": _clean,
+                    "result": _clean,
+                    "compliance": "review",
+                    "confidence": 0.0,
+                    "reasoning": (
+                        f"Upstream returned HTTP {resp.status_code}"
+                        + (" (HTML error page)" if _is_html else "")
+                    ),
+                    "elapsed": elapsed,
+                }
             return {
                 "row_id": row_id,
                 "findings": "Nil",
@@ -5149,6 +5173,16 @@ def _build_tasks(
             'bl conditions of carriage', 'conditions of carriage',
             'cover page', 'title page',
             'unknown', 'unidentified', 'supporting document',
+            # P198bs — Attached List / Attached Schedule is an ancillary
+            # page that lists the pallets / containers / cargo breakdown
+            # of the MAIN Bill of Lading. It is not an independently
+            # presented document under UCP 600, so "ALL DOCUMENTS MUST
+            # SHOW LC NUMBER / DATE / BANK" does not apply to it. Same
+            # for an Attached Schedule, cargo manifest page, pallet
+            # manifest, or packing insert.
+            'attached list', 'attached schedule', 'attached manifest',
+            'cargo manifest page', 'pallet manifest', 'packing insert',
+            'container list', 'container manifest', 'stuffing list',
         )
 
         def _is_excluded_from_alldoc_fanout(pt: str, pkt=None) -> bool:
@@ -8762,6 +8796,15 @@ def run(
             ('FREIGHT PAYABLE',
              re.compile(r'\bFREIGHT\s+PAYABLE\b')),
         ]
+        # P198bq — Aggregate across all packets sharing the same row_id
+        # BEFORE deciding the verdict. When the LC condition fans out to
+        # multiple BL packets (real BLs + back-side / attached-list pages
+        # both classified as "Bill of Lading"), the wording may be on
+        # the real BL but absent from small attached-list pages. Under
+        # UCP existential multi-doc aggregation, ANY packet with the
+        # wording satisfies the requirement. Previous per-task loop
+        # race-conditioned the row's state.
+        _freight_per_row: Dict[str, Dict] = {}
         for task in vlm_tasks:
             row = task["row"]
             _row_id = task.get("row_id", "?")
@@ -8772,12 +8815,7 @@ def run(
                 _cond_u = (task.get("condition_text") or "").upper()
                 if 'FREIGHT' not in _cond_u:
                     continue
-                # Skip prohibitive / document-type-prohibition conditions —
-                # e.g. "freight forwarder's BL not acceptable",
-                # "BL having any reference of issuer being a freight
-                # forwarder must not be presented", "FIATA not accepted".
-                # These are handled by P198ao / P198ar, not by freight
-                # payability wording matching.
+                # Skip prohibitive / document-type-prohibition conditions
                 if re.search(
                     r'\b(?:NOT\s+ACCEPT|MUST\s+NOT|SHALL\s+NOT|NOT\s+PRESENTED|'
                     r'NOT\s+PERMITTED|NOT\s+ALLOWED|FORBIDDEN|PROHIBIT|'
@@ -8792,8 +8830,6 @@ def run(
                     _cond_u,
                 ):
                     continue
-                # Figure out which freight wording is required using
-                # precise regex matchers (P198bm).
                 _required_key = None
                 for k, _pat in _key_matchers:
                     if _pat.search(_cond_u):
@@ -8806,54 +8842,202 @@ def run(
                 if not _doc_text_up:
                     continue
                 _present = [t for t in _alts if t in _doc_text_up]
+                _entry = _freight_per_row.setdefault(_row_id, {
+                    'row': row,
+                    'required_key': _required_key,
+                    'alts': _alts,
+                    'tasks_present': [],
+                    'tasks_absent': [],
+                })
+                if _present:
+                    _entry['tasks_present'].append((
+                        task.get("document_type", "?"), _present[0],
+                    ))
+                else:
+                    _entry['tasks_absent'].append(
+                        task.get("document_type", "?"),
+                    )
+            except Exception as _e:
+                try:
+                    print(f"[P198be collect] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+
+        # Apply the aggregated verdict per row.
+        for _row_id, _entry in _freight_per_row.items():
+            try:
+                row = _entry['row']
                 _comp_now = _get(row, "compliance", "").upper()
-                # Avoid double-overriding a row already updated by an
-                # earlier check (P198ao / P198ar / P198bb / P198bc) with
-                # an explicit rescue — those rescues apply to different
-                # concerns and should not be clobbered. If the row has
-                # already been set to PASS by one of those, we skip FAIL
-                # overrides here.
                 _prior_notes = (_get(row, "verification_notes", "") or "").lower()
                 _prior_rescue = any(tag in _prior_notes for tag in (
                     'p198ao', 'p198ar', 'p198bb', 'p198bc',
                 ))
-                if _present:
-                    # Wording IS on BL. If LLM said FAIL → flip to PASS.
+                _req = _entry['required_key']
+                _alts = _entry['alts']
+                if _entry['tasks_present']:
+                    # ANY packet carries the wording → existential PASS.
                     if _comp_now == 'FAIL':
+                        _dtype, _match = _entry['tasks_present'][0]
                         _msg = (
-                            f"Required freight wording '{_required_key}' "
-                            f"is present on the BL (matched: "
-                            f"'{_present[0]}'). Condition satisfied."
+                            f"Required freight wording '{_req}' is present "
+                            f"on the BL (matched: '{_match}' on {_dtype}). "
+                            f"Condition satisfied."
                         )
                         _set(row, "compliance", "PASS")
                         _set(row, "findings", _msg)
                         _set(row, "result", _msg[:200])
                         _set(row, "verification_notes",
-                             f"P198be freight-wording-present: required='{_required_key}' matched='{_present[0]}'")
+                             f"P198be/bq freight-wording-present: required='{_req}' "
+                             f"matched='{_match}' on {len(_entry['tasks_present'])}/{len(_entry['tasks_present'])+len(_entry['tasks_absent'])} packet(s)")
                         _progress(
-                            f"  [P198be freight-wording] {_row_id}: "
-                            f"FAIL->PASS ('{_required_key}' present)"
+                            f"  [P198bq freight-wording] {_row_id}: "
+                            f"FAIL->PASS ('{_req}' present on {_dtype})"
                         )
                 else:
-                    # Wording NOT on BL. If LLM said PASS → flip to FAIL.
+                    # NO packet carries the wording → FAIL.
                     if _comp_now == 'PASS' and not _prior_rescue:
                         _msg = (
-                            f"Required freight wording '{_required_key}' "
-                            f"is NOT present on the BL. LC condition "
-                            f"requires the BL to carry this exact wording."
+                            f"Required freight wording '{_req}' is NOT "
+                            f"present on any of the {len(_entry['tasks_absent'])} "
+                            f"BL packet(s). LC condition requires this wording."
                         )
                         _set(row, "compliance", "FAIL")
                         _set(row, "findings", _msg)
                         _set(row, "result", _msg[:200])
                         _set(row, "verification_notes",
-                             f"P198be freight-wording-missing: required='{_required_key}' none of {_alts} present")
+                             f"P198be/bq freight-wording-missing: required='{_req}' "
+                             f"none of {_alts} present on {len(_entry['tasks_absent'])} packet(s)")
                         _progress(
-                            f"  [P198be freight-wording] {_row_id}: "
-                            f"PASS->FAIL ('{_required_key}' missing on BL)"
+                            f"  [P198bq freight-wording] {_row_id}: "
+                            f"PASS->FAIL ('{_req}' missing on all BL packets)"
                         )
             except Exception as _e:
                 try:
-                    print(f"[P198be freight-wording] exception on row {_row_id}: {_e}")
+                    print(f"[P198bq apply] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # P198br — Aggregation-aware BL consignee "TO ORDER OF <BANK>" rescue.
+    # When the LC requires the BL to be consigned "TO THE ORDER OF <BANK>",
+    # the deterministic consignee check runs per-packet. If one of the
+    # matched packets is a mis-classified tiny attached-list page, its
+    # empty consignee field produces a FAIL that overwrites a correct
+    # PASS from the real BL packet. This rescue scans ALL matched BL
+    # packets' document_text for the endorsement phrase with the required
+    # bank name near it; if ANY packet carries it, flip FAIL -> PASS.
+    try:
+        _consignee_per_row: Dict[str, Dict] = {}
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                _doc_type_lc = (task.get("document_type") or '').lower()
+                if 'bill of lading' not in _doc_type_lc:
+                    continue
+                _cond_u = (task.get("condition_text") or "").upper()
+                if not (
+                    'TO THE ORDER OF' in _cond_u or 'TO ORDER OF' in _cond_u
+                    or 'CONSIGNED TO' in _cond_u or 'MADE OUT TO' in _cond_u
+                ):
+                    continue
+                # Extract the target bank / party name from the condition.
+                _target = None
+                for _pat in (
+                    r'TO\s+(?:THE\s+)?ORDER\s+OF[\s:]+([^.\n]+?)(?:[.,\n]|$)',
+                    r'CONSIGNED\s+TO[\s:]+([^.\n]+?)(?:[.,\n]|$)',
+                    r'MADE\s+OUT\s+TO[\s:]+([^.\n]+?)(?:[.,\n]|$)',
+                ):
+                    _m = re.search(_pat, _cond_u)
+                    if _m:
+                        _target = _m.group(1).strip(' .,:\'"')
+                        break
+                if not _target:
+                    continue
+                # Build distinctive token(s) from the target — use words
+                # that are likely the distinctive party name (BANK AL HABIB
+                # -> "BANK AL HABIB") plus variants without "BANK"/"LTD".
+                _target_clean = re.sub(r'[.,;:\'"—–-]+', ' ', _target).strip()
+                _stop = {'BANK','LTD','LIMITED','LLC','PLC','INC','CO',
+                         'PVT','PRIVATE','COMPANY','THE','OF','AND',
+                         'PAKISTAN','KARACHI','LAHORE','ISLAMABAD'}
+                _tokens = [
+                    w for w in re.split(r'\s+', _target_clean)
+                    if w and w.upper() not in _stop and len(w) >= 2
+                ]
+                if not _tokens:
+                    continue
+                _distinct_phrase = ' '.join(_tokens).upper()
+                _doc_text_up = (task.get("document_text") or "").upper()
+                if not _doc_text_up:
+                    continue
+                # Find endorsement: "TO THE ORDER OF ... <distinctive tokens>"
+                # within a reasonable distance (80 chars).
+                _doc_squash = re.sub(r'\s+', ' ', _doc_text_up)
+                _has_endorsement = False
+                _endorsement_hit = ''
+                for _m in re.finditer(
+                    r'TO\s+(?:THE\s+)?ORDER\s+OF\s+([^.\n]{0,120})',
+                    _doc_squash,
+                ):
+                    _window = _m.group(1)
+                    # All distinctive tokens must appear in the window
+                    if all(tok.upper() in _window for tok in _tokens):
+                        _has_endorsement = True
+                        _endorsement_hit = _m.group(0)[:120]
+                        break
+                _entry = _consignee_per_row.setdefault(_row_id, {
+                    'row': row,
+                    'target': _target,
+                    'tokens': _tokens,
+                    'packets_with_endorsement': [],
+                    'packets_without': [],
+                })
+                if _has_endorsement:
+                    _entry['packets_with_endorsement'].append((
+                        task.get("document_type", "?"), _endorsement_hit,
+                    ))
+                else:
+                    _entry['packets_without'].append(
+                        task.get("document_type", "?"),
+                    )
+            except Exception as _e:
+                try:
+                    print(f"[P198br collect] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+
+        for _row_id, _entry in _consignee_per_row.items():
+            try:
+                row = _entry['row']
+                _comp_now = _get(row, "compliance", "").upper()
+                if _comp_now != 'FAIL':
+                    continue
+                if not _entry['packets_with_endorsement']:
+                    continue
+                # At least one BL packet carries "TO THE ORDER OF <BANK>"
+                # with the required distinctive tokens -> existential PASS.
+                _dtype, _hit = _entry['packets_with_endorsement'][0]
+                _msg = (
+                    f"BL is made out TO THE ORDER OF {_entry['target']} — "
+                    f"endorsement phrase located on {_dtype}: "
+                    f"'{_hit[:100]}'. Condition satisfied across "
+                    f"{len(_entry['packets_with_endorsement'])} BL packet(s)."
+                )
+                _set(row, "compliance", "PASS")
+                _set(row, "findings", _msg)
+                _set(row, "result", _msg[:200])
+                _set(row, "verification_notes",
+                     f"P198br consignee aggregation: tokens={_entry['tokens']} "
+                     f"present on {len(_entry['packets_with_endorsement'])} packet(s)")
+                _progress(
+                    f"  [P198br consignee] {_row_id}: FAIL->PASS "
+                    f"('TO THE ORDER OF {_entry['target'][:30]}' on {_dtype})"
+                )
+            except Exception as _e:
+                try:
+                    print(f"[P198br apply] exception on row {_row_id}: {_e}")
                 except Exception:
                     pass
     except Exception:

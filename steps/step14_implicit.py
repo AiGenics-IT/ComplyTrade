@@ -823,33 +823,14 @@ def _hybrid_date_check(check_id: str, clause_ref: str, lc_date_str: str,
         # back to the issue date on a covering document, since the
         # issue date is when the negotiating bank SENT, not when the
         # issuing bank RECEIVED).
-        _stamp_note = ''
-        if _stamps_raw:
-            _raw_texts = [
-                str(s.get('text', '') or '') for s in _stamps_raw
-                if isinstance(s, dict) and s.get('text')
-            ]
-            if _raw_texts:
-                _stamp_note = (
-                    f" Stamp text on page: "
-                    f"{', '.join(repr(t) for t in _raw_texts[:3])} — "
-                    f"could not be parsed as a date (likely OCR "
-                    f"corruption of day/month)."
-                )
+        # P198bt — Short, user-facing finding. Prior wording was too
+        # long (~100 words) and repeated the system's internal logic in
+        # the report. Keep it one line.
         return CheckResult(
             check_id=check_id, clause_ref=clause_ref, condition=condition,
             document_checked=doc_type,
-            findings=(
-                "Presentation date on covering schedule is indeterminate. "
-                "The only reliable source on a Documentary Remittance / "
-                "Covering Schedule is the RECEIVED stamp at the issuing "
-                "bank; the typed document date is the SENDING date and "
-                "cannot be used for LC-expiry / presentation-period "
-                "checks."
-                + _stamp_note
-                + " Manual review of the page is required."
-            ),
-            result="Presentation date unclear — manual review",
+            findings="Receiving / presentation date not clear — manual review.",
+            result="Receiving / presentation date not clear — manual review",
             compliance="REVIEW", severity="hard",
         )
 
@@ -1825,8 +1806,31 @@ def run(
                     lc_text_all,
                 ))
                 if prior_prohibited:
+                    # P198bs — Attached List / attached schedule / pallet
+                    # manifest / etc. are ancillary pages of the Bill of
+                    # Lading, not independently presented documents. F31C
+                    # date-of-issue applies to standalone presented docs
+                    # only; skipping these avoids spurious "no date" REVIEWs.
+                    _F31C_EXCLUDE_TYPES = (
+                        'attached list', 'attached schedule',
+                        'attached manifest', 'cargo manifest page',
+                        'pallet manifest', 'packing insert',
+                        'container list', 'container manifest',
+                        'stuffing list',
+                        'documentary remittance', 'document remittance',
+                        'covering letter', 'cover letter',
+                        'covering schedule', 'cover schedule',
+                        'blank page', 'back page', 'back cover',
+                        'terms and conditions', 'terms overleaf',
+                        'conditions of carriage',
+                        'unknown', 'unidentified',
+                    )
                     for pkt in _deduplicate_documents(packets):
                         dt = pkt.get('document_type', 'Unknown')
+                        _dt_lo = (dt or '').lower().strip()
+                        if any(ex in _dt_lo for ex in _F31C_EXCLUDE_TYPES):
+                            progress_fn(f"  [date_of_issue] [{dt}]: SKIPPED (ancillary/non-standalone)")
+                            continue
                         r = _hybrid_date_check('date_of_issue', 'F31C', lc_date, pkt,
                             f"Document must be dated on/after LC issue date ({lc_date})", 'after')
                         all_results.append(r)
