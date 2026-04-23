@@ -8399,16 +8399,34 @@ def run(
                 ))
                 if not _prohibitive:
                     continue
-                # Which prohibition-markers does the condition name?
+                # P198bn — map condition wording to prohibition keys.
+                # Conditions rarely say "NVOCC" — they say
+                # "non-vessel operating carrier", etc. Accept either form.
+                _COND_SYNONYMS = {
+                    'FIATA': ('FIATA',),
+                    'NVOCC': (
+                        'NVOCC', 'NON-VESSEL OPERATING',
+                        'NON VESSEL OPERATING', 'NON-VESSEL CARRIER',
+                        'NON VESSEL CARRIER',
+                    ),
+                    'HOUSE': (
+                        'HOUSE B/L', 'HOUSE BILL OF LADING',
+                        'HOUSE BL', 'HBL',
+                    ),
+                    'FORWARDER': (
+                        'FREIGHT FORWARDER', "FORWARDER'S",
+                        'FORWARDERS', "FORWARDER BILL",
+                        'FORWARDER BL', 'ISSUED BY FREIGHT FORWARDER',
+                    ),
+                    'CHARTER PARTY': ('CHARTER PARTY', 'CHARTER-PARTY'),
+                    'SHORT FORM': ('SHORT FORM',),
+                    'BLANK BACK': ('BLANK BACK',),
+                }
                 _named_prohibitions = []
-                for _key in _BL_PROHIB_TOKENS.keys():
-                    if _key in _cond_u:
-                        _named_prohibitions.append(_key)
-                # Also detect "WORDS LIKE 'FIATA'" / "SHOWING FIATA"
-                # even when the condition doesn't spell out other
-                # prohibitions.
-                if 'FIATA' in _cond_u and 'FIATA' not in _named_prohibitions:
-                    _named_prohibitions.append('FIATA')
+                for _key, _syns in _COND_SYNONYMS.items():
+                    if any(s in _cond_u for s in _syns):
+                        if _key not in _named_prohibitions:
+                            _named_prohibitions.append(_key)
                 if not _named_prohibitions:
                     continue
                 _doc_text_up = (task.get("document_text") or "").upper()
