@@ -6304,12 +6304,31 @@ def run(
             _ref_m = re.search(_pat, _cond_up)
             if _ref_m:
                 _ref_num = _ref_m.group(1).strip()
-                # Check if this reference number appears in the document
-                if _ref_num not in _doc_up and _ref_num.replace('-', '') not in _doc_up.replace('-', ''):
+                # P198bl — compare the reference number with OCR-tolerant
+                # normalization. Otherwise condition "POLICY NO
+                # 2023008MIPD000453" (LC-extracted; OCR read O as 0)
+                # would FAIL the document "POLICY NO 2023008MIPDO00453"
+                # (with letter O), even though both refer to the same
+                # policy. _normalize_id folds O<->0 / I<->1 / etc.
+                _ref_norm = _normalize_id(_ref_num)
+                _doc_norm = _normalize_id(_doc_up)
+                _ref_plain = _ref_num.replace('-', '')
+                _doc_plain = _doc_up.replace('-', '')
+                _found = (
+                    _ref_num in _doc_up
+                    or _ref_plain in _doc_plain
+                    or (len(_ref_norm) >= 4 and _ref_norm in _doc_norm)
+                )
+                if not _found:
                     _set(row, "compliance", "FAIL")
                     _set(row, "result", f"{_label} {_ref_num} not found in document")
                     _set(row, "findings", f"{_label} number {_ref_num} not found in document text")
                     _progress(f"  {row_id}: PASS->FAIL ({_label} {_ref_num} not in document)")
+                else:
+                    # Keep PASS. If LLM had a hallucinated FAIL earlier,
+                    # this deterministic check would already have been
+                    # on a PASS row (entry condition); nothing to do.
+                    pass
                 break
 
         # Check B: Consignee "TO ORDER OF [bank]" vs "TO ORDER" alone
@@ -7405,24 +7424,36 @@ def run(
             toks = [t for t in s.split() if len(t) >= 3]
             return toks
 
+        # P198bk — regex of corporate-entity words stripped from BOTH
+        # the expected name phrase AND the doc-text before matching. The
+        # previous normalizer only stripped these as a SUFFIX at the end
+        # of the name, so a condition "... AND SONS (PVT) LTD, 4-KM ..."
+        # normalized to "... AND SONS LTD 4 KM ..." (LTD kept because not
+        # at end) while the doc "SONS(PVT) LTD.4-KM ..." normalized to
+        # "... AND SONS PVT LTD 4 KM ..." (PVT now a separate word),
+        # producing a false mismatch. Strip them inline on both sides.
+        _ENTITY_WORDS_RE = re.compile(
+            r'\b(?:LTD|LIMITED|LLC|PLC|INC|INCORPORATED|CORP|CORPORATION|'
+            r'CO|COMPANY|PVT|PRIVATE|S\.?A\.?|S\.?L\.?|B\.?V\.?|N\.?V\.?|'
+            r'GMBH|AG|AB|OY)\b\.?',
+            flags=re.IGNORECASE,
+        )
+
         def _normalize_name_phrase(s):
             """Normalize a party name for contiguous phrase matching.
-            Strips M/s / Messrs / Mr. prefixes, corporate suffixes,
-            punctuation, and collapses whitespace. Keeps the DISTINCTIVE
-            NAME PHRASE intact so we search for it as a whole unit, not
-            as isolated words that could match anything."""
+            Strips M/s / Messrs / Mr. prefixes, corporate entity words
+            (anywhere — not just suffix), punctuation, parenthetical
+            acronyms, and collapses whitespace. Keeps the DISTINCTIVE
+            NAME PHRASE intact so we search for it as a whole unit."""
             s = str(s or '').upper()
             # Strip honorifics
             s = re.sub(r'\b(M/?S\.?|MESSRS\.?|MR\.?|MRS\.?|DR\.?)\s+', '', s)
             # Strip parenthetical acronyms (SIUT), (Pvt), etc.
             s = re.sub(r'\([^)]*\)', ' ', s)
-            # Strip corporate suffixes at the END of the name
-            s = re.sub(
-                r'\s+(LTD|LIMITED|LLC|PLC|INC|CORP|CO|PVT|PRIVATE|COMPANY|'
-                r'S\.?A\.?|S\.?L\.?|B\.?V\.?|N\.?V\.?|GMBH|AG|AB|OY)\b\.?'
-                r'(?:\s+.*)?$',
-                '', s,
-            )
+            # Strip corporate entity words ANYWHERE in the string (not
+            # just at end). Fixes the "SONS LTD 4 KM" vs "SONS PVT LTD
+            # 4 KM" alignment problem.
+            s = _ENTITY_WORDS_RE.sub(' ', s)
             # Strip trailing location (", KARACHI, PAKISTAN" / ", LAHORE")
             s = re.sub(
                 r',?\s*(?:KARACHI|LAHORE|ISLAMABAD|MUMBAI|DUBAI|RIYADH|DOHA|'
@@ -7441,22 +7472,46 @@ def run(
             return s
 
         def _phrase_in_doc(name_phrase, doc_text_up):
-            """True if the normalized party name appears on the doc as a
-            contiguous phrase. Tolerates whitespace/punctuation differences
-            between words but requires word order to match."""
+            """True if the normalized party name appears on the doc.
+            Tolerates whitespace/punctuation differences, inline corporate
+            entity words (PVT/LTD/CO), and minor token noise (up to 2
+            filler words between consecutive phrase tokens). P198bk."""
             if not name_phrase or not doc_text_up:
                 return False
-            # Doc normalized the same way (upper + collapse non-alpha to space)
+            # Normalize doc: collapse non-alnum to space, strip inline
+            # corporate entity words so "SONS PVT LTD 4 KM" matches a
+            # phrase built from "SONS 4 KM".
             _doc_norm = re.sub(r'[^A-Z0-9]+', ' ', doc_text_up).strip()
+            _doc_norm = _ENTITY_WORDS_RE.sub(' ', _doc_norm)
             _doc_norm = re.sub(r'\s+', ' ', _doc_norm)
             _words = [w for w in name_phrase.split() if w]
-            if len(_words) < 2:
+            if not _words:
+                return False
+            if len(_words) == 1:
                 # Single-word name — require exact word boundary
                 return bool(re.search(r'\b' + re.escape(name_phrase) + r'\b', _doc_norm))
-            # Multi-word — require all words contiguously with only
-            # whitespace between. Build pattern escaping each word.
-            _pattern = r'\b' + r'\s+'.join(re.escape(w) for w in _words) + r'\b'
-            return bool(re.search(_pattern, _doc_norm))
+            # Multi-word — allow up to 2 filler words (other than the
+            # next phrase word) between each phrase token, so small doc
+            # artefacts like a stray word, abbreviation, or punctuation
+            # block don't break the match.
+            _gap = r'(?:\s+\S+){0,2}\s+'
+            _pattern = (
+                r'\b' + _gap.join(re.escape(w) for w in _words) + r'\b'
+            )
+            if re.search(_pattern, _doc_norm):
+                return True
+            # P198bk fallback — high token-coverage match. If >= 85% of
+            # the phrase's distinctive tokens (length >= 3) appear in
+            # the doc, treat as present. Handles documents that split
+            # the name across lines or reorder sub-phrases.
+            _distinct = [w for w in _words if len(w) >= 3]
+            if not _distinct:
+                return False
+            _hits = sum(
+                1 for w in _distinct
+                if re.search(r'\b' + re.escape(w) + r'\b', _doc_norm)
+            )
+            return (_hits / len(_distinct)) >= 0.85
 
         # P198ac — Aggregate per-row across multiple packet tasks so
         # that ANY packet satisfying the addressing requirement keeps

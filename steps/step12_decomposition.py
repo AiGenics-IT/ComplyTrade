@@ -1710,17 +1710,24 @@ def run(structured_lc: dict, output_dir: str = None, progress_callback=None) -> 
             # to the negotiating bank, not a compliance requirement on
             # any shipping document — there is nothing to verify on the
             # document set (no "beneficiary paid for courier" field lives
-            # on any shipping doc).
+            # on any shipping doc). [\s\S] lets the address span
+            # newlines (typical SWIFT clause layout).
             r'DOCUMENTS?\s+(?:MUST|SHALL|WILL|SHOULD|ARE\s+TO|TO)\s+'
-            r'BE\s+SENT\s+TO\s+.{5,200}\b(?:BY\s+COURIER|BY\s+DHL|BY\s+FEDEX|'
+            r'BE\s+SENT\s+TO\s+[\s\S]{5,400}\b(?:BY\s+COURIER|BY\s+DHL|BY\s+FEDEX|'
             r'BY\s+TNT|BY\s+UPS|BY\s+ARAMEX)',
             original_upper,
         ) or re.search(
             # Any remittance wording that explicitly names "AT
             # BENEFICIARY'S COST" / "AT SELLER'S COST" alongside
-            # DOCUMENTS + COURIER wording.
-            r'DOCUMENTS?.{0,200}(?:BY\s+COURIER|BY\s+DHL|BY\s+FEDEX|BY\s+TNT|BY\s+UPS|BY\s+ARAMEX)'
-            r'.{0,100}AT\s+(?:BENEFICIARY|SELLER|APPLICANT|BUYER)(?:\'S|S)?\s+COST',
+            # DOCUMENTS + COURIER wording (cross-line).
+            r'DOCUMENTS?[\s\S]{0,300}(?:BY\s+COURIER|BY\s+DHL|BY\s+FEDEX|BY\s+TNT|BY\s+UPS|BY\s+ARAMEX)'
+            r'[\s\S]{0,200}AT\s+(?:BENEFICIARY|SELLER|APPLICANT|BUYER)(?:\'S|S)?\s+COST',
+            original_upper,
+        ) or re.search(
+            # Combined: "AT BENEFICIARY'S COST" near "COURIER" even when
+            # ordering or wrapping is unusual.
+            r'AT\s+(?:BENEFICIARY|SELLER|APPLICANT|BUYER)(?:\'S|S)?\s+COST'
+            r'[\s\S]{0,200}(?:COURIER|DHL|FEDEX)',
             original_upper,
         ):
             _progress(f"  {dc.clause_ref}: FILTERED all conditions — document forwarding instruction")
