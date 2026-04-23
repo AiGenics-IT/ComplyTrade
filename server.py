@@ -1929,17 +1929,50 @@ def _do_regenerate(job_id: str):
         _log(f"Step 7 failed: {e}")
         s7 = {}
 
-    # Re-run Step 8 (Shipping Classification) — needs step03 packets + step07 required docs
+    # Re-run Step 8 (Shipping Classification) — needs step03 packets +
+    # step07 required docs + per-page image paths + GLM text. The
+    # original pipeline path (around the main upload flow) enriches
+    # each shipping packet with image paths and cleaned text from
+    # step02 before handing it to Step 8; without that enrichment,
+    # Step 8 can't classify / extract and Step 9 falls back to
+    # placeholder output. P198av — mirror the original-pipeline
+    # enrichment here.
     try:
         s8_dir = os.path.join(results_dir, 'step08')
         os.makedirs(s8_dir, exist_ok=True)
-        # Build shipping packets from step03
-        _ship_pkts = [dict(p) for p in s3.get('packets', [])
-                      if (p.get('document_type', '') or '').lower() not in
-                      ('lc', 'letter of credit', 'amendment', 'mt799', 'mt999',
-                       'mt754', 'mt940', 'mt730', 'mt740', 'mt747')]
+        _img_dir = os.path.join(results_dir, 'images')
+        _ship_pkts = []
+        for _p in s3.get('packets', []):
+            _dt = (_p.get('document_type', '') or '').lower()
+            if _dt in ('lc', 'letter of credit', 'amendment',
+                       'mt799', 'mt999', 'mt754', 'mt940',
+                       'mt730', 'mt740', 'mt747'):
+                continue
+            _spkt_copy = dict(_p)
+            _pg_nums = _spkt_copy.get('page_numbers', []) or []
+            _img_paths = []
+            for _pn in _pg_nums:
+                _ip = os.path.join(_img_dir, f"page_{_pn:03d}.png")
+                if os.path.exists(_ip):
+                    _img_paths.append(_ip)
+            _spkt_copy['page_image_paths'] = _img_paths
+            _texts = []
+            for _pn in _pg_nums:
+                _t = s5_input.get('page_texts', {}).get(_pn, '') or \
+                     s5_input.get('page_texts', {}).get(str(_pn), '')
+                if _t:
+                    _texts.append(_t)
+            _joined = '\n'.join(_texts)
+            _spkt_copy['text'] = _joined
+            _spkt_copy['cleaned_text'] = _joined
+            _spkt_copy['raw_text'] = _joined
+            _ship_pkts.append(_spkt_copy)
+        # Pass the enriched packets via the s6.shipping_packets field
+        # (same contract as the main pipeline path at server.py:3128)
+        _s6_with_shipping = dict(s6)
+        _s6_with_shipping['shipping_packets'] = _ship_pkts
         s8 = _to_dict(step08_shipping_classification.run(
-            {'packets': _ship_pkts}, s7, s8_dir, _log))
+            _s6_with_shipping, s7, s8_dir, _log))
         if job_id in _jobs:
             _jobs[job_id]['step_results']['step08'] = s8
     except Exception as e:
@@ -1955,6 +1988,37 @@ def _do_regenerate(job_id: str):
             _jobs[job_id]['step_results']['step09'] = s9
     except Exception as e:
         _log(f"Step 9 failed: {e}")
+        s9 = {}
+
+    # P198av — Sanity check step 9 output. If packets came back with
+    # placeholder text / empty images / bogus extracted fields, log a
+    # loud warning so verification isn't silently run on bad data.
+    try:
+        _pkts_s9 = (s9 or {}).get('reconciled_packets') or []
+        _bad = 0
+        _total = len(_pkts_s9)
+        _placeholders = (
+            'the GLM text with any additions',
+            'SCC-2023-12345',
+            'PO-987654321',
+            'INV-123456789',
+            'Global Logistics Maritime',
+        )
+        for _p in _pkts_s9:
+            _txt = (_p.get('refined_text', '') or
+                    _p.get('cleaned_text', '') or
+                    _p.get('raw_text', ''))
+            _imgs = _p.get('page_image_paths') or []
+            if (not _txt or len(_txt) < 40 or
+                    any(pl in _txt for pl in _placeholders) or
+                    not _imgs):
+                _bad += 1
+        if _total > 0 and _bad >= _total * 0.5:
+            _log(f"⚠ WARNING: step 9 produced {_bad}/{_total} packets with "
+                 f"missing/placeholder text or no images. Verification will "
+                 f"be unreliable. Re-upload the PDF to recover.")
+    except Exception:
+        pass
 
     # Read back from saved file for accurate data
     _s6_saved = {}

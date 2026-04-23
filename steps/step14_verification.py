@@ -4742,17 +4742,69 @@ def _build_tasks(
             continue
 
         # Auto-PASS copy/duplicate conditions — system counts copies, not VLM
-        # BUT only if the document actually exists in the submission
+        # BUT only if:
+        #   1) the document actually exists in the submission, AND
+        #   2) the condition is ONLY about copy count (no other
+        #      requirements like consignee / freight / clean / signed
+        #      / charter-party / notify / to-the-order-of / endorsed /
+        #      addressed to).
+        #
+        # P198as — previously the auto-PASS fired whenever the condition
+        # contained "FULL SET" / "DUPLICATE" / "COPIES" / "TRIPLICATE",
+        # bypassing other verbs in the same sentence. That caused
+        # compound clauses like "Full set of clean shipped on board
+        # Marine/Ocean Charter Party Bills of Lading MUST BE MADE OUT
+        # TO THE ORDER OF BANK AL HABIB LTD." to silently pass the
+        # consignee check. Now we fall through to the LLM/post-checks
+        # when the condition carries additional requirements.
         condition_text = _get(row, "condition_text", "")
         _cond_upper = condition_text.upper()
         if re.search(r'\b(DUPLICATE|TRIPLICATE|QUADRUPLICATE|OCTUPLICATE|COPIES|FULL\s+SET|IN\s+\d+\s+ORIG)', _cond_upper):
-            # Check if the document type mentioned in the condition exists
+            # Detect additional requirements in the SAME clause.
+            _has_other_requirement = bool(re.search(
+                r'\b('
+                # Consignee / order-of / endorsement
+                r'TO\s+(?:THE\s+)?ORDER\s+OF|'       # "to the order of <bank>"
+                r'CONSIGNED\s+TO|'
+                r'CONSIGNEE|CONSIGNOR|'
+                r'IN\s+(?:FAVOUR|FAVOR)\s+OF|'
+                r'ENDORS(?:ED|E|EMENT|ING|ABLE)|'
+                # Notify / shipper
+                r'NOTIFY(?:\s+|ING)|'
+                r'NOTIFY\s+PARTY|'
+                r'SHIPPER|'
+                # Freight / clean / shipped-on-board
+                r'FREIGHT\s+(?:PREPAID|COLLECT|PAYABLE|TO\s+COLLECT)|'
+                r'CLEAN\s+(?:SHIPPED\s+)?ON\s+BOARD|'
+                r'CLEAN\s+ON\s+BOARD|'
+                r'SHIPPED\s+ON\s+BOARD|'
+                # Marked / showing / bearing / stating
+                r'MARKED(?:\s|\')|'
+                r'SHOWING\b|'
+                r'MADE\s+OUT\s+TO|'
+                r'ADDRESSED\s+(?:TO|AT)|'
+                # Imperative verbs after the noun
+                r'(?:MUST|SHOULD|SHALL)\s+(?:SHOW|STATE|INDICATE|BEAR|CONTAIN|MENTION|APPEAR|CERTIFY|BE\s+SIGNED|BE\s+MADE|BE\s+MARKED|BE\s+ADDRESSED)|'
+                r'BEARING\b|STATING\b|CERTIFYING\b|MENTIONING\b|INDICATING\b|'
+                # Signing / issuer
+                r'SIGNED\s+BY|ISSUED\s+BY|'
+                # BL type restrictions
+                r'CHARTER\s+PARTY|CHARTER-PARTY|'
+                r'SHORT\s+FORM|BLANK\s+BACK|'
+                r'HOUSE\s+(?:BL|BILL|B/L)|'
+                r'FIATA|NVOCC|'
+                r'INSTITUTE\s+CLASSIFICATION'
+                r')\b',
+                _cond_upper,
+            ))
             doc_checked = _get(row, "document_checked", "")
             _doc_exists = False
             if doc_checked:
                 _matched = _find_matching_docs(doc_checked, deduped_packets)
                 _doc_exists = bool(_matched)
-            if _doc_exists:
+            if _doc_exists and not _has_other_requirement:
+                # Condition is SOLELY about copy count (e.g. "BL in
+                # full set of 3 originals") — auto-PASS.
                 _set(row, "compliance", "PASS")
                 _set(row, "result", "Copy requirement verified by system (document count checked)")
                 _set(row, "findings", f"System detected correct number of copies")
@@ -4763,8 +4815,10 @@ def _build_tasks(
                     "reason": "copy_count_auto_pass",
                 })
                 continue
-            # Document not found — don't auto-pass, let it fall through
-            # to the missing document check below
+            # Either doc not found, or condition has OTHER requirements
+            # (consignee / freight / clean / endorsement / etc.) — fall
+            # through to LLM verification so the other clauses get
+            # checked.
 
         # P76: Auto-PASS physical packing instructions —
         # "COPY OF X SHOULD BE PLACED INSIDE/IN ANY OF THE CARTON/DRUM/CASE/BOX",
@@ -5528,7 +5582,34 @@ def run(
                     'AIR WAYBILL': ['AIRWAY BILL', 'AWB', 'HAWB', 'MAWB'],
                     'PACKING LIST': ['PACKING SLIP', 'WEIGHT AND PACKING LIST'],
                     'DRAFT BILL OF EXCHANGE': ['BILL OF EXCHANGE', 'DRAFT', 'BOE'],
-                    'SHIPPING COMPANY CERTIFICATE': ['AGENT\'S CERTIFICATE', 'AGENTS CERTIFICATE', 'CARRIER\'S CERTIFICATE'],
+                    # P198ba — add reverse-phrasing variants for Shipping
+                    # Company Certificate. LC clauses routinely say
+                    # "CERTIFICATE FROM SHIPPING COMPANY / CERTIFICATE
+                    # ISSUED BY SHIPPING COMPANY / CERTIFICATE FROM THE
+                    # OWNER OF THE VESSEL" etc. Without these synonyms,
+                    # the drop-check wrongly believes the LC doesn't
+                    # require an SCC and silently drops the rows even
+                    # though 46A-3 / 46A-5 explicitly required one.
+                    'SHIPPING COMPANY CERTIFICATE': [
+                        'AGENT\'S CERTIFICATE', 'AGENTS CERTIFICATE',
+                        'CARRIER\'S CERTIFICATE', 'CARRIER CERTIFICATE',
+                        'CERTIFICATE FROM SHIPPING COMPANY',
+                        'CERTIFICATE FROM THE SHIPPING COMPANY',
+                        'CERTIFICATE ISSUED BY SHIPPING COMPANY',
+                        'CERTIFICATE ISSUED BY THE SHIPPING COMPANY',
+                        'CERTIFICATE FROM SHIPPING AGENT',
+                        'CERTIFICATE FROM THE SHIPPING AGENT',
+                        'CERTIFICATE FROM CARRIER',
+                        'CERTIFICATE FROM THE CARRIER',
+                        'CERTIFICATE FROM THE OWNER OF THE VESSEL',
+                        'CERTIFICATE FROM VESSEL OWNER',
+                        'CERTIFICATE FROM THE OWNER OF THE SHIP',
+                        'VESSEL OWNER\'S CERTIFICATE',
+                        'VESSEL OWNERS CERTIFICATE',
+                        'OWNER\'S CERTIFICATE',
+                        'SHIP OWNER\'S CERTIFICATE',
+                        'SHIPOWNER\'S CERTIFICATE',
+                    ],
                 }
                 for _k, _syns in _SYN_MAP.items():
                     if _k == _dt_up:
@@ -6934,6 +7015,80 @@ def run(
             if _cand:
                 _pkt_issue[str(_doc_name_raw)] = _cand
 
+        # P198aw — SWIFT YYMMDD reparse guard. VLM occasionally mis-
+        # normalizes six-digit dates like "260217" (YYMMDD) into
+        # "2017-02-26" (treating YY as 2-digit year 2017). When the
+        # parsed candidate comes back decades before the LC issue
+        # date BUT the raw text contains a 6-digit token that, read
+        # as YYMMDD, equals the LC issue date (or a plausible close
+        # date), reinterpret and override. This happens most often
+        # on drafts with "Date of issue: 260217" where SWIFT spec is
+        # YYMMDD.
+        try:
+            _lc_y = _lc_issue_date.year if _lc_issue_date else None
+        except Exception:
+            _lc_y = None
+        if _lc_y:
+            for _pkt in packets:
+                if not isinstance(_pkt, dict):
+                    continue
+                _doc_name_raw = (_pkt.get('document_type') or '') or ''
+                _cached = _pkt_issue.get(str(_doc_name_raw))
+                if not _cached:
+                    continue
+                # Only consider obviously-wrong parses: > 5 years off
+                if abs(_cached.year - _lc_y) <= 5:
+                    continue
+                # Collect raw date strings from unified_summary + text
+                _us = (_pkt.get('unified_summary') or {}) if isinstance(_pkt, dict) else {}
+                _raw_candidates = []
+                if isinstance(_us, dict):
+                    for _k in ('issue_date', 'invoice_date', 'bl_issue_date',
+                               'draft_date', 'document_date'):
+                        _v = _us.get(_k)
+                        if _v: _raw_candidates.append(str(_v))
+                    for _item in (_us.get('dates_found') or []):
+                        if isinstance(_item, dict):
+                            _raw_candidates.append(str(_item.get('raw', '')))
+                            _raw_candidates.append(str(_item.get('value', '')))
+                _raw_candidates.append(_pkt_text(_pkt) or '')
+                # Find any 6-digit YYMMDD token near a "Date of issue"
+                # marker; decode under YYMMDD interpretation.
+                _alt = None
+                import re as _re_yy
+                for _rc in _raw_candidates:
+                    for _m in _re_yy.finditer(
+                            r'(?:DATE\s+OF\s+ISSUE|ISSUE\s+DATE|ISSUED\s+ON|'
+                            r'DATE|DATED|DTD)[\s:;\-]*(\d{6})\b',
+                            str(_rc), _re_yy.IGNORECASE):
+                        _d6 = _m.group(1)
+                        try:
+                            _yy = int(_d6[0:2])
+                            _mo = int(_d6[2:4])
+                            _dd = int(_d6[4:6])
+                            if not (1 <= _mo <= 12 and 1 <= _dd <= 31):
+                                continue
+                            # Century: LC-year-aware window
+                            _yr = 2000 + _yy if _yy <= 69 else 1900 + _yy
+                            _alt = datetime(_yr, _mo, _dd)
+                            break
+                        except Exception:
+                            continue
+                    if _alt:
+                        break
+                if _alt and abs(_alt.year - _lc_y) <= 1:
+                    # Prefer the YYMMDD reinterpretation
+                    _pkt_issue[str(_doc_name_raw)] = _alt
+                    try:
+                        _progress(
+                            f"  [P198aw YYMMDD reparse] {_doc_name_raw}: "
+                            f"parsed {_cached.date().isoformat()} "
+                            f"→ corrected to {_alt.date().isoformat()} "
+                            f"(raw YYMMDD matched LC year {_lc_y})"
+                        )
+                    except Exception:
+                        pass
+
         _pre_dated = {name: d for name, d in _pkt_issue.items() if d < _lc_issue_date}
 
         for row in rows:
@@ -7654,16 +7809,22 @@ def run(
                 # Collapse multiple spaces / weird separators
                 s = re.sub(r'\s+', ' ', s).strip()
 
-                # "JAN 21, 2026" / "JANUARY 21, 2026" / "JAN.21,2026" / "JAN 21 2026"
+                # "JAN 21, 2026" / "JANUARY 21, 2026" / "JAN.21,2026" /
+                # "JAN 21 2026" / "JAN,21,2026" (all-comma). Allow any
+                # combination of space / comma / dot / dash separators
+                # between month name, day, and year.
                 m = re.match(
-                    r'^([A-Z]+)\.?\s*[- ]?\s*(\d{1,2})\s*[,.\- ]\s*(\d{2,4})$',
+                    r'^([A-Z]+)[\s,.\- ]*(\d{1,2})[\s,.\- ]+(\d{2,4})$',
                     s,
                 )
                 if m and _MONTHS.get(m.group(1)):
                     y = int(m.group(3))
+                    d = int(m.group(2))
+                    if not (1 <= d <= 31):
+                        return None
                     if y < 100:
                         y = 2000 + y if y <= 69 else 1900 + y
-                    return (y, _MONTHS[m.group(1)], int(m.group(2)))
+                    return (y, _MONTHS[m.group(1)], d)
 
                 # "21 JAN 2026" / "21-JAN-2026" / "21/JAN/2026" / "21.JAN.2026"
                 m = re.match(
@@ -7677,11 +7838,14 @@ def run(
                     return (y, _MONTHS[m.group(2)], int(m.group(1)))
 
                 # ISO-ish "2026-01-21" / "2026/01/21" / "2026.01.21"
+                # Validates month 1-12 and day 1-31 (returns None on
+                # out-of-range values like "2026-13-45").
                 m = re.match(r'^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$', s)
                 if m:
                     mo, d = int(m.group(2)), int(m.group(3))
                     if 1 <= mo <= 12 and 1 <= d <= 31:
                         return (int(m.group(1)), mo, d)
+                    return None
 
                 # DD-MM-YYYY (European) — AMBIGUOUS with MM-DD-YYYY so we
                 # only accept this when day > 12 (unambiguous) OR when
@@ -8060,6 +8224,128 @@ def run(
             except Exception as _e:
                 try:
                     print(f"[P198ao BL master-agency] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # P198ar — Deterministic "BL text must not contain <X>" rescue.
+    # When a BL row FAILs because the LC condition prohibits certain
+    # literal markers (FIATA / NVOCC / "FREIGHT FORWARDER" / "HOUSE
+    # BILL" / "CHARTER PARTY") and the LLM hallucinates that the
+    # marker is on the BL just because the LC condition mentions it,
+    # this check scans the actual BL document_text for the literal
+    # prohibited tokens. If NONE of the prohibited tokens are present
+    # on the BL, flip FAIL to PASS — the BL is demonstrably clean.
+    #
+    # Rationale: under UCP 600, a BL that does not carry "FIATA",
+    # "NVOCC", or an explicit "FREIGHT FORWARDER" / "HOUSE" marking
+    # is compliant with a "must not be FF / NVOCC / FIATA" rule,
+    # regardless of the signing format. The LLM frequently echoes
+    # words from the LC condition back as if they were document
+    # evidence — this check fact-checks against the raw BL text.
+    try:
+        # Literal marker tokens — each prohibition is tied to
+        # tokens that would actually appear on a BL if the doc
+        # really were that type.
+        _BL_PROHIB_TOKENS = {
+            'FIATA': ('FIATA',),
+            'NVOCC': ('NVOCC', 'NON-VESSEL OPERATING',
+                      'NON VESSEL OPERATING', 'NON-VESSEL CARRIER'),
+            'HOUSE': ('HOUSE BILL OF LADING', 'HOUSE B/L',
+                      'HOUSE BL', 'HBL', 'HAWB'),
+            'FORWARDER': (
+                "FREIGHT FORWARDER'S BILL",
+                'FREIGHT FORWARDER BILL',
+                "FORWARDER'S BILL OF LADING",
+                'FORWARDER BILL OF LADING',
+                'ISSUED BY FREIGHT FORWARDER',
+                'AS FREIGHT FORWARDER',
+                # Typical forwarder logos / license codes
+                'IATA/CASS', 'FMC LICENSE',
+            ),
+            'CHARTER PARTY': (
+                'CHARTER PARTY',
+                'CHARTER-PARTY',
+                'SUBJECT TO CHARTER PARTY',
+                'ISSUED UNDER CHARTER PARTY',
+            ),
+            'SHORT FORM': ('SHORT FORM BILL', 'SHORT FORM B/L', 'SHORT FORM BL'),
+            'BLANK BACK': ('BLANK BACK BILL', 'BLANK BACK B/L', 'BLANK BACK BL'),
+        }
+
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                _comp_now = _get(row, "compliance", "").upper()
+                if _comp_now != "FAIL":
+                    continue
+                _doc_type_lc = (task.get("document_type") or '').lower()
+                if 'bill of lading' not in _doc_type_lc:
+                    continue
+                _cond_u = (task.get("condition_text") or "").upper()
+                # Must be prohibitive
+                _prohibitive = any(m in _cond_u for m in (
+                    'NOT ACCEPTABLE', 'NOT PERMITTED', 'NOT ALLOWED',
+                    'MUST NOT', 'UNACCEPTABLE', 'SHALL NOT',
+                    'WILL NOT', 'NOT BE ACCEPT', 'MUST NOT BE PRESENT',
+                    'PROHIBIT',
+                ))
+                if not _prohibitive:
+                    continue
+                # Which prohibition-markers does the condition name?
+                _named_prohibitions = []
+                for _key in _BL_PROHIB_TOKENS.keys():
+                    if _key in _cond_u:
+                        _named_prohibitions.append(_key)
+                # Also detect "WORDS LIKE 'FIATA'" / "SHOWING FIATA"
+                # even when the condition doesn't spell out other
+                # prohibitions.
+                if 'FIATA' in _cond_u and 'FIATA' not in _named_prohibitions:
+                    _named_prohibitions.append('FIATA')
+                if not _named_prohibitions:
+                    continue
+                _doc_text_up = (task.get("document_text") or "").upper()
+                if not _doc_text_up:
+                    continue
+                # Collect every prohibited token applicable to this
+                # row, and check whether ANY token is present on BL.
+                _tokens_present = []
+                _tokens_checked = []
+                for _key in _named_prohibitions:
+                    for _tok in _BL_PROHIB_TOKENS.get(_key, ()):
+                        _tokens_checked.append(_tok)
+                        if _tok in _doc_text_up:
+                            _tokens_present.append(_tok)
+                if _tokens_present:
+                    # BL actually has prohibited marker(s) — leave FAIL
+                    continue
+                if not _tokens_checked:
+                    continue
+                # BL is clean of every prohibited marker named by
+                # the condition — rescue to PASS.
+                _msg = (
+                    f"BL text does not contain any of the prohibited "
+                    f"markers named by the LC condition "
+                    f"({', '.join(_named_prohibitions)}). "
+                    f"Checked {len(_tokens_checked)} token(s) — none "
+                    f"found on the BL. Document satisfies the "
+                    f"prohibition."
+                )
+                _set(row, "compliance", "PASS")
+                _set(row, "findings", _msg)
+                _set(row, "result", _msg[:200])
+                _set(row, "verification_notes",
+                     f"P198ar prohibited-marker absence check: "
+                     f"prohibitions={_named_prohibitions} — no tokens on BL")
+                _progress(
+                    f"  [P198ar BL-prohibited-absent] {_row_id}: "
+                    f"FAIL->PASS ({'/'.join(_named_prohibitions)} not on BL)"
+                )
+            except Exception as _e:
+                try:
+                    print(f"[P198ar BL-prohibited] exception on row {_row_id}: {_e}")
                 except Exception:
                     pass
     except Exception:

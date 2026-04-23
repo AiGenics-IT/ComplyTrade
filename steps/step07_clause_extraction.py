@@ -204,10 +204,67 @@ def _split_into_clauses(text: str) -> List[str]:
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # Try numbered splitting: "1.", "2.", "1)", etc.
-    numbered = re.split(r'\n(?=\d+[\.\)]\s)', text)
-    if len(numbered) > 1:
-        return [c.strip() for c in numbered if c.strip()]
+    # P198at — Numbered splitting with BOTH newline-separated AND
+    # inline-separated markers. Many LCs come through as one long
+    # line where the numbered markers "1)", "2)", ... appear INLINE
+    # separated only by spaces (after step06 text consolidation
+    # reflows newlines). Others have a partial mix. Strategy:
+    #   1) Split on newline-preceded markers first.
+    #   2) For each resulting chunk, also split on INLINE markers.
+    #   3) Flatten and validate that chunks begin with "N)" / "N."
+    #      and the numbers are loosely monotonic increasing.
+    # Guarded against splitting inside numeric IDs like
+    # "NTN 3075811-4" or dates like "2025/07/11" by requiring the
+    # marker to be preceded by whitespace or period AND followed by
+    # whitespace + uppercase letter / "(".
+
+    def _inline_split(chunk):
+        # Split on "N)" or "N." preceded by whitespace/period/comma,
+        # followed EITHER by whitespace+uppercase OR directly by an
+        # uppercase letter / "(". Real LCs sometimes come through
+        # with NO space between marker and content ("8)BENEFICIARY").
+        inline = re.split(
+            r'(?<=[\s\.\,])(?=\d{1,2}[\)\.]\s*[A-Z\(])',
+            chunk,
+        )
+        parts = [c.strip() for c in inline if c.strip()]
+        if len(parts) <= 1:
+            return [chunk.strip()] if chunk.strip() else []
+        _is_marker = lambda c: bool(re.match(r'^\d{1,2}[\)\.]', c))
+        if not all(_is_marker(c) for c in parts[1:]):
+            return [chunk.strip()] if chunk.strip() else []
+        def _num(c):
+            m = re.match(r'^(\d{1,2})', c)
+            return int(m.group(1)) if m else -1
+        nums = [_num(c) for c in parts if _is_marker(c)]
+        if (nums and len(nums) >= 2 and all(n > 0 for n in nums) and
+                all(nums[i+1] >= nums[i] for i in range(len(nums)-1))):
+            return parts
+        return [chunk.strip()] if chunk.strip() else []
+
+    # Pass 1: newline-separated numbered markers (with or without
+    # space after the marker — "10)" / "10) ")
+    numbered = re.split(r'\n(?=\d+[\.\)])', text)
+    numbered = [c.strip() for c in numbered if c.strip()]
+
+    # Pass 2: expand each chunk via inline-marker splitting. This
+    # catches LCs where clauses "1)", "2)", ..., "13)" are all on
+    # one line separated by spaces, as well as partially reflowed
+    # LCs where only some clauses have a preceding newline.
+    expanded = []
+    for ch in numbered:
+        expanded.extend(_inline_split(ch))
+
+    # Validate combined: if we got more than 1 chunk and they look
+    # like a proper numbered clause list, use it.
+    if len(expanded) > 1:
+        _is_marker = lambda c: bool(re.match(r'^\d{1,2}[\)\.]', c))
+        if all(_is_marker(c) for c in expanded):
+            return expanded
+        # Accept even if the very first chunk is a preamble (no
+        # leading marker) as long as the rest are markers.
+        if all(_is_marker(c) for c in expanded[1:]):
+            return expanded
 
     # Try letter splitting: "A.", "B.", etc.
     lettered = re.split(r'\n(?=[A-Z][\.\)]\s)', text)

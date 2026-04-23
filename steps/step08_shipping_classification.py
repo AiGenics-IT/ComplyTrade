@@ -943,6 +943,22 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
                 rule_override_type = preferred or 'Airway Bill'
             elif rule_matches[0]['document_name'] == 'Documentary Remittance':
                 rule_override_type = 'Documentary Remittance'
+            # P198aq — Strong-lexical-marker certificate rescue.
+            # Some certificates have VERY distinctive heading /
+            # content wording that's rarely used by any other doc
+            # family: a page with "HEALTH CERTIFICATE" + "FIT FOR
+            # HUMAN CONSUMPTION" is a Health Certificate, NOT a
+            # Shipping Company Certificate (which the VLM has been
+            # observed to call it when the issuer's letterhead
+            # mentions ships/vessels). When the rule classifier
+            # scores ≥ 0.99 for one of these high-specificity
+            # certificate types, override the VLM label.
+            elif rule_matches[0]['document_name'] in (
+                'Health Certificate',
+                'Phytosanitary Certificate',
+                'Fumigation Certificate',
+            ):
+                rule_override_type = rule_matches[0]['document_name']
 
     if rule_override_type:
         document_type = rule_override_type
@@ -1127,8 +1143,54 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
         # Title-case fallback when there's no LC match — at least
         # collapses casing variants of the same string.
         document_type = (document_type or '').strip()
-        if document_type and document_type.isupper():
-            document_type = document_type.title()
+        # P198az — Canonicalize to known Title-Case forms so downstream
+        # code (step 12 targeting, step 14 matching, aggregation) sees
+        # one consistent label instead of case variants like
+        # "HEALTH CERTIFICATE" vs "Health Certificate" vs "Certificate
+        # of Analysis" vs "CERTIFICATE OF ANALYSIS".
+        _DOC_TYPE_CANON = {
+            'HEALTH CERTIFICATE': 'Health Certificate',
+            'PHYTOSANITARY CERTIFICATE': 'Phytosanitary Certificate',
+            'FUMIGATION CERTIFICATE': 'Fumigation Certificate',
+            'HALAL CERTIFICATE': 'Halal Certificate',
+            'CERTIFICATE OF ORIGIN': 'Certificate of Origin',
+            'WEIGHT CERTIFICATE': 'Weight Certificate',
+            'QUALITY CERTIFICATE': 'Quality Certificate',
+            'WEIGHT/QUALITY CERTIFICATE': 'Quality Certificate',
+            'WEIGHT AND QUALITY CERTIFICATE': 'Quality Certificate',
+            'CERTIFICATE OF WEIGHT AND QUALITY': 'Quality Certificate',
+            'CERTIFICATE OF QUALITY AND WEIGHT': 'Quality Certificate',
+            'CERTIFICATE OF ANALYSIS': 'Quality Certificate',
+            'BENEFICIARY CERTIFICATE': 'Beneficiary Certificate',
+            "BENEFICIARY'S CERTIFICATE": 'Beneficiary Certificate',
+            'INSPECTION CERTIFICATE': 'Inspection Certificate',
+            'INSPECTION REPORT': 'Inspection Certificate',
+            'SHIPPING COMPANY CERTIFICATE': 'Shipping Company Certificate',
+            'SURVEY REPORT': 'Survey Report',
+            'FULL LOADING SURVEY REPORT': 'Full Loading Survey Report',
+            'COMMERCIAL INVOICE': 'Commercial Invoice',
+            'BILL OF LADING': 'Bill of Lading',
+            'DRAFT BILL OF EXCHANGE': 'Draft Bill of Exchange',
+            'BILL OF EXCHANGE': 'Draft Bill of Exchange',
+            'DOCUMENTARY REMITTANCE': 'Documentary Remittance',
+            'COVERING LETTER': 'Documentary Remittance',
+            'COVERING SCHEDULE': 'Documentary Remittance',
+            'PACKING LIST': 'Packing List',
+            'PACKING NOTE': 'Packing List',
+            'PACKING SLIP': 'Packing List',
+            'AIR WAYBILL': 'Airway Bill',
+            'AIRWAY BILL': 'Airway Bill',
+            'COURIER RECEIPT': 'Courier Receipt',
+            'SHIPMENT ADVICE': 'Shipment Advice',
+            'SHIPPING ADVICE': 'Shipment Advice',
+        }
+        if document_type:
+            _key = document_type.upper().strip()
+            if _key in _DOC_TYPE_CANON:
+                document_type = _DOC_TYPE_CANON[_key]
+            elif document_type.isupper():
+                # Unknown all-uppercase label — fall back to Title Case
+                document_type = document_type.title()
 
     elapsed = time.time() - start
 

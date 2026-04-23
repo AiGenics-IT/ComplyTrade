@@ -646,6 +646,72 @@ DOCUMENT IDENTIFICATION:
       - "Carrier's Certificate" / "Carrier Certificate"
       - "Certificate from Shipping Company"
       - "Certificate from Shipping Company or Their Authorized Agents"
+  • VESSEL OWNER CERTIFICATE — synonyms, all map to "Shipping Company
+    Certificate" (UCP 600 practice: the owner-issued cert is a
+    carrier-class certificate and is grouped with Shipping Company
+    Certificate for verification). Always use document_to_check =
+    "Shipping Company Certificate" for these:
+      - "Vessel Owner's Certificate" / "Vessel Owners Certificate"
+      - "Owner's Certificate" / "Owners Certificate"
+      - "Certificate from the Owner of the Vessel(s)"
+      - "Certificate from Vessel Owner"
+      - "Certificate from the Owner of the Ship"
+      - "Ship Owner's Certificate" / "Shipowner's Certificate"
+
+VESSEL-ATTRIBUTE CERTIFICATE ROUTING — CRITICAL:
+When an LC clause bundles vessel-attribute requirements (classification
+/ age / flag / direct sailing / vessel IMO / vessel name) with the
+phrase "A CERTIFICATE FROM THE OWNER OF THE VESSEL(S) MUST BE
+ENCLOSED ... FOR THE CONFIRMATION OF [X] AND [Y]" — or similar wording
+that explicitly names a vessel-owner / shipping-company certificate as
+the evidentiary document — the individual attribute requirements MUST
+target that certificate, NOT the Bill of Lading. The BL generally does
+not carry vessel classification / age / flag; it is not the
+evidentiary document here.
+
+Example LC clause:
+  "SHIPMENT MUST BE MADE IN REGULAR LINER VESSEL LLOYD'S 100A1 OR
+   EQUIVALENT AND VESSELS NOT TO BE MORE THAN 15 YEARS OLD, AND
+   VESSEL SAIL DIRECT TO PORT QASIM, PAKISTAN AND A CERTIFICATE
+   FROM THE OWNER OF THE VESSELS MUST BE ENCLOSED WITH ORIGINAL
+   DOCUMENTS FOR THE CONFIRMATION OF DIRECT SAILING TO PORT QASIM,
+   PAKISTAN AND VESSEL AGE"
+
+CORRECT decomposition:
+  [0] document_to_check = "Shipping Company Certificate"
+      condition_text    = "Certificate from the owner of the vessel
+                           must certify the carrying vessel is a
+                           regular liner vessel classed Lloyd's 100A1
+                           or equivalent."
+      look_for_value    = "Lloyd's 100A1 OR EQUIVALENT"
+  [1] document_to_check = "Shipping Company Certificate"
+      condition_text    = "Certificate from the owner of the vessel
+                           must certify the vessel is not more than
+                           15 years old."
+      look_for_value    = "NOT MORE THAN 15 YEARS OLD / VESSEL AGE"
+  [2] document_to_check = "Shipping Company Certificate"
+      condition_text    = "Certificate from the owner of the vessel
+                           must certify direct sailing to Port Qasim,
+                           Pakistan."
+      look_for_value    = "DIRECT SAILING TO PORT QASIM"
+  [3] document_to_check = "Shipping Company Certificate"
+      condition_text    = "Certificate from the owner of the vessel
+                           must be enclosed with the original
+                           documents (presence of the certificate)."
+      look_for_value    = "Owner's Certificate enclosed"
+
+Port-of-discharge on the BL is a SEPARATE implicit check (F44F) and
+the verifier handles it independently. Do NOT double-emit a BL port
+check from the vessel-owner clause — the BL port check is already
+auto-generated from F44F.
+
+WRONG (do NOT do this):
+  [0] document_to_check = "Bill of Lading"
+      condition_text    = "Bill of Lading must show vessel Lloyd's 100A1 classification."
+
+The BL does not carry Lloyd's classification. Routing a Lloyd's/age/
+classification check to the BL produces a false REVIEW that the
+verifier cannot resolve.
   • SYNONYMS — these all mean the SAME document; always use "Documentary
     Remittance" as document_to_check:
       - "Documentary Remittance"
@@ -1602,9 +1668,62 @@ def run(structured_lc: dict, output_dir: str = None, progress_callback=None) -> 
             _progress(f"  {dc.clause_ref}: FILTERED all conditions — bank SWIFT notification obligation")
             filtered = []
 
-        # Filter: Document forwarding/courier instructions to the bank
-        if re.search(r'ALL\s+DOCUMENTS?\s+(?:TO\s+BE\s+|MUST\s+BE\s+)?(?:FORWARDED|SENT|DISPATCHED|COURIERED)\s+(?:TO\s+US|TO\s+THE\s+BANK|BY\s+COURIER)', original_upper):
+        # Filter: Document forwarding / inter-bank courier instructions.
+        # P198ax — broadened to catch:
+        #   - "ALL DOCUMENTS FORWARDED TO US/THE BANK BY COURIER"
+        #   - "ORIGINAL DOCUMENTS TO BE SENT BY NEGOTIATING BANK TO OPENING
+        #      BANK BY DHL/COURIER/TNT/FEDEX/UPS/ARAMEX"
+        #   - "DOCUMENTS TO BE SENT TO US/OUR OFFICE BY DHL"
+        # These are inter-bank operational instructions, not compliance
+        # checks against the submitted shipping documents — nothing on
+        # the shipping doc set can "verify" them.
+        if re.search(
+            r'ALL\s+DOCUMENTS?\s+(?:TO\s+BE\s+|MUST\s+BE\s+)?(?:FORWARDED|SENT|DISPATCHED|COURIERED)\s+'
+            r'(?:TO\s+US|TO\s+THE\s+BANK|BY\s+COURIER)',
+            original_upper,
+        ) or re.search(
+            r'(?:ORIGINAL|ALL|DOCUMENTARY)?\s*DOCUMENTS?\s+(?:TO\s+BE\s+|MUST\s+BE\s+)?'
+            r'(?:SENT|FORWARDED|DISPATCHED|DELIVERED|COURIERED|TRANSMITTED)\s+'
+            r'BY\s+(?:NEGOTIATING|PRESENTING|COLLECTING|NOMINATED|CONFIRMING)\s+BANK',
+            original_upper,
+        ) or re.search(
+            r'DOCUMENTS?\s+(?:TO\s+BE\s+|MUST\s+BE\s+|SHALL\s+BE\s+|WILL\s+BE\s+|SHOULD\s+BE\s+)?'
+            r'(?:SENT|FORWARDED|DISPATCHED|DELIVERED|COURIERED)\s+'
+            r'(?:TO\s+(?:US|OPENING|ISSUING|OUR|NOMINATED|CONFIRMING|NEGOTIATING)[\w\s,]*?\s+BANK|'
+            r'TO\s+THE\s+BANK|TO\s+OUR\s+(?:OFFICE|COUNTERS))\s+'
+            r'BY\s+(?:DHL|FEDEX|FED\s?EX|TNT|UPS|ARAMEX|SF\s+EXPRESS|SPECIAL\s+COURIER|'
+            r'COURIER|EXPRESS\s+MAIL|REGISTERED\s+MAIL)',
+            original_upper,
+        ) or re.search(
+            # Alternate order: "... SENT BY DHL TO US/OUR OFFICE/THE BANK"
+            r'DOCUMENTS?\s+(?:TO\s+BE\s+|MUST\s+BE\s+|SHALL\s+BE\s+|WILL\s+BE\s+|SHOULD\s+BE\s+)?'
+            r'(?:SENT|FORWARDED|DISPATCHED|DELIVERED|COURIERED)\s+'
+            r'BY\s+(?:DHL|FEDEX|FED\s?EX|TNT|UPS|ARAMEX|SF\s+EXPRESS|SPECIAL\s+COURIER|'
+            r'COURIER|EXPRESS\s+MAIL|REGISTERED\s+MAIL)\s+'
+            r'TO\s+(?:US|OPENING|ISSUING|OUR|NOMINATED|CONFIRMING|NEGOTIATING|THE\s+BANK)',
+            original_upper,
+        ):
             _progress(f"  {dc.clause_ref}: FILTERED all conditions — document forwarding instruction")
+            filtered = []
+
+        # P198ax — Filter: sanctions / counter-measures / restrictive-
+        # measures disclaimers. These are boilerplate liability
+        # disclaimers the bank adds to its undertaking, NOT compliance
+        # requirements on the shipping documents. Typical phrasing:
+        #   "NOTWITHSTANDING ANYTHING TO THE CONTRARY ... WE DISCLAIM
+        #    LIABILITY FOR DELAY, NON-RETURN OF DOCUMENTS ... COMPELLED
+        #    BY RESTRICTIVE MEASURES, COUNTER-MEASURES OR SANCTIONS LAWS"
+        # Nothing on the shipping doc set can verify or contradict this.
+        if re.search(
+            r'(?:RESTRICTIVE\s+MEASURES|COUNTER[\s\-]?MEASURES|SANCTIONS\s+LAWS?|'
+            r'ECONOMIC\s+SANCTIONS|OFAC|EU\s+SANCTIONS|UN\s+SANCTIONS)',
+            original_upper,
+        ) and re.search(
+            r'(?:DISCLAIM|NOT\s+LIABLE|NOT\s+RESPONSIBLE|NO\s+LIABILITY|'
+            r'NOTWITHSTANDING\s+ANYTHING)',
+            original_upper,
+        ):
+            _progress(f"  {dc.clause_ref}: FILTERED all conditions — sanctions / liability disclaimer")
             filtered = []
 
         dc.conditions = filtered
