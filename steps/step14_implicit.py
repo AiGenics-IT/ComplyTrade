@@ -737,12 +737,121 @@ Return ONLY valid JSON with the extracted values. Do not analyze or judge — ju
 # HYBRID CHECKS — VLM extracts, Python compares
 # ══════════════════════════════════════════════════════════════
 
+def _extract_received_stamp_date(pkt: Dict):
+    """For covering schedules / documentary remittance: look at stamps on
+    the page and try to parse a date out of each. Returns (datetime, raw
+    text) on success, or None if no stamp is parseable. OCR-mangled
+    stamps (e.g. "71 CCR 2025" where day/month are corrupted) will fail
+    to parse and return None — callers should flip to REVIEW rather than
+    fall back to the document issue date.
+    """
+    for stamp in (pkt.get('stamps') or []):
+        if not isinstance(stamp, dict):
+            continue
+        text = str(stamp.get('text', '') or '').strip()
+        if not text:
+            continue
+        dt = _parse_date(text)
+        if dt:
+            return dt, text
+    return None
+
+
 def _hybrid_date_check(check_id: str, clause_ref: str, lc_date_str: str,
                        pkt: Dict, condition: str, check_type: str) -> CheckResult:
     """VLM extracts document date, Python compares to LC date."""
     doc_type = pkt.get('document_type', 'Unknown')
     doc_text = _get_doc_text(pkt)
     image_path = (pkt.get('page_image_paths', [None]) or [None])[0]
+
+    # P198bg — For lc_expiry and presentation_period on covering /
+    # remittance / schedule docs, the RECEIVED stamp is the only
+    # trustworthy presentation date. The document_date on such covers is
+    # the SENDING date (when the negotiating bank dispatched), NOT the
+    # receiving date at the issuing bank. Using the sending date causes
+    # false FAILs ("LC expired") or false PASSes on genuinely late
+    # presentations. If the stamp is OCR-mangled and unparseable, we
+    # return REVIEW — we must NOT fall back to the issue date.
+    _doc_type_lo = (doc_type or '').lower()
+    _is_cover_doc = any(k in _doc_type_lo for k in (
+        'remittance', 'cover letter', 'covering', 'schedule',
+        'cover schedule',
+    ))
+    if check_id in ('lc_expiry', 'presentation_period') and _is_cover_doc:
+        _stamp = _extract_received_stamp_date(pkt)
+        _stamps_raw = pkt.get('stamps') or []
+        if _stamp is not None:
+            doc_date = _stamp[0]
+            doc_date_str = _stamp[1]
+            lc_date = _parse_date(lc_date_str)
+            if lc_date is None:
+                return CheckResult(
+                    check_id=check_id, clause_ref=clause_ref, condition=condition,
+                    document_checked=doc_type,
+                    findings=f"Cannot parse LC date: {lc_date_str}",
+                    result="LC date unclear", compliance="REVIEW", severity="hard",
+                )
+            if check_type == 'before':
+                if doc_date <= lc_date:
+                    return CheckResult(
+                        check_id=check_id, clause_ref=clause_ref, condition=condition,
+                        document_checked=doc_type,
+                        findings=(
+                            f"Presentation date from RECEIVED stamp: "
+                            f"'{doc_date_str}' (parsed {doc_date:%Y-%m-%d})"
+                        ),
+                        result=(
+                            f"Received {doc_date:%Y-%m-%d} — within deadline "
+                            f"{lc_date_str}"
+                        ),
+                        compliance="PASS", severity="hard",
+                    )
+                return CheckResult(
+                    check_id=check_id, clause_ref=clause_ref, condition=condition,
+                    document_checked=doc_type,
+                    findings=(
+                        f"Presentation date from RECEIVED stamp: "
+                        f"'{doc_date_str}' (parsed {doc_date:%Y-%m-%d})"
+                    ),
+                    result=(
+                        f"Received {doc_date:%Y-%m-%d} — AFTER deadline "
+                        f"{lc_date_str}"
+                    ),
+                    compliance="FAIL", severity="hard",
+                )
+        # No stamp OR stamp could not be parsed → REVIEW (never fall
+        # back to the issue date on a covering document, since the
+        # issue date is when the negotiating bank SENT, not when the
+        # issuing bank RECEIVED).
+        _stamp_note = ''
+        if _stamps_raw:
+            _raw_texts = [
+                str(s.get('text', '') or '') for s in _stamps_raw
+                if isinstance(s, dict) and s.get('text')
+            ]
+            if _raw_texts:
+                _stamp_note = (
+                    f" Stamp text on page: "
+                    f"{', '.join(repr(t) for t in _raw_texts[:3])} — "
+                    f"could not be parsed as a date (likely OCR "
+                    f"corruption of day/month)."
+                )
+        return CheckResult(
+            check_id=check_id, clause_ref=clause_ref, condition=condition,
+            document_checked=doc_type,
+            findings=(
+                "Presentation date on covering schedule is indeterminate. "
+                "The only reliable source on a Documentary Remittance / "
+                "Covering Schedule is the RECEIVED stamp at the issuing "
+                "bank; the typed document date is the SENDING date and "
+                "cannot be used for LC-expiry / presentation-period "
+                "checks."
+                + _stamp_note
+                + " Manual review of the page is required."
+            ),
+            result="Presentation date unclear — manual review",
+            compliance="REVIEW", severity="hard",
+        )
 
     # First try extracted fields from Step 9
     doc_date_str = pkt.get('document_date', '') or (pkt.get('extracted_fields', {}) or {}).get('date', '')

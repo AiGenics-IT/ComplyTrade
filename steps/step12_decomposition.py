@@ -1702,6 +1702,26 @@ def run(structured_lc: dict, output_dir: str = None, progress_callback=None) -> 
             r'COURIER|EXPRESS\s+MAIL|REGISTERED\s+MAIL)\s+'
             r'TO\s+(?:US|OPENING|ISSUING|OUR|NOMINATED|CONFIRMING|NEGOTIATING|THE\s+BANK)',
             original_upper,
+        ) or re.search(
+            # P198bi — "DOCUMENTS MUST BE SENT TO <NAMED BANK> ... BY
+            # COURIER AT BENEFICIARY'S COST". Pattern covers any named
+            # issuing-bank address with a BY COURIER / AT BENEFICIARY'S
+            # COST tail. This is an operational remittance instruction
+            # to the negotiating bank, not a compliance requirement on
+            # any shipping document — there is nothing to verify on the
+            # document set (no "beneficiary paid for courier" field lives
+            # on any shipping doc).
+            r'DOCUMENTS?\s+(?:MUST|SHALL|WILL|SHOULD|ARE\s+TO|TO)\s+'
+            r'BE\s+SENT\s+TO\s+.{5,200}\b(?:BY\s+COURIER|BY\s+DHL|BY\s+FEDEX|'
+            r'BY\s+TNT|BY\s+UPS|BY\s+ARAMEX)',
+            original_upper,
+        ) or re.search(
+            # Any remittance wording that explicitly names "AT
+            # BENEFICIARY'S COST" / "AT SELLER'S COST" alongside
+            # DOCUMENTS + COURIER wording.
+            r'DOCUMENTS?.{0,200}(?:BY\s+COURIER|BY\s+DHL|BY\s+FEDEX|BY\s+TNT|BY\s+UPS|BY\s+ARAMEX)'
+            r'.{0,100}AT\s+(?:BENEFICIARY|SELLER|APPLICANT|BUYER)(?:\'S|S)?\s+COST',
+            original_upper,
         ):
             _progress(f"  {dc.clause_ref}: FILTERED all conditions — document forwarding instruction")
             filtered = []

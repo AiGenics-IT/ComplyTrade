@@ -4894,9 +4894,32 @@ def _build_tasks(
         # definitive amount comparison, but the 46A decomposer also creates
         # a VLM row for the same requirement from the clause text.  We
         # short-circuit that VLM row here with deterministic arithmetic.
-        if re.search(r'(?:NOT\s+EXCEED|MUST\s+NOT\s+EXCEED|SHOULD\s+NOT\s+EXCEED|NOT\s+EXCEEDING)\s+'
-                     r'(?:THE\s+)?(?:AMOUNT|VALUE)\s+(?:OF\s+)?(?:THIS\s+)?(?:CREDIT|L/?C|LC|LETTER\s+OF\s+CREDIT)',
-                     _cond_upper):
+        #
+        # P198bj — also match the inverted wording "INVOICES EXCEEDING
+        # [THIS] CREDIT AMOUNT ARE NOT ACCEPTABLE" / "INVOICES EXCEEDING
+        # LC VALUE NOT PERMITTED" — same check, different phrasing from
+        # the decomposer.
+        if (
+            re.search(
+                r'(?:NOT\s+EXCEED|MUST\s+NOT\s+EXCEED|SHOULD\s+NOT\s+EXCEED|NOT\s+EXCEEDING)\s+'
+                r'(?:THE\s+)?(?:AMOUNT|VALUE)\s+(?:OF\s+)?(?:THIS\s+)?'
+                r'(?:CREDIT|L/?C|LC|LETTER\s+OF\s+CREDIT)',
+                _cond_upper,
+            )
+            or re.search(
+                r'(?:INVOICES?|AMOUNTS?|VALUES?|DOCUMENTS?)\s+EXCEEDING\s+'
+                r'(?:THIS\s+|THE\s+)?(?:CREDIT|L/?C|LC|LETTER\s+OF\s+CREDIT)'
+                r'\s+(?:AMOUNT|VALUE)?\b.{0,80}'
+                r'(?:NOT\s+ACCEPTABLE|NOT\s+PERMITTED|NOT\s+ALLOWED|'
+                r'UNACCEPTABLE|DISCREPANT|REJECTED)',
+                _cond_upper,
+            )
+            or re.search(
+                r'EXCEEDING\s+(?:THIS\s+|THE\s+)?(?:CREDIT|L/?C|LC)\s+'
+                r'(?:AMOUNT|VALUE|CEILING)',
+                _cond_upper,
+            )
+        ):
             # Get LC amount from F32B
             _lc_32b = _get_lc_field_value(step06_result, '32B')
             _lc_amt_val = None
@@ -8660,6 +8683,97 @@ def run(
                     pass
     except Exception:
         pass
+
+    # P198bh — F45A alternate-goods-block rescue.
+    # When F45A lists multiple product blocks separated by a period
+    # (common SWIFT pattern for AND/OR alternatives across blocks):
+    #
+    #     LDPE HP4023WN AND/OR HP4024WN AND/OR HP4025ZN
+    #     QTY 25.50 MT @ USD 1,140 / MT
+    #     .
+    #     LDPE HP4024N
+    #     QTY 25.50 MT @ USD 1,190 / MT
+    #
+    # the invoice needs to fulfil only ONE block — the blocks are
+    # alternatives, not cumulative requirements. The decomposer still
+    # emits a per-product set of conditions for each block; when the
+    # invoice ships the first block's product at the first block's
+    # rate, the FAIL on the second block's rate is not a real
+    # discrepancy.
+    #
+    # This post-check groups 45A rows by the set of product codes
+    # mentioned in each row's condition_text. If one group is fully
+    # PASS ("the shipped block"), it flips any FAIL in the other
+    # product groups to PASS with a clear "alternate block not
+    # shipped" note.
+    try:
+        from collections import defaultdict as _dd
+        _prod_re = re.compile(r'\b([A-Z]{1,4}\d{3,6}[A-Z]{0,3})\b')
+        _groups = _dd(list)
+        _any_45a = False
+        for task in vlm_tasks:
+            row = task["row"]
+            cref = (_get(row, "clause_ref", "")
+                    or task.get("clause_ref", "") or "")
+            if not str(cref).startswith("45A"):
+                continue
+            _any_45a = True
+            cond_u = (task.get("condition_text") or "").upper()
+            codes = _prod_re.findall(cond_u)
+            # Must look like a product code: has a digit and >=4 chars
+            codes = [c for c in codes
+                     if re.search(r'\d', c) and len(c) >= 4
+                     and c not in ('ICC', 'USD', 'EUR', 'GBP', 'USA')]
+            if not codes:
+                continue
+            _groups[frozenset(codes)].append((task, row))
+        if _any_45a and len(_groups) >= 2:
+            _shipped = set()
+            for _key, _bucket in _groups.items():
+                if not _bucket:
+                    continue
+                if all(
+                    str(_get(_r, "compliance", "")).upper() == "PASS"
+                    for _, _r in _bucket
+                ):
+                    _shipped.add(_key)
+            if _shipped:
+                _shipped_names = ' / '.join(
+                    ' + '.join(sorted(s)) for s in _shipped
+                )
+                for _key, _bucket in _groups.items():
+                    if _key in _shipped:
+                        continue
+                    _alt_name = ' + '.join(sorted(_key))
+                    for _task, _row in _bucket:
+                        if str(_get(_row, "compliance", "")).upper() != "FAIL":
+                            continue
+                        _msg = (
+                            f"Alternate F45A product block ({_alt_name}) "
+                            f"was not shipped on this invoice. The "
+                            f"shipped block ({_shipped_names}) fully "
+                            f"satisfies the LC goods description / "
+                            f"quantity / rate. Under SWIFT F45A "
+                            f"practice, period-separated product "
+                            f"blocks are alternatives — the invoice "
+                            f"needs to fulfil only one of them."
+                        )
+                        _set(_row, "compliance", "PASS")
+                        _set(_row, "findings", _msg)
+                        _set(_row, "result", _msg[:200])
+                        _set(_row, "verification_notes",
+                             f"P198bh 45A alt-block: "
+                             f"alt={_alt_name} shipped={_shipped_names}")
+                        _progress(
+                            f"  [P198bh 45A alt-block] "
+                            f"{_task.get('row_id','?')}: FAIL->PASS "
+                            f"(alternate block '{_alt_name}' not shipped)"
+                        )
+    except Exception as _e:
+        try:
+            print(f"[P198bh 45A alt-block] outer exception: {_e}")
+        except Exception:
+            pass
 
     # P177 — Deterministic "freight must be shown/mentioned separately
     # on the Commercial Invoice" check. LLM routinely PASSes this check
