@@ -3054,17 +3054,62 @@ CRITICAL RULES (follow strictly):
     match, the row is PASS — period.
 21. QUANTITY MATCHING: LC may say "QTY 736" and invoice may show individual line items that SUM to 736. Check the SYSTEM PRE-CALCULATED SUMMARY at the top of the document text — it shows per-product totals. Use these totals instead of counting line items yourself.
 Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 981E" = "LN981E". Ignore spaces in product codes when matching.
-21z. PROFORMA INVOICE REFERENCE:
+21z. PROFORMA INVOICE REFERENCE — NUMBER AND DATE MUST BOTH MATCH:
+
+    ANTI-HALLUCINATION RULE (READ THIS FIRST — CRITICAL):
+    Before writing anything about the proforma citation, you MUST
+    locate the actual proforma line on the INVOICE TEXT and QUOTE
+    the date verbatim from it. Do NOT "restate" the LC's expected
+    date as if it were on the invoice. Do NOT paraphrase. If your
+    findings contain a date, that date MUST be copied character-
+    for-character from the invoice body, not from the condition or
+    the LC F45A. Echoing the condition's expected date back as if
+    the invoice showed it is a HALLUCINATION that violates this
+    rule — the verdict is automatically FAIL.
+
+    Required evidence procedure:
+      1) Search the invoice text for "PROFORMA" (case-insensitive)
+      2) Read the full line(s) containing "PROFORMA INVOICE REF.NO."
+         and the "DATED" clause that follows it
+      3) Quote those line(s) verbatim in your "quote" field —
+         including BOTH the ref number and the date as printed
+         on the invoice
+      4) ONLY THEN compare the invoice-printed date against the
+         LC-required date and decide PASS or FAIL
+
     When the LC says "SPECIFICATIONS AND FURTHER DETAILS ARE AS PER
     BENEFICIARY'S PROFORMA INVOICE NO. XXX DATED YYY", the commercial
-    invoice MUST reference that exact proforma invoice number (XXX).
-    - If the invoice mentions proforma invoice No. XXX → PASS
-    - If the invoice ONLY references the LC number but NOT the
-      proforma invoice number → FAIL. The LC explicitly requires
-      the proforma reference. Referencing the LC number is NOT a
-      substitute for the proforma invoice number.
-    - This is a documentary credit requirement — the bank checker
-      must see the exact proforma invoice number on the document.
+    invoice MUST reference that exact proforma invoice number (XXX)
+    AND the exact proforma date (YYY). These are two separate pieces
+    of the citation and both must be verified.
+
+    Decision rules:
+    - Invoice cites proforma No. XXX AND date YYY → PASS
+    - Invoice cites proforma No. XXX but with a DIFFERENT date
+      (e.g. LC says "DATED JAN 21, 2026" but invoice says
+      "DATED FEB 18, 2026") → FAIL. "STRICTLY AS PER" language
+      binds both the ref number and the date. A different date
+      points at a different proforma revision and is a documentary
+      discrepancy under UCP 600 Art 18(c).
+    - Invoice cites proforma No. XXX but OMITS the date → REVIEW
+      (bank checker must verify the same proforma revision was
+      shipped against).
+    - Invoice ONLY references the LC number but NOT the proforma
+      invoice number → FAIL. Referencing the LC is not a substitute.
+
+    Quote the exact proforma line from the invoice in your response
+    (both the number and the date). When writing FAIL findings,
+    include both the LC-expected date and the invoice-shown date so
+    the discrepancy is auditable.
+
+    Worked example:
+      LC F45A: "...AS PER BENEFICIARY'S PROFORMA INVOICE REF.NO.
+                786/S-13198-SOYPI-E DATED JAN 21, 2026"
+      Invoice: "BENEFICIARY'S PROFORMA INVOICE REF.NO.
+                786/S-13198-SOYPI-E DATED FEB 18, 2026"
+      → Ref matches, DATE DIFFERS (Jan 21 vs Feb 18) → FAIL with
+      findings="Proforma ref 786/S-13198-SOYPI-E matches but date
+      differs: LC requires Jan 21 2026, invoice shows Feb 18 2026".
 
 21a. MULTI-ITEM INVOICE MATCHING (CRITICAL):
     When the LC's 45A has MULTIPLE goods (e.g., "MEYER RICE COLOR SORTER 10 CHUTES QTY 5 SETS" AND "MEYER SESAME SEEDS COLOR SORTER 10 CHUTES QTY 1 SET"), each item becomes a separate verification row. For each row:
@@ -7334,6 +7379,314 @@ def run(
                         pass
     except Exception:
         pass
+
+    # P198ak — Proforma ref+date citation integrity (deterministic).
+    # LC F45A may require "SPECIFICATIONS AS PER BENEFICIARY'S
+    # PROFORMA INVOICE REF.NO. <X> DATED <Y>" and the commercial
+    # invoice must cite BOTH <X> and <Y> verbatim. Rule 21z in the
+    # LLM prompt tells the verifier to quote the invoice's proforma
+    # date and compare, but the LLM has been observed to echo the
+    # LC's expected date back as if it were on the invoice and
+    # verdict PASS — a pure hallucination. This post-check extracts
+    # the proforma date from the LC and from the invoice body, and
+    # flips the row to FAIL when they differ. Works purely on the
+    # refined text, independent of the LLM's self-report.
+    try:
+        _f45a_full = str(
+            _final_lc_fields.get('45A', '') or _final_lc_fields.get('F45A', '') or ''
+        )
+        _f45a_up = _f45a_full.upper()
+        # Flexible LC-side regex (same as invoice-side below) —
+        # handles "PROFORMA INVOICE REF.NO.", "PROFORMA INV. REF.",
+        # "PROFORMA:", "PI NO.", etc., followed by a ref then
+        # "DATED" / "DT" / "DATE" and a date in common formats.
+        _m_lc = re.search(
+            r'(?:P(?:RO)?\.?\s*)?FORMA\s*(?:INV(?:OICE)?\.?)?\s*'
+            r'(?:REF\.?|#)?\s*(?:NO\.?|NUMBER)?\s*[:\.]?\s*'
+            r'([A-Z0-9][A-Z0-9/\- .\n]*?)\s*'
+            r'(?:DATED|DT\.?|DATE|DT)\s*[:\.]?\s*'
+            r'([A-Z]+\.?\s*\d{1,2}[,\s]+\d{2,4}|'
+            r'\d{1,2}[\s\-./]+[A-Z]+\.?[\s\-./]+\d{2,4}|'
+            r'\d{4}[-./]\d{1,2}[-./]\d{1,2}|'
+            r'\d{1,2}[-./]\d{1,2}[-./]\d{2,4})',
+            _f45a_up, re.DOTALL,
+        )
+        if _m_lc:
+            _lc_pro_ref_raw = _m_lc.group(1).strip()
+            _lc_pro_date_raw = _m_lc.group(2).strip()
+
+            _MONTHS = {
+                'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+                'JUL': 7, 'AUG': 8, 'SEP': 9, 'SEPT': 9, 'OCT': 10,
+                'NOV': 11, 'DEC': 12,
+                'JANUARY': 1, 'FEBRUARY': 2, 'MARCH': 3, 'APRIL': 4,
+                'JUNE': 6, 'JULY': 7, 'AUGUST': 8, 'SEPTEMBER': 9,
+                'OCTOBER': 10, 'NOVEMBER': 11, 'DECEMBER': 12,
+            }
+
+            def _pro_parse(s):
+                """Parse a date string into (year, month, day).
+                Returns None when the string is ambiguous or missing a
+                year. Conservative: only returns a tuple when all three
+                components are confidently known."""
+                if not s:
+                    return None
+                s = str(s).upper().strip().rstrip('.,;:')
+                # Strip ordinal suffixes: "21ST", "22ND", "23RD", "4TH"
+                s = re.sub(r'(\d+)(ST|ND|RD|TH)\b', r'\1', s)
+                # Collapse multiple spaces / weird separators
+                s = re.sub(r'\s+', ' ', s).strip()
+
+                # "JAN 21, 2026" / "JANUARY 21, 2026" / "JAN.21,2026" / "JAN 21 2026"
+                m = re.match(
+                    r'^([A-Z]+)\.?\s*[- ]?\s*(\d{1,2})\s*[,.\- ]\s*(\d{2,4})$',
+                    s,
+                )
+                if m and _MONTHS.get(m.group(1)):
+                    y = int(m.group(3))
+                    if y < 100:
+                        y = 2000 + y if y <= 69 else 1900 + y
+                    return (y, _MONTHS[m.group(1)], int(m.group(2)))
+
+                # "21 JAN 2026" / "21-JAN-2026" / "21/JAN/2026" / "21.JAN.2026"
+                m = re.match(
+                    r'^(\d{1,2})[\s\-./]+([A-Z]+)\.?[\s\-./]+(\d{2,4})$',
+                    s,
+                )
+                if m and _MONTHS.get(m.group(2)):
+                    y = int(m.group(3))
+                    if y < 100:
+                        y = 2000 + y if y <= 69 else 1900 + y
+                    return (y, _MONTHS[m.group(2)], int(m.group(1)))
+
+                # ISO-ish "2026-01-21" / "2026/01/21" / "2026.01.21"
+                m = re.match(r'^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$', s)
+                if m:
+                    mo, d = int(m.group(2)), int(m.group(3))
+                    if 1 <= mo <= 12 and 1 <= d <= 31:
+                        return (int(m.group(1)), mo, d)
+
+                # DD-MM-YYYY (European) — AMBIGUOUS with MM-DD-YYYY so we
+                # only accept this when day > 12 (unambiguous) OR when
+                # both values <= 12 we skip to avoid misordering.
+                m = re.match(r'^(\d{1,2})[-./](\d{1,2})[-./](\d{2,4})$', s)
+                if m:
+                    a, b = int(m.group(1)), int(m.group(2))
+                    y = int(m.group(3))
+                    if y < 100:
+                        y = 2000 + y if y <= 69 else 1900 + y
+                    if a > 12 and 1 <= b <= 12:
+                        # Unambiguously DD-MM-YYYY
+                        return (y, b, a)
+                    if b > 12 and 1 <= a <= 12:
+                        # Unambiguously MM-DD-YYYY (US)
+                        return (y, a, b)
+                    # Ambiguous (both ≤ 12) — bail, can't decide safely
+                    return None
+
+                # Compact YYMMDD "260121"
+                m = re.match(r'^(\d{2})(\d{2})(\d{2})$', s)
+                if m:
+                    y = 2000 + int(m.group(1)) if int(m.group(1)) <= 69 else 1900 + int(m.group(1))
+                    mo, d = int(m.group(2)), int(m.group(3))
+                    if 1 <= mo <= 12 and 1 <= d <= 31:
+                        return (y, mo, d)
+                # Compact YYYYMMDD "20260121"
+                m = re.match(r'^(\d{4})(\d{2})(\d{2})$', s)
+                if m:
+                    mo, d = int(m.group(2)), int(m.group(3))
+                    if 1 <= mo <= 12 and 1 <= d <= 31:
+                        return (int(m.group(1)), mo, d)
+
+                return None
+
+            def _pro_norm_ref(s):
+                return re.sub(r'[\s\-/]', '', str(s or '').upper())
+
+            _lc_pro_date = _pro_parse(_lc_pro_date_raw)
+            _lc_pro_ref_n = _pro_norm_ref(_lc_pro_ref_raw)
+
+            # P198ak — Robustified: iterate rows directly (not tasks)
+            # and look up matching Commercial Invoice packets from
+            # the `packets` list. This is independent of how tasks
+            # were constructed / consumed and works across any
+            # decomposition shape.
+
+            # Flexible invoice-side regex — handles common variants:
+            # "Proforma Invoice Ref.No." / "Proforma Inv. Ref."
+            # / "Proforma Ref." / "Proforma:" / "PI No." / "PI#"
+            # followed by a ref, then "DATED" / "DT" / "DT." / "DATE"
+            # and a date in any of the supported formats.
+            _PRO_INV_REGEX = re.compile(
+                r'(?:P(?:RO)?\.?\s*)?FORMA\s*(?:INV(?:OICE)?\.?)?\s*'
+                r'(?:REF\.?|#)?\s*(?:NO\.?|NUMBER)?\s*[:\.]?\s*'
+                r'([A-Z0-9][A-Z0-9/\- .\n]*?)\s*'
+                r'(?:DATED|DT\.?|DATE|DT)\s*[:\.]?\s*'
+                r'([A-Z]+\.?\s*\d{1,2}[,\s]+\d{2,4}|'
+                r'\d{1,2}[\s\-./]+[A-Z]+\.?[\s\-./]+\d{2,4}|'
+                r'\d{4}[-./]\d{1,2}[-./]\d{1,2}|'
+                r'\d{1,2}[-./]\d{1,2}[-./]\d{2,4})',
+                re.DOTALL,
+            )
+
+            def _find_proforma_on_pkt(_pkt_text):
+                if not _pkt_text or 'PROFORMA' not in _pkt_text.upper():
+                    return None, None
+                _doc_up = _pkt_text.upper()
+                m = _PRO_INV_REGEX.search(_doc_up)
+                if not m:
+                    return None, None
+                _ref = re.sub(r'\s+', ' ', m.group(1).strip())
+                _date = m.group(2).strip()
+                return _ref, _date
+
+            # Pre-collect invoice packets with their proforma citation.
+            # Source priority:
+            #   1. unified_summary.references_found[role=proforma_reference]
+            #      + unified_summary.dates_found[role=proforma_invoice_date
+            #        | proforma_date | proforma_ref_date] — structured
+            #        data emitted by step03
+            #   2. Body-text regex fallback — when step03 didn't tag the
+            #      proforma date as a role and it only exists as free
+            #      text like "DATED FEB 18, 2026"
+            _inv_citations = []  # (pkt_label, ref, date_raw, date_parsed, source)
+            for _pkt in packets:
+                if not isinstance(_pkt, dict):
+                    continue
+                _pt = (_pkt.get('document_type') or '').lower()
+                if 'invoice' not in _pt or 'proforma' in _pt:
+                    continue
+                _pkt_label = _pkt.get('document_type', 'Commercial Invoice')
+                _us = _pkt.get('unified_summary') or {}
+                # Structured: proforma ref from references_found
+                _struct_ref = None
+                for _item in (_us.get('references_found') or []):
+                    if (isinstance(_item, dict) and
+                        'proforma' in str(_item.get('role', '') or '').lower()):
+                        _struct_ref = str(_item.get('value') or _item.get('raw') or '').strip()
+                        if _struct_ref:
+                            break
+                # Structured: proforma date from dates_found
+                _struct_date_raw = None
+                for _item in (_us.get('dates_found') or []):
+                    if not isinstance(_item, dict):
+                        continue
+                    _role = str(_item.get('role', '') or '').lower()
+                    if 'proforma' in _role:
+                        _struct_date_raw = str(
+                            _item.get('raw') or _item.get('value') or ''
+                        ).strip()
+                        if _struct_date_raw:
+                            break
+                if _struct_ref and _struct_date_raw:
+                    _inv_citations.append((
+                        _pkt_label, _struct_ref, _struct_date_raw,
+                        _pro_parse(_struct_date_raw), 'structured',
+                    ))
+                    continue
+                # Fallback: body-text regex
+                _ptxt = _pkt_text(_pkt) or ''
+                _r, _d = _find_proforma_on_pkt(_ptxt)
+                if _r and _d:
+                    _inv_citations.append((
+                        _pkt_label, _r, _d, _pro_parse(_d), 'body-text',
+                    ))
+
+            # Iterate every row; flip when any invoice citation has
+            # the same ref but a different parsed date.
+            for row in rows:
+                try:
+                    _row_id = _get(row, "row_id", "?")
+                    _clause_ref_u = (_get(row, "clause_ref", "") or '').upper()
+                    _cond_u = (
+                        _get(row, "condition_text", "") or
+                        _get(row, "condition", "")
+                    ).upper()
+                    # Only consider rows whose condition EXPLICITLY
+                    # mentions the proforma citation. Other 45A-family
+                    # rows (goods description, quantity, unit price,
+                    # incoterms, etc.) are not about the proforma
+                    # citation and must not be touched by this check.
+                    if 'PROFORMA' not in _cond_u:
+                        continue
+                    # Doc target must be Commercial Invoice
+                    _doc_checked = (
+                        _get(row, "document_checked", "") or
+                        _get(row, "document_type", "")
+                    ).lower()
+                    if _doc_checked and 'invoice' not in _doc_checked:
+                        continue
+                    _current = _get(row, "compliance", "").upper()
+                    if _current not in ("PASS", "REVIEW"):
+                        continue  # don't touch genuine FAILs
+
+                    # Raw-string normaliser for the fallback path — used
+                    # when the date is ambiguous (e.g. "01-12-2025" where
+                    # both 01 and 12 are valid day/month). If LC and
+                    # invoice show the SAME raw string, they match even
+                    # if we can't confidently assign day vs month.
+                    def _norm_date_raw(s):
+                        return re.sub(r'[\s\-./,]+', '', str(s or '').upper()).strip()
+                    _lc_date_raw_n = _norm_date_raw(_lc_pro_date_raw)
+                    _mismatch = None
+                    for _pkt_label, _inv_ref, _inv_date_raw, _inv_date, _src in _inv_citations:
+                        _inv_ref_n = _pro_norm_ref(_inv_ref)
+                        _ref_match = (
+                            _lc_pro_ref_n == _inv_ref_n or
+                            _lc_pro_ref_n in _inv_ref_n or
+                            _inv_ref_n in _lc_pro_ref_n
+                        )
+                        if not _ref_match:
+                            continue
+                        # Compare dates: first by parsed value (robust),
+                        # fall back to raw-string match when parsing
+                        # fails or is ambiguous.
+                        if _lc_pro_date and _inv_date:
+                            if _lc_pro_date != _inv_date:
+                                _mismatch = (_pkt_label, _inv_ref, _inv_date_raw, _src)
+                                break
+                            else:
+                                continue  # parsed dates match
+                        # Parsing failed on one/both sides — try raw equality
+                        _inv_date_raw_n = _norm_date_raw(_inv_date_raw)
+                        if _lc_date_raw_n and _inv_date_raw_n:
+                            if _lc_date_raw_n != _inv_date_raw_n:
+                                _mismatch = (_pkt_label, _inv_ref, _inv_date_raw, _src)
+                                break
+                            # raw strings equal — treat as match, continue
+                    if not _mismatch:
+                        continue
+                    _pkt_label, _inv_ref, _inv_date_raw, _src = _mismatch
+                    _msg = (
+                        f"Proforma reference {_lc_pro_ref_raw} matches but "
+                        f"DATE DIFFERS: LC requires {_lc_pro_date_raw}; "
+                        f"invoice ({_pkt_label}) shows {_inv_date_raw}. "
+                        f"Under UCP 600 Art 18(c), 'strictly as per' "
+                        f"binds both ref and date — different proforma "
+                        f"date is a documentary discrepancy."
+                    )
+                    _set(row, "compliance", "FAIL")
+                    _set(row, "findings", _msg)
+                    _set(row, "result", _msg[:200])
+                    _set(row, "verification_notes",
+                         f"P198ak proforma-date cross-check [{_src}]: LC=("
+                         f"{_lc_pro_ref_raw}, {_lc_pro_date_raw}) vs "
+                         f"invoice=({_inv_ref}, {_inv_date_raw})")
+                    _progress(
+                        f"  [P198ak proforma-date:{_src}] {_row_id}: "
+                        f"{_current}->FAIL (LC {_lc_pro_date_raw} "
+                        f"vs invoice {_inv_date_raw})"
+                    )
+                except Exception as _e:
+                    try:
+                        print(f"[P198ak proforma-date] exception on row {_get(row,'row_id','?')}: {_e}")
+                    except Exception:
+                        pass
+    except Exception as _e_outer:
+        try:
+            print(f"[P198ak proforma-date] outer exception: {_e_outer}")
+        except Exception:
+            pass
 
     # P177 — Deterministic "freight must be shown/mentioned separately
     # on the Commercial Invoice" check. LLM routinely PASSes this check
