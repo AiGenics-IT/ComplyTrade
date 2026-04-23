@@ -6114,7 +6114,20 @@ def run(
         # Check: does the condition mention sending to a specific email?
         email_keywords = ['via email', 'by email', 'email at', 'email to',
                           'e-mail to', 'e-mail at', 'send to']
-        has_email_kw = any(kw in cond_text for kw in email_keywords)
+        # P198bp — also trigger when the condition contains an explicit
+        # email address (either @ form or SWIFT-style (AT)/(DOT) form).
+        # The decomposer often emits "addressed to X at EMAIL" wording
+        # without any of the legacy keyword phrases, but the intent is
+        # still the same: the document must carry that email.
+        _has_email_addr = bool(re.search(
+            r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}',
+            cond_text,
+        )) or bool(re.search(
+            r'[A-Za-z0-9._%+\-]+\s*\(\s*AT\s*\)\s*[A-Za-z0-9.\-]+',
+            cond_text,
+            flags=re.IGNORECASE,
+        ))
+        has_email_kw = any(kw in cond_text for kw in email_keywords) or _has_email_addr
 
         if has_email_kw:
             # Extract email addresses from the LC condition
@@ -7530,6 +7543,20 @@ def run(
                     continue  # only catch false PASSes
                 _cond_u = (task.get("condition_text") or "").upper()
                 if 'ADDRESSED TO' not in _cond_u and 'MARKED TO' not in _cond_u:
+                    continue
+                # P198bp — when the condition explicitly names an EMAIL
+                # address, the real target is the email on the document,
+                # not the applicant/beneficiary/company name. The email
+                # check (step14 post-check above) handles this case.
+                # Don't override with a name-based FAIL — would produce
+                # the inverse-correct "not addressed to Applicant 'X'"
+                # finding when one of the matched packets actually has
+                # the required email.
+                if re.search(
+                    r'[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}|'
+                    r'[A-Z0-9._%+\-]+\s*\(\s*AT\s*\)\s*[A-Z0-9.\-]+',
+                    _cond_u,
+                ):
                     continue
                 # P198h — Skip OR-routed rows. When step 12 emitted a
                 # pipe-separated `document_to_check` (e.g. "Shipment
