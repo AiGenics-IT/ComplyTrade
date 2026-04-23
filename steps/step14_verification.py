@@ -5685,6 +5685,120 @@ def run(
                     _review_types.append(_dt)
                 else:
                     _fail_types.append(_dt)
+
+            # P198an — Deterministic rescue for universal "all docs must
+            # show X" checks. If the LLM was evaluated on the deduped
+            # representative of a doc-type and missed the value (often
+            # because OCR glues letters into one block like
+            # "DOCUMENTARYCREDITNUMBER:0086LC55629/2025DATED250109"),
+            # scan the ORIGINAL (undeduped) packets of that type for
+            # the literal value. If ANY packet of the type contains
+            # it, rescue: move the type from _fail_types to
+            # _pass_types.
+            try:
+                _cond_u_for_rescue = _cond_text_u
+                _rescue_values = []  # list of (label, value) to search for
+                _cf_rescue = step06_result.get('consolidated_fields', {})
+                if not _cf_rescue and isinstance(step06_result, dict):
+                    _cf_rescue = step06_result.get('final_lc', {}).get('consolidated_fields', {}) or {}
+                # LC number (F20)
+                if ('LC NUMBER' in _cond_u_for_rescue or
+                        'L/C NUMBER' in _cond_u_for_rescue or
+                        'DOCUMENTARY CREDIT NUMBER' in _cond_u_for_rescue or
+                        'DOCUMENTARY CREDIT NO' in _cond_u_for_rescue or
+                        'CREDIT NUMBER' in _cond_u_for_rescue):
+                    _v20 = str(_cf_rescue.get('20', '') or _cf_rescue.get('F20', '') or '').strip()
+                    if _v20:
+                        _rescue_values.append(('LC#', _v20))
+                # LC issue date (F31C)
+                if ('DATE OF THE L/C' in _cond_u_for_rescue or
+                        'DATE OF L/C' in _cond_u_for_rescue or
+                        'LC ISSUE DATE' in _cond_u_for_rescue or
+                        'L/C DATE' in _cond_u_for_rescue or
+                        ('LC' in _cond_u_for_rescue and 'ISSUE' in _cond_u_for_rescue)):
+                    _v31c = str(_cf_rescue.get('31C', '') or _cf_rescue.get('F31C', '') or '').strip()
+                    if _v31c:
+                        _rescue_values.append(('LC date', _v31c))
+                # Issuing bank (F52A / F50B)
+                if ('ISSUING BANK' in _cond_u_for_rescue or
+                        'OPENING BANK' in _cond_u_for_rescue or
+                        'L/C ISSUING' in _cond_u_for_rescue):
+                    _v52 = str(_cf_rescue.get('52A', '') or _cf_rescue.get('F52A', '') or '').strip()
+                    if _v52:
+                        # First line only — the bank name
+                        _bank_name = _v52.split('\n')[0].strip()
+                        if _bank_name:
+                            _rescue_values.append(('Issuing bank', _bank_name))
+
+                if _rescue_values and _fail_types:
+                    def _normalize_for_scan(s):
+                        # Collapse whitespace, strip punctuation — catches
+                        # OCR glue like "LCNUMBER:0086LC55629/2025"
+                        return re.sub(r'[\s\-.,;:()\[\]]+', '', str(s).upper())
+
+                    # Group ORIGINAL packets by document_type
+                    _orig_by_type: Dict[str, list] = {}
+                    for _p in packets:
+                        if not isinstance(_p, dict):
+                            continue
+                        _dt = _p.get('document_type', '') or 'Unknown'
+                        _orig_by_type.setdefault(_dt, []).append(_p)
+
+                    _rescued = []
+                    for _ft in list(_fail_types):
+                        _pkts_of_type = _orig_by_type.get(_ft, [])
+                        if not _pkts_of_type:
+                            continue
+                        # For each required value, check if ANY packet has it
+                        _all_values_found = True
+                        _found_labels = []
+                        for _label, _value in _rescue_values:
+                            _v_norm = _normalize_for_scan(_value)
+                            if not _v_norm:
+                                continue
+                            _found_in_any = False
+                            for _p in _pkts_of_type:
+                                _ptxt = _pkt_text(_p) or ''
+                                _us = _p.get('unified_summary') or {}
+                                _us_parts = [
+                                    str(_us.get('lc_reference', '')),
+                                    str(_us.get('issue_date', '')),
+                                    str(_us.get('issuer', '')),
+                                ]
+                                for _arr_k in ('references_found', 'dates_found', 'parties_found', 'other_details_found'):
+                                    for _item in (_us.get(_arr_k) or []):
+                                        if isinstance(_item, dict):
+                                            _us_parts.append(str(_item.get('value', '')))
+                                            _us_parts.append(str(_item.get('raw', '')))
+                                _combined = _normalize_for_scan(_ptxt + ' ' + ' '.join(_us_parts))
+                                if _v_norm in _combined:
+                                    _found_in_any = True
+                                    break
+                            if _found_in_any:
+                                _found_labels.append(_label)
+                            else:
+                                _all_values_found = False
+                                break
+                        if _all_values_found and _rescue_values:
+                            _rescued.append((_ft, _found_labels))
+                    if _rescued:
+                        for _ft, _labels in _rescued:
+                            _fail_types.remove(_ft)
+                            if _ft not in _pass_types:
+                                _pass_types.append(_ft)
+                        try:
+                            _progress(
+                                f"  [P198an universal-rescue] row={row.get('row_id','?')}: "
+                                f"rescued {len(_rescued)} type(s) from FAIL via deterministic "
+                                f"scan: {', '.join(t for t,_ in _rescued)}"
+                            )
+                        except Exception:
+                            pass
+            except Exception as _e_rescue:
+                try:
+                    print(f"[P198an universal-rescue] exception: {_e_rescue}")
+                except Exception:
+                    pass
             _per_doc_lines = []
             for r in results:
                 _dt = r.get("document_type", "?")
@@ -7133,13 +7247,16 @@ def run(
                 if _m_head:
                     _explicit_tail = _m_head.group(1).strip()
                 if _explicit_tail:
-                    # Split on conjunctions that introduce new targets.
-                    # Keep "AND TO THE APPLICANT" as marker but we handle
-                    # "APPLICANT" via the LC-party branch above, so for
-                    # explicit extraction we split on "AND TO" (followed
-                    # by an all-caps or M/s-prefixed name).
+                    # P198am — Split ONLY on "AND TO" (with TO mandatory),
+                    # never on bare "AND". Company names frequently
+                    # contain AND ("AL MASHOOD OIL AND GHEE INDUSTRIES",
+                    # "MITSUBISHI FUSO TRUCK AND BUS CORPORATION") and
+                    # a bare-AND split corrupts them into nonsense
+                    # fragments like "THE APPLICANT AL MASHOOD OIL" +
+                    # "GHEE INDUSTRIES PVT LTD" that then produce false
+                    # "not addressed to required party" FAILs.
                     _parts = re.split(
-                        r'\s+AND\s+(?:TO\s+)?(?:THE\s+)?',
+                        r'\s+AND\s+TO\s+(?:THE\s+)?',
                         _explicit_tail,
                     )
                     for _p in _parts:
@@ -7166,6 +7283,36 @@ def run(
                         if _p_no_notify != _p:
                             # Was a "NOTIFY X" target — skip, handled elsewhere.
                             continue
+                        # P198am — If the phrase (with optional leading
+                        # "THE") is JUST a role word (APPLICANT /
+                        # BENEFICIARY / ISSUING BANK / etc.), skip —
+                        # the LC-party branch above already added the
+                        # real party target.
+                        _role_only_re = (
+                            r'^(?:THE\s+)?(?:APPLICANT|BENEFICIARY|'
+                            r'ISSUING\s+BANK|OPENING\s+BANK|'
+                            r'L/C\s+ISSUING\s+BANK|L/C\s+OPENING\s+BANK|'
+                            r'NOMINATED\s+BANK|CONFIRMING\s+BANK|'
+                            r'NEGOTIATING\s+BANK|ADVISING\s+BANK)\s*$'
+                        )
+                        if re.match(_role_only_re, _p):
+                            continue
+                        # P198am — Strip leading role prefixes when
+                        # followed by an actual party name. "THE
+                        # APPLICANT AL MASHOOD OIL AND GHEE..." →
+                        # "AL MASHOOD OIL AND GHEE...", which then
+                        # de-dupes correctly against the LC-party
+                        # applicant target.
+                        _p_stripped = re.sub(
+                            r'^(?:THE\s+)?(?:APPLICANT|BENEFICIARY|'
+                            r'ISSUING\s+BANK|OPENING\s+BANK|'
+                            r'L/C\s+ISSUING\s+BANK|L/C\s+OPENING\s+BANK|'
+                            r'NOMINATED\s+BANK|CONFIRMING\s+BANK|'
+                            r'NEGOTIATING\s+BANK|ADVISING\s+BANK)\s+',
+                            '', _p,
+                        ).strip()
+                        if _p_stripped and _p_stripped != _p:
+                            _p = _p_stripped
                         # Skip generic words like "APPLICANT" / "BENEFICIARY"
                         # / "ISSUING BANK" — already covered by LC-party
                         # branch above.
@@ -7687,6 +7834,166 @@ def run(
             print(f"[P198ak proforma-date] outer exception: {_e_outer}")
         except Exception:
             pass
+
+    # P198ao — BL signing-pattern rescue for "as agent(s) for and
+    # on behalf of the master" / master-agency signings. Under UCP
+    # 600 Art 20 (marine/ocean BL) and Art 22 (charter party BL),
+    # both permit signing by "an agent for or on behalf of the
+    # master / owner / charterer". This signing format is the
+    # STANDARD for charter party BLs and also valid for regular
+    # marine BLs — it is NOT a freight forwarder BL and does not
+    # automatically make the document defective.
+    #
+    # Common false-FAIL pattern:
+    #   BL signed "AS AGENTS FOR AND ON BEHALF OF THE MASTER,
+    #    CAPT. <NAME>"
+    #   bl_subtype.signing_type = "agent_for_master"
+    #   LC F47A says "CHARTER PARTY B/L ACCEPTABLE" or
+    #                 "FREIGHT FORWARDER'S / HOUSE BL ACCEPTABLE"
+    #   LLM FAILs with "could be a freight forwarder's BL" — a
+    #   hallucination that ignores the explicit master-agency
+    #   wording.
+    #
+    # This check scans BL rows with FAIL verdict. When (a) the BL
+    # shows master-agency signing text, (b) the row's condition
+    # wording ALLOWS / PERMITS charter party or freight forwarder
+    # BLs (not prohibits), (c) structured bl_subtype.signing_type
+    # is master-agency / master-signed / carrier-signed — flip the
+    # row to PASS.
+    try:
+        _MASTER_AGENCY_PHRASES = (
+            'AS AGENTS FOR AND ON BEHALF OF THE MASTER',
+            'AS AGENT FOR AND ON BEHALF OF THE MASTER',
+            'AS AGENTS FOR THE MASTER',
+            'AS AGENT FOR THE MASTER',
+            'AS AGENT ON BEHALF OF THE MASTER',
+            'AS AGENTS ON BEHALF OF THE MASTER',
+            'ON BEHALF OF THE MASTER AS AGENT',
+            'ON BEHALF OF THE MASTER AS AGENTS',
+            'AS AGENTS ONLY FOR AND BY AUTHORITY OF THE MASTER',
+            'AS AGENT ONLY FOR AND BY AUTHORITY OF THE MASTER',
+            'FOR THE MASTER AS AGENT',
+            'FOR THE MASTER AS AGENTS',
+            'AGENT FOR MASTER',
+            'AGENTS FOR MASTER',
+            'AS AGENT FOR THE CARRIER',
+            'AS AGENTS FOR THE CARRIER',
+            'FOR AND ON BEHALF OF THE CARRIER',
+            'AS AGENT FOR AND ON BEHALF OF THE OWNER',
+            'AS AGENTS FOR AND ON BEHALF OF THE OWNER',
+        )
+        # Signing types that indicate NOT a freight forwarder
+        _MASTER_AGENCY_SIGNING = (
+            'agent_for_master', 'master_signed', 'carrier_signed',
+            'agent_for_carrier', 'agent_for_owner',
+        )
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                _comp_now = _get(row, "compliance", "").upper()
+                if _comp_now != "FAIL":
+                    continue
+                _doc_type_lc = (task.get("document_type") or '').lower()
+                if 'bill of lading' not in _doc_type_lc:
+                    continue
+                _cond_u = (task.get("condition_text") or "").upper()
+                # Only rescue when the row is about BL signing / BL
+                # type / charter-party / forwarder acceptability.
+                _rel_markers = (
+                    'CHARTER PARTY', 'CHARTER-PARTY',
+                    'FORWARDER', 'HOUSE BL', 'HOUSE BILL',
+                    'SIGNED BY', 'SIGNATORY', 'AGENT',
+                    'MASTER', 'CARRIER',
+                )
+                if not any(m in _cond_u for m in _rel_markers):
+                    continue
+                # Determine if condition is PERMISSIVE (allows these
+                # BL types) or PROHIBITIVE (forbids them). Don't
+                # rescue under prohibition — a prohibited charter
+                # party BL still fails.
+                _prohibitive = any(m in _cond_u for m in (
+                    'NOT ACCEPTABLE', 'NOT PERMITTED', 'NOT ALLOWED',
+                    'MUST NOT BE', 'UNACCEPTABLE',
+                    'SHALL NOT', 'WILL NOT',
+                    'NOT BE ACCEPT',
+                ))
+                _permissive = (
+                    not _prohibitive and
+                    any(m in _cond_u for m in (
+                        'ACCEPTABLE', 'PERMITTED', 'ALLOWED',
+                        'MAY BE', 'CAN BE',
+                    ))
+                )
+                _doc_text_up = (task.get("document_text") or "").upper()
+                _has_master_agency_text = any(
+                    ph in _doc_text_up for ph in _MASTER_AGENCY_PHRASES
+                )
+                # Read structured bl_subtype if present
+                _bl_subtype = (
+                    task.get("bl_subtype") or
+                    (task.get("packet") or {}).get("bl_subtype") or {}
+                )
+                _signing = str(_bl_subtype.get('signing_type', '') or '').lower() if isinstance(_bl_subtype, dict) else ''
+                _is_master_agency_structured = _signing in _MASTER_AGENCY_SIGNING
+
+                if not (_has_master_agency_text or _is_master_agency_structured):
+                    continue
+                # Under UCP 600 Art 20/22, master-agency signing is
+                # valid for both regular marine and charter-party
+                # BLs. If the condition is permissive about CPBL
+                # or does not prohibit it, PASS.
+                if _prohibitive and 'CHARTER PARTY' in _cond_u:
+                    # Condition prohibits CPBL. Master-agency
+                    # signing alone does NOT prove CPBL — the
+                    # document would need "CHARTER PARTY" text
+                    # or charter-party-specific markings. Check.
+                    if 'CHARTER PARTY' in _doc_text_up:
+                        continue  # document IS charter party — leave FAIL
+                    # Not charter party — flip to PASS
+                elif _prohibitive and 'FORWARDER' in _cond_u:
+                    # Condition prohibits forwarder BL. Master-agency
+                    # signing is explicitly NOT forwarder — PASS.
+                    pass
+                elif _prohibitive and 'HOUSE' in _cond_u:
+                    # Condition prohibits house BL. Master-agency
+                    # is carrier-issued (not house) — PASS.
+                    pass
+                elif _permissive:
+                    # Condition permits CPBL / forwarder / house —
+                    # master-agency meets the allowance → PASS.
+                    pass
+                else:
+                    # Unclear wording; don't rescue.
+                    continue
+
+                _set(row, "compliance", "PASS")
+                _findings = (
+                    f"BL signed by agent for/on behalf of the master — "
+                    f"this is the UCP 600 Art 20/22 standard signing "
+                    f"format for charter party and marine/ocean BLs. "
+                    f"Not a freight forwarder's BL."
+                    + (f" Evidence: structured signing_type='{_signing}'." if _is_master_agency_structured else "")
+                    + (" Master-agency signing phrase present on BL."
+                       if _has_master_agency_text else "")
+                )
+                _set(row, "findings", _findings)
+                _set(row, "result", _findings[:200])
+                _set(row, "verification_notes",
+                     "P198ao BL master-agency signing rescue: "
+                     f"signing_type={_signing or 'n/a'}, "
+                     f"master-agency text={_has_master_agency_text}")
+                _progress(
+                    f"  [P198ao BL master-agency] {_row_id}: "
+                    f"FAIL->PASS (master-agency signing, not a forwarder BL)"
+                )
+            except Exception as _e:
+                try:
+                    print(f"[P198ao BL master-agency] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
     # P177 — Deterministic "freight must be shown/mentioned separately
     # on the Commercial Invoice" check. LLM routinely PASSes this check

@@ -1277,15 +1277,63 @@ RULES:
 
 LC Transshipment Condition (F43T): {ts}
 
-RULES:
-1. If LC says "NOT ALLOWED" or "PROHIBITED":
-   - Check if the BL indicates transshipment (goods moved through multiple vessels)
-   - If BL shows transshipment → FAIL
-   - If BL shows direct shipment (no transshipment) → PASS
-2. If LC says "ALLOWED" or "PERMITTED":
-   - Transshipment is acceptable → PASS regardless
-3. Look for: transshipment notations, multiple vessel names, "via" routing, feeder vessel mentions
-4. Extract: any transshipment indication found on the BL""",
+━━━ UCP 600 DEFINITION OF TRANSSHIPMENT (CRITICAL — READ FIRST) ━━━
+UCP 600 Art 19(b) / 20(b) define transshipment as:
+   "Unloading from one means of conveyance and reloading to ANOTHER
+    means of conveyance during the carriage from the place of dispatch
+    / port of loading to the place of final destination / port of
+    discharge named in the credit."
+
+Transshipment REQUIRES: cargo taken off the first vessel AND reloaded
+onto a DIFFERENT vessel mid-journey. A single vessel calling at
+multiple ports on one voyage is NOT transshipment.
+
+━━━ WHAT IS TRANSSHIPMENT (FAIL) ━━━
+Transshipment is indicated ONLY by EXPLICIT evidence of cargo moving
+between DIFFERENT vessels:
+  • "TRANSHIPPED AT <PORT> BY <SECOND VESSEL>" or similar
+  • "TRANSSHIPMENT AT <PORT>" with a second vessel named
+  • Two separate vessels named as the first-leg carrier and the
+    ocean carrier (feeder vessel + mother vessel)
+  • "ON-CARRIAGE FROM <PORT> BY <VESSEL>" or "CONNECTING VESSEL"
+  • Explicit "T/S" / "TRANSHIP" / "VIA <PORT> BY <OTHER VESSEL>"
+
+━━━ WHAT IS NOT TRANSSHIPMENT (PASS) ━━━
+The following patterns ALONE are NOT transshipment:
+  • "AS AT <PORT>" / "AS AGENTS AT <PORT>" / "AS AGENT AT <PORT>"
+    — indicates the DECLARED / CONTRACTUAL loading port; the ship
+    recorded the loading at this port even if the vessel also
+    touched another port. This is NOT transshipment.
+  • Carrier's office address in a different country (boilerplate
+    on the BL — just the issuer's HQ, not a routing leg)
+  • The same vessel calling at multiple ports on one voyage
+  • "ROUTING VIA <PORT>" on the SAME vessel with NO second vessel
+  • "FROM <PORT A> TO <PORT B>" listed on the same vessel
+  • A discharge at an intermediate port followed by cabotage/
+    local delivery — unless a DIFFERENT ocean vessel is named
+  • Port Klang, Singapore, Colombo, or Jebel Ali appearing as
+    the CARRIER'S OFFICE, NOT as an on-carriage port
+
+Common false-positive pattern (DO NOT fail this):
+    "Port of Loading: BALIKPANG, INDONESIA"
+    "PORT KLANG, MALAYSIA AS AT BALIKPANG, INDONESIA"
+   → "AS AT" means the BL RECORDS loading at Balikpang, even though
+     the carrier's office / handling agent is at Port Klang. Only
+     ONE vessel, ONE loading. NOT transshipment → PASS.
+
+━━━ DECISION RULES ━━━
+1. If LC says "ALLOWED" / "PERMITTED":
+   - Transshipment (if any) is acceptable → PASS regardless.
+2. If LC says "NOT ALLOWED" / "PROHIBITED":
+   - Apply the UCP 600 transshipment definition above.
+   - FAIL only when you can identify EXPLICIT evidence of TWO
+     DIFFERENT vessels + a mid-journey reload.
+   - If the BL shows only "AS AT" / carrier-office / same-vessel
+     multi-port routing → PASS (no transshipment).
+   - When in doubt and no second vessel is identified → PASS.
+3. Quote the exact BL line you are relying on in your response.
+   Do NOT flip to FAIL based on the word "via" alone or on a
+   carrier office being in a different country.""",
                 "doc_text": _get_doc_text(bl),
                 "image_path": (bl.get('page_image_paths', [None]) or [None])[0],
                 "clause_ref": "F43T", "condition": f"Transshipment: {ts}",
