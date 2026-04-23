@@ -8654,6 +8654,30 @@ def run(
         ),
     }
     try:
+        # P198bm — precise keyword matchers. Several gotchas:
+        #   • "FREIGHT FORWARDER" (party) must NOT match "FREIGHT FORWARD"
+        #     (payability). Require a word boundary that rules out
+        #     "FORWARDER" / "FORWARDING" / "FORWARDED" etc.
+        #   • Prohibitive conditions ("Bills of Lading ... must not be
+        #     presented", "NOT ACCEPTABLE", "FREIGHT FORWARDER'S BL NOT
+        #     ACCEPTABLE") should NOT go through P198be at all — those
+        #     are document-type prohibitions handled by P198ao / P198ar.
+        _key_matchers = [
+            ('FREIGHT PAYABLE AS PER CHARTER PARTY',
+             re.compile(r'\bFREIGHT\s+PAYABLE\s+AS\s+PER\s+CHARTER\s+PART[YI]\b')),
+            ('FREIGHT PAYABLE AT DESTINATION',
+             re.compile(r'\bFREIGHT\s+PAYABLE\s+AT\s+DESTINATION\b|\bFREIGHT\s+PAYABLE\s+AT\s+(?:THE\s+)?PORT\s+OF\s+DISCHARGE\b')),
+            ('FREIGHT PREPAID',
+             re.compile(r'\bFREIGHT\s+PREPAID\b|\bPREPAID\s+FREIGHT\b|\bFREIGHT\s+PAID\b')),
+            ('FREIGHT COLLECT',
+             re.compile(r'\bFREIGHT\s+COLLECT\b|\bCOLLECT\s+FREIGHT\b|\bFREIGHT\s+TO\s+COLLECT\b')),
+            # FORWARD means forwardED/forwardING as a payability clause.
+            # Exclude FORWARDER / FORWARDERS / FORWARDING (entity).
+            ('FREIGHT FORWARD',
+             re.compile(r'\bFREIGHT\s+FORWARD\b(?!ER|ERS|ING|ED)|\bFREIGHT\s+TO\s+BE\s+FORWARDED\b')),
+            ('FREIGHT PAYABLE',
+             re.compile(r'\bFREIGHT\s+PAYABLE\b')),
+        ]
         for task in vlm_tasks:
             row = task["row"]
             _row_id = task.get("row_id", "?")
@@ -8664,19 +8688,31 @@ def run(
                 _cond_u = (task.get("condition_text") or "").upper()
                 if 'FREIGHT' not in _cond_u:
                     continue
-                # Figure out which freight wording is required.
+                # Skip prohibitive / document-type-prohibition conditions —
+                # e.g. "freight forwarder's BL not acceptable",
+                # "BL having any reference of issuer being a freight
+                # forwarder must not be presented", "FIATA not accepted".
+                # These are handled by P198ao / P198ar, not by freight
+                # payability wording matching.
+                if re.search(
+                    r'\b(?:NOT\s+ACCEPT|MUST\s+NOT|SHALL\s+NOT|NOT\s+PRESENTED|'
+                    r'NOT\s+PERMITTED|NOT\s+ALLOWED|FORBIDDEN|PROHIBIT|'
+                    r'UNACCEPTABLE|NOT\s+TO\s+BE|CANNOT\s+BE|WILL\s+NOT\s+BE)\b',
+                    _cond_u,
+                ):
+                    continue
+                if re.search(
+                    r'\bFREIGHT\s+FORWARDER[S\'’]?\b|\bFIATA\b|\bNVOCC\b|'
+                    r'\bHOUSE\s+(?:B\s*/\s*L|BILL\s+OF\s+LADING)\b|'
+                    r'\bNON[\s\-]VESSEL\s+OPERAT',
+                    _cond_u,
+                ):
+                    continue
+                # Figure out which freight wording is required using
+                # precise regex matchers (P198bm).
                 _required_key = None
-                # Order matters — check the longest/most-specific first
-                _priority = [
-                    'FREIGHT PAYABLE AS PER CHARTER PARTY',
-                    'FREIGHT PAYABLE AT DESTINATION',
-                    'FREIGHT PREPAID',
-                    'FREIGHT COLLECT',
-                    'FREIGHT FORWARD',
-                    'FREIGHT PAYABLE',
-                ]
-                for k in _priority:
-                    if k in _cond_u:
+                for k, _pat in _key_matchers:
+                    if _pat.search(_cond_u):
                         _required_key = k
                         break
                 if not _required_key:
