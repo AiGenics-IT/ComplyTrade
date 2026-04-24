@@ -1650,13 +1650,19 @@ RULES:
         f43p = (lc_fields.get('43P') or lc_fields.get('F43P') or '').upper()  # Partial Shipments
 
         def _expected_mode():
-            # PRIORITY 1: F44E/F44F port names — strongest signal
-            # If port names contain SEAPORT/PORT → SEA
-            # If port names contain AIRPORT → AIR
-            _has_sea_port = any(k in f44e for k in ('SEAPORT', 'SEA PORT', 'PORT')) or \
-                            any(k in f44f for k in ('SEAPORT', 'SEA PORT', 'PORT'))
-            _has_air_port = any(k in f44e for k in ('AIRPORT', 'AIR PORT')) or \
-                            any(k in f44f for k in ('AIRPORT', 'AIR PORT'))
+            # PRIORITY 1: F44E/F44F port names — strongest signal.
+            # Use word-boundary matching so "AIRPORT" does NOT also
+            # satisfy a bare "PORT" check (P198cw fix — "ANY AIRPORT
+            # IN CHINA" was previously flagged BOTH as has_sea_port
+            # (because "PORT" appears as a substring) AND
+            # has_air_port, defeating the mode detection and falling
+            # through to the F46A priority).
+            _joined = f"{f44e} {f44f}"
+            _has_air_port = bool(re.search(r'\bAIRPORT\b|\bAIR\s+PORT\b', _joined))
+            _has_sea_port = bool(re.search(r'\bSEAPORT\b|\bSEA\s+PORT\b', _joined))
+            if not _has_air_port and not _has_sea_port:
+                # Generic "PORT" (bare token, NOT inside AIRPORT) implies SEA.
+                _has_sea_port = bool(re.search(r'\bPORT\b', _joined))
             if _has_air_port and not _has_sea_port:
                 return 'AIR'
             if _has_sea_port and not _has_air_port:
