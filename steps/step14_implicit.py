@@ -1842,7 +1842,15 @@ def run(
 
     # ── Run HYBRID checks first (VLM extracts, Python compares) ──
     all_results: List[CheckResult] = []
-    _HYBRID_CHECKS = {'date_of_issue', 'lc_expiry', 'amount_currency', 'latest_shipment'}
+    # P198cf — presentation_period is now hybrid so it uses the same
+    # stamp-first / labeled-date / textual-assertion logic as lc_expiry.
+    # Without this, the VLM-only path would take the Documentary
+    # Remittance's unlabelled "DATE: 16MAR26" (which is the SENDING
+    # date) and treat it as the PRESENTATION date, then FAIL the
+    # 30-day rule — and that FAIL cross-links to an auto-FAIL on
+    # lc_expiry (step14_implicit.py:2175+).
+    _HYBRID_CHECKS = {'date_of_issue', 'lc_expiry', 'amount_currency',
+                      'latest_shipment', 'presentation_period'}
 
     for check_id in _HYBRID_CHECKS:
         if not config.get(check_id, {}).get('enabled', False):
@@ -1909,6 +1917,144 @@ def run(
                         r.result = f"LC EXPIRED - {r.result}"
                     all_results.append(r)
                     progress_fn(f"  [lc_expiry] [{cover.get('document_type','')}]: {r.compliance} - {r.result[:50]}")
+
+        elif check_id == 'presentation_period':
+            # P198cf — Hybrid presentation-period check. The period
+            # rule (F48 or default 21 days) says docs must be presented
+            # within N days AFTER shipment. Compute:
+            #     days_elapsed = presentation_date − shipment_date
+            # Presentation date MUST come from (a) a RECEIVED stamp, OR
+            # (b) a LABELED presentation/received date on the cover, OR
+            # (c) a textual "presented within validity" assertion. An
+            # unlabelled "DATE: X" on the Documentary Remittance is the
+            # SENDING date (when the negotiating bank dispatched), not
+            # the receipt date — so we must NEVER use it for this check.
+            f48 = str(lc_fields.get('48', lc_fields.get('F48', '')) or '')
+            # Default presentation period per UCP 600 Art 14(c) = 21 days
+            period_days = 21
+            _pd_m = re.search(r'\b(\d{1,3})\s*DAYS?\b', f48.upper())
+            if _pd_m:
+                try:
+                    period_days = int(_pd_m.group(1))
+                except ValueError:
+                    pass
+            latest = lc_fields.get('44C', lc_fields.get('F44C', '')) or ''
+            for cover in _get_docs_by_type(packets, 'remittance', 'covering',
+                                           'cover letter', 'schedule'):
+                # First try the existing helper — it handles textual
+                # "presented within validity" assertion and labeled /
+                # stamp dates, and returns REVIEW for unlabelled dates.
+                # We reuse its decision machinery by asking a synthetic
+                # "must be presented before lc_expiry" question; if that
+                # comes back REVIEW (no reliable date), the period check
+                # also REVIEWs.
+                _pres_date_tuple = _extract_received_stamp_date(cover)
+                _doc_text_up = _get_doc_text(cover).upper()
+                _presentation_ok_patterns = (
+                    r'DOCUMENTS?\s+(?:HAVE\s+BEEN\s+)?PRESENTED\s+(?:ON\s+TIME|'
+                    r'WITHIN\s+(?:THE\s+)?(?:L/?C\s+)?(?:VALIDITY|EXPIRY|PERIOD)|'
+                    r'PRIOR\s+TO\s+EXPIRY|BEFORE\s+(?:THE\s+)?EXPIRY|'
+                    r'WITHIN\s+(?:THE\s+)?PRESENTATION\s+PERIOD)',
+                    r'PRESENTATION\s+(?:IS\s+|WAS\s+)?MADE\s+WITHIN\s+(?:L/?C\s+)?'
+                    r'(?:VALIDITY|EXPIRY\s+DATE)',
+                    r'DOCUMENTS?\s+ARE\s+(?:BEING\s+)?PRESENTED\s+WITHIN\s+VALIDITY',
+                    r'WITHIN\s+L/?C\s+VALIDITY\s+PERIOD',
+                    r'DOCUMENTS?\s+NEGOTIATED\s+WITHIN\s+(?:THE\s+)?VALIDITY',
+                )
+                _doc = cover.get('document_type', 'Documentary Remittance')
+                if any(re.search(p, _doc_text_up, re.IGNORECASE)
+                       for p in _presentation_ok_patterns):
+                    all_results.append(CheckResult(
+                        check_id='presentation_period', clause_ref='F48',
+                        condition=f"Documents within {period_days:03d} days of shipment",
+                        document_checked=_doc,
+                        findings=(
+                            "Covering schedule explicitly certifies documents "
+                            "were presented within LC validity / on time."
+                        ),
+                        result="Presented within LC validity per covering schedule",
+                        compliance='PASS', severity='hard',
+                    ))
+                    progress_fn(f"  [presentation_period] [{_doc}]: PASS (textual assertion)")
+                    continue
+                if _pres_date_tuple is None:
+                    # No stamp, no labeled date → REVIEW. NEVER use the
+                    # sending / issue date for this check.
+                    all_results.append(CheckResult(
+                        check_id='presentation_period', clause_ref='F48',
+                        condition=f"Documents within {period_days:03d} days of shipment",
+                        document_checked=_doc,
+                        findings=(
+                            "Receiving / presentation date not clear — "
+                            "manual review."
+                        ),
+                        result="Receiving / presentation date not clear — manual review",
+                        compliance='REVIEW', severity='hard',
+                    ))
+                    progress_fn(f"  [presentation_period] [{_doc}]: REVIEW (no stamp / labeled date)")
+                    continue
+                # We have a trustworthy presentation date. Compute period.
+                pres_date, pres_date_raw = _pres_date_tuple
+                # Shipment date: first BL on-board date we can find
+                ship_date = None
+                for bl in _get_docs_by_type(packets, 'bill of lading', 'b/l'):
+                    _sob = (bl.get('extracted_fields', {}) or {}).get('shipped_on_board_date', '')
+                    if _sob:
+                        ship_date = _parse_date(_sob)
+                    if not ship_date:
+                        ship_date = _parse_date(bl.get('document_date', ''))
+                    if ship_date:
+                        break
+                if ship_date is None:
+                    all_results.append(CheckResult(
+                        check_id='presentation_period', clause_ref='F48',
+                        condition=f"Documents within {period_days:03d} days of shipment",
+                        document_checked=_doc,
+                        findings=(
+                            f"Presentation date {pres_date:%Y-%m-%d} known but "
+                            f"shipment date could not be parsed from BL — "
+                            f"manual review."
+                        ),
+                        result="Shipment date unclear — manual review",
+                        compliance='REVIEW', severity='hard',
+                    ))
+                    continue
+                days_elapsed = (pres_date - ship_date).days
+                within = 0 <= days_elapsed <= period_days
+                if within:
+                    all_results.append(CheckResult(
+                        check_id='presentation_period', clause_ref='F48',
+                        condition=f"Documents within {period_days:03d} days of shipment",
+                        document_checked=_doc,
+                        findings=(
+                            f"Presented {pres_date:%Y-%m-%d} "
+                            f"({days_elapsed} day(s) after shipment "
+                            f"{ship_date:%Y-%m-%d}) — within {period_days}-day limit."
+                        ),
+                        result=(
+                            f"Presented {days_elapsed} days after shipment — "
+                            f"within {period_days}-day limit"
+                        ),
+                        compliance='PASS', severity='hard',
+                    ))
+                    progress_fn(f"  [presentation_period] [{_doc}]: PASS ({days_elapsed}d ≤ {period_days})")
+                else:
+                    all_results.append(CheckResult(
+                        check_id='presentation_period', clause_ref='F48',
+                        condition=f"Documents within {period_days:03d} days of shipment",
+                        document_checked=_doc,
+                        findings=(
+                            f"Presented {pres_date:%Y-%m-%d} "
+                            f"({days_elapsed} day(s) after shipment "
+                            f"{ship_date:%Y-%m-%d}) — exceeds {period_days}-day limit."
+                        ),
+                        result=(
+                            f"Presentation {days_elapsed} days after shipment "
+                            f"— exceeds {period_days}-day limit"
+                        ),
+                        compliance='FAIL', severity='hard',
+                    ))
+                    progress_fn(f"  [presentation_period] [{_doc}]: FAIL ({days_elapsed}d > {period_days})")
 
         elif check_id == 'latest_shipment':
             latest = lc_fields.get('44C', lc_fields.get('F44C', ''))
