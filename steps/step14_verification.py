@@ -9339,6 +9339,181 @@ def run(
     except Exception:
         pass
 
+    # P198cs — Strict freight-wording adjacency override. Final
+    # authority on "BL must show FREIGHT PREPAID" / "FREIGHT COLLECT"
+    # conditions. Runs after every other rescue and IGNORES prior-
+    # rescue flags, because freight payability is a hard documentary
+    # requirement under UCP 600 Art 27 / Art 20(a) and cannot be
+    # overridden by signing-type / prohibition / permissive rescues.
+    #
+    # Rules:
+    #   • The BL must literally carry the two tokens together
+    #     (FREIGHT + PREPAID or FREIGHT + COLLECT), allowing any
+    #     whitespace between them (including newlines from OCR
+    #     line breaks) — so "FREIGHT\nCOLLECT" counts as adjacent,
+    #     "FREIGHT COLLECT" counts, but bare "COLLECT" or bare
+    #     "PREPAID" NEVER counts.
+    #   • If the strict phrase IS present on any matched packet →
+    #     PASS. If it is NOT present on any packet, and the row's
+    #     condition is MANDATORY (must/shall show), force-FAIL.
+    #   • Skip permissive conditions ("freight collect is
+    #     acceptable" etc.) — no strict adjacency required.
+    _FREIGHT_ADJ_RE = {
+        'FREIGHT PREPAID': re.compile(
+            r'\b(?:FREIGHT|FRT\.?)\s+PREPAID\b'
+            r'|\bPREPAID\s+(?:FREIGHT|FRT\.?)\b'
+            r'|\b(?:FREIGHT|FRT\.?)\s+PAID\b'
+        ),
+        'FREIGHT COLLECT': re.compile(
+            r'\b(?:FREIGHT|FRT\.?)\s+COLLECT\b'
+            r'|\bCOLLECT\s+(?:FREIGHT|FRT\.?)\b'
+            r'|\b(?:FREIGHT|FRT\.?)\s+TO\s+COLLECT\b'
+        ),
+        'FREIGHT FORWARD': re.compile(
+            r'\b(?:FREIGHT|FRT\.?)\s+FORWARD\b(?!ER|ERS|ING|ED)'
+            r'|\b(?:FREIGHT|FRT\.?)\s+TO\s+BE\s+FORWARDED\b'
+        ),
+    }
+    _REQ_FREIGHT_KEY_RE = [
+        ('FREIGHT PREPAID',
+         re.compile(r'\b(?:FREIGHT|FRT\.?)\s+PREPAID\b|\bPREPAID\s+(?:FREIGHT|FRT\.?)\b|\b(?:FREIGHT|FRT\.?)\s+PAID\b')),
+        ('FREIGHT COLLECT',
+         re.compile(r'\b(?:FREIGHT|FRT\.?)\s+COLLECT\b|\bCOLLECT\s+(?:FREIGHT|FRT\.?)\b')),
+        ('FREIGHT FORWARD',
+         re.compile(r'\b(?:FREIGHT|FRT\.?)\s+FORWARD\b(?!ER|ERS|ING|ED)')),
+    ]
+    _MANDATORY_VERB_RE = re.compile(
+        r'\b(?:MUST|SHALL|HAS\s+TO|HAVE\s+TO|TO\s+BE|MUST\s+BE)\b'
+        r'[^.]{0,120}?\b(?:SHOW|SHOWING|INDICATE|STATE|READ|MARKED|CARRY|BEAR|EVIDENCE|PRESENT)\b',
+        flags=re.IGNORECASE,
+    )
+    _PERMISSIVE_VERB_RE = re.compile(
+        r'\b(?:is|are|to\s+be)\s+(?:acceptable|permitted|allowed|permissible|allowable)\b',
+        flags=re.IGNORECASE,
+    )
+    _PROHIBITIVE_RE = re.compile(
+        r'\b(?:NOT\s+ACCEPTABLE|NOT\s+PERMITTED|NOT\s+ALLOWED|'
+        r'MUST\s+NOT|SHALL\s+NOT|UNACCEPTABLE|PROHIBIT|'
+        r'NOT\s+BE\s+ACCEPT)\b',
+        flags=re.IGNORECASE,
+    )
+
+    try:
+        # Aggregate per row_id across all matched BL packets.
+        _freight_strict_per_row: Dict[str, Dict] = {}
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                _doc_type_lc = (task.get("document_type") or '').lower()
+                if 'bill of lading' not in _doc_type_lc:
+                    continue
+                _cond = task.get("condition_text") or ""
+                _cond_u = _cond.upper()
+                if 'FREIGHT' not in _cond_u:
+                    continue
+                # Skip permissive / prohibitive / forwarder-type
+                # conditions — they are handled elsewhere.
+                if _PERMISSIVE_VERB_RE.search(_cond):
+                    continue
+                if _PROHIBITIVE_RE.search(_cond_u):
+                    continue
+                if re.search(
+                    r'\bFREIGHT\s+FORWARDER[S\'’]?\b|\bFIATA\b|\bNVOCC\b|'
+                    r'\bHOUSE\s+(?:B\s*/\s*L|BILL\s+OF\s+LADING)\b|'
+                    r'\bNON[\s\-]VESSEL\s+OPERAT',
+                    _cond_u,
+                ):
+                    continue
+                # Which freight key is required?
+                _req_key = None
+                for k, _pat in _REQ_FREIGHT_KEY_RE:
+                    if _pat.search(_cond_u):
+                        _req_key = k
+                        break
+                if not _req_key:
+                    continue
+                # Require MANDATORY verb in the condition.
+                if not _MANDATORY_VERB_RE.search(_cond):
+                    # Loose condition (e.g., "freight collect is
+                    # shown") — don't hard-override. Let other
+                    # checks handle it.
+                    continue
+                _doc_text_up = (task.get("document_text") or "").upper()
+                _adj_re = _FREIGHT_ADJ_RE.get(_req_key)
+                _adj_hit = bool(_adj_re and _adj_re.search(_doc_text_up))
+                _entry = _freight_strict_per_row.setdefault(_row_id, {
+                    'row': row,
+                    'req_key': _req_key,
+                    'hits': [],
+                    'misses': [],
+                })
+                if _adj_hit:
+                    _entry['hits'].append(task.get("document_type", "?"))
+                else:
+                    _entry['misses'].append(task.get("document_type", "?"))
+            except Exception as _e:
+                try:
+                    print(f"[P198cs freight-strict collect] row {_row_id}: {_e}")
+                except Exception:
+                    pass
+
+        for _row_id, _ent in _freight_strict_per_row.items():
+            try:
+                row = _ent['row']
+                _rk = _ent['req_key']
+                if _ent['hits']:
+                    # Adjacency verified on at least one packet — PASS.
+                    _comp_now = _get(row, "compliance", "").upper()
+                    if _comp_now != 'PASS':
+                        _set(row, "compliance", "PASS")
+                        _msg = (
+                            f"Strict adjacency verified: BL shows "
+                            f"'{_rk}' literally (on {_ent['hits'][0]}). "
+                            f"Tokens adjacent per UCP 600 Art 27 / 20(a)."
+                        )
+                        _set(row, "findings", _msg)
+                        _set(row, "result", _msg[:200])
+                        _set(row, "verification_notes",
+                             f"P198cs freight-strict-adjacent: "
+                             f"{_rk} matched on {_ent['hits'][0]}")
+                        _progress(
+                            f"  [P198cs freight-strict] {_row_id}: "
+                            f"-> PASS ({_rk} adjacency)"
+                        )
+                else:
+                    # Adjacency NOT present on any packet — force FAIL.
+                    # Bare "PREPAID" / "COLLECT" alone never counts.
+                    _comp_now = _get(row, "compliance", "").upper()
+                    if _comp_now != 'FAIL':
+                        _set(row, "compliance", "FAIL")
+                        _msg = (
+                            f"Required freight wording '{_rk}' is "
+                            f"NOT present as adjacent tokens on any "
+                            f"of the {len(_ent['misses'])} BL "
+                            f"packet(s). Bare 'PREPAID' or 'COLLECT' "
+                            f"alone does not satisfy the LC "
+                            f"requirement — the phrase must be "
+                            f"literal and adjacent."
+                        )
+                        _set(row, "findings", _msg)
+                        _set(row, "result", _msg[:200])
+                        _set(row, "verification_notes",
+                             f"P198cs freight-strict-missing: "
+                             f"'{_rk}' not adjacent on any of "
+                             f"{len(_ent['misses'])} BL packet(s)")
+                        _progress(
+                            f"  [P198cs freight-strict] {_row_id}: "
+                            f"-> FAIL ({_rk} not adjacent on any BL)"
+                        )
+            except Exception as _e:
+                try:
+                    print(f"[P198cs freight-strict apply] {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     # P198ci — THCD / Terminal Handling Charge deterministic check.
     # LC conditions of the form "BL must show THCD prepaid at origin"
     # (or "Terminal Handling Charges at Destination prepaid at
