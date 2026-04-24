@@ -738,13 +738,24 @@ Return ONLY valid JSON with the extracted values. Do not analyze or judge — ju
 # ══════════════════════════════════════════════════════════════
 
 def _extract_received_stamp_date(pkt: Dict):
-    """For covering schedules / documentary remittance: look at stamps on
-    the page and try to parse a date out of each. Returns (datetime, raw
-    text) on success, or None if no stamp is parseable. OCR-mangled
-    stamps (e.g. "71 CCR 2025" where day/month are corrupted) will fail
-    to parse and return None — callers should flip to REVIEW rather than
-    fall back to the document issue date.
+    """For covering schedules / documentary remittance: look at stamps
+    AND labeled date fields on the page. Returns (datetime, raw text)
+    on success, or None if no identifiable presentation/received date
+    is parseable.
+
+    Priority order:
+      1. Stamps with parseable dates (RECEIVED stamp at issuing bank —
+         strongest evidence of actual receipt date).
+      2. Explicitly labeled dates in the doc text: "Presentation Date",
+         "Received Date", "Received:", "Date of Presentation",
+         "Presented on" — these carry the same semantic weight.
+      3. None — no identifiable presentation/received date.
+
+    P198ce — unlabelled bare dates (e.g. "DATE: 18/02/25" at the top
+    of a covering schedule) are NEVER used — that is the SENDING /
+    issue date, not the receiving date.
     """
+    # 1. Stamps
     for stamp in (pkt.get('stamps') or []):
         if not isinstance(stamp, dict):
             continue
@@ -754,6 +765,27 @@ def _extract_received_stamp_date(pkt: Dict):
         dt = _parse_date(text)
         if dt:
             return dt, text
+
+    # 2. Labeled date fields in doc text
+    doc_text = _get_doc_text(pkt) or ''
+    _labeled_patterns = [
+        r'RECEIVED\s+DATE\s*[:\-]\s*([^\n]{4,30})',
+        r'DATE\s+OF\s+RECEIPT\s*[:\-]\s*([^\n]{4,30})',
+        r'DATE\s+RECEIVED\s*[:\-]\s*([^\n]{4,30})',
+        r'PRESENTATION\s+DATE\s*[:\-]\s*([^\n]{4,30})',
+        r'DATE\s+OF\s+PRESENTATION\s*[:\-]\s*([^\n]{4,30})',
+        r'PRESENTED\s+ON\s*[:\-]?\s*([^\n]{4,30})',
+        r'RECEIVED\s*[:\-]\s*([0-9][^\n]{3,25})',
+        r'RECEIVING\s+DATE\s*[:\-]\s*([^\n]{4,30})',
+    ]
+    for _pat in _labeled_patterns:
+        m = re.search(_pat, doc_text, re.IGNORECASE)
+        if not m:
+            continue
+        raw = m.group(1).strip()
+        dt = _parse_date(raw)
+        if dt:
+            return dt, m.group(0).strip()
     return None
 
 
@@ -778,6 +810,35 @@ def _hybrid_date_check(check_id: str, clause_ref: str, lc_date_str: str,
         'cover schedule',
     ))
     if check_id in ('lc_expiry', 'presentation_period') and _is_cover_doc:
+        # P198ce — If the covering schedule / remittance EXPLICITLY
+        # certifies that documents were presented on time / within LC
+        # validity, that assertion IS the presentation-timing evidence
+        # — PASS without needing a stamp date. Look for common phrases
+        # bank covering letters use to confirm on-time presentation.
+        _doc_text_up = _get_doc_text(pkt).upper()
+        _presentation_ok_patterns = (
+            r'DOCUMENTS?\s+(?:HAVE\s+BEEN\s+)?PRESENTED\s+(?:ON\s+TIME|'
+            r'WITHIN\s+(?:THE\s+)?(?:L/?C\s+)?(?:VALIDITY|EXPIRY|PERIOD)|'
+            r'PRIOR\s+TO\s+EXPIRY|BEFORE\s+(?:THE\s+)?EXPIRY|'
+            r'WITHIN\s+(?:THE\s+)?PRESENTATION\s+PERIOD)',
+            r'PRESENTATION\s+(?:IS\s+|WAS\s+)?MADE\s+WITHIN\s+(?:L/?C\s+)?'
+            r'(?:VALIDITY|EXPIRY\s+DATE)',
+            r'DOCUMENTS?\s+ARE\s+(?:BEING\s+)?PRESENTED\s+WITHIN\s+VALIDITY',
+            r'WITHIN\s+L/?C\s+VALIDITY\s+PERIOD',
+            r'DOCUMENTS?\s+NEGOTIATED\s+WITHIN\s+(?:THE\s+)?VALIDITY',
+        )
+        if any(re.search(p, _doc_text_up, re.IGNORECASE)
+               for p in _presentation_ok_patterns):
+            return CheckResult(
+                check_id=check_id, clause_ref=clause_ref, condition=condition,
+                document_checked=doc_type,
+                findings=(
+                    "Covering schedule explicitly certifies documents were "
+                    "presented within LC validity / on time."
+                ),
+                result="Presented within LC validity per covering schedule",
+                compliance="PASS", severity="hard",
+            )
         _stamp = _extract_received_stamp_date(pkt)
         _stamps_raw = pkt.get('stamps') or []
         if _stamp is not None:

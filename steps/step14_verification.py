@@ -1672,6 +1672,22 @@ Required content:
 
 Reference to LC:
 - references_found[role=lc_reference].
+
+POLICY / COVER NOTE / OPEN POLICY NUMBER — INTERCHANGEABLE LABELS (P198cd):
+When the LC requires the Shipment Advice to reference an insurance identifier,
+that same reference number may appear on the document under ANY of these labels,
+all referring to the SAME item:
+   • Policy No.
+   • Open Policy No.
+   • Cover Note No.
+   • Insurance Policy No.
+   • Marine Policy No.
+   • Cover Note
+If the NUMBER matches (character-for-character, ignoring O↔0 OCR variance),
+the document references the required policy — PASS — regardless of which label
+precedes it. Do NOT return FAIL because the condition says "Policy No." and
+the document uses "Cover Note No." The prefix label is interchangeable; the
+number is what binds the reference.
 """
 
 
@@ -9185,6 +9201,85 @@ def run(
             except Exception as _e:
                 try:
                     print(f"[P198br apply] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # P198cd — Cross-label policy / cover-note / open-policy rescue.
+    # LC conditions commonly say "Shipment Advice must reference Policy
+    # No. <N>" but the document carries that same number under a DIFFERENT
+    # label — "COVER NOTE NO. <N>", "OPEN POLICY NO. <N>", "INSURANCE
+    # POLICY NO. <N>". These are interchangeable names for the same
+    # insurance reference. The LLM often FAILs because it searches
+    # strictly for the "POLICY NO." label even though the number IS on
+    # the doc.
+    try:
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                _comp_now = _get(row, "compliance", "").upper()
+                if _comp_now != "FAIL":
+                    continue
+                _cond_u = (task.get("condition_text") or "").upper()
+                # Condition must mention a policy-like reference
+                _label_re = re.compile(
+                    r'(?:OPEN\s+)?(?:INSURANCE\s+|MARINE\s+)?'
+                    r'(?:POLICY|COVER\s+NOTE)\s+NO\.?\s*'
+                    r'([A-Z0-9][A-Z0-9/\-._]{4,}[A-Z0-9])',
+                    flags=re.IGNORECASE,
+                )
+                _m = _label_re.search(_cond_u)
+                if not _m:
+                    continue
+                _ref_num = _m.group(1).strip()
+                _ref_norm = _normalize_id(_ref_num)
+                if len(_ref_norm) < 6 or sum(1 for c in _ref_norm if c.isdigit()) < 3:
+                    continue
+                # Scan doc text AND unified_summary.references_found
+                # (ANY role, not just policy-specific)
+                _doc_up = (task.get("document_text") or "").upper()
+                _doc_norm = _normalize_id(_doc_up)
+                _found_in_doc = (
+                    _ref_num in _doc_up
+                    or _ref_num.replace('-', '') in _doc_up.replace('-', '')
+                    or (len(_ref_norm) >= 4 and _ref_norm in _doc_norm)
+                )
+                _us = task.get("unified_summary") or (task.get("packet") or {}).get("unified_summary") or {}
+                _found_in_refs = False
+                _ref_hit = ''
+                if isinstance(_us, dict):
+                    for _item in (_us.get('references_found') or []):
+                        if not isinstance(_item, dict):
+                            continue
+                        _v = _normalize_id(_item.get('value', '') or '')
+                        if _v and (_v == _ref_norm or _ref_norm in _v or _v in _ref_norm):
+                            _found_in_refs = True
+                            _ref_hit = f"references_found[role={_item.get('role','other')}]={_item.get('value','')}"
+                            break
+                if _found_in_doc or _found_in_refs:
+                    _msg = (
+                        f"Reference '{_ref_num}' is present on the "
+                        f"document (matched regardless of label — "
+                        f"Policy No / Cover Note No / Open Policy No "
+                        f"are interchangeable insurance-reference labels). "
+                        + (f"Source: {_ref_hit}. " if _ref_hit else "")
+                        + "Condition satisfied."
+                    )
+                    _set(row, "compliance", "PASS")
+                    _set(row, "findings", _msg)
+                    _set(row, "result", _msg[:200])
+                    _set(row, "verification_notes",
+                         f"P198cd cross-label policy rescue: needle={_ref_num!r} "
+                         f"found_in_doc={_found_in_doc} found_in_refs={_found_in_refs}")
+                    _progress(
+                        f"  [P198cd cross-label] {_row_id}: FAIL->PASS "
+                        f"({_ref_num} found regardless of label prefix)"
+                    )
+            except Exception as _e:
+                try:
+                    print(f"[P198cd] exception on row {_row_id}: {_e}")
                 except Exception:
                     pass
     except Exception:
