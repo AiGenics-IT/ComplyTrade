@@ -8335,8 +8335,37 @@ def run(
                     # both 01 and 12 are valid day/month). If LC and
                     # invoice show the SAME raw string, they match even
                     # if we can't confidently assign day vs month.
+                    #
+                    # P198cn — strip common date-label noise words that
+                    # wrap the actual date token on LC / invoice side
+                    # (e.g. invoice prints "EACH DATED DEC 23, 2025"
+                    # while LC prints "DEC 23, 2025"). Without this
+                    # strip, the raw fallback flags a false mismatch
+                    # purely on the "EACH DATED" prefix.
+                    _DATE_NOISE_RE = re.compile(
+                        r'\b(?:EACH|DATED|DATE|DT|OF|THE|ON|AT|'
+                        r'BEARING|ISSUED|INVOICE|PI|PROFORMA|REF)\b\.?',
+                        flags=re.IGNORECASE,
+                    )
+                    # Also try to isolate a date token so any surrounding
+                    # commentary is dropped entirely.
+                    _DATE_TOKEN_RE = re.compile(
+                        r'(?:[A-Z]+\.?\s*\d{1,2}[,\s]+\d{2,4}|'
+                        r'\d{1,2}[\s\-./]+[A-Z]+\.?[\s\-./]+\d{2,4}|'
+                        r'\d{4}[-./]\d{1,2}[-./]\d{1,2}|'
+                        r'\d{1,2}[-./]\d{1,2}[-./]\d{2,4}|'
+                        r'\d{6}|\d{8})',
+                        flags=re.IGNORECASE,
+                    )
+
                     def _norm_date_raw(s):
-                        return re.sub(r'[\s\-./,]+', '', str(s or '').upper()).strip()
+                        s0 = str(s or '').upper()
+                        # First pass: try to isolate a proper date token
+                        _tok = _DATE_TOKEN_RE.search(s0)
+                        core = _tok.group(0) if _tok else s0
+                        # Remove noise words regardless
+                        core = _DATE_NOISE_RE.sub(' ', core)
+                        return re.sub(r'[\s\-./,]+', '', core).strip()
                     _lc_date_raw_n = _norm_date_raw(_lc_pro_date_raw)
                     _mismatch = None
                     for _pkt_label, _inv_ref, _inv_date_raw, _inv_date, _src in _inv_citations:
@@ -8348,11 +8377,24 @@ def run(
                         )
                         if not _ref_match:
                             continue
+                        # P198cn — Re-parse invoice date after stripping
+                        # noise tokens (EACH DATED / DATED / etc.) so
+                        # the parsed-value comparison doesn't fall into
+                        # the raw-fallback path for benign wrappers.
+                        if not _inv_date and _inv_date_raw:
+                            _tok = _DATE_TOKEN_RE.search(str(_inv_date_raw).upper())
+                            if _tok:
+                                _inv_date = _pro_parse(_tok.group(0))
+                        _lc_pro_date_local = _lc_pro_date
+                        if not _lc_pro_date_local and _lc_pro_date_raw:
+                            _tok_lc = _DATE_TOKEN_RE.search(str(_lc_pro_date_raw).upper())
+                            if _tok_lc:
+                                _lc_pro_date_local = _pro_parse(_tok_lc.group(0))
                         # Compare dates: first by parsed value (robust),
                         # fall back to raw-string match when parsing
                         # fails or is ambiguous.
-                        if _lc_pro_date and _inv_date:
-                            if _lc_pro_date != _inv_date:
+                        if _lc_pro_date_local and _inv_date:
+                            if _lc_pro_date_local != _inv_date:
                                 _mismatch = (_pkt_label, _inv_ref, _inv_date_raw, _src)
                                 break
                             else:
@@ -9388,6 +9430,332 @@ def run(
             except Exception as _e:
                 try:
                     print(f"[P198ci THCD] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # P198co — Certificate of Origin issuer equivalence rescue.
+    # LC conditions commonly say "CoO must be issued / certified by
+    # Chamber of Commerce in the country of exporter". In practice,
+    # CoOs from many jurisdictions are issued by equivalent
+    # government-authorized bodies (customs, inspection bureaus,
+    # trade promotion councils, ministries of commerce) — especially
+    # on FTA preferential CoOs (China-Pakistan FTA, ASEAN, GCC,
+    # etc.). UCP 600 Art 14(c) recognizes form compliance with the
+    # condition, not a strict literal-issuer match. Under ISBP 745
+    # ¶L a CoO issued by a competent authority of the export country
+    # (including customs / CCPIT / CIQ / Ministry / Board of
+    # Investment) satisfies the "Chamber of Commerce" requirement
+    # unless the LC specifically excludes such issuers.
+    #
+    # This rescue flips FAIL→PASS on CoO rows when:
+    #   • Condition names "Chamber of Commerce" as required issuer
+    #   • Condition does not explicitly reject customs / government
+    #     (e.g. "issued BY CHAMBER OF COMMERCE ONLY" / "NOT CUSTOMS")
+    #   • Actual CoO issuer (structured issuer field / stamps /
+    #     body text) is one of the equivalent authorized bodies in
+    #     the exporter's country.
+    try:
+        _COO_EQUIV_ISSUERS = (
+            # China
+            'CCPIT', 'COUNCIL FOR THE PROMOTION OF INTERNATIONAL TRADE',
+            'CHINA CUSTOMS', 'CUSTOMS OF THE PEOPLE',
+            "PEOPLE'S REPUBLIC OF CHINA CUSTOMS",
+            'ENTRY-EXIT INSPECTION AND QUARANTINE',
+            'CIQ', 'INSPECTION AND QUARANTINE',
+            # Pakistan
+            'TRADE DEVELOPMENT AUTHORITY OF PAKISTAN', 'TDAP',
+            # India
+            'DGFT', 'DIRECTORATE GENERAL OF FOREIGN TRADE',
+            'EXPORT INSPECTION COUNCIL', 'EIC',
+            # Indonesia / Malaysia / ASEAN
+            'MINISTRY OF TRADE', 'KEMENTERIAN PERDAGANGAN',
+            'MATRADE', 'MINISTRY OF INTERNATIONAL TRADE AND INDUSTRY',
+            # Generic
+            'CUSTOMS', 'CUSTOMS AUTHORITY', 'CUSTOMS OFFICE',
+            'BUREAU OF CUSTOMS', 'GENERAL ADMINISTRATION OF CUSTOMS',
+            'INSPECTION BUREAU', 'ENTRY EXIT INSPECTION',
+            'MINISTRY OF COMMERCE', 'BOARD OF INVESTMENT',
+            'TRADE PROMOTION COUNCIL', 'EXPORT PROMOTION',
+            'COMPETENT AUTHORITY',
+        )
+        # Genuine exclusions — LC explicitly requires ONLY Chamber of
+        # Commerce. Do NOT rescue.
+        _COO_STRICT_PATTERNS = (
+            'ONLY BY CHAMBER OF COMMERCE',
+            'CHAMBER OF COMMERCE ONLY',
+            'EXCLUSIVELY BY CHAMBER OF COMMERCE',
+            'NOT CUSTOMS', 'EXCLUDING CUSTOMS',
+            'NOT ACCEPTABLE IF ISSUED BY CUSTOMS',
+        )
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                _comp_now = _get(row, "compliance", "").upper()
+                if _comp_now != "FAIL":
+                    continue
+                _doc_type_lc = (task.get("document_type") or '').lower()
+                if 'certificate of origin' not in _doc_type_lc:
+                    continue
+                _cond_u = (task.get("condition_text") or "").upper()
+                if 'CHAMBER OF COMMERCE' not in _cond_u:
+                    continue
+                # Strict exclusion of customs / equivalents?
+                if any(p in _cond_u for p in _COO_STRICT_PATTERNS):
+                    continue
+
+                _doc_text_up = (task.get("document_text") or "").upper()
+                _issuer_hit = None
+                # Structured issuer field (via unified_summary or
+                # bl_subtype-style analog) if present.
+                _us = (
+                    task.get("unified_summary") or
+                    (task.get("packet") or {}).get("unified_summary") or {}
+                )
+                if isinstance(_us, dict):
+                    for _k in ('issuer', 'issuing_authority',
+                               'issued_by', 'certifying_authority'):
+                        _iv = str(_us.get(_k) or '').upper()
+                        if _iv:
+                            for _eq in _COO_EQUIV_ISSUERS:
+                                if _eq in _iv:
+                                    _issuer_hit = (_k, _iv, _eq); break
+                            if _issuer_hit: break
+                # Stamps (rubber stamps often name the issuing body)
+                if not _issuer_hit:
+                    _stamps = (
+                        task.get("stamps") or
+                        (task.get("packet") or {}).get("stamps") or []
+                    )
+                    for _st in _stamps or []:
+                        _st_text = ''
+                        if isinstance(_st, dict):
+                            _st_text = str(_st.get('text', '') or '').upper()
+                        elif isinstance(_st, str):
+                            _st_text = _st.upper()
+                        if not _st_text:
+                            continue
+                        for _eq in _COO_EQUIV_ISSUERS:
+                            if _eq in _st_text:
+                                _issuer_hit = ('stamp', _st_text, _eq); break
+                        if _issuer_hit: break
+                # Body-text fallback
+                if not _issuer_hit and _doc_text_up:
+                    for _eq in _COO_EQUIV_ISSUERS:
+                        if _eq in _doc_text_up:
+                            _issuer_hit = ('body', _eq, _eq); break
+
+                if not _issuer_hit:
+                    continue
+
+                _src, _ctx, _eq = _issuer_hit
+                _msg = (
+                    f"Certificate of Origin issued by '{_eq}' — a "
+                    f"government-authorized issuer in the country of "
+                    f"exporter. Under UCP 600 Art 14(c) and ISBP 745, "
+                    f"a CoO from a competent authority (Customs / "
+                    f"Trade Promotion Council / Inspection Bureau / "
+                    f"Ministry) satisfies a 'Chamber of Commerce in "
+                    f"country of exporter' requirement unless the LC "
+                    f"explicitly excludes such issuers. Evidence from "
+                    f"{_src}."
+                )
+                _set(row, "compliance", "PASS")
+                _set(row, "findings", _msg)
+                _set(row, "result", _msg[:200])
+                _set(row, "verification_notes",
+                     f"P198co CoO equivalent-issuer: '{_eq}' via {_src}")
+                _progress(
+                    f"  [P198co CoO-issuer] {_row_id}: FAIL->PASS "
+                    f"(equivalent issuer '{_eq}' via {_src})"
+                )
+            except Exception as _e:
+                try:
+                    print(f"[P198co CoO-issuer] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # P198cm — Unit-price row item-match guard. When an LC 45A-1 row
+    # names a SPECIFIC item model/SKU ("Unit price must be USD 19.60
+    # per PC for COMPRESSOR DONPER SU50DU1 R290") and the LLM's
+    # findings quote a DIFFERENT model on the invoice (because the
+    # Commercial Invoice in this packet carries a different item
+    # in a multi-item partial shipment), the FAIL is spurious: the
+    # condition applies to a specific model that may live on a
+    # different invoice packet, and failing based on a mismatched
+    # line is not a genuine documentary discrepancy.
+    #
+    # Rescue rule:
+    #   1. FAIL row on a 45A-family unit-price condition with a
+    #      specific model/SKU token in the condition text.
+    #   2. Scan all Commercial Invoice packets' document_text and
+    #      unified_summary line_items for the condition's model.
+    #   3. If the model IS found on any packet, and an OCR-tolerant
+    #      unit-price match is detectable near it → PASS.
+    #   4. If the model is NOT found on any packet, demote FAIL →
+    #      REVIEW (legitimate partial-shipment absence; human review).
+    #   5. Else leave the FAIL alone (real price mismatch).
+    try:
+        def _extract_model_tokens(text):
+            """Pull model-like SKU tokens from a condition: uppercase
+            alphanumerics with digits, min length 5 (e.g. SU50DU1,
+            L68WU1, 0817018-5). Rejects simple refrigerant grades
+            like R290 / R134a / R600 which are typed after a model
+            number but are not themselves distinguishing SKUs."""
+            toks = re.findall(
+                r'\b[A-Z][A-Z0-9]{2,}[0-9][A-Z0-9]*\b',
+                text or '',
+            )
+            out = []
+            for t in toks:
+                if not (re.search(r'\d', t) and re.search(r'[A-Z]', t)):
+                    continue
+                # Refrigerant / simple-suffix heuristic: token has
+                # exactly one leading letter followed only by digits
+                # (optionally with one trailing letter like 134a).
+                # Treat as a refrigerant grade, not a SKU.
+                if re.match(r'^[A-Z]\d+[A-Z]?$', t):
+                    continue
+                # Need letter AFTER the first digit in the token —
+                # ensures the SKU is an alternating alpha-numeric
+                # code (SU50DU1) not a simple prefix-digits code.
+                first_digit = re.search(r'\d', t)
+                if first_digit and not re.search(r'[A-Z]', t[first_digit.end():]):
+                    continue
+                out.append(t)
+            return out
+
+        def _extract_unit_price(cond):
+            """Return (currency, price_float) from condition text or None."""
+            m = re.search(
+                r'([A-Z]{3})\s*([\d,]+\.\d{1,4})\s*(?:PER|/)\s*(?:PC|PIECE|UNIT|MT|KG)',
+                (cond or '').upper(),
+            )
+            if not m:
+                m = re.search(
+                    r'([A-Z]{3})\s*([\d,]+\.\d{1,4})\b',
+                    (cond or '').upper(),
+                )
+            if not m:
+                return None
+            try:
+                return (m.group(1), float(m.group(2).replace(',', '')))
+            except Exception:
+                return None
+
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                _comp_now = _get(row, "compliance", "").upper()
+                if _comp_now != "FAIL":
+                    continue
+                _field_tag = (_get(row, "field_tag", "") or '').upper()
+                if '45A' not in _field_tag and '45A' not in (_get(row, "clause_ref","") or '').upper():
+                    continue
+                _doc_type_lc = (task.get("document_type") or '').lower()
+                if 'invoice' not in _doc_type_lc or 'proforma' in _doc_type_lc:
+                    continue
+                _cond_raw = (task.get("condition_text") or "")
+                _cond_u = _cond_raw.upper()
+                # Only rescue unit-price/per-piece/per-unit conditions
+                if not any(k in _cond_u for k in ('UNIT PRICE', 'PER PC', 'PER PIECE', 'PER UNIT', 'RATE OF', 'AT THE RATE')):
+                    continue
+                _models = _extract_model_tokens(_cond_raw)
+                if not _models:
+                    continue
+                _required = _extract_unit_price(_cond_raw)
+                if not _required:
+                    continue
+                _req_cur, _req_price = _required
+
+                # Aggregate across all Commercial Invoice packets:
+                # find the condition's model anywhere in the submission.
+                _model_found_on = []
+                _price_match_on = []
+                for _pkt in packets or []:
+                    if not isinstance(_pkt, dict):
+                        continue
+                    _pt = (_pkt.get('document_type') or '').lower()
+                    if 'invoice' not in _pt or 'proforma' in _pt:
+                        continue
+                    _pkt_label = _pkt.get('packet_id') or _pt
+                    _txt_up = (_pkt.get('document_text') or _pkt.get('cleaned_text') or '').upper()
+                    if not _txt_up:
+                        continue
+                    for _mdl in _models:
+                        if _mdl in _txt_up:
+                            _model_found_on.append((_pkt_label, _mdl))
+                            # Look for the unit price near the model
+                            # within ±300 chars
+                            _pos = _txt_up.find(_mdl)
+                            _win = _txt_up[max(0, _pos - 300): _pos + 300]
+                            # Find any price tokens in window
+                            for _pm in re.finditer(
+                                r'([A-Z]{3})?\s*([\d,]+\.\d{1,4})\s*(?:PER|/)\s*(?:PC|PIECE|UNIT|MT|KG)',
+                                _win,
+                            ):
+                                try:
+                                    _got = float(_pm.group(2).replace(',', ''))
+                                except Exception:
+                                    continue
+                                if abs(_got - _req_price) < 0.01:
+                                    _price_match_on.append(
+                                        (_pkt_label, _mdl, _got))
+                                    break
+                            break
+
+                if _price_match_on:
+                    _pl, _mdl, _got = _price_match_on[0]
+                    _msg = (
+                        f"Unit price for {_mdl} verified on {_pl}: "
+                        f"{_req_cur} {_got:.2f} per PC matches the "
+                        f"required rate {_req_cur} {_req_price:.2f}. "
+                        f"(Multi-item partial shipment — the earlier "
+                        f"LLM finding compared against a different "
+                        f"model on a different invoice packet.)"
+                    )
+                    _set(row, "compliance", "PASS")
+                    _set(row, "findings", _msg)
+                    _set(row, "result", _msg[:200])
+                    _set(row, "verification_notes",
+                         f"P198cm unit-price aggregated match: "
+                         f"{_mdl} @ {_req_cur}{_got:.2f} on {_pl}")
+                    _progress(
+                        f"  [P198cm unit-price] {_row_id}: FAIL->PASS "
+                        f"({_mdl} @ {_req_cur}{_got:.2f} on {_pl})"
+                    )
+                    continue
+                if not _model_found_on:
+                    # Model not on any invoice — likely partial
+                    # shipment that doesn't include this item.
+                    # Demote FAIL to REVIEW.
+                    _msg = (
+                        f"Unit-price condition names model "
+                        f"{_models[0]} which is not present on any "
+                        f"Commercial Invoice in this submission. "
+                        f"This often reflects a partial / tranche "
+                        f"shipment where the named item is not in "
+                        f"this drawing. Routed to REVIEW pending "
+                        f"confirmation of scope."
+                    )
+                    _set(row, "compliance", "REVIEW")
+                    _set(row, "findings", _msg)
+                    _set(row, "result", _msg[:200])
+                    _set(row, "verification_notes",
+                         f"P198cm unit-price model absent from all "
+                         f"invoices: {_models}")
+                    _progress(
+                        f"  [P198cm unit-price] {_row_id}: FAIL->REVIEW "
+                        f"(model {_models[0]} not on any CI)"
+                    )
+            except Exception as _e:
+                try:
+                    print(f"[P198cm unit-price] exception on row {_row_id}: {_e}")
                 except Exception:
                     pass
     except Exception:

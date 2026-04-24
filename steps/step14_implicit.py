@@ -1187,10 +1187,24 @@ def _hybrid_amount_check(lc_amount: float, lc_currency: str, tol_plus: float, to
                 findings=f"Draft: {lc_currency} {doc_amount:,.2f}",
                 result=f"Draft matches invoice total {lc_currency} {inv_total:,.2f}", compliance="PASS", severity="hard")
         elif inv_total:
+            # P198cp — Draft amount may LEGITIMATELY differ from the
+            # sum of commercial invoices when the presentation is a
+            # partial shipment / tranche, when the draft is drawn for
+            # one specific invoice in a multi-invoice presentation, or
+            # when the LC permits partial drawings. Comparing draft to
+            # total-of-invoices and hard-FAILing on mismatch produces
+            # false discrepancies on valid partial-shipment flows.
+            # Demote to informational REVIEW so the difference is
+            # visible in the review queue without blocking compliance.
             return CheckResult(check_id=check_id, clause_ref="F32B",
-                condition="Draft must match invoice total", document_checked=doc_type,
+                condition="Draft and invoice total (informational)",
+                document_checked=doc_type,
                 findings=f"Draft: {lc_currency} {doc_amount:,.2f}",
-                result=f"Draft {lc_currency} {doc_amount:,.2f} vs invoices {lc_currency} {inv_total:,.2f}", compliance="FAIL", severity="hard")
+                result=(f"Draft {lc_currency} {doc_amount:,.2f} vs "
+                        f"invoices total {lc_currency} {inv_total:,.2f} "
+                        f"— not cross-checked (partial shipments and "
+                        f"tranche drafts are permitted under UCP 600)."),
+                compliance="REVIEW", severity="soft")
         elif doc_amount > max_amount:
             return CheckResult(check_id=check_id, clause_ref="F32B",
                 condition="Draft must not exceed LC amount", document_checked=doc_type,
