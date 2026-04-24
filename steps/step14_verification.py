@@ -9844,17 +9844,54 @@ def run(
             flags=re.IGNORECASE,
         )
 
-        for task in vlm_tasks:
-            row = task["row"]
-            _row_id = task.get("row_id", "?")
+        # P198cl_v2 — iterate over `rows` directly, not just
+        # vlm_tasks. Rows whose target document is missing from the
+        # submission are pre-filled as FAIL without ever being added
+        # to vlm_tasks, so the old per-task loop missed exactly the
+        # case we need to rescue (Proforma Invoice not submitted as a
+        # standalone document, PI ref cited on the Commercial Invoice
+        # instead).
+        _rows_to_scan = []
+        _seen_rowids_for_cl = set()
+        try:
+            for task in vlm_tasks:
+                _r = task.get("row")
+                if _r is None:
+                    continue
+                _rid = task.get("row_id", _get(_r, "row_id", "?"))
+                if _rid in _seen_rowids_for_cl:
+                    continue
+                _seen_rowids_for_cl.add(_rid)
+                _rows_to_scan.append(_r)
+            for _r in (rows or []):
+                _rid = _get(_r, "row_id", "?")
+                if _rid in _seen_rowids_for_cl:
+                    continue
+                _seen_rowids_for_cl.add(_rid)
+                _rows_to_scan.append(_r)
+        except Exception:
+            _rows_to_scan = list(rows or [])
+
+        for row in _rows_to_scan:
+            _row_id = _get(row, "row_id", "?")
             try:
                 _comp_now = _get(row, "compliance", "").upper()
                 if _comp_now != "FAIL":
                     continue
-                _doc_type_lc = (task.get("document_type") or '').lower()
-                if 'proforma' not in _doc_type_lc:
+                # Use the row's target document (`document_checked` /
+                # row.document_type), NOT the matched packet's type.
+                # When no standalone Proforma Invoice is submitted,
+                # the row still targets "Proforma Invoice" but any
+                # task would be fanned out to a Commercial Invoice
+                # packet. Reading the packet's type here would skip
+                # the exact false-FAIL case we need to rescue.
+                _row_target = (
+                    _get(row, "document_checked", "") or
+                    _get(row, "document_type", "") or ""
+                ).lower()
+                if 'proforma' not in _row_target:
                     continue
-                _cond = (task.get("condition_text") or "")
+                _cond = _get(row, "condition_text", "") or ""
                 _cond_u = _cond.upper()
                 if 'PROFORMA' not in _cond_u:
                     continue
