@@ -2426,6 +2426,20 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         r'Message\s+type:\s*700',
         r'SWIFT_MT700',
         r'SWIFT_MT\s*700\b',
+        # P198ca — Alliance Message Management / BAHL SWIFT report format
+        # prints the message identifier as
+        #     Identifier: fin.700 Expansion: Issue of a Documentary Credit
+        # The previous pattern list caught "Message type: 700" but not the
+        # "fin.700" form, so an LC MT700 that followed an MT730 ack in the
+        # same PDF inherited the preceding page's MT730 type via the VLM's
+        # is_continuation=True verdict. Added Alliance identifier patterns
+        # below so the regex preclassifier sets _page_swift_type='LC' for
+        # these pages and the boundary is drawn correctly.
+        r'\bfin\.\s*700\b',
+        r'\bfin\.\s*701\b',
+        r'\bIdentifier\s*:\s*fin\.\s*700\b',
+        r'\bIdentifier\s*:\s*fin\.\s*701\b',
+        r'\bIssue\s+of\s+a\s+Documentary\s+Credit\b',
         r'(?:^|\n)\s*:46A:',             # Alliance F46A (Documents Required)
         r'(?:^|\n)\s*F46A\s*:',          # Fusion F46A
         r'(?:^|\n)\s*:40A:',             # Alliance F40A (Form of LC)
@@ -2517,6 +2531,14 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         r'(?:^|\n)\s*(?::|\bF)47A[\s:]+',  # Additional Conditions
         r'(?:^|\n)\s*(?::|\bF)47B[\s:]+',  # Additional Conditions contd
         r'(?:^|\n)\s*(?::|\bF)78[\s:]+',   # Instructions
+        # P198ca — F72 / F72Z Sender-to-Receiver Information is a
+        # common LC trailer field. Without this, the last page of a
+        # multi-page MT700 that carries only F72 narrative + the
+        # "Page X of Y" footer would fall through to "no SWIFT
+        # signal" and inherit a stale `prev_swift_type`.
+        r'(?:^|\n)\s*(?::|\bF)72[Z]?[\s:]+',
+        r'(?:^|\n)\s*(?::|\bF)71[BD]?[\s:]+',  # Charges
+        r'(?:^|\n)\s*(?::|\bF)49[\s:]+',       # Confirmation instructions
         r'(?:^|\n)\s*(?::|\bF)72[\s:]+',   # Sender to Receiver
         r'(?:^|\n)\s*(?::|\bF)49[\s:]+',   # Confirmation Instructions
         r'(?:^|\n)\s*(?::|\bF)71[BD][\s:]+',  # Charges
@@ -2583,8 +2605,12 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                 _msg_detail_pages[pg_num] = []
             _msg_detail_pages[pg_num].append(msg_num)
 
-    # If 3+ pages have "Message Details #N", this is a BAHL multi-message report
-    if len(_msg_detail_pages) >= 3:
+    # If 2+ pages have "Message Details #N", this is a BAHL multi-message
+    # report. P198ca — lowered from 3 to 2: the common MT730 (ack) + MT700
+    # (LC) pair in one PDF has exactly 2 message headers, and without BAHL
+    # mode the "Page X of Y" footer on each page would lump them as a
+    # single 5-page document of the first message's type (MT730).
+    if len(_msg_detail_pages) >= 2:
         _is_bahl = True
         _progress(f"  BAHL multi-message report detected: {len(_msg_detail_pages)} message headers found")
 

@@ -693,19 +693,90 @@ def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tupl
     _FILLER = {'THE', 'AND', 'FOR', 'FROM', 'WITH', 'THEIR', 'MUST', 'SHOULD',
                'FULL', 'SET', 'ORIGINAL', 'COPY', 'DUPLICATE', 'ORDER'}
     dt_words -= _FILLER
+
+    # P198cb — certificate-family guard. Certificates belong to mutually
+    # exclusive semantic families. A Health Certificate (regulatory /
+    # food-safety) MUST NOT match a Shipping Company Certificate (carrier
+    # attestation) just because both contain the word "CERTIFICATE". The
+    # marker tokens below identify the family of a cert name; if doc_type
+    # names one family and expected names a different family, reject the
+    # match regardless of any other key-word overlap.
+    _CERT_FAMILIES = {
+        'health':          {'HEALTH'},
+        'phytosanitary':   {'PHYTOSANITARY', 'PHYTO'},
+        'fumigation':      {'FUMIGATION', 'FUMIGATED', 'FUMIGATOR'},
+        'halal':           {'HALAL'},
+        'shipping_agent':  {'SHIPPING', 'AGENT', "AGENT'S", 'AGENTS',
+                            'CARRIER', "CARRIER'S", 'CARRIERS',
+                            'VESSEL', "VESSEL'S", 'SHIPOWNER',
+                            "SHIPOWNER'S", 'NVOCC'},
+        'beneficiary':     {'BENEFICIARY', "BENEFICIARY'S"},
+        'origin':          {'ORIGIN'},
+        'analysis':        {'ANALYSIS', 'ANALYTICAL'},
+        'inspection':      {'INSPECTION', 'INSPECTED'},
+        'survey':          {'SURVEY', 'SURVEYED'},
+        'weight_quality':  {'WEIGHT', 'QUALITY'},
+        'insurance':       {'INSURANCE', 'POLICY', 'COVER NOTE'},
+    }
+
+    def _cert_family(words):
+        found = set()
+        for fam, tokens in _CERT_FAMILIES.items():
+            if words & tokens:
+                found.add(fam)
+        return found
+
+    _is_cert_dt = 'CERTIFICATE' in dt_words
+    dt_families = _cert_family(dt_words) if _is_cert_dt else set()
+
+    _key_words = {'BILL', 'LADING', 'INVOICE', 'DRAFT', 'EXCHANGE',
+                  'ADVICE', 'PACKING', 'WEIGHT', 'QUALITY', 'INSURANCE',
+                  'FUMIGATION', 'PHYTOSANITARY'}
+    # Collect all candidate matches with a score; pick the best at the end.
+    # Score heuristic: +10 per shared non-filler non-CERTIFICATE token,
+    # +5 per shared key_word, +3 for same-family cert pairing. Negative
+    # for cross-family certs (→ skip).
+    _best = (-1, "", -1)  # (score, name, index)
     for i, ed in enumerate(expected_docs):
         ed_upper = ed.get('document_name', '').upper()
         ed_words = set(re.findall(r'[A-Z]{3,}', _normalize(ed_upper))) - _FILLER
         overlap = dt_words & ed_words
-        # Key document words: BILL, LADING, INVOICE, CERTIFICATE, DRAFT, ADVICE, PACKING, WEIGHT, QUALITY
-        _key_words = {'BILL', 'LADING', 'INVOICE', 'CERTIFICATE', 'DRAFT', 'EXCHANGE',
-                      'ADVICE', 'PACKING', 'WEIGHT', 'QUALITY', 'INSURANCE', 'FUMIGATION',
-                      'PHYTOSANITARY', 'SHIPPING', 'AGENT'}
-        key_overlap = overlap & _key_words
-        if key_overlap:
-            return i, ed.get('document_name', '')
-        if len(overlap) >= 2:
-            return i, ed.get('document_name', '')
+        _is_cert_ed = 'CERTIFICATE' in ed_words
+
+        if _is_cert_dt and _is_cert_ed:
+            ed_families = _cert_family(ed_words)
+            if dt_families and ed_families and not (dt_families & ed_families):
+                continue  # cross-family — reject
+
+        # Non-CERTIFICATE overlap tokens count most
+        _non_cert_overlap = overlap - {'CERTIFICATE'}
+        score = 10 * len(_non_cert_overlap)
+        key_hits = overlap & _key_words
+        score += 5 * len(key_hits)
+        if _is_cert_dt and _is_cert_ed:
+            ed_families = _cert_family(ed_words)
+            if dt_families and ed_families and (dt_families & ed_families):
+                score += 3
+            # Bonus for family-specific tokens both present
+            score += 2 * len(_non_cert_overlap)
+
+        # Minimum floor: at least one non-filler overlap besides CERTIFICATE,
+        # OR a same-family cert pair, OR a key-word match.
+        _has_floor = (
+            bool(_non_cert_overlap)
+            or bool(key_hits)
+            or (_is_cert_dt and _is_cert_ed
+                and dt_families and _cert_family(ed_words)
+                and (dt_families & _cert_family(ed_words)))
+        )
+        if not _has_floor:
+            continue
+
+        if score > _best[0]:
+            _best = (score, ed.get('document_name', ''), i)
+
+    if _best[2] >= 0:
+        return _best[2], _best[1]
     return -1, ""
 
 
