@@ -3666,9 +3666,31 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     # that happen to sit next to each other — the X sequence breaks
     # at the boundary (e.g. 1,2,3,1,2,3) and that starts a new group.
     _report_groups = {}  # key: Y → list of (packet_idx, pdf_page, X)
+    # P198cj — pages belonging to a BAHL-split SWIFT message are ALREADY
+    # correctly grouped by message_number. Their "Page X of Y" marker
+    # spans the WHOLE BAHL bundle (multiple SWIFT messages in one PDF)
+    # — so running the Page-X-of-Y multi-page report clustering over
+    # them would merge distinct messages (e.g. MT730 ack + MT700 LC)
+    # back into a single packet. Skip any packet that carries a BAHL-
+    # pre-classified page.
+    _bahl_page_set_local = set()
+    try:
+        if _is_bahl:
+            for _mi in _bahl_messages.values():
+                _bahl_page_set_local.update(_mi.get('pages', []))
+    except Exception:
+        pass
+
     for i, pkt in enumerate(merged_packets):
         dt = pkt.document_type.lower().strip()
         if dt in _skip_merge or dt in _bl_types or dt in _bl_tc_types:
+            continue
+        # P198cj — skip BAHL-split packets.
+        if _bahl_page_set_local and any(
+            (pg_cls.get('page_number', 0) if isinstance(pg_cls, dict) else 0)
+            in _bahl_page_set_local
+            for pg_cls in pkt.pages
+        ):
             continue
         for pg_cls in pkt.pages:
             pg_num = pg_cls.get('page_number', 0) if isinstance(pg_cls, dict) else 0

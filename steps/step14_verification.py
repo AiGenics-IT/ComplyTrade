@@ -8768,7 +8768,66 @@ def run(
                             _bare_agent = True
                             break
 
-                    if _struct_is_house or _bare_agent:
+                    # P198ck — NO signing-capacity proof at all → treat
+                    # as house BL. A legitimate master / carrier / owner
+                    # BL signed under UCP 600 Art 20 MUST declare the
+                    # signing capacity ("as master", "as carrier", "as
+                    # agent for <master/carrier/owner>", "for and on
+                    # behalf of the <master/carrier/owner>"). If none
+                    # of those capacity-affirming phrases appear on the
+                    # BL text at all, we cannot prove it is a
+                    # carrier-issued BL — the conservative reading is
+                    # that it is a forwarder-issued house BL, so the
+                    # HOUSE-prohibition FAIL must stand.
+                    _CAPACITY_AFFIRMS = (
+                        'AS MASTER',
+                        'MASTER OF THE VESSEL',
+                        'MASTER OF THE SHIP',
+                        'AS THE MASTER',
+                        'SIGNED BY THE MASTER',
+                        'AS AGENT FOR THE MASTER',
+                        'AS AGENTS FOR THE MASTER',
+                        'AS AGENT FOR MASTER',
+                        'AS AGENTS FOR MASTER',
+                        'AS AGENT ON BEHALF OF THE MASTER',
+                        'AS AGENTS ON BEHALF OF THE MASTER',
+                        'AS AGENTS FOR AND ON BEHALF OF THE MASTER',
+                        'AS AGENT FOR AND ON BEHALF OF THE MASTER',
+                        'FOR AND ON BEHALF OF THE MASTER',
+                        'ON BEHALF OF THE MASTER',
+                        'FOR THE MASTER AS AGENT',
+                        'FOR THE MASTER AS AGENTS',
+                        'AS AGENTS ONLY FOR AND BY AUTHORITY OF THE MASTER',
+                        'AS AGENT ONLY FOR AND BY AUTHORITY OF THE MASTER',
+                        # Carrier-direct / carrier-agent signings
+                        'AS CARRIER',
+                        'THE CARRIER',
+                        'SIGNED BY THE CARRIER',
+                        'AS AGENT FOR THE CARRIER',
+                        'AS AGENTS FOR THE CARRIER',
+                        'AS AGENT FOR AND ON BEHALF OF THE CARRIER',
+                        'AS AGENTS FOR AND ON BEHALF OF THE CARRIER',
+                        'FOR AND ON BEHALF OF THE CARRIER',
+                        'ON BEHALF OF THE CARRIER',
+                        # Owner / charterer signings (charter-party BLs)
+                        'AS OWNER', 'AS OWNERS',
+                        'AS AGENT FOR THE OWNER',
+                        'AS AGENTS FOR THE OWNER',
+                        'AS AGENT FOR AND ON BEHALF OF THE OWNER',
+                        'AS AGENTS FOR AND ON BEHALF OF THE OWNER',
+                        'FOR AND ON BEHALF OF THE OWNER',
+                        'ON BEHALF OF THE OWNER',
+                        'AS CHARTERER', 'AS CHARTERERS',
+                        'FOR AND ON BEHALF OF THE CHARTERER',
+                        # "Signed by XYZ Shipping Line / Shipping Co."
+                        'SHIPPING LINE',
+                        'SHIPPING COMPANY',
+                    )
+                    _no_capacity_proof = not any(
+                        ph in _doc_text_up for ph in _CAPACITY_AFFIRMS
+                    )
+
+                    if _struct_is_house or _bare_agent or _no_capacity_proof:
                         _reason_bits = []
                         if _struct_is_house:
                             _reason_bits.append(
@@ -8783,9 +8842,16 @@ def run(
                                 "'for master / carrier / owner' qualifier — "
                                 "indicates freight-forwarder-issued house BL"
                             )
+                        if _no_capacity_proof and not (_struct_is_house or _bare_agent):
+                            _reason_bits.append(
+                                "no master / carrier / owner signing-"
+                                "capacity affirmation anywhere on BL — "
+                                "cannot prove carrier-issued BL, so the "
+                                "HOUSE prohibition stands"
+                            )
                         _progress(
-                            f"  [P198ch HOUSE-rescue-block] {_row_id}: "
-                            f"BL is a house BL by "
+                            f"  [P198ch/ck HOUSE-rescue-block] {_row_id}: "
+                            f"BL is / may be a house BL by "
                             f"{' + '.join(_reason_bits)} — leaving FAIL"
                         )
                         continue
