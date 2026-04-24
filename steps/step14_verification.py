@@ -5796,26 +5796,24 @@ def run(
                 except Exception:
                     pass
 
-            # P183 — Deduplicate missing-doc reports PER DOCUMENT TYPE
-            # globally (not per clause). If the LC has multiple clauses
-            # asking about the same missing doc (e.g. 5 conditions on
-            # Shipment Advice), show ONE "Required document missing"
-            # row; drop all other content-check rows for the same doc
-            # from the report entirely. Checking sub-conditions of a
-            # document that doesn't exist is meaningless.
+            # P183 — DEPRECATED dedup. Previously, when the LC had
+            # multiple clauses asking about the same missing doc
+            # (e.g. 5 sub-conditions on Shipment Advice), only ONE
+            # "Required document missing" row was shown and the
+            # other 4 were silently dropped from the report. This
+            # hid clauses like 46A-5 / 46A-8 / 46A-9 entirely when
+            # their underlying document (Beneficiary Certificate,
+            # Courier Receipt, Halal, etc.) was missing — the
+            # reviewer couldn't see that the clause even existed.
+            #
+            # P198cy — Keep EVERY clause sub-row visible in the
+            # report with its own FAIL ("Required document missing:
+            # X"). Each 46A-X clause stays accountable even when
+            # its document is absent. Downstream consolidation
+            # collapses findings if it wants to, but the row-level
+            # record is preserved so the checklist UI shows full
+            # clause coverage.
             _missing_key = doc_target.strip().lower()
-            if _missing_key in _seen_missing:
-                # Drop entirely — not even N/A visible in report.
-                _set(row, "compliance", "N/A")
-                _set(row, "result", "")
-                _set(row, "findings", "")
-                _set(row, "verification_notes",
-                     f"{doc_target} not in submission — content check skipped (missing doc already reported)")
-                try:
-                    row["_drop_from_report"] = True
-                except Exception:
-                    pass
-                continue
             _seen_missing.add(_missing_key)
             # Use the actual document name in the message instead of the
             # generic "Document not found in submission" — gives the
