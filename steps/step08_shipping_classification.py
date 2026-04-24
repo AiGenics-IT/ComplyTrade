@@ -1087,6 +1087,112 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
                 document_type = _prior_dt_for_match
                 reasoning = f"Step 3 prior classification (preferred): {_prior_dt_for_match}"
                 match_confidence = max(match_confidence, 0.90)
+
+        # ── P198cx — Block "Shipping Company Certificate" force-fit ──
+        # An LC's "Shipping Company Certificate" requirement is a
+        # carrier-issued / agent-issued attestation about the VESSEL
+        # (Institute Classification Clause coverage, vessel ownership,
+        # port regulations, etc.). When the VLM sees this slot in the
+        # LC's expected-docs list and a page it can't confidently
+        # classify, it commonly force-fits independent-SURVEYOR
+        # certificates (Last 3 Cargoes statements, Shelf Life
+        # Certificates, Certificates of Analysis, Load Port Survey
+        # Reports, etc.) into the SCC slot — they happen to mention
+        # the vessel name but are issued by Control Union / SGS / Alfred
+        # H Knight, not by the shipping company.
+        #
+        # Rule: if VLM returned "Shipping Company Certificate" but the
+        # document body carries high-specificity markers for a
+        # different certificate family — or step 3 already labelled
+        # it with one of those specific names — override the VLM and
+        # keep the specific type (which will then resolve as
+        # alien_document via the standard matcher). These markers
+        # virtually never appear on a genuine SCC.
+        _vlm_dt_u = (document_type or '').strip().upper()
+        if _vlm_dt_u == 'SHIPPING COMPANY CERTIFICATE':
+            _glm_up = (glm_text or '').upper()
+            _prior_up = (_prior_dt_for_match or '').upper()
+            _SPECIFIC_CERT_MARKERS = (
+                # Shelf life
+                (r'\bSHELF\s+LIFE\s+CERTIFICATE\b', 'Shelf Life Certificate'),
+                (r'\bSHELF\s+LIFE\b.*\b(?:EXPIRY|PRODUCTION)\s+DATE\b',
+                 'Shelf Life Certificate'),
+                # Last 3 / previous cargoes
+                (r'\bLAST\s+\d\s+CARGOES\b', 'Last Cargoes Statement'),
+                (r'\bLAST\s+THREE\s+CARGOES\b', 'Last Cargoes Statement'),
+                (r'\bPREVIOUS\s+CARGOES?\b', 'Last Cargoes Statement'),
+                (r'\bFOSFA\s+INTERNATIONAL\s+LIST\s+OF\s+BANNED\s+PREVIOUS\s+CARGOES\b',
+                 'Last Cargoes Statement'),
+                # Analysis / quality / survey (surveyor-issued — not SCC)
+                (r'\bCERTIFICATE\s+OF\s+ANALYSIS\b', 'Certificate of Analysis'),
+                (r'\bCERTIFICATE\s+OF\s+QUALITY\s+AND\s+WEIGHT\b',
+                 'Certificate of Quality and Weight'),
+                (r'\bLOAD\s+PORT\s+SURVEY\s+REPORT\b', 'Load Port Survey Report'),
+                (r'\bDISCHARGE\s+SURVEY\s+REPORT\b', 'Discharge Survey Report'),
+                (r'\bDRAUGHT\s+SURVEY\s+REPORT\b', 'Draught Survey Report'),
+                # Other high-spec types
+                (r'\bPHYTOSANITARY\b', 'Phytosanitary Certificate'),
+                (r'\bHEALTH\s+CERTIFICATE\b', 'Health Certificate'),
+                (r'\bFUMIGATION\s+CERTIFICATE\b', 'Fumigation Certificate'),
+                (r'\bHALAL\s+CERTIFICATE\b', 'Halal Certificate'),
+            )
+            _override_to = None
+            for _pat, _name in _SPECIFIC_CERT_MARKERS:
+                if re.search(_pat, _glm_up) or re.search(_pat, _prior_up):
+                    _override_to = _name
+                    break
+            # Also: if step 3's label directly names one of these
+            # specific types (e.g. "SHELF LIFE CERTIFICATE"), keep it.
+            if not _override_to and _prior_up:
+                _PRIOR_SPECIFIC_NAMES = {
+                    'SHELF LIFE CERTIFICATE': 'Shelf Life Certificate',
+                    'CERTIFICATE OF ANALYSIS': 'Certificate of Analysis',
+                    'CERTIFICATE OF QUALITY AND WEIGHT':
+                        'Certificate of Quality and Weight',
+                    'CERTIFICATE OF QUALITY': 'Certificate of Quality',
+                    'LOAD PORT SURVEY REPORT': 'Load Port Survey Report',
+                    'DISCHARGE SURVEY REPORT': 'Discharge Survey Report',
+                    'DRAUGHT SURVEY REPORT': 'Draught Survey Report',
+                    'LAST 3 CARGOES': 'Last Cargoes Statement',
+                    'LAST CARGOES': 'Last Cargoes Statement',
+                    'PHYTOSANITARY CERTIFICATE': 'Phytosanitary Certificate',
+                    'HEALTH CERTIFICATE': 'Health Certificate',
+                    'FUMIGATION CERTIFICATE': 'Fumigation Certificate',
+                    'HALAL CERTIFICATE': 'Halal Certificate',
+                }
+                for _key, _name in _PRIOR_SPECIFIC_NAMES.items():
+                    if _key in _prior_up:
+                        _override_to = _name
+                        break
+            # Additional guard: if issued_by / letterhead names an
+            # independent surveyor (Control Union, SGS, Alfred H
+            # Knight, Intertek, Bureau Veritas, etc.) — definitely
+            # NOT a shipping company certificate.
+            if not _override_to:
+                _SURVEYOR_NAMES = (
+                    'CONTROL UNION', 'SGS', 'ALFRED H KNIGHT',
+                    'INTERTEK', 'BUREAU VERITAS', 'SAYBOLT',
+                    'CORNELDER', 'COTECNA', 'OMIC',
+                )
+                if any(s in _glm_up for s in _SURVEYOR_NAMES):
+                    # Prefer step 3's label if informative; else
+                    # fall back to a generic "Certificate".
+                    _override_to = _prior_dt_for_match or 'Certificate'
+            if _override_to:
+                print(
+                    f"[Step 8] P198cx: overriding VLM "
+                    f"'Shipping Company Certificate' → '{_override_to}' "
+                    f"for packet {packet_index} (surveyor-issued / "
+                    f"high-specificity certificate, not SCC)"
+                )
+                document_type = _override_to
+                reasoning = (
+                    f"P198cx: VLM labelled 'Shipping Company "
+                    f"Certificate' but document is {_override_to} "
+                    f"(surveyor-issued, not a carrier/agent "
+                    f"attestation). SCC false-match blocked."
+                )
+                match_confidence = max(match_confidence, 0.90)
         document_summary = vlm_result.get('summary', '')
         document_number = vlm_result.get('document_number', '')
         document_date = vlm_result.get('date', '')
