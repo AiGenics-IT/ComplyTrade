@@ -2490,7 +2490,23 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     ]
     _SWIFT_AMEND_PATTERNS = [
         r'Message\s+type:\s*707',
-        r'SWIFT_MT707',
+        r'Message\s+type:\s*708',
+        r'SWIFT_MT707', r'SWIFT_MT708',
+        # P198cg — Alliance / BAHL report format prints the amendment
+        # header as "Identifier: fin.707 Expansion: Amendment to a
+        # Documentary Credit". The previous list caught
+        # "Message type: 707" but not the fin.707 form, so page 1 of
+        # an MT707 failed to be preclassified as Amendment, leaving
+        # page 2 (F45B / F46B continuation only) without a
+        # prev_swift_type anchor — each page became its own packet,
+        # the final amendment text was truncated, and downstream
+        # reconstruction merged only page 1 into the final LC.
+        r'\bfin\.\s*707\b',
+        r'\bfin\.\s*708\b',
+        r'\bIdentifier\s*:\s*fin\.\s*707\b',
+        r'\bIdentifier\s*:\s*fin\.\s*708\b',
+        r'\bAmendment\s+to\s+a\s+Documentary\s+Credit\b',
+        r'\bAmendment\s+to\s+a\s+Confirmation\b',
         r'(?:^|\n)\s*26E:\s*Number\s+of\s+Amendment',
         r'(?:^|\n)\s*26E:',              # Alliance amendment number
         r'26E:\s*\d+',                   # 26E with number
@@ -2834,6 +2850,18 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
 
     # ── Step 0d: Build final pre-classification ──
     prev_swift_type = None
+
+    # P198cg — build page → BAHL-message lookup so we can distinguish
+    # "first page of this SWIFT message" from "continuation page of
+    # the same SWIFT message". Without this every page of a BAHL-split
+    # message was pre-classified with is_continuation=False, producing
+    # one packet per page and truncating multi-page LCs / amendments.
+    _bahl_page_to_msg = {}
+    if _is_bahl:
+        for _msg_num, _mi in _bahl_messages.items():
+            for _p in _mi.get('pages', []):
+                _bahl_page_to_msg[_p] = (_msg_num, _mi.get('mt_type', ''), _mi.get('pages', []))
+
     for pg_num, img_path, text in all_page_data:
         # Check if this page belongs to a Fusion document group
         _in_group = None
@@ -2857,6 +2885,35 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             prev_swift_type = doc_type
             _progress(f"  Page {pg_num}: PRE-CLASSIFIED as {doc_type}{' (cont)' if is_cont else ''} [Page {_page_of_total.get(pg_num, ('?','?'))[0]} of {_page_of_total.get(pg_num, ('?','?'))[1]}]")
             continue
+
+        # P198cg — BAHL-message group: first page of the message starts
+        # a new packet (is_continuation=False); subsequent pages of the
+        # same message inherit the type with is_continuation=True so
+        # step09 reconciles them into ONE packet.
+        if pg_num in _bahl_page_to_msg:
+            _msg_num, _mt_type, _msg_pages = _bahl_page_to_msg[pg_num]
+            if _mt_type:
+                _is_first_of_msg = (_msg_pages and pg_num == _msg_pages[0])
+                _swift_preclassified[pg_num] = {
+                    'page_number': pg_num,
+                    'document_type': _mt_type,
+                    'is_continuation': not _is_first_of_msg,
+                    'confidence': 0.99,
+                    'stamps': [], 'signatures': [], 'seals': [], 'logos': [],
+                    'copy_status': 'original', 'copy_label': '',
+                    'marking_status': 'unsigned',
+                    'doc_hint': (
+                        f'BAHL Msg#{_msg_num} {_mt_type}'
+                        f"{' (cont)' if not _is_first_of_msg else ''}"
+                    ),
+                }
+                prev_swift_type = _mt_type
+                _progress(
+                    f"  Page {pg_num}: PRE-CLASSIFIED as {_mt_type}"
+                    f"{' (cont)' if not _is_first_of_msg else ''} "
+                    f"[BAHL Msg#{_msg_num}]"
+                )
+                continue
 
         # Not in a Fusion group — use direct SWIFT pattern detection
         st = _page_swift_type.get(pg_num, '')
