@@ -2932,6 +2932,23 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             }
             _progress(f"  Page {pg_num}: PRE-CLASSIFIED as {prev_swift_type} header page")
         else:
+            # P198cc — A blank (or near-blank) page sitting INSIDE a SWIFT
+            # message must NOT reset prev_swift_type. Otherwise an MT700
+            # with an interleaved blank page drops the LC context, and
+            # the next page (F47A/F72Z continuation) can't inherit 'LC'.
+            # We detect blank-ish pages by text length and leave prev
+            # intact — the "Page X of Y" footer or the subsequent SWIFT
+            # continuation page will still carry the context forward.
+            try:
+                _text_len = len((text or '').strip())
+            except Exception:
+                _text_len = 0
+            # <80 chars = blank / very light (covers pure blank, footer-
+            # only pages, "this page intentionally left blank" sentinels).
+            if _text_len < 80:
+                # Preserve prev_swift_type across this blank so the next
+                # page's continuation detection still finds an anchor.
+                continue
             prev_swift_type = None  # Reset — not SWIFT content
 
     _progress(f"  Pre-classified {len(_swift_preclassified)} pages as SWIFT (LC/Amendment/MT799/MT999)")
