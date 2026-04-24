@@ -8709,6 +8709,87 @@ def run(
                     continue
                 if not _tokens_checked:
                     continue
+
+                # P198ch — HOUSE prohibition needs extra signals
+                # beyond literal "HOUSE" tokens. A BL can be a house
+                # BL without ever printing "HOUSE" on its face — the
+                # tell is the SIGNING CAPACITY:
+                #   • "As Agent" / "As Agents" alone, with NO
+                #     "for master" / "for the carrier" / "for the
+                #     owner" / "on behalf of master", indicates the
+                #     signer is a freight forwarder acting as their
+                #     own agent → this IS a house BL.
+                #   • "As agent for master" / "on behalf of the
+                #     master" / "for the carrier" / "for the owner"
+                #     → NOT a house BL (master-agency, UCP 600 Art 20).
+                # Also honour structured bl_subtype flags from step03
+                # (is_house_bl, issuer_type=house_bl, signing_type=
+                # forwarder_signed). If any of these say "house",
+                # leave the FAIL in place rather than rescuing.
+                if 'HOUSE' in _named_prohibitions:
+                    _bl_subtype = (
+                        task.get("bl_subtype") or
+                        (task.get("packet") or {}).get("bl_subtype") or {}
+                    )
+                    _struct_is_house = False
+                    if isinstance(_bl_subtype, dict):
+                        if bool(_bl_subtype.get('is_house_bl')):
+                            _struct_is_house = True
+                        if str(_bl_subtype.get('issuer_type', '') or '').lower() == 'house_bl':
+                            _struct_is_house = True
+                        if str(_bl_subtype.get('signing_type', '') or '').lower() == 'forwarder_signed':
+                            _struct_is_house = True
+
+                    # Bare-agent signing heuristic: "AS AGENT" /
+                    # "AS AGENTS" appears on BL but without a
+                    # qualifying "MASTER" / "CARRIER" / "OWNER"
+                    # / "SHIPPING LINE" within ~120 chars AFTER
+                    # the "AS AGENT" phrase. Check every occurrence —
+                    # if any "AS AGENT" is unqualified, flag as house.
+                    _bare_agent = False
+                    _QUALIFIERS = (
+                        'MASTER', 'CARRIER', 'OWNER', 'OWNERS',
+                        'CHARTERER', 'CHARTERERS',
+                        'SHIPPING LINE', 'SHIPPING COMPANY',
+                        'THE VESSEL', 'THE SHIP',
+                    )
+                    _agent_re = re.compile(
+                        r'\bAS\s+AGENTS?\b',
+                        flags=re.IGNORECASE,
+                    )
+                    for _m in _agent_re.finditer(_doc_text_up):
+                        _end = _m.end()
+                        _window = _doc_text_up[_end:_end + 120]
+                        # Also look ~40 chars before — some BLs
+                        # write "FOR THE MASTER AS AGENT".
+                        _pre = _doc_text_up[max(0, _m.start() - 40): _m.start()]
+                        if not any(q in _window for q in _QUALIFIERS) and \
+                           not any(q in _pre for q in _QUALIFIERS):
+                            _bare_agent = True
+                            break
+
+                    if _struct_is_house or _bare_agent:
+                        _reason_bits = []
+                        if _struct_is_house:
+                            _reason_bits.append(
+                                f"structured bl_subtype flags "
+                                f"(is_house_bl={_bl_subtype.get('is_house_bl')}, "
+                                f"issuer_type={_bl_subtype.get('issuer_type')}, "
+                                f"signing_type={_bl_subtype.get('signing_type')})"
+                            )
+                        if _bare_agent:
+                            _reason_bits.append(
+                                "signing capacity 'As Agent' with no "
+                                "'for master / carrier / owner' qualifier — "
+                                "indicates freight-forwarder-issued house BL"
+                            )
+                        _progress(
+                            f"  [P198ch HOUSE-rescue-block] {_row_id}: "
+                            f"BL is a house BL by "
+                            f"{' + '.join(_reason_bits)} — leaving FAIL"
+                        )
+                        continue
+
                 # BL is clean of every prohibited marker named by
                 # the condition — rescue to PASS.
                 _msg = (
