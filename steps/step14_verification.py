@@ -8821,6 +8821,17 @@ def run(
                     # carrier-issued BL — the conservative reading is
                     # that it is a forwarder-issued house BL, so the
                     # HOUSE-prohibition FAIL must stand.
+                    #
+                    # P198cr — Tightened capacity-affirm list: dropped
+                    # "THE CARRIER" / "AS CARRIER" / "SHIPPING LINE" /
+                    # "SHIPPING COMPANY" standalones because those
+                    # phrases appear dozens of times in BL Terms &
+                    # Conditions legal boilerplate ("the carrier shall
+                    # not be liable...", "all shipping line clauses
+                    # apply...") even on house BLs that are NOT carrier
+                    # -issued. Only retained phrases that unambiguously
+                    # indicate a signing capacity in the signature
+                    # block.
                     _CAPACITY_AFFIRMS = (
                         'AS MASTER',
                         'MASTER OF THE VESSEL',
@@ -8836,21 +8847,18 @@ def run(
                         'AS AGENTS FOR AND ON BEHALF OF THE MASTER',
                         'AS AGENT FOR AND ON BEHALF OF THE MASTER',
                         'FOR AND ON BEHALF OF THE MASTER',
-                        'ON BEHALF OF THE MASTER',
                         'FOR THE MASTER AS AGENT',
                         'FOR THE MASTER AS AGENTS',
                         'AS AGENTS ONLY FOR AND BY AUTHORITY OF THE MASTER',
                         'AS AGENT ONLY FOR AND BY AUTHORITY OF THE MASTER',
-                        # Carrier-direct / carrier-agent signings
-                        'AS CARRIER',
-                        'THE CARRIER',
+                        # Carrier-agent signings (but NOT bare "THE
+                        # CARRIER" / "AS CARRIER" which occur in T&C).
                         'SIGNED BY THE CARRIER',
                         'AS AGENT FOR THE CARRIER',
                         'AS AGENTS FOR THE CARRIER',
                         'AS AGENT FOR AND ON BEHALF OF THE CARRIER',
                         'AS AGENTS FOR AND ON BEHALF OF THE CARRIER',
                         'FOR AND ON BEHALF OF THE CARRIER',
-                        'ON BEHALF OF THE CARRIER',
                         # Owner / charterer signings (charter-party BLs)
                         'AS OWNER', 'AS OWNERS',
                         'AS AGENT FOR THE OWNER',
@@ -8858,18 +8866,71 @@ def run(
                         'AS AGENT FOR AND ON BEHALF OF THE OWNER',
                         'AS AGENTS FOR AND ON BEHALF OF THE OWNER',
                         'FOR AND ON BEHALF OF THE OWNER',
-                        'ON BEHALF OF THE OWNER',
                         'AS CHARTERER', 'AS CHARTERERS',
                         'FOR AND ON BEHALF OF THE CHARTERER',
-                        # "Signed by XYZ Shipping Line / Shipping Co."
-                        'SHIPPING LINE',
-                        'SHIPPING COMPANY',
                     )
-                    _no_capacity_proof = not any(
-                        ph in _doc_text_up for ph in _CAPACITY_AFFIRMS
+                    # Proximity guard: the capacity phrase must appear
+                    # in the LAST 40% of the BL text (where signature
+                    # blocks live) OR within 300 chars of a signature
+                    # marker. Boilerplate mentions of "FOR AND ON BEHALF
+                    # OF THE CARRIER" in Terms & Conditions occur in
+                    # the middle of the document and should be ignored.
+                    _SIGN_MARKERS = (
+                        '[SIGNATURE]', 'SIGNATURE:', 'SIGNED BY',
+                        'AUTHORIZED SIGNATORY', 'AUTHORISED SIGNATORY',
+                        'FOR AND ON BEHALF OF', 'STAMP:',
                     )
+                    _cap_proof_hit = None
+                    _doc_len = len(_doc_text_up)
+                    for _ph in _CAPACITY_AFFIRMS:
+                        _p = _doc_text_up.find(_ph)
+                        while _p >= 0:
+                            # Accept if in last 40% OR near a signature
+                            # marker (±300 chars window).
+                            _in_last = (_p >= int(_doc_len * 0.60))
+                            _near_sig = any(
+                                abs(_doc_text_up.find(_sm, max(0, _p - 300),
+                                                      _p + 300 + len(_ph)) - _p) <= 300
+                                for _sm in _SIGN_MARKERS
+                                if _doc_text_up.find(_sm, max(0, _p - 300),
+                                                     _p + 300 + len(_ph)) >= 0
+                            )
+                            if _in_last or _near_sig:
+                                _cap_proof_hit = (_ph, _p)
+                                break
+                            _p = _doc_text_up.find(_ph, _p + 1)
+                        if _cap_proof_hit:
+                            break
+                    _no_capacity_proof = _cap_proof_hit is None
 
-                    if _struct_is_house or _bare_agent or _no_capacity_proof:
+                    # P198cr — Forwarder-name block. If the BL's
+                    # issuer / letterhead / signature area contains a
+                    # forwarder-style company name, it is a house BL
+                    # regardless of other signals. "M.Y Logistics",
+                    # "Global Logistics Pte Ltd", "XYZ Freight
+                    # Forwarding", "NVOCC Line", etc.
+                    _FORWARDER_INDICATORS = (
+                        r'\bLOGISTICS\b',
+                        r'\bFREIGHT\s+FORWARD(?:ING|ER|ERS)?\b',
+                        r'\bFORWARDING\s+AGENT\b',
+                        r'\bFORWARDER[S\']?\b',
+                        r'\bNVOCC\b',
+                        r'\bCONSOLIDAT(?:OR|ION|ED)\b',
+                        r'\bFIATA\b',
+                        r'\bMULTIMODAL\s+TRANSPORT\s+OPERATOR\b',
+                        r'\bMTO\b',
+                        r'\bEXPRESS\s+CARGO\b',
+                        r'\bSEA\s*&?\s*AIR\s+FREIGHT\b',
+                    )
+                    _fwd_hit = None
+                    for _pat in _FORWARDER_INDICATORS:
+                        _m = re.search(_pat, _doc_text_up)
+                        if _m:
+                            _fwd_hit = (_pat, _m.group(0),
+                                        _m.start(), _m.end())
+                            break
+
+                    if _struct_is_house or _bare_agent or _no_capacity_proof or _fwd_hit:
                         _reason_bits = []
                         if _struct_is_house:
                             _reason_bits.append(
@@ -8884,15 +8945,22 @@ def run(
                                 "'for master / carrier / owner' qualifier — "
                                 "indicates freight-forwarder-issued house BL"
                             )
-                        if _no_capacity_proof and not (_struct_is_house or _bare_agent):
+                        if _no_capacity_proof and not (_struct_is_house or _bare_agent or _fwd_hit):
                             _reason_bits.append(
-                                "no master / carrier / owner signing-"
-                                "capacity affirmation anywhere on BL — "
-                                "cannot prove carrier-issued BL, so the "
-                                "HOUSE prohibition stands"
+                                "no master / owner signing-capacity "
+                                "affirmation near signature block — "
+                                "cannot prove carrier-issued BL, so "
+                                "the HOUSE prohibition stands"
+                            )
+                        if _fwd_hit:
+                            _reason_bits.append(
+                                f"forwarder-style issuer name present "
+                                f"on BL (matched pattern: "
+                                f"'{_fwd_hit[1]}') — freight-forwarder-"
+                                f"issued BL, not a master BL"
                             )
                         _progress(
-                            f"  [P198ch/ck HOUSE-rescue-block] {_row_id}: "
+                            f"  [P198ch/ck/cr HOUSE-rescue-block] {_row_id}: "
                             f"BL is / may be a house BL by "
                             f"{' + '.join(_reason_bits)} — leaving FAIL"
                         )
