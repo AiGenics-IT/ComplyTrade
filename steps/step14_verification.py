@@ -9393,6 +9393,213 @@ def run(
     except Exception:
         pass
 
+    # P198cl — Proforma Invoice "must be present in the submission"
+    # citation rescue. When the LC F47A says something like
+    #     "Beneficiary's Proforma Invoice Ref.No. 786/S-13198-SOYPI-E
+    #      dated Jan 21, 2026 must be present in the submission"
+    # the banking reality is that a standalone "Proforma Invoice"
+    # document is rarely submitted with the shipping docs — instead
+    # the PI reference is CITED on the Commercial Invoice's goods
+    # description / reference field. Presenter's intent: prove the
+    # PI exists by quoting it on the CI. Under UCP 600 this counts
+    # as "present in the submission".
+    #
+    # Without this check, when no separate PI packet exists the
+    # deterministic / LLM path falls back to the CI packet, misreads
+    # the CI's own invoice_reference (e.g. "MCI-786/S-13198-SOY-E")
+    # as the "Proforma Invoice reference number", and FAILs on the
+    # literal mismatch with the LC's required PI ref — a false FAIL.
+    #
+    # This rescue runs on Proforma Invoice rows still at FAIL:
+    #   1. Skip if the condition is about STRICT-MATCH / date-binding
+    #      (e.g. R0004 "strictly follow" — handled by P198ak). Only
+    #      rescue "must be present / shown / cited / included" rows.
+    #   2. Extract the PI identifier tokens from the condition.
+    #   3. Scan ALL submitted packets' document_text AND structured
+    #      references_found for an OCR-tolerant match on the PI ref.
+    #   4. If matched anywhere → flip FAIL→PASS with evidence
+    #      quoting the packet that carries the citation.
+    try:
+        # Build a fold of every packet's text + structured refs so we
+        # can cheaply substring-match the PI reference across the whole
+        # submission. packets is the step09 reconciled list.
+        _all_packet_refs = []  # list of (doc_type, ref_value_normalized, raw)
+        _all_packet_text = []  # list of (doc_type, upper_text)
+        try:
+            for _pkt in (packets or []):
+                _dtype = _pkt_type(_pkt) or str(
+                    _pkt.get('document_type') if isinstance(_pkt, dict) else
+                    getattr(_pkt, 'document_type', '')
+                )
+                _pkt_text_src = ''
+                if isinstance(_pkt, dict):
+                    _pkt_text_src = _pkt.get('document_text') or _pkt.get('cleaned_text') or ''
+                    _pkt_us = _pkt.get('unified_summary') or {}
+                else:
+                    _pkt_text_src = getattr(_pkt, 'document_text', '') or \
+                                    getattr(_pkt, 'cleaned_text', '') or ''
+                    _pkt_us = getattr(_pkt, 'unified_summary', {}) or {}
+                if isinstance(_pkt_text_src, str) and _pkt_text_src:
+                    _all_packet_text.append((_dtype, _pkt_text_src.upper()))
+                if isinstance(_pkt_us, dict):
+                    for _item in (_pkt_us.get('references_found') or []):
+                        if isinstance(_item, dict):
+                            _v = str(_item.get('value', '') or '')
+                            if _v:
+                                _all_packet_refs.append((
+                                    _dtype, _normalize_id(_v), _v,
+                                    str(_item.get('role', '') or ''),
+                                ))
+                    for _key in ('proforma_reference', 'invoice_reference',
+                                 'contract_reference'):
+                        _tv = str(_pkt_us.get(_key, '') or '')
+                        if _tv:
+                            _all_packet_refs.append((
+                                _dtype, _normalize_id(_tv), _tv, _key,
+                            ))
+        except Exception:
+            pass
+
+        _PRESENCE_PATTERNS = re.compile(
+            r'\b(?:must|shall|should|is\s+to|to)\s+'
+            r'(?:be\s+)?'
+            r'(?:present|shown|cited|referenced|included|'
+            r'indicated|mentioned|attached|submitted|appear|'
+            r'quoted|noted)\b',
+            flags=re.IGNORECASE,
+        )
+        _STRICT_PATTERNS = re.compile(
+            r'\b(?:strictly\s+(?:as\s+per|follow)|'
+            r'binding\s+(?:both|on)|'
+            r'date\s+must|must\s+match\s+the\s+date|'
+            r'shall\s+match\s+the\s+date)\b',
+            flags=re.IGNORECASE,
+        )
+
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                _comp_now = _get(row, "compliance", "").upper()
+                if _comp_now != "FAIL":
+                    continue
+                _doc_type_lc = (task.get("document_type") or '').lower()
+                if 'proforma' not in _doc_type_lc:
+                    continue
+                _cond = (task.get("condition_text") or "")
+                _cond_u = _cond.upper()
+                if 'PROFORMA' not in _cond_u:
+                    continue
+                # Skip strict-match / date-binding rows — those are
+                # handled by P198ak and a real date mismatch should
+                # remain a FAIL.
+                if _STRICT_PATTERNS.search(_cond):
+                    continue
+                # Require presence-verb wording in the condition —
+                # otherwise we might rescue unrelated proforma rows.
+                if not _PRESENCE_PATTERNS.search(_cond):
+                    continue
+
+                # Extract the PI reference tokens from the condition.
+                _cond_ids_raw = re.findall(
+                    r'[A-Z0-9][A-Z0-9/\-._]{5,}[A-Z0-9]',
+                    _cond,
+                    flags=re.IGNORECASE,
+                )
+                _cond_ids = [t for t in _cond_ids_raw if re.search(r'\d', t)]
+                if not _cond_ids:
+                    continue
+
+                _best_hit = None  # (doc_type, token, source_desc)
+                for _needle in _cond_ids:
+                    _n_norm = _normalize_id(_needle)
+                    if len(_n_norm) < 6:
+                        continue
+
+                    # Priority 1 — structured refs tagged as proforma_reference.
+                    # These are unambiguous PI citations regardless of
+                    # exact vs substring equality.
+                    for _dt, _v_norm, _raw, _role in _all_packet_refs:
+                        if _role.lower() not in (
+                            'proforma_reference', 'pi_reference',
+                        ):
+                            continue
+                        if _v_norm and (
+                            _v_norm == _n_norm or
+                            _n_norm in _v_norm or _v_norm in _n_norm
+                        ):
+                            _best_hit = (_dt, _raw,
+                                         f"structured proforma_reference on {_dt}")
+                            break
+                    if _best_hit:
+                        break
+
+                    # Priority 2 — ANY structured ref with EXACT match
+                    # (including invoice_reference when it happens to
+                    # equal the PI ref). Skip invoice_reference pure-
+                    # substring matches — those are the CI's own
+                    # identity overlapping the PI ref prefix, and
+                    # that's the exact false-FAIL we're guarding
+                    # against.
+                    for _dt, _v_norm, _raw, _role in _all_packet_refs:
+                        if _v_norm == _n_norm:
+                            _best_hit = (_dt, _raw,
+                                         f"structured {_role} on {_dt} (exact)")
+                            break
+                    if _best_hit:
+                        break
+
+                    # Priority 3 — substring scan over raw packet body
+                    # text, OCR-tolerant via _normalize_id. This picks
+                    # up PI citations embedded in goods descriptions
+                    # even if step 3 failed to tag the role correctly.
+                    for _dt, _txt_up in _all_packet_text:
+                        _txt_norm = _normalize_id(_txt_up)
+                        if _n_norm and _n_norm in _txt_norm:
+                            _pos = _txt_up.find(_needle.upper())
+                            if _pos < 0:
+                                _quote = _needle
+                            else:
+                                _quote = _txt_up[
+                                    max(0, _pos - 30):
+                                    _pos + len(_needle) + 30
+                                ].strip()
+                            _best_hit = (_dt, _quote,
+                                         f"body text on {_dt}")
+                            break
+                    if _best_hit:
+                        break
+
+                if not _best_hit:
+                    continue
+
+                _dt_hit, _raw_hit, _src_hit = _best_hit
+                _msg = (
+                    f"Proforma Invoice reference is cited in the "
+                    f"submission on the {_dt_hit}. Under UCP 600 the "
+                    f"PI is typically quoted on the Commercial Invoice "
+                    f"rather than submitted as a standalone document — "
+                    f"the citation satisfies the 'must be present in "
+                    f"the submission' requirement. Evidence: "
+                    f"\"{str(_raw_hit)[:180]}\" ({_src_hit})."
+                )
+                _set(row, "compliance", "PASS")
+                _set(row, "findings", _msg)
+                _set(row, "result", _msg[:200])
+                _set(row, "verification_notes",
+                     f"P198cl PI-citation-in-submission: {_src_hit}")
+                _progress(
+                    f"  [P198cl PI-citation] {_row_id}: FAIL->PASS "
+                    f"(found on {_dt_hit})"
+                )
+            except Exception as _e:
+                try:
+                    print(f"[P198cl PI-citation] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     # P198br — Aggregation-aware BL consignee "TO ORDER OF <BANK>" rescue.
     # When the LC requires the BL to be consigned "TO THE ORDER OF <BANK>",
     # the deterministic consignee check runs per-packet. If one of the
