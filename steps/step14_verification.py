@@ -9163,6 +9163,170 @@ def run(
     except Exception:
         pass
 
+    # P198ci — THCD / Terminal Handling Charge deterministic check.
+    # LC conditions of the form "BL must show THCD prepaid at origin"
+    # (or "Terminal Handling Charges at Destination prepaid at
+    # origin") refer to a SEPARATE charges line on the BL — not the
+    # main freight payability. A typical BL charges table shows
+    # multiple parallel lines, e.g.:
+    #     FREIGHT ............ COLLECT
+    #     THCD ............... PREPAID AT ORIGIN
+    # The LLM frequently conflates the two and FAILs the THCD
+    # condition because it sees "FREIGHT COLLECT" on the BL — ignoring
+    # the separate THCD line. This deterministic post-LLM check
+    # rescues such FAILs when the BL text actually carries a THCD /
+    # THC / Terminal Handling token with a prepaid / origin indicator
+    # nearby. Conversely, if the THCD line itself is marked COLLECT,
+    # we leave the FAIL in place.
+    try:
+        _THCD_STRONG_TOKENS = (
+            'THCD',
+            'THC DESTINATION', 'THC DEST',
+            'DEST THC', 'DESTINATION THC',
+            'DESTINATION TERMINAL HANDLING',
+            'TERMINAL HANDLING CHARGES DESTINATION',
+            'TERMINAL HANDLING CHARGE DESTINATION',
+            'TERMINAL HANDLING DESTINATION',
+            'ORIGIN THC', 'THC ORIGIN',
+            'ORIGIN TERMINAL HANDLING',
+            'TERMINAL HANDLING ORIGIN',
+        )
+        _THC_GENERIC_TOKENS = (
+            'TERMINAL HANDLING CHARGES',
+            'TERMINAL HANDLING CHARGE',
+            'TERMINAL HANDLING',
+        )
+        _PREPAID_TOKENS = (
+            'PREPAID AT ORIGIN',
+            'AT ORIGIN PREPAID',
+            'ORIGIN PREPAID',
+            'PAID AT ORIGIN',
+            'ORIGIN CHARGES PREPAID',
+            'ORIGIN CHARGES PAID',
+            'PRE-PAID', 'PRE PAID',
+            'PREPAID', 'PREPAY',
+        )
+        _COLLECT_TOKENS = (
+            'COLLECT AT DESTINATION',
+            'COLLECT',
+        )
+        _thc_word_re = re.compile(r'\bTHC\b')
+
+        def _thcd_find_match(doc_text_up):
+            """Return (tok, context) if a THCD-family token appears with
+            a prepaid/origin indicator nearby; None otherwise.
+            Context window is ±120 chars."""
+            hits = []
+            for tok in _THCD_STRONG_TOKENS:
+                idx = 0
+                while True:
+                    p = doc_text_up.find(tok, idx)
+                    if p < 0:
+                        break
+                    hits.append((tok, p, p + len(tok)))
+                    idx = p + 1
+            for tok in _THC_GENERIC_TOKENS:
+                idx = 0
+                while True:
+                    p = doc_text_up.find(tok, idx)
+                    if p < 0:
+                        break
+                    hits.append((tok, p, p + len(tok)))
+                    idx = p + 1
+            for m in _thc_word_re.finditer(doc_text_up):
+                # Skip overlaps with longer matches already collected.
+                if any(p <= m.start() < e for (_t, p, e) in hits):
+                    continue
+                hits.append(('THC', m.start(), m.end()))
+            # Search for prepaid context around each hit. Skip hits
+            # that are inside tariff/T&C boilerplate ("TERMINAL
+            # HANDLING CHARGES TO BE BORNE BY ...", definitions).
+            for tok, p, e in hits:
+                ctx = doc_text_up[max(0, p - 120): e + 120]
+                # Boilerplate phrasing — not a charges-line entry.
+                boilerplate = (
+                    'TO BE BORNE BY', 'BORNE BY', 'PAYABLE BY',
+                    'SHALL BE', 'IS DEFINED', 'MEANS ',
+                    'DEFINITION', 'GLOSSARY', 'INCLUDED IN',
+                )
+                if any(b in ctx for b in boilerplate):
+                    continue
+                # Must have prepaid/origin indicator nearby
+                has_prepaid = any(pp in ctx for pp in _PREPAID_TOKENS)
+                if not has_prepaid:
+                    continue
+                # If THCD line itself reads COLLECT AND not PREPAID,
+                # skip — THCD line is not prepaid.
+                # Look ±40 chars around the token for COLLECT without
+                # an accompanying PREPAID.
+                narrow = doc_text_up[max(0, p - 40): e + 40]
+                if any(c in narrow for c in _COLLECT_TOKENS) and \
+                   not any(pp in narrow for pp in _PREPAID_TOKENS):
+                    continue
+                return tok, ctx
+            return None
+
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                _comp_now = _get(row, "compliance", "").upper()
+                if _comp_now != "FAIL":
+                    continue
+                _doc_type_lc = (task.get("document_type") or '').lower()
+                if 'bill of lading' not in _doc_type_lc:
+                    continue
+                _cond_u = (task.get("condition_text") or "").upper()
+                _cond_has_thcd = (
+                    'THCD' in _cond_u
+                    or 'TERMINAL HANDLING' in _cond_u
+                    or (_thc_word_re.search(_cond_u) is not None)
+                )
+                if not _cond_has_thcd:
+                    continue
+                # Only rescue when the condition is affirmative
+                # ("must show", "to show", "shall evidence"). Skip
+                # prohibitive ("must not show THCD") conditions.
+                if re.search(
+                    r'\b(?:NOT\s+SHOW|MUST\s+NOT|SHALL\s+NOT|'
+                    r'NOT\s+ACCEPTABLE|NOT\s+PERMITTED|PROHIBIT)\b',
+                    _cond_u,
+                ):
+                    continue
+                _doc_text_up = (task.get("document_text") or "").upper()
+                if not _doc_text_up:
+                    continue
+                _match = _thcd_find_match(_doc_text_up)
+                if not _match:
+                    continue
+                _tok, _ctx = _match
+                _ctx_clean = re.sub(r'\s+', ' ', _ctx.strip())[:220]
+                _msg = (
+                    f"BL shows a separate THCD / Terminal Handling "
+                    f"line with a prepaid-at-origin indicator. "
+                    f"Evidence near '{_tok}' on BL: "
+                    f"\"{_ctx_clean}\". The 'FREIGHT COLLECT' wording "
+                    f"on the BL refers to the main freight charge — "
+                    f"it is a separate line item and does NOT contradict "
+                    f"THCD being prepaid at origin."
+                )
+                _set(row, "compliance", "PASS")
+                _set(row, "findings", _msg)
+                _set(row, "result", _msg[:200])
+                _set(row, "verification_notes",
+                     f"P198ci THCD-prepaid-separate-line: tok='{_tok}'")
+                _progress(
+                    f"  [P198ci THCD-prepaid] {_row_id}: "
+                    f"FAIL->PASS ('{_tok}' with prepaid context)"
+                )
+            except Exception as _e:
+                try:
+                    print(f"[P198ci THCD] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     # P198br — Aggregation-aware BL consignee "TO ORDER OF <BANK>" rescue.
     # When the LC requires the BL to be consigned "TO THE ORDER OF <BANK>",
     # the deterministic consignee check runs per-packet. If one of the
