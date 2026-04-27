@@ -2686,17 +2686,70 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                     _progress(f"  F{_tag}: clause ({_clause_num}) not found in F{_ref_tag} ({len(_ref_clauses)} clauses)")
             continue
 
-        # Pattern C2: "SEE FIELD YY" / "AS PER FIELD YY" / "REFER TO FIELD YY" (no clause number)
+        # Pattern C2: "SEE FIELD YY" / "AS PER FIELD YY" / "REFER TO FIELD YY"
+        # (no clause number)
+        #
+        # P198di — Only apply this whole-field replacement when the
+        # current field's content is ESSENTIALLY just a reference
+        # ("PLS REFER FIELD 47A", "AS PER FIELD 47A.") — typical of
+        # short fields like F48 that say nothing but "see X". When
+        # the reference is just one phrase inside a longer clause
+        # field (e.g. F47A clause 10: "ALL DOCUMENTS SHOWING
+        # DESCRIPTION OF GOODS AS SOYBEANS ACCEPTABLE ONLY INVOICE
+        # TO SHOW FULL DESCRIPTION AS PER FIELD 45A"), we MUST NOT
+        # replace the entire F47A with F45A's content — doing so
+        # wipes out the other 16 conditions.
+        # P198di — fixed pre-existing regex: 'REFER\\s+(?:TO)?' required
+        # double whitespace when TO was absent, so 'REFER FIELD' (single
+        # space, no 'TO') never matched. Now 'REFER(?:\\s+TO)?'.
         _simple_ref_m = re.search(
-            r'(?:SEE|REFER\s+(?:TO)?|AS\s+PER)\s+FIELD\s+(\d{2}[A-Z]?)',
+            r'(?:SEE|REFER(?:\s+TO)?|AS\s+PER)\s+FIELD\s+(\d{2}[A-Z]?)',
             _val, re.IGNORECASE)
         if _simple_ref_m:
-            _ref_tag = _simple_ref_m.group(1)
-            _ref_val = _cf.get(_ref_tag, '')
-            if _ref_val:
-                # Replace the reference with the actual value
-                _cf[_tag] = _ref_val
-                _progress(f"  F{_tag}: resolved simple ref from F{_ref_tag} → {_ref_val[:60]}")
+            # Heuristic: only treat as a whole-field replacement if
+            # stripping the reference leaves essentially no other
+            # content (≤ 30 chars after removing the marker and
+            # surrounding label words). Long multi-clause fields
+            # (≥ 200 chars or with numbered list items "1)" / "2)")
+            # are NEVER replaced — the reference is just text inside
+            # one of their clauses.
+            _val_after = (
+                _val[:_simple_ref_m.start()]
+                + _val[_simple_ref_m.end():]
+            )
+            # Strip common label / connective words that surround a
+            # bare-reference shape ("Period for Presentation in
+            # Days", "Days:", "Narrative:", whitespace, slashes)
+            _val_residual = re.sub(
+                r'(?:Period\s+for\s+Presentation(?:\s+in\s+Days)?|'
+                r'Additional\s+Conditions|Documents\s+Required|'
+                r'Description\s+of\s+Goods(?:\s+and/or\s+Services)?|'
+                r'Days?\s*:|Narrative\s*:|/|\\|\.|\s)+',
+                ' ', _val_after, flags=re.IGNORECASE,
+            ).strip()
+            _is_multi_clause = bool(
+                re.search(r'(?m)^\s*\d+\s*[\)\.]\s', _val)
+                or len(_val) > 200
+            )
+            if (not _is_multi_clause) and len(_val_residual) <= 30:
+                _ref_tag = _simple_ref_m.group(1)
+                _ref_val = _cf.get(_ref_tag, '')
+                if _ref_val:
+                    # Replace the reference with the actual value
+                    _cf[_tag] = _ref_val
+                    _progress(
+                        f"  F{_tag}: resolved simple ref from F{_ref_tag} "
+                        f"→ {_ref_val[:60]}"
+                    )
+            else:
+                # Skip — reference is just one phrase inside a
+                # larger clause field; do NOT replace the whole
+                # field with the referenced field's content.
+                _progress(
+                    f"  F{_tag}: skipped simple-ref replacement "
+                    f"(field has multi-clause content; reference "
+                    f"is in-clause text only)"
+                )
             continue
 
         # Pattern D: "REFER FIELD YY CLAUSE NO.X" (reversed order)
