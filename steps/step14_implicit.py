@@ -1950,9 +1950,35 @@ def run(
             # SENDING date (when the negotiating bank dispatched), not
             # the receipt date — so we must NEVER use it for this check.
             f48 = str(lc_fields.get('48', lc_fields.get('F48', '')) or '')
-            # Default presentation period per UCP 600 Art 14(c) = 21 days
+            # Default presentation period per UCP 600 Art 14(c) = 21 days.
+            #
+            # P198de — F48 day-count parser. SWIFT F48 / Alliance/BAHL
+            # notation commonly writes the period as
+            #     "15/FRM SHIPMENT DATE BUT WITH IN EXPIRY"
+            #     "21/FROM SHIPMENT DATE BUT WITHIN EXPIRY"
+            # i.e. <NUMBER> + slash + word — NOT followed by the
+            # literal "DAYS". The previous regex only matched
+            # "<N> DAYS" so it missed BAHL F48 wording entirely
+            # and silently fell back to the 21-day default. The
+            # extended pattern accepts the classic "<N> DAYS"
+            # form, the BAHL slash form, and a leading bare
+            # number followed by "FROM"/"FRM"/"DAYS"/SHIPMENT-token.
             period_days = 21
-            _pd_m = re.search(r'\b(\d{1,3})\s*DAYS?\b', f48.upper())
+            f48_u = f48.upper()
+            _pd_m = (
+                re.search(r'\b(\d{1,3})\s*DAYS?\b', f48_u)
+                or re.search(r'\b(\d{1,3})\s*/\s*(?:FROM|FRM)\b', f48_u)
+                or re.search(
+                    r'\b(\d{1,3})\s*(?:FROM|FRM)\s+'
+                    r'(?:SHIPMENT|B/?L|BL\b|NEGOTIATION|PRESENTATION)',
+                    f48_u,
+                )
+                or re.search(
+                    r'^\s*(\d{1,3})\s*[/\-:]?\s*(?:FROM|FRM|DAYS|DAY)\b',
+                    f48_u,
+                )
+                or re.search(r'^\s*(\d{1,3})\b', f48_u)
+            )
             if _pd_m:
                 try:
                     period_days = int(_pd_m.group(1))
