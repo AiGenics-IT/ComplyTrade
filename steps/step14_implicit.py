@@ -1986,7 +1986,7 @@ def run(
                        for p in _presentation_ok_patterns):
                     all_results.append(CheckResult(
                         check_id='presentation_period', clause_ref='F48',
-                        condition=f"Documents within {period_days:03d} days of shipment",
+                        condition=f"Documents within {period_days} days of shipment",
                         document_checked=_doc,
                         findings=(
                             "Covering schedule explicitly certifies documents "
@@ -2002,7 +2002,7 @@ def run(
                     # sending / issue date for this check.
                     all_results.append(CheckResult(
                         check_id='presentation_period', clause_ref='F48',
-                        condition=f"Documents within {period_days:03d} days of shipment",
+                        condition=f"Documents within {period_days} days of shipment",
                         document_checked=_doc,
                         findings=(
                             "Receiving / presentation date not clear — "
@@ -2028,7 +2028,7 @@ def run(
                 if ship_date is None:
                     all_results.append(CheckResult(
                         check_id='presentation_period', clause_ref='F48',
-                        condition=f"Documents within {period_days:03d} days of shipment",
+                        condition=f"Documents within {period_days} days of shipment",
                         document_checked=_doc,
                         findings=(
                             f"Presentation date {pres_date:%Y-%m-%d} known but "
@@ -2040,11 +2040,84 @@ def run(
                     ))
                     continue
                 days_elapsed = (pres_date - ship_date).days
+                # P198dd — When F48 explicitly says the period is
+                # bounded by LC expiry ("X DAYS BUT WITHIN EXPIRY",
+                # "X DAYS OR EXPIRY", "FROM SHIPMENT DATE BUT WITHIN
+                # EXPIRY", "AS PER LC VALIDITY"), the binding deadline
+                # is the LC expiry date — the X-day count is a soft
+                # target, not a hard limit. PASS if the presentation
+                # falls on or before the LC expiry date even when it
+                # exceeds the X-day count.
+                _f48_u = f48.upper()
+                _expiry_bound = bool(re.search(
+                    r'BUT\s+WITHIN\s+EXPIRY|WITHIN\s+(?:LC\s+|L/?C\s+)?EXPIRY|'
+                    r'WITHIN\s+(?:LC\s+|L/?C\s+)?VALIDITY|'
+                    r'OR\s+(?:LC\s+|L/?C\s+)?EXPIRY|'
+                    r'AS\s+PER\s+(?:LC\s+|L/?C\s+)?(?:VALIDITY|EXPIRY)',
+                    _f48_u,
+                ))
                 within = 0 <= days_elapsed <= period_days
+                # P198dd — If the F48 phrasing makes expiry the
+                # binding deadline AND we have a parsable LC expiry,
+                # extend "within" to also accept presentations on or
+                # before the expiry date.
+                if (not within) and _expiry_bound:
+                    _expiry_str = lc_fields.get('31D', lc_fields.get('F31D', '')) or ''
+                    _expiry_date = None
+                    try:
+                        _exp_m = re.search(
+                            r'(\d{4})[-./](\d{1,2})[-./](\d{1,2})',
+                            _expiry_str,
+                        )
+                        if _exp_m:
+                            from datetime import date as _date
+                            _expiry_date = _date(
+                                int(_exp_m.group(1)),
+                                int(_exp_m.group(2)),
+                                int(_exp_m.group(3)),
+                            )
+                    except Exception:
+                        _expiry_date = None
+                    if _expiry_date and pres_date <= _expiry_date:
+                        within = True
+                        # Annotate so the output explains what happened
+                        period_days_label = (
+                            f"{period_days} (relaxed by F48 'BUT WITHIN "
+                            f"EXPIRY' qualifier — LC expiry "
+                            f"{_expiry_date} is the binding deadline)"
+                        )
+                        all_results.append(CheckResult(
+                            check_id='presentation_period', clause_ref='F48',
+                            condition=f"Documents presented within LC validity "
+                                      f"(F48: '{f48[:80]}')",
+                            document_checked=_doc,
+                            findings=(
+                                f"Presented {pres_date:%Y-%m-%d} "
+                                f"({days_elapsed} day(s) after shipment "
+                                f"{ship_date:%Y-%m-%d}). F48 contains "
+                                f"'BUT WITHIN EXPIRY' / equivalent — "
+                                f"LC expiry {_expiry_date} is the binding "
+                                f"deadline. Presentation is on or before "
+                                f"expiry, so the {period_days}-day target "
+                                f"is informational. PASS."
+                            ),
+                            result=(
+                                f"Presented {days_elapsed} days after "
+                                f"shipment — within LC validity "
+                                f"(expiry {_expiry_date})"
+                            ),
+                            compliance='PASS', severity='hard',
+                        ))
+                        progress_fn(
+                            f"  [presentation_period] [{_doc}]: PASS "
+                            f"({days_elapsed}d > {period_days} but ≤ expiry "
+                            f"{_expiry_date})"
+                        )
+                        continue
                 if within:
                     all_results.append(CheckResult(
                         check_id='presentation_period', clause_ref='F48',
-                        condition=f"Documents within {period_days:03d} days of shipment",
+                        condition=f"Documents within {period_days} days of shipment",
                         document_checked=_doc,
                         findings=(
                             f"Presented {pres_date:%Y-%m-%d} "
@@ -2061,7 +2134,7 @@ def run(
                 else:
                     all_results.append(CheckResult(
                         check_id='presentation_period', clause_ref='F48',
-                        condition=f"Documents within {period_days:03d} days of shipment",
+                        condition=f"Documents within {period_days} days of shipment",
                         document_checked=_doc,
                         findings=(
                             f"Presented {pres_date:%Y-%m-%d} "
@@ -2336,25 +2409,17 @@ def run(
                     compliance="REVIEW",
                 ))
 
-    # ── Cross-link: Late Presentation → LC Expired ──
-    # If presentation period check found FAIL (late presentation), also flag LC expired
-    has_late_presentation = any(r.check_id == 'presentation_period' and r.compliance == 'FAIL' for r in all_results)
-    has_lc_expiry_fail = any(r.check_id == 'lc_expiry' and r.compliance == 'FAIL' for r in all_results)
-    if has_late_presentation and not has_lc_expiry_fail:
-        # Find the late presentation result for details
-        late_r = next((r for r in all_results if r.check_id == 'presentation_period' and r.compliance == 'FAIL'), None)
-        if late_r:
-            all_results.append(CheckResult(
-                check_id='lc_expiry', clause_ref='F31D',
-                condition='LC has expired — documents presented after expiry date',
-                document_checked=late_r.document_checked,
-                findings=late_r.findings,
-                result='LC EXPIRED',
-                compliance='FAIL',
-                confidence=1.0,
-                severity='hard',
-            ))
-            progress_fn(f"  [lc_expiry] Auto-flagged: LC EXPIRED (linked from late presentation)")
+    # P198dd — Removed cross-link "Late Presentation → LC Expired".
+    # Late presentation (>21 days from shipment) is a UCP 600 Art
+    # 14(c) violation, NOT an LC-expiry event. The two are separate
+    # documentary requirements. Auto-flagging "LC EXPIRED" purely
+    # because the 21-day rule was missed produced false FAILs on
+    # presentations that occurred BEFORE the actual LC expiry date
+    # (e.g. presentation 2025-02-24 vs LC expiry 2025-02-28 was
+    # tagged "LC EXPIRED" even though the LC had clearly not
+    # expired). The lc_expiry check now stands on its own evidence:
+    # the actual presentation date vs the actual F31D expiry date.
+    pass
 
     # Reverse: LC Expired → Late Presentation
     # If LC expired, presentation is ALWAYS late (regardless of what the period check says)
