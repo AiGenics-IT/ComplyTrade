@@ -9512,6 +9512,137 @@ def run(
     except Exception:
         pass
 
+    # P198cz — Shipping Company Certificate strict-content guard.
+    # When an LC clause requires the SCC to STATE specific content
+    # (Institute Classification Clause, Pakistani Maritime Rules &
+    # Port Regulations, approximate date of arrival at destination,
+    # etc.), the LLM commonly PASSes by hallucinating from context:
+    #   • "PIL is operating in accordance with Pakistani Maritime
+    #     Rules" — concluded purely because the issuer is a known
+    #     shipping line, with NO such literal statement on the doc.
+    #   • "Sailing on: 01 FEB 2025" treated as the ETA at the
+    #     destination — confusing departure date with arrival.
+    #
+    # Override rule: when the row is currently PASS, the document
+    # is a Shipping Company Certificate, and the condition demands
+    # one of these specific phrases or data points, force FAIL if
+    # the literal evidence is NOT on the document text.
+    try:
+        # Patterns that must literally appear on the SCC text when
+        # the LC condition demands them.
+        _SCC_REQUIREMENTS = [
+            # (condition_marker_regex, required_token_regex,
+            #  human_label, required_phrase_for_findings)
+            (
+                re.compile(
+                    r'\b(?:PAKISTAN(?:I)?\s+MARITIME\s+RULES?|'
+                    r'MARITIME\s+RULES?\s+AND\s+PORT\s+REGULATIONS?|'
+                    r'PORT\s+REGULATIONS?)\b',
+                    re.IGNORECASE,
+                ),
+                re.compile(
+                    r'\b(?:PAKISTAN(?:I)?\s+MARITIME\s+RULES?|'
+                    r'OPERATING\s+IN\s+ACCORDANCE\s+WITH\s+PAKISTAN|'
+                    r'MARITIME\s+RULES?\s+AND\s+PORT\s+REGULATIONS?)\b',
+                    re.IGNORECASE,
+                ),
+                'Pakistani Maritime Rules / Port Regulations statement',
+                "the literal statement that the carrying vessel "
+                "is owned by companies operating in accordance "
+                "with Pakistani Maritime Rules and Port Regulations",
+            ),
+            (
+                re.compile(
+                    r'\bINSTITUTE\s+CLASSIFICATION\s+CLAUSE\b',
+                    re.IGNORECASE,
+                ),
+                re.compile(
+                    r'\bINSTITUTE\s+CLASSIFICATION\s+CLAUSE\b|'
+                    r'\bICC\s*\(?\s*INSTITUTE\b',
+                    re.IGNORECASE,
+                ),
+                'Institute Classification Clause coverage',
+                "the literal statement that the carrying vessel "
+                "is covered under the Institute Classification "
+                "Clause",
+            ),
+            (
+                re.compile(
+                    r'\b(?:APPROXIMATE\s+DATE\s+OF\s+ARRIVAL|'
+                    r'ESTIMATED\s+(?:TIME|DATE)\s+OF\s+ARRIVAL|'
+                    r'\bETA\b|EXPECTED\s+ARRIVAL|'
+                    r'DATE\s+OF\s+ARRIVAL\s+(?:OF\s+)?(?:THE\s+)?VESSEL|'
+                    r'ARRIVAL\s+(?:OF\s+)?(?:THE\s+)?VESSEL\s+'
+                    r'AT\s+(?:THE\s+)?(?:PORT\s+OF\s+)?DESTINATION)\b',
+                    re.IGNORECASE,
+                ),
+                re.compile(
+                    r'\b(?:ETA|ESTIMATED\s+(?:TIME|DATE)\s+OF\s+ARRIVAL|'
+                    r'EXPECTED\s+ARRIVAL|APPROXIMATE\s+DATE\s+OF\s+ARRIVAL|'
+                    r'DATE\s+OF\s+ARRIVAL\s+AT|ARRIVAL\s+AT\s+'
+                    r'(?:THE\s+)?(?:PORT\s+OF\s+)?DESTINATION|'
+                    r'ARRIVING\s+AT\s+DESTINATION|'
+                    r'EXPECTED\s+(?:TO\s+)?ARRIVE)\b',
+                    re.IGNORECASE,
+                ),
+                'Approximate date of arrival at destination (ETA)',
+                "the approximate / estimated date of arrival at "
+                "the port of destination (ETA). The vessel's "
+                "sailing / departure date is NOT the ETA.",
+            ),
+        ]
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                _comp_now = _get(row, "compliance", "").upper()
+                if _comp_now != "PASS":
+                    continue
+                _doc_type_lc = (task.get("document_type") or '').lower()
+                if 'shipping company' not in _doc_type_lc:
+                    continue
+                _cond = task.get("condition_text") or ""
+                _doc_text_up = (task.get("document_text") or "").upper()
+                if not _doc_text_up:
+                    continue
+                for cond_re, doc_re, label, phrase in _SCC_REQUIREMENTS:
+                    if not cond_re.search(_cond):
+                        continue
+                    if doc_re.search(_doc_text_up):
+                        # Literal evidence is on the doc — keep PASS.
+                        continue
+                    # Condition demands this content but document
+                    # doesn't carry it — force FAIL. The LLM
+                    # hallucinated PASS without literal evidence.
+                    _msg = (
+                        f"Shipping Company Certificate is missing "
+                        f"{phrase}. The LLM previously PASSed this "
+                        f"check without literal evidence on the "
+                        f"document; under UCP 600 Art 14(d) the "
+                        f"required statement must appear on the "
+                        f"face of the document. The certificate "
+                        f"submitted does not carry the {label} "
+                        f"required by the LC condition."
+                    )
+                    _set(row, "compliance", "FAIL")
+                    _set(row, "findings", _msg)
+                    _set(row, "result", _msg[:200])
+                    _set(row, "verification_notes",
+                         f"P198cz SCC strict-content: missing "
+                         f"'{label}' on document")
+                    _progress(
+                        f"  [P198cz SCC-strict] {_row_id}: "
+                        f"PASS->FAIL ({label} not on document)"
+                    )
+                    break  # only emit one FAIL per row
+            except Exception as _e:
+                try:
+                    print(f"[P198cz SCC-strict] {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     # P198ct — Draft (Bill of Exchange) rescue: LC-reference OCR-
     # tolerant match AND drawee equivalence.
     #
