@@ -2450,6 +2450,7 @@ def run(
     # Reverse: LC Expired → Late Presentation
     # If LC expired, presentation is ALWAYS late (regardless of what the period check says)
     has_late_presentation_fail = any(r.check_id == 'presentation_period' and r.compliance == 'FAIL' for r in all_results)
+    has_lc_expiry_fail = any(r.check_id == 'lc_expiry' and r.compliance == 'FAIL' for r in all_results)
     if has_lc_expiry_fail and not has_late_presentation_fail:
         expiry_r = next((r for r in all_results if r.check_id == 'lc_expiry' and r.compliance == 'FAIL'), None)
         if expiry_r:
