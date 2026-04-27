@@ -5594,6 +5594,249 @@ def run(
                or step09_result.get("classified_packets")
                or [])
 
+    # P198da — F47A "needs evidence" recognizer. Step 12's LLM
+    # decomposer commonly drops two important F47A clause families
+    # as informational because they read like bank-to-bank
+    # instructions, leaving step 13 to emit them as N/A rows that
+    # get ignored:
+    #   • Charges-on-Forwarding-Schedule: "Negotiating bank must
+    #     certify on their documents forwarding schedule that all
+    #     their charges and all charges of the advising bank are
+    #     paid by the beneficiary." — checkable against the
+    #     Documentary Remittance / Covering Schedule.
+    #   • Authenticated SWIFT advice: "On date of negotiation the
+    #     negotiating bank must advise us via authenticated SWIFT
+    #     on <BIC>, stating ... copy of such SWIFT message must
+    #     accompany original set of documents." — checkable by
+    #     looking for an MT799 / MT999 packet in the submission.
+    # Both clauses provide concrete evidence that lives in the
+    # presentation, so they SHOULD be verified, not informational.
+    #
+    # This pre-processor scans N/A rows BEFORE task building,
+    # detects these patterns, and upgrades the row with the
+    # correct document_checked + a deterministic verdict.
+    try:
+        _NEG_BANK_CHARGES_RE = re.compile(
+            r'(?:NEGOTIAT(?:ING|ION)|FORWARDING)\s+'
+            r'(?:BANK|SCHEDULE)[^.]{0,200}?'
+            r'(?:CHARGES?|FEE|EXPENSE)[^.]{0,200}?'
+            r'(?:PAID|BORNE|PAYABLE|ACCOUNT)\s+'
+            r'(?:BY|OF|AT)?\s*'
+            r'(?:THE\s+)?(?:BENEFICIARY|APPLICANT)',
+            re.IGNORECASE | re.DOTALL,
+        )
+        # Alt form: "must certify ... charges ... paid by beneficiary"
+        _NEG_BANK_CHARGES_ALT_RE = re.compile(
+            r'CERTIF(?:Y|ICATION)[^.]{0,200}?CHARGES?[^.]{0,200}?'
+            r'(?:PAID|BORNE)[^.]{0,40}?BENEFICIARY',
+            re.IGNORECASE | re.DOTALL,
+        )
+        _SWIFT_ADVICE_RE = re.compile(
+            r'(?:AUTHENT(?:ICATED|IC)\s+SWIFT|VIA\s+SWIFT|'
+            r'BY\s+SWIFT|MT\s*799|MT\s*999|FREE\s+FORMAT\s+MESSAGE|'
+            r'SWIFT\s+MESSAGE\s+MUST\s+ACCOMPANY)',
+            re.IGNORECASE,
+        )
+        _DR_CHARGES_DOC_RE = re.compile(
+            r'(?:ALL\s+)?(?:OUR\s+)?CHARGES?\s+'
+            r'(?:AND\s+(?:ALL\s+)?(?:OUR\s+)?CHARGES?\s+OF\s+'
+            r'(?:THE\s+)?ADVISING\s+BANK\s+)?'
+            r'(?:ARE\s+|TO\s+BE\s+)?'
+            r'(?:PAID|BORNE|FOR\s+(?:THE\s+)?ACCOUNT)\s+'
+            r'(?:OF|BY)\s+(?:THE\s+)?BENEFICIARY',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        def _has_dr_packet(pkts):
+            for p in pkts or []:
+                dt = (p.get('document_type') or '').lower() if isinstance(p, dict) else ''
+                if any(k in dt for k in ('document remittance',
+                                          'documentary remittance',
+                                          'covering schedule',
+                                          'covering letter',
+                                          'cover letter',
+                                          'cover schedule',
+                                          'bills schedule',
+                                          'forwarding schedule')):
+                    return p
+            return None
+
+        def _has_swift_advice_packet(pkts):
+            for p in pkts or []:
+                dt = (p.get('document_type') or '').lower() if isinstance(p, dict) else ''
+                if any(k in dt for k in ('mt799', 'mt 799', 'mt999',
+                                          'mt 999', 'fin.799', 'fin.999',
+                                          'free format message',
+                                          'free-format message',
+                                          'authenticated swift',
+                                          'swift advice',
+                                          'swift message')):
+                    return p
+            return None
+
+        for row in rows:
+            try:
+                _comp = (row.get('compliance', '') or '').upper()
+                if _comp not in ('N/A', 'NA', 'PENDING', ''):
+                    continue
+                _cref = (row.get('clause_ref', '') or '').upper()
+                _cond = row.get('condition_text', '') or ''
+                if not _cond:
+                    continue
+                _cond_u = _cond.upper()
+                # Only target 47A family
+                if '47A' not in _cref and '47B' not in _cref:
+                    continue
+
+                # ── Pattern 1: Charges on Forwarding Schedule ──
+                _is_charges = bool(
+                    _NEG_BANK_CHARGES_RE.search(_cond)
+                    or _NEG_BANK_CHARGES_ALT_RE.search(_cond)
+                ) and 'FORWARDING' in _cond_u or (
+                    'CHARGES' in _cond_u and 'BENEFICIARY' in _cond_u
+                    and ('CERTIFY' in _cond_u or 'SCHEDULE' in _cond_u
+                         or 'NEGOTIATING BANK' in _cond_u)
+                )
+                # ── Pattern 2: Authenticated SWIFT advice ──
+                _is_swift = bool(_SWIFT_ADVICE_RE.search(_cond_u)) and \
+                            ('NEGOTIATING' in _cond_u or 'ADVISE' in _cond_u
+                             or 'ACCOMPANY' in _cond_u or 'ADVICE' in _cond_u)
+
+                if not (_is_charges or _is_swift):
+                    continue
+
+                if _is_charges:
+                    # Target = Documentary Remittance
+                    row['document_checked'] = 'Documentary Remittance'
+                    dr_pkt = _has_dr_packet(packets)
+                    if not dr_pkt:
+                        row['compliance'] = 'FAIL'
+                        msg = (
+                            "Negotiating bank's Documentary Remittance / "
+                            "Covering Schedule is not present in the "
+                            "submission. The LC F47A clause requires the "
+                            "negotiating bank to certify on the documents "
+                            "forwarding schedule that all charges are paid "
+                            "by the beneficiary — without the schedule the "
+                            "certification cannot be evidenced."
+                        )
+                        row['findings'] = msg
+                        row['result'] = msg[:200]
+                        row['found_text'] = msg[:200]
+                        row['verification_notes'] = (
+                            "P198da F47A charges-on-forwarding-schedule: "
+                            "Documentary Remittance not in submission"
+                        )
+                        _progress(
+                            f"  [P198da F47A charges] {row.get('row_id','?')}: "
+                            f"N/A->FAIL (DR missing)"
+                        )
+                    else:
+                        # DR present — check its text for the charges
+                        # statement
+                        _dr_text = (
+                            dr_pkt.get('document_text') or
+                            dr_pkt.get('cleaned_text') or ''
+                        )
+                        if _DR_CHARGES_DOC_RE.search(_dr_text):
+                            row['compliance'] = 'PASS'
+                            msg = (
+                                "Documentary Remittance / Covering Schedule "
+                                "carries the certification that all charges "
+                                "(negotiating + advising bank) are paid by "
+                                "the beneficiary. F47A condition satisfied."
+                            )
+                            row['findings'] = msg
+                            row['result'] = msg[:200]
+                            row['found_text'] = msg[:200]
+                            row['verification_notes'] = (
+                                "P198da F47A charges-on-forwarding-schedule: "
+                                "literal certification found on DR"
+                            )
+                            _progress(
+                                f"  [P198da F47A charges] {row.get('row_id','?')}: "
+                                f"N/A->PASS (charges-paid-by-beneficiary on DR)"
+                            )
+                        else:
+                            row['compliance'] = 'FAIL'
+                            msg = (
+                                "Documentary Remittance is present but does "
+                                "not literally certify that all charges of "
+                                "the negotiating bank and advising bank are "
+                                "paid by the beneficiary. The F47A clause "
+                                "requires this certification to appear on "
+                                "the forwarding schedule."
+                            )
+                            row['findings'] = msg
+                            row['result'] = msg[:200]
+                            row['found_text'] = msg[:200]
+                            row['verification_notes'] = (
+                                "P198da F47A charges-on-forwarding-schedule: "
+                                "DR present but no charges-paid-by-beneficiary "
+                                "statement"
+                            )
+                            _progress(
+                                f"  [P198da F47A charges] {row.get('row_id','?')}: "
+                                f"N/A->FAIL (DR has no charges certification)"
+                            )
+
+                if _is_swift:
+                    # Target = MT799 / MT999 / authenticated SWIFT advice
+                    row['document_checked'] = 'MT799/MT999 SWIFT Advice'
+                    sw_pkt = _has_swift_advice_packet(packets)
+                    if not sw_pkt:
+                        row['compliance'] = 'FAIL'
+                        msg = (
+                            "Authenticated SWIFT advice (MT799 / MT999) "
+                            "from the negotiating bank is not present in "
+                            "the submission. The LC F47A clause requires "
+                            "an authenticated SWIFT message stating "
+                            "amount of negotiation, BL number, vessel, "
+                            "voyage, ports, container/seal numbers and "
+                            "date of dispatch — and a copy of that SWIFT "
+                            "message must accompany the original "
+                            "documents. No such SWIFT advice was found."
+                        )
+                        row['findings'] = msg
+                        row['result'] = msg[:200]
+                        row['found_text'] = msg[:200]
+                        row['verification_notes'] = (
+                            "P198da F47A SWIFT-advice: MT799/MT999 not "
+                            "in submission"
+                        )
+                        _progress(
+                            f"  [P198da F47A SWIFT] {row.get('row_id','?')}: "
+                            f"N/A->FAIL (no MT799/MT999 in submission)"
+                        )
+                    else:
+                        row['compliance'] = 'PASS'
+                        msg = (
+                            f"Authenticated SWIFT advice "
+                            f"({sw_pkt.get('document_type')}) from the "
+                            f"negotiating bank is present in the "
+                            f"submission, accompanying the original "
+                            f"documents as required by F47A."
+                        )
+                        row['findings'] = msg
+                        row['result'] = msg[:200]
+                        row['found_text'] = msg[:200]
+                        row['verification_notes'] = (
+                            f"P198da F47A SWIFT-advice: "
+                            f"{sw_pkt.get('document_type')} present"
+                        )
+                        _progress(
+                            f"  [P198da F47A SWIFT] {row.get('row_id','?')}: "
+                            f"N/A->PASS (SWIFT advice {sw_pkt.get('document_type')} "
+                            f"present)"
+                        )
+            except Exception as _e:
+                try:
+                    print(f"[P198da F47A pre-processor] {row.get('row_id','?')}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     _progress(
         f"Verifying {len(rows)} condition rows against "
         f"{len(packets)} document packets (LLM-only mode)..."
