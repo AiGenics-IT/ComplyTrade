@@ -581,7 +581,7 @@ def _build_executive_summary(
             _rv_rows = [_rv_hdr]
             for i, ri in enumerate(_review_display, 1):
                 detail = _esc(_safe_str(
-                    ri.get('condition', '') or ri.get('result', '') or ri.get('findings', ''), 500))
+                    ri.get('condition', '') or ri.get('result', '') or ri.get('findings', ''), 100000))
                 _rv_clause_ref = ri.get("clause_ref", "")
                 _rv_anchor = _clause_anchor(_rv_clause_ref)
                 if _rv_anchor:
@@ -687,7 +687,7 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
         for clause in section.get('clauses', []):
 
             clause_ref = clause.get('clause_ref', '')
-            clause_text = _safe_str(clause.get('clause_text', ''), 2000)
+            clause_text = _safe_str(clause.get('clause_text', ''), 100000)
             overall = clause.get('overall_result', 'REVIEW REQUIRED')
             overall_lower = overall.lower().strip()
 
@@ -776,7 +776,7 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
                               styles['CellTextSmall']),
                     Paragraph(f'<font size="7"><i>{_esc(_safe_str(_find_text, 100000))}</i></font>',
                               styles['CellTextSmall']),
-                    Paragraph(f'<font size="7">{_esc(_safe_str(row.get("document_checked", ""), 200))}</font>',
+                    Paragraph(f'<font size="7">{_esc(_safe_str(row.get("document_checked", ""), 100000))}</font>',
                               styles['CellTextSmall']),
                     Paragraph(f'<font size="7.5">{_esc(_safe_str(result_val, 100000))}</font>',
                               styles['CellTextSmall']),

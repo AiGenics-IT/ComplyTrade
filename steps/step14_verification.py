@@ -4096,7 +4096,7 @@ def _call_vlm(
         if "result" not in parsed:
             # Use findings as the short status; truncate for UI display
             _f = parsed.get("findings") or ""
-            parsed["result"] = _f[:600] if _f else parsed.get("compliance", "review")
+            parsed["result"] = _f if _f else parsed.get("compliance", "review")
         if "reasoning" not in parsed:
             _src = parsed.get("structured_source") or ""
             _q = parsed.get("quote") or ""
@@ -4155,7 +4155,7 @@ def _call_vlm(
                             f"{_findings.rstrip('. ')}. Arithmetic post-check: "
                             f"{_actual:,.2f} is NOT greater than {_limit:,.2f} — within tolerance (P133 override)."
                         )
-                        parsed["result"] = parsed["findings"][:600]
+                        parsed["result"] = parsed["findings"]
                         parsed["_post_check"] = "P133_arithmetic_override"
                 if _says_less and len(_vals) >= 2:
                     _actual = _vals[0]
@@ -4167,7 +4167,7 @@ def _call_vlm(
                             f"{_findings.rstrip('. ')}. Arithmetic post-check: "
                             f"{_actual:,.2f} is NOT less than {_limit:,.2f} — within tolerance (P133 override)."
                         )
-                        parsed["result"] = parsed["findings"][:600]
+                        parsed["result"] = parsed["findings"]
                         parsed["_post_check"] = "P133_arithmetic_override"
         except Exception:
             pass  # never let the sanity check break the pipeline
@@ -4247,7 +4247,7 @@ def _call_vlm(
                             f"Structured consignee contains '{_target_key}' "
                             f"(consignee='{_cons_txt[:150]}'). (P134 override)"
                         )
-                        parsed["result"] = parsed["findings"][:600]
+                        parsed["result"] = parsed["findings"]
                         parsed["_post_check"] = "P134_consignee_override"
                     elif _target_key and document_text:
                         # Fallback: scan raw document text for "TO ORDER OF"
@@ -4271,7 +4271,7 @@ def _call_vlm(
                                 f"alongside consignee/'TO ORDER' marker — "
                                 f"requirement satisfied. (P134 doc-text override)"
                             )
-                            parsed["result"] = parsed["findings"][:600]
+                            parsed["result"] = parsed["findings"]
                             parsed["_post_check"] = "P134_doc_text_override"
         except Exception:
             pass
@@ -4336,7 +4336,7 @@ def _call_vlm(
                             f"— treating as same product with OCR variant. "
                             f"(P150 OCR near-miss override)"
                         )
-                        parsed["result"] = parsed["findings"][:600]
+                        parsed["result"] = parsed["findings"]
                         parsed["_post_check"] = "P150_unit_price_ocr_pass"
         except Exception:
             pass
@@ -4391,7 +4391,7 @@ def _call_vlm(
                             f"identifier appears after character-confusion "
                             f"handling (O↔0, I↔1, etc.)."
                         )
-                        parsed["result"] = parsed["findings"][:600]
+                        parsed["result"] = parsed["findings"]
                         parsed["_post_check"] = "P135_reference_found_override"
                         break
         except Exception:
@@ -4519,7 +4519,7 @@ def _call_vlm(
                         f"document carries the full legal name). "
                         f"(P165 prefix/truncation override)"
                     )
-                    parsed["result"] = parsed["findings"][:600]
+                    parsed["result"] = parsed["findings"]
                     parsed["_post_check"] = "P165_name_prefix_match"
         except Exception:
             pass
@@ -4592,7 +4592,7 @@ def _call_vlm(
                         f"Date IS present on document: {_val} "
                         f"(from {_src})."
                     )
-                    parsed["result"] = parsed["findings"][:600]
+                    parsed["result"] = parsed["findings"]
                     parsed["_post_check"] = "P138_date_found_override"
         except Exception:
             pass
@@ -4645,7 +4645,7 @@ def _call_vlm(
                             f"'{_hit_tok}' is present in the document "
                             f"(identifier match). Requirement satisfied."
                         )
-                        parsed["result"] = parsed["findings"][:600]
+                        parsed["result"] = parsed["findings"]
                         parsed["_post_check"] = "P155_identifier_match"
         except Exception:
             pass
@@ -4677,16 +4677,16 @@ def _call_vlm(
                 _fin2 = re.sub(r'\.{2,}', '.', _fin2).strip()
                 if _fin2 and _fin2 != _fin:
                     parsed["findings"] = _fin2
-                    # Keep result in sync
-                    if parsed.get("result") == _fin[:200]:
-                        parsed["result"] = _fin2[:600]
+                    # Keep result in sync (P198dn — no truncation)
+                    if parsed.get("result") == _fin:
+                        parsed["result"] = _fin2
                     else:
                         _res = str(parsed.get("result", "") or "")
                         _res = re.sub(
                             r'[\s,;—–-]+(?:The\s+)?closest\s+(?:text|match|wording|phrase)[^.]*',
                             '', _res, flags=re.IGNORECASE,
                         )
-                        parsed["result"] = _res.strip()[:600]
+                        parsed["result"] = _res.strip()
         except Exception:
             pass
 
@@ -5851,8 +5851,8 @@ def run(
                             "certification cannot be evidenced."
                         )
                         row['findings'] = msg
-                        row['result'] = msg[:200]
-                        row['found_text'] = msg[:200]
+                        row['result'] = msg
+                        row['found_text'] = msg
                         row['verification_notes'] = (
                             "P198da F47A charges-on-forwarding-schedule: "
                             "Documentary Remittance not in submission"
@@ -5877,8 +5877,8 @@ def run(
                                 "the beneficiary. F47A condition satisfied."
                             )
                             row['findings'] = msg
-                            row['result'] = msg[:200]
-                            row['found_text'] = msg[:200]
+                            row['result'] = msg
+                            row['found_text'] = msg
                             row['verification_notes'] = (
                                 "P198da F47A charges-on-forwarding-schedule: "
                                 "literal certification found on DR"
@@ -5898,8 +5898,8 @@ def run(
                                 "the forwarding schedule."
                             )
                             row['findings'] = msg
-                            row['result'] = msg[:200]
-                            row['found_text'] = msg[:200]
+                            row['result'] = msg
+                            row['found_text'] = msg
                             row['verification_notes'] = (
                                 "P198da F47A charges-on-forwarding-schedule: "
                                 "DR present but no charges-paid-by-beneficiary "
@@ -5934,8 +5934,8 @@ def run(
                             "documents. No such SWIFT advice was found."
                         )
                         row['findings'] = msg
-                        row['result'] = msg[:200]
-                        row['found_text'] = msg[:200]
+                        row['result'] = msg
+                        row['found_text'] = msg
                         row['verification_notes'] = (
                             "P198da F47A SWIFT-advice: MT799/MT999 not "
                             "in submission"
@@ -5961,8 +5961,8 @@ def run(
                                 f"({_why})."
                             )
                             row['findings'] = msg
-                            row['result'] = msg[:200]
-                            row['found_text'] = msg[:200]
+                            row['result'] = msg
+                            row['found_text'] = msg
                             row['verification_notes'] = (
                                 f"P198dk F47A SWIFT-advice: "
                                 f"{sw_pkt.get('document_type')} present, "
@@ -5992,8 +5992,8 @@ def run(
                                 f"date of dispatch."
                             )
                             row['findings'] = msg
-                            row['result'] = msg[:200]
-                            row['found_text'] = msg[:200]
+                            row['result'] = msg
+                            row['found_text'] = msg
                             row['verification_notes'] = (
                                 f"P198dk F47A SWIFT-advice: "
                                 f"{sw_pkt.get('document_type')} present "
@@ -7648,7 +7648,7 @@ def run(
                         f"threshold. (P160 deterministic)"
                     )
                 _set(row, 'findings', _msg)
-                _set(row, 'result', _msg[:200])
+                _set(row, 'result', _msg)
                 _set(row, 'verification_notes', f"P160 stale-BL cross-doc deterministic (threshold={_stale_days_threshold}d)")
                 _progress(f"  [P160 stale-BL] {row.get('row_id','?')}: delta={_delta}d threshold={_stale_days_threshold}d → {row.get('compliance')}")
             else:
@@ -7683,7 +7683,7 @@ def run(
                          f"DR receiving_date and BL on-board date. Manual check required. "
                          f"Form type / blank back / house / claused signals are "
                          f"irrelevant for staleness.")
-                    _set(row, 'result', _get(row, 'findings', '')[:200])
+                    _set(row, 'result', _get(row, 'findings', ''))
         except Exception as _e:
             try:
                 print(f"[P160 stale-BL] exception on row {row.get('row_id','?')}: {_e}")
@@ -7911,7 +7911,7 @@ def run(
                         + ". (P198ad permissive)"
                     )
                     _set(row, 'findings', _msg)
-                    _set(row, 'result', _msg[:200])
+                    _set(row, 'result', _msg)
                     _set(row, 'verification_notes',
                          f"P198ad permissive pre-dated rule "
                          f"(F31C={_lc_issue_date.isoformat()})")
@@ -7932,7 +7932,7 @@ def run(
                         f"(P163 deterministic)"
                     )
                     _set(row, 'findings', _msg)
-                    _set(row, 'result', _msg[:200])
+                    _set(row, 'result', _msg)
                     _set(row, 'verification_notes',
                          f"P163 cross-doc date-of-issue check vs F31C={_lc_issue_date.isoformat()}")
                 else:
@@ -7942,7 +7942,7 @@ def run(
                         f"date {_lc_issue_date.isoformat()}. (P163 deterministic)"
                     )
                     _set(row, 'findings', _msg)
-                    _set(row, 'result', _msg[:200])
+                    _set(row, 'result', _msg)
                     _set(row, 'verification_notes',
                          f"P163 cross-doc date-of-issue check vs F31C={_lc_issue_date.isoformat()}")
                 _progress(f"  [P163 pre-dated-docs] {row.get('row_id','?')}: "
@@ -8063,14 +8063,14 @@ def run(
                     _set(row, 'findings',
                          f"H.S. Code {_cond_hs} matches document code "
                          f"{_doc_shown} ({_matched_as}).")
-                    _set(row, 'result', _get(row, 'findings', '')[:200])
+                    _set(row, 'result', _get(row, 'findings', ''))
                 else:
                     _set(row, 'compliance', 'FAIL')
                     _other = ', '.join(sorted(_matched_codes))
                     _set(row, 'findings',
                          f"H.S. Code mismatch. LC requires '{_cond_hs}' but "
                          f"document shows '{_other}'.")
-                    _set(row, 'result', _get(row, 'findings', '')[:200])
+                    _set(row, 'result', _get(row, 'findings', ''))
                 _set(row, 'verification_notes',
                      f"P172 HS deterministic: required={_cond_hs} vs found={sorted(_matched_codes)}")
                 _progress(f"  [P172 HS] {row.get('row_id','?')} doc={_matched_doc}: required={_cond_hs} found={sorted(_matched_codes)} -> {row.get('compliance')}")
@@ -8445,7 +8445,7 @@ def run(
                 _set(row, "findings",
                      f"Document is not addressed to the required "
                      f"party/parties: {_missing_summary}.")
-                _set(row, "result", _get(row, "findings", "")[:200])
+                _set(row, "result", _get(row, "findings", ""))
                 _set(row, "verification_notes",
                      f"P174/P178/P179 addressed-to deterministic "
                      f"(checked {len(_entries)} packet(s); "
@@ -8549,7 +8549,7 @@ def run(
                         f"beneficiary as principal — acceptable."
                     )
                     _set(row, "findings", _findings)
-                    _set(row, "result", _findings[:200])
+                    _set(row, "result", _findings)
                     _set(row, "verification_notes",
                          "P198ae shipper-agency rescue: beneficiary "
                          "named on BL via agency wording")
@@ -8734,8 +8734,8 @@ def run(
                 _date = m.group(2).strip()
                 return _ref, _date
 
-            # Pre-collect invoice packets with their proforma citation.
-            # Source priority:
+            # Pre-collect invoice + packing-list packets with their
+            # proforma citation. Source priority:
             #   1. unified_summary.references_found[role=proforma_reference]
             #      + unified_summary.dates_found[role=proforma_invoice_date
             #        | proforma_date | proforma_ref_date] — structured
@@ -8743,12 +8743,20 @@ def run(
             #   2. Body-text regex fallback — when step03 didn't tag the
             #      proforma date as a role and it only exists as free
             #      text like "DATED FEB 18, 2026"
+            #
+            # P198dm — Packing List packets are also scanned. The
+            # F45A "strictly as per ... proforma ... dated ..." clause
+            # is fanned out to the Packing List as an opportunistic
+            # check (P198dl). When the PL carries a proforma citation
+            # the same ref + date integrity rule applies as on the CI.
             _inv_citations = []  # (pkt_label, ref, date_raw, date_parsed, source)
             for _pkt in packets:
                 if not isinstance(_pkt, dict):
                     continue
                 _pt = (_pkt.get('document_type') or '').lower()
-                if 'invoice' not in _pt or 'proforma' in _pt:
+                _is_inv = 'invoice' in _pt and 'proforma' not in _pt
+                _is_pl = 'packing list' in _pt
+                if not (_is_inv or _is_pl):
                     continue
                 _pkt_label = _pkt.get('document_type', 'Commercial Invoice')
                 _us = _pkt.get('unified_summary') or {}
@@ -8803,12 +8811,16 @@ def run(
                     # citation and must not be touched by this check.
                     if 'PROFORMA' not in _cond_u:
                         continue
-                    # Doc target must be Commercial Invoice
+                    # Doc target must be Commercial Invoice OR Packing
+                    # List (P198dm — F45A proforma citation may be
+                    # checked on the PL via the opportunistic clone).
                     _doc_checked = (
                         _get(row, "document_checked", "") or
                         _get(row, "document_type", "")
                     ).lower()
-                    if _doc_checked and 'invoice' not in _doc_checked:
+                    if (_doc_checked
+                        and 'invoice' not in _doc_checked
+                        and 'packing list' not in _doc_checked):
                         continue
                     _current = _get(row, "compliance", "").upper()
                     if _current not in ("PASS", "REVIEW"):
@@ -8851,8 +8863,22 @@ def run(
                         core = _DATE_NOISE_RE.sub(' ', core)
                         return re.sub(r'[\s\-./,]+', '', core).strip()
                     _lc_date_raw_n = _norm_date_raw(_lc_pro_date_raw)
+                    # P198dm — Scope the citation check to the row's
+                    # own document type. A CI row must not be flipped
+                    # by a PL date mismatch and vice versa.
+                    _row_doc_is_pl = 'packing list' in _doc_checked
+                    _row_doc_is_inv = ('invoice' in _doc_checked
+                                       and 'proforma' not in _doc_checked)
                     _mismatch = None
                     for _pkt_label, _inv_ref, _inv_date_raw, _inv_date, _src in _inv_citations:
+                        _pl_lab = (_pkt_label or '').lower()
+                        _pkt_is_pl = 'packing list' in _pl_lab
+                        _pkt_is_inv = ('invoice' in _pl_lab
+                                       and 'proforma' not in _pl_lab)
+                        if _row_doc_is_pl and not _pkt_is_pl:
+                            continue
+                        if _row_doc_is_inv and not _pkt_is_inv:
+                            continue
                         _inv_ref_n = _pro_norm_ref(_inv_ref)
                         _ref_match = (
                             _lc_pro_ref_n == _inv_ref_n or
@@ -8903,7 +8929,7 @@ def run(
                     )
                     _set(row, "compliance", "FAIL")
                     _set(row, "findings", _msg)
-                    _set(row, "result", _msg[:200])
+                    _set(row, "result", _msg)
                     _set(row, "verification_notes",
                          f"P198ak proforma-date cross-check [{_src}]: LC=("
                          f"{_lc_pro_ref_raw}, {_lc_pro_date_raw}) vs "
@@ -9067,7 +9093,7 @@ def run(
                        if _has_master_agency_text else "")
                 )
                 _set(row, "findings", _findings)
-                _set(row, "result", _findings[:200])
+                _set(row, "result", _findings)
                 _set(row, "verification_notes",
                      "P198ao BL master-agency signing rescue: "
                      f"signing_type={_signing or 'n/a'}, "
@@ -9462,7 +9488,7 @@ def run(
                 )
                 _set(row, "compliance", "PASS")
                 _set(row, "findings", _msg)
-                _set(row, "result", _msg[:200])
+                _set(row, "result", _msg)
                 _set(row, "verification_notes",
                      f"P198ar prohibited-marker absence check: "
                      f"prohibitions={_named_prohibitions} — no tokens on BL")
@@ -9521,7 +9547,7 @@ def run(
                 )
                 _set(row, "compliance", "PASS")
                 _set(row, "findings", _msg)
-                _set(row, "result", _msg[:200])
+                _set(row, "result", _msg)
                 _set(row, "verification_notes",
                      "P198bb permissive-cant-fail: "
                      "acceptable/permitted/allowed statement cannot FAIL")
@@ -9606,7 +9632,7 @@ def run(
                 )
                 _set(row, "compliance", "PASS")
                 _set(row, "findings", _msg)
-                _set(row, "result", _msg[:200])
+                _set(row, "result", _msg)
                 _set(row, "verification_notes",
                      f"P198bc BL-terms-present: found {_found_terms[:5]}")
                 _progress(
@@ -9789,7 +9815,7 @@ def run(
                         )
                         _set(row, "compliance", "PASS")
                         _set(row, "findings", _msg)
-                        _set(row, "result", _msg[:200])
+                        _set(row, "result", _msg)
                         _set(row, "verification_notes",
                              f"P198be/bq freight-wording-present: required='{_req}' "
                              f"matched='{_match}' on {len(_entry['tasks_present'])}/{len(_entry['tasks_present'])+len(_entry['tasks_absent'])} packet(s)")
@@ -9807,7 +9833,7 @@ def run(
                         )
                         _set(row, "compliance", "FAIL")
                         _set(row, "findings", _msg)
-                        _set(row, "result", _msg[:200])
+                        _set(row, "result", _msg)
                         _set(row, "verification_notes",
                              f"P198be/bq freight-wording-missing: required='{_req}' "
                              f"none of {_alts} present on {len(_entry['tasks_absent'])} packet(s)")
@@ -9957,7 +9983,7 @@ def run(
                             f"Tokens adjacent "
                         )
                         _set(row, "findings", _msg)
-                        _set(row, "result", _msg[:200])
+                        _set(row, "result", _msg)
                         _set(row, "verification_notes",
                              f"P198cs freight-strict-adjacent: "
                              f"{_rk} matched on {_ent['hits'][0]}")
@@ -9981,7 +10007,7 @@ def run(
                             f"literal and adjacent."
                         )
                         _set(row, "findings", _msg)
-                        _set(row, "result", _msg[:200])
+                        _set(row, "result", _msg)
                         _set(row, "verification_notes",
                              f"P198cs freight-strict-missing: "
                              f"'{_rk}' not adjacent on any of "
@@ -10109,7 +10135,7 @@ def run(
                     )
                     _set(row, "compliance", "FAIL")
                     _set(row, "findings", _msg)
-                    _set(row, "result", _msg[:200])
+                    _set(row, "result", _msg)
                     _set(row, "verification_notes",
                          f"P198cz SCC strict-content: missing "
                          f"'{label}' on document")
@@ -10232,7 +10258,7 @@ def run(
                         )
                         _set(row, "compliance", "PASS")
                         _set(row, "findings", _msg)
-                        _set(row, "result", _msg[:200])
+                        _set(row, "result", _msg)
                         _set(row, "verification_notes",
                              f"P198ct draft-LC-ref OCR-tolerant suffix: "
                              f"'{_found_ref}' ≈ '{_lc_ref_full}'")
@@ -10276,7 +10302,7 @@ def run(
                         )
                         _set(row, "compliance", "PASS")
                         _set(row, "findings", _msg)
-                        _set(row, "result", _msg[:200])
+                        _set(row, "result", _msg)
                         _set(row, "verification_notes",
                              f"P198ct draft-drawee: issuing bank "
                              f"'{_hit_tok}' present on draft")
@@ -10378,7 +10404,7 @@ def run(
                 )
                 _set(row, "compliance", "PASS")
                 _set(row, "findings", _msg)
-                _set(row, "result", _msg[:200])
+                _set(row, "result", _msg)
                 _set(row, "verification_notes",
                      f"P198cv AWB-original-relaxation: copy_status="
                      f"{_copy_status}, iata_boilerplate={_iata_boilerplate}")
@@ -10543,7 +10569,7 @@ def run(
                 )
                 _set(row, "compliance", "PASS")
                 _set(row, "findings", _msg)
-                _set(row, "result", _msg[:200])
+                _set(row, "result", _msg)
                 _set(row, "verification_notes",
                      f"P198ci THCD-prepaid-separate-line: tok='{_tok}'")
                 _progress(
@@ -10686,7 +10712,7 @@ def run(
                 )
                 _set(row, "compliance", "PASS")
                 _set(row, "findings", _msg)
-                _set(row, "result", _msg[:200])
+                _set(row, "result", _msg)
                 _set(row, "verification_notes",
                      f"P198co CoO equivalent-issuer: '{_eq}' via {_src}")
                 _progress(
@@ -10843,7 +10869,7 @@ def run(
                     )
                     _set(row, "compliance", "PASS")
                     _set(row, "findings", _msg)
-                    _set(row, "result", _msg[:200])
+                    _set(row, "result", _msg)
                     _set(row, "verification_notes",
                          f"P198cm unit-price aggregated match: "
                          f"{_mdl} @ {_req_cur}{_got:.2f} on {_pl}")
@@ -10867,7 +10893,7 @@ def run(
                     )
                     _set(row, "compliance", "REVIEW")
                     _set(row, "findings", _msg)
-                    _set(row, "result", _msg[:200])
+                    _set(row, "result", _msg)
                     _set(row, "verification_notes",
                          f"P198cm unit-price model absent from all "
                          f"invoices: {_models}")
@@ -11112,7 +11138,7 @@ def run(
                 )
                 _set(row, "compliance", "PASS")
                 _set(row, "findings", _msg)
-                _set(row, "result", _msg[:200])
+                _set(row, "result", _msg)
                 _set(row, "verification_notes",
                      f"P198cl PI-citation-in-submission: {_src_hit}")
                 _progress(
@@ -11235,7 +11261,7 @@ def run(
                 )
                 _set(row, "compliance", "PASS")
                 _set(row, "findings", _msg)
-                _set(row, "result", _msg[:200])
+                _set(row, "result", _msg)
                 _set(row, "verification_notes",
                      f"P198br consignee aggregation: tokens={_entry['tokens']} "
                      f"present on {len(_entry['packets_with_endorsement'])} packet(s)")
@@ -11314,7 +11340,7 @@ def run(
                     )
                     _set(row, "compliance", "PASS")
                     _set(row, "findings", _msg)
-                    _set(row, "result", _msg[:200])
+                    _set(row, "result", _msg)
                     _set(row, "verification_notes",
                          f"P198cd cross-label policy rescue: needle={_ref_num!r} "
                          f"found_in_doc={_found_in_doc} found_in_refs={_found_in_refs}")
@@ -11430,7 +11456,7 @@ def run(
                     )
                     _set(row, "compliance", "PASS")
                     _set(row, "findings", _msg)
-                    _set(row, "result", _msg[:200])
+                    _set(row, "result", _msg)
                     _set(row, "verification_notes",
                          f"P198bx container/seal ISO 6346 rescue: "
                          f"containers={len(_entry['containers'])} "
@@ -11508,7 +11534,7 @@ def run(
                             )
                             _set(row, "compliance", "PASS")
                             _set(row, "findings", _msg)
-                            _set(row, "result", _msg[:200])
+                            _set(row, "result", _msg)
                             _set(row, "verification_notes",
                                  f"P198bz third-party exception: drawer matches "
                                  f"F59 beneficiary (coverage={_coverage:.2f})")
@@ -11600,7 +11626,7 @@ def run(
                         )
                         _set(_row, "compliance", "PASS")
                         _set(_row, "findings", _msg)
-                        _set(_row, "result", _msg[:200])
+                        _set(_row, "result", _msg)
                         _set(_row, "verification_notes",
                              f"P198bh 45A alt-block: "
                              f"alt={_alt_name} shipped={_shipped_names}")
@@ -11692,7 +11718,7 @@ def run(
                          "The total appears to include freight (CFR/CIF/CIP) "
                          "without a distinct freight line — LC requires freight "
                          "to be mentioned as a separate value.")
-                    _set(row, "result", _get(row, "findings", "")[:200])
+                    _set(row, "result", _get(row, "findings", ""))
                     _set(row, "verification_notes",
                          "P177 freight-separate deterministic: no FREIGHT + amount line on invoice")
                     _progress(f"  [P177 freight-separate] {row_id}: PASS->FAIL (no separate freight amount on invoice)")
