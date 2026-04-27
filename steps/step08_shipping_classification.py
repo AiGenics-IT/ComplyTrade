@@ -179,7 +179,7 @@ Based on the image AND the document text above, classify this page:
    • A DHL / FedEx / UPS / TNT / Aramex / EXPRESS ENVELOPE / WAYBILL / AWB / HAWB / MAWB / "Air Waybill" label is a "Courier Receipt" or "Airway Bill" — these two are TREATED AS THE SAME CATEGORY. Use whichever name appears in the LC's required-documents list; if the LC asked for "Courier Receipt" use that, if it asked for "Airway Bill" use that. It is NEVER a "Documentary Remittance" or "Beneficiary Certificate", even though it carries documents.
    • A bank-letterhead page that says "We enclose documents related to above referenced letter of credit", "Total Amount Claimed", "Presentation Number", "Our Reference No.", "Your Documentary Credit No.", or "remit funds to our correspondent" is a "Documentary Remittance" (covering schedule), NEVER a "Beneficiary Certificate".
    • A "Beneficiary Certificate" is a short certificate ISSUED BY THE BENEFICIARY (the seller/exporter), titled "BENEFICIARY'S CERTIFICATE" or similar, certifying a single fact (e.g. "we hereby certify that one set of documents has been sent by courier"). It is on the beneficiary's letterhead, not a bank's.
-   • A "Short Form Bill of Lading" / "Blank Back Bill of Lading" / "Liner Bill of Lading" / "Charter Party Bill of Lading" / "Combined Transport Bill of Lading" / "Multimodal Bill of Lading" is STILL a "Bill of Lading" (per UCP 600 Art 20(a)(v)). It is NOT an "Airway Bill" and NOT a "Courier Receipt" — it just lacks the full carriage terms on the reverse side.
+   • A "Short Form Bill of Lading" / "Blank Back Bill of Lading" / "Liner Bill of Lading" / "Charter Party Bill of Lading" / "Combined Transport Bill of Lading" / "Multimodal Bill of Lading" is STILL a "Bill of Lading" ((v)). It is NOT an "Airway Bill" and NOT a "Courier Receipt" — it just lacks the full carriage terms on the reverse side.
 2. confidence: 0.0 to 1.0
 3. summary: Detailed description including ALL key details: drawer/drawee, at sight/usance, to the order of, amount in figures AND words, tenor, maturity, endorsements, and any other relevant terms visible in the document
 4. document_number: if visible
@@ -228,7 +228,7 @@ _DOC_INDICATORS = {
         r'PORT\s+OF\s+LOADING', r'PORT\s+OF\s+DISCHARGE', r'ON\s+BOARD',
         r'VESSEL\s+NAME', r'OCEAN\s+BILL',
         # Short form / blank back / charter party / liner B/L variants —
-        # all still classified as "Bill of Lading" (UCP 600 Art 20(a)(v)).
+        # all still classified as "Bill of Lading" ((v)).
         r'SHORT\s+FORM\s+BILL\s+OF\s+LADING',
         r'BLANK\s+BACK\s+BILL\s+OF\s+LADING',
         r'LINER\s+BILL\s+OF\s+LADING',
@@ -238,7 +238,7 @@ _DOC_INDICATORS = {
         r'(?:CONDITIONS|TERMS)\s+OF\s+CARRIAGE\s+(?:ARE\s+)?(?:REFERRED|AVAILABLE)',
     ],
     # ── Airway Bill / Courier Receipt are treated as the SAME category ──
-    # Both are single-piece air/courier transport documents (UCP 600 Art 23 /
+    # Both are single-piece air/courier transport documents ( /
     # Art 25). Patterns for both kinds of waybill live here so either signal
     # — an airline AWB or a DHL/FedEx/UPS/TNT/Aramex express envelope —
     # produces the same classification. The companion entry "Courier Receipt"
@@ -451,7 +451,7 @@ _DOC_INDICATORS = {
 # ── Bill of Lading "Terms and Conditions of Carriage" page detector ──
 #
 # A blank-back / short-form BL is one whose REVERSE side does not carry the
-# detailed carriage terms. UCP 600 Art 20(a)(v) accepts these unconditionally
+# detailed carriage terms. (v) accepts these unconditionally
 # UNLESS the LC explicitly forbids them ("SHORT FORM / BLANK BACK / HOUSE /
 # STALE / FORWARDER AGENT BL NOT ACCEPTABLE").
 #
@@ -1545,7 +1545,7 @@ def run(step3_result: dict, step7_result: dict, output_dir: str = None, progress
             cp['bl_short_form_status'] = 'full_form'
         else:
             # No T&Cs anywhere in the document set — treat as short-form /
-            # blank-back. (UCP 600 Art 20(a)(v) still ACCEPTS this unless
+            # blank-back. ((v) still ACCEPTS this unless
             # the LC explicitly forbids it; the discrepancy is raised
             # later by the cross-clause audit when that LC clause exists.)
             cp['bl_short_form_status'] = 'short_form'

@@ -933,7 +933,7 @@ ANTI-HALLUCINATION RULES (STRICT — READ CAREFULLY)
       - Honorifics: "M/s SINDH INSTITUTE..." = "SINDH INSTITUTE..."
       - Corporate suffix differences: "UBL" = "UBL Ltd" = "United Bank"
       - Acronym expansion: "SIUT" = "Sindh Institute of Urology and
-        Transplantation" — these are THE SAME entity under UCP 600
+        Transplantation" — these are THE SAME entity under 
       - Common typos: "Insititute" ≈ "Institute", "Karachhi" ≈ "Karachi"
       - Address differences: name matches but address differs → PASS
       - Company "currently known as / formerly known as" forms
@@ -982,7 +982,7 @@ ANTI-HALLUCINATION RULES (STRICT — READ CAREFULLY)
 
    CONSIGNEE / TO-ORDER-OF CHECKS (P152 — CRITICAL, never hallucinate):
    - Consignee and Notify Party are TWO DIFFERENT FIELDS on a BL. They
-     have DIFFERENT legal meanings under UCP 600. Never substitute one
+     have DIFFERENT legal meanings under. Never substitute one
      for the other. A bank appearing ONLY in Notify Party does NOT
      satisfy a "consigned to order of <bank>" requirement.
    - When the condition asks "consigned to / made out to the order of
@@ -1238,7 +1238,7 @@ documents and the specific field that disagrees.
     BL:  "Net Weight: 248,100 KG"
     ❌ WRONG: PASS / REVIEW because "both docs show a weight".
     ✅ CORRECT: FAIL — "CI net weight 249,500 KG conflicts with BL
-        net weight 248,100 KG. UCP 600 Art 14(e) requires consistency
+        net weight 248,100 KG. requires consistency
         between documents."
 
 ─── EXAMPLE 12: AMENDMENT APPLIED BETWEEN PRESENTATIONS ──────────────
@@ -1312,7 +1312,7 @@ When comparing a document's party name against an LC party name:
   required name (document carrying a short form), same PASS.
 - Do NOT write "does not exactly match" as a FAIL reason for these
   cases — the mismatch is caused by LC-side text truncation, not
-  a real party mismatch. Under UCP 600 Art 14(d), minor differences
+  a real party mismatch. minor differences
   in spelling or completeness of name that do not change the party's
   legal identity are acceptable.
 
@@ -1396,11 +1396,11 @@ It is purely a DATE ARITHMETIC check:
     days_elapsed = DR.receiving_date - BL.onboard_date
     STALE if days_elapsed > 30 (fixed 30-day rule; do not use F48).
 Staleness is NOT related to:
-  - form_type (short form / long form / blank back) — that is UCP 600
+  - form_type (short form / long form / blank back) — that is 
     Art 20(a)(v) short-form BL rules, a completely different topic
-  - issuer_type (house / master / charter party) — that is UCP 600
+  - issuer_type (house / master / charter party) — that is 
     Art 19/20 issuer rules
-  - cleanness (clean / claused) — UCP 600 Art 27
+  - cleanness (clean / claused) — 
   - reverse-side T&C presence
 NEVER write "BL is stale because it is marked as short form" or
 "BL is stale because it is blank back" or any similar statement.
@@ -1412,7 +1412,7 @@ reasoning from other BL attributes.
 
 BL ATTRIBUTES — NEVER CONFUSE THESE (P167 — CRITICAL):
 The following are FIVE INDEPENDENT attributes on a BL. They mean
-completely different things under UCP 600 and must NOT be substituted
+completely different things under and must NOT be substituted
 for each other:
   • cleanness (Art 27):    clean | claused
       - Clean = no damage/defect notation on the goods.
@@ -1498,7 +1498,7 @@ and the BL consignee field shows just "TO ORDER" (bearer / blank
 endorsable) with no named party AND no explicit endorsement phrase
 to <BANK> is visible on the BL face, the verdict is FAIL — NOT
 REVIEW. A bare "TO ORDER" without the named party / endorsement is
-a strict UCP 600 Art 14(e) discrepancy. Only return PASS when you
+a strict discrepancy. Only return PASS when you
 can see an EXPLICIT endorsement line to <BANK> on the BL face
 ("TO THE ORDER OF <BANK>", "ENDORSED TO <BANK>", "PAY TO THE
 ORDER OF <BANK>", or similar — with the bank's distinctive name
@@ -1542,7 +1542,7 @@ Amount checks (most common false-fail source — read carefully):
   is a FAIL.
 - AMOUNT IN WORDS vs FIGURES: always use the NUMERIC amount (words line is
   just confirmation).
-- UCP 600 Art 30 tolerance: invoice amount can be LESS than LC amount for
+- tolerance: invoice amount can be LESS than LC amount for
   partial / short shipments — that is PASS (unless F47A forbids).
 
 Addressing:
@@ -1626,7 +1626,7 @@ Quantity / packages:
 - Marks & numbers: references_found[role=shipping_marks / marks_and_numbers].
 
 Tolerance:
-- UCP 600 Art 30 quantity tolerance (5% unless excluded by "ABOUT"/"CIRCA").
+- quantity tolerance (5% unless excluded by "ABOUT"/"CIRCA").
 
 Partial shipments:
 - Check F47A for "PARTIAL SHIPMENT ALLOWED" before flagging quantity FAIL.
@@ -2314,7 +2314,7 @@ def _deterministic_verify(
                     'structured_source': 'bl_subtype.issuer_type',
                 }
         # P167: "BL MUST NOT BE CLAUSED" / "CLAUSED BL NOT ACCEPTABLE" /
-        # "BL MUST BE CLEAN". This is UCP 600 Art 27 — a claused BL has
+        # "BL MUST BE CLEAN". This is — a claused BL has
         # damage/defect notations. It is a COMPLETELY DIFFERENT attribute
         # from blank_back (which is about the reverse side of the BL).
         # Read bl_subtype.cleanness / is_claused_bl — never confuse with
@@ -2334,12 +2334,12 @@ def _deterministic_verify(
                     'findings': (
                         f"BL is claused — damage/defect notation present: "
                         f"'{_notes[:150] or '(see BL face)'}'. LC requires clean BL "
-                        f"(UCP 600 Art 27)."
+                        f"."
                     ),
                     'confidence': 0.95,
                     'structured_source': 'bl_subtype.cleanness',
                 }
-            # Otherwise default to CLEAN (P168). UCP 600 Art 27 says a
+            # Otherwise default to CLEAN (P168). says a
             # BL is clean unless it has an explicit clause declaring the
             # goods defective. If structured facts have no claused flag
             # and no clausing_notes, the BL is clean by default — do
@@ -2350,7 +2350,7 @@ def _deterministic_verify(
                 'findings': (
                     f"BL is clean — no damage/defect notation on the goods "
                     f"(cleanness={_cleanness or 'clean'}, "
-                    f"is_claused_bl={_is_claused or False}). UCP 600 Art 27 "
+                    f"is_claused_bl={_is_claused or False}). "
                     f"treats a BL without explicit clausing as clean by default."
                 ),
                 'confidence': 0.90,
@@ -2359,7 +2359,7 @@ def _deterministic_verify(
 
     # ── Check 2b (P152 — revised): Consignee / to-order-of match
     # ──
-    # ── CRITICAL UCP 600 semantics:
+    # ── CRITICAL semantics:
     # ──   "Consignee" and "Notify Party" are TWO DIFFERENT BL fields.
     # ──   A bank appearing in Notify Party does NOT satisfy a consignee
     # ──   requirement. Only the CONSIGNEE box counts for "drawn to order
@@ -2453,7 +2453,7 @@ def _deterministic_verify(
 
                 if _is_bearer_only or not _cons_clean:
                     # Consignee is "TO ORDER" only — no named party. Under
-                    # UCP 600 Art 14(e), a blank-endorsable BL is acceptable
+                    # , a blank-endorsable BL is acceptable
                     # only if the reverse side carries the proper
                     # endorsement.
                     # P192 — Tighten the endorsement detection. The old
@@ -2680,9 +2680,9 @@ CRITICAL RULES (follow strictly):
    • Do NOT count the same Total twice. If a multi-copy invoice (e.g. octuplicate) was merged, the same "Total Amount: 97,216.00" line may appear several times in the raw text — this is ONE invoice with ONE total, not multiple invoices. The SUMMARY at the top has already deduped this for you.
    • For a multi-page invoice, the Total line on the LAST page is the figure for the whole invoice — do not add per-page subtotals on top of it.
    • SYMMETRIC TOLERANCE (P127 — CRITICAL): If the LC has F39A = "05/05" or F47A says "+/-5%" or "05PCT MORE OR LESS" or similar plus-minus language, the tolerance band is +/- that percent in BOTH directions. The invoice amount is a PASS if it falls in [LC × (1 − tolerance%), LC × (1 + tolerance%)].
-       EXAMPLE: LC = USD 100,000.00 with F39A "05/05" → band = 95,000 to 105,000. Invoice 104,500 → PASS. Invoice 96,000 → PASS. Invoice 106,000 → FAIL. Invoice 94,000 → FAIL only if partial shipment is prohibited — otherwise PASS as short shipment under UCP 600 Art 30.
+       EXAMPLE: LC = USD 100,000.00 with F39A "05/05" → band = 95,000 to 105,000. Invoice 104,500 → PASS. Invoice 96,000 → PASS. Invoice 106,000 → FAIL. Invoice 94,000 → FAIL only if partial shipment is prohibited — otherwise PASS as short shipment.
    • ASYMMETRIC TOLERANCE: If F39A says "10/05" → +10% / -5%. If it says "05/10" → +5% / -10%. Apply each side separately.
-   • NO EXPLICIT TOLERANCE: Without F39A or an explicit +/- clause, UCP 600 Art 30(b) gives an IMPLICIT 5% symmetric tolerance on the AMOUNT only when the LC amount is expressed with "ABOUT" / "APPROXIMATELY" / "CIRCA". Without those qualifiers, invoice must be <= LC amount (but can be less — partial/short shipment is allowed unless prohibited).
+   • NO EXPLICIT TOLERANCE: Without F39A or an explicit +/- clause, gives an IMPLICIT 5% symmetric tolerance on the AMOUNT only when the LC amount is expressed with "ABOUT" / "APPROXIMATELY" / "CIRCA". Without those qualifiers, invoice must be <= LC amount (but can be less — partial/short shipment is allowed unless prohibited).
    • "MUST NOT EXCEED" / "NOT TO EXCEED": invoice amount must be <= LC amount × (1 + tolerance%). Equal (=) is NOT exceeding — that is PASS.
    • EQUAL AMOUNTS: If the invoice amount EQUALS the LC amount exactly
      (e.g., both are USD 30,080.00), this is PASS — NOT a discrepancy.
@@ -2765,7 +2765,7 @@ CRITICAL RULES (follow strictly):
        EXAMPLE: LC says "QTY 9025 KGS", F43P = "ALLOWED", invoice shows 3625 KGS → PASS (partial shipment, 3625 < 9025).
        EXAMPLE: LC says "QTY 9025 KGS", F43P = "PROHIBITED", invoice shows 3625 KGS → FAIL (partial shipment not allowed, quantity must match within tolerance).
        EXAMPLE: LC says "QTY 9025 KGS", F43P = "ALLOWED", invoice shows 10000 KGS → FAIL (exceeds LC quantity).
-    c) UCP 600 Art 30(b): Unless the LC prohibits partial shipment, a tolerance of 5% more or less in quantity is allowed, provided the total amount does not exceed the LC amount. So even without explicit tolerance, 5% variation is acceptable if partial shipment is not prohibited.
+    c) : Unless the LC prohibits partial shipment, a tolerance of 5% more or less in quantity is allowed, provided the total amount does not exceed the LC amount. So even without explicit tolerance, 5% variation is acceptable if partial shipment is not prohibited.
 13. BILL OF LADING LIMITATIONS: BLs do NOT show dollar amounts or unit prices — never fail a BL for "amount not mentioned". BLs do NOT typically show LC/credit numbers unless F47A specifically requires it on BL.
 13e. BL TYPES — see BL PROHIBITION QUICK-CHECK above (near top of prompt).
 13f. DRAFT / BILL OF EXCHANGE DATES:
@@ -3191,7 +3191,7 @@ Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 
       "DATED FEB 18, 2026") → FAIL. "STRICTLY AS PER" language
       binds both the ref number and the date. A different date
       points at a different proforma revision and is a documentary
-      discrepancy under UCP 600 Art 18(c).
+      discrepancy.
     - Invoice cites proforma No. XXX but OMITS the date → REVIEW
       (bank checker must verify the same proforma revision was
       shipped against).
@@ -3240,7 +3240,7 @@ Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 
     "ALSO TO" = "AND TO" = "TO" = addressed. Do NOT fail because the
     prefix is "ALSO TO" instead of "TO" — they are equivalent.
 
-    PARTY-NAME OCR TOLERANCE (ISBP 821 paragraph A1 & UCP 600 Art 14(d/e)):
+    PARTY-NAME OCR TOLERANCE ( A1 & (d/e)):
     Company / party names (Applicant, Beneficiary, Consignee, Notify
     Party, Issuing Bank, etc.) MUST be matched semantically, not
     character-by-character. The bank's job is to confirm the parties
@@ -3337,11 +3337,11 @@ Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 
     name uses entirely different words ("GI ENTERPRISES" vs "MARWAN
     TRADING"), that is FAIL. The tolerance applies only to the
     canonical OCR-pixel mistakes listed above.
-23. SHORT FORM / BLANK BACK BILL OF LADING (UCP 600 Art 20(a)(v)): A "short form" or "blank back" Bill of Lading is one that does NOT print the detailed terms and conditions of carriage on its reverse side. UCP 600 Art 20(a)(v) ACCEPTS such bills of lading by default — banks will not examine the contents of those terms. ONLY raise a discrepancy when the LC explicitly forbids them with wording like "SHORT FORM / BLANK BACK BL NOT ACCEPTABLE", and even then, check the DOCUMENT VISUAL METADATA above:
+23. SHORT FORM / BLANK BACK BILL OF LADING ((v)): A "short form" or "blank back" Bill of Lading is one that does NOT print the detailed terms and conditions of carriage on its reverse side. (v) ACCEPTS such bills of lading by default — banks will not examine the contents of those terms. ONLY raise a discrepancy when the LC explicitly forbids them with wording like "SHORT FORM / BLANK BACK BL NOT ACCEPTABLE", and even then, check the DOCUMENT VISUAL METADATA above:
    • If "BL Form Status: full_form" → the BL is a full-form BL = PASS (the carriage terms are present, either on this BL or on a separate T&C page in the same submission set).
    • If "BL Terms Page Present in Set: True" → the carriage terms are supplied on a separate sheet within the document set; the BL is therefore a full-form BL = PASS, even if the LC forbids blank-back.
    • Only when "BL Form Status: short_form" AND no terms page exists in the set AND the LC explicitly forbids short-form/blank-back → mark as FAIL.
-   In all other cases (including the LC being silent on short-form), short-form / blank-back BLs are acceptable per UCP 600 = PASS.
+   In all other cases (including the LC being silent on short-form), short-form / blank-back BLs are acceptable per = PASS.
 
 24. CONSIGNEE vs NOTIFY PARTY — DO NOT CONFUSE THESE FIELDS (CRITICAL):
     On a Bill of Lading these are TWO COMPLETELY DIFFERENT fields:
@@ -3446,7 +3446,7 @@ Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 
     Why this matters: HS Code and NTN are regulatory identifiers used by
     customs and tax authorities. A single wrong digit makes the document
     legally non-compliant. There is no "close enough" — banks must reject
-    a presentation with an incorrect HS Code or NTN under UCP 600 Art 14.
+    a presentation with an incorrect HS Code or NTN.
 
 Return ONLY valid JSON:
 {{
@@ -3821,7 +3821,7 @@ def _call_vlm(
                                 or '\nhbl' in _pre_lower)
             _title_note = (
                 "This BL is titled a Multimodal Transport Document "
-                "(potentially falls under UCP 600 Art 19). "
+                "(potentially falls ). "
                 if _is_mtd else ""
             )
             _marker = (
@@ -4455,7 +4455,7 @@ def _call_vlm(
                 # where the expected source is the LC's BENEFICIARY and
                 # the subject is the BL's SHIPPER (or similar cross-field
                 # checks). The doc's shipper genuinely differing from the
-                # LC's beneficiary is a real UCP 600 Art 14(j) FAIL, not
+                # LC's beneficiary is a real FAIL, not
                 # a truncation artefact.
                 _cu_p165 = (condition_text or '').upper()
                 _cross_field = (
@@ -4978,7 +4978,7 @@ def _build_tasks(
         )
         if _phys_pack_re.search(condition_text):
             _set(row, "compliance", "PASS")
-            _set(row, "result", "Physical packing instruction — copy prepared by beneficiary, placement inside carton/drum cannot be verified from documents (UCP 600 Art 14(h))")
+            _set(row, "result", "Physical packing instruction — copy prepared by beneficiary, placement inside carton/drum cannot be verified from documents ")
             _set(row, "findings", "Physical packing requirement — beneficiary obligation, not document-verifiable")
             _set(row, "confidence", 1.0)
             tasks.append({
@@ -5287,7 +5287,7 @@ def _build_tasks(
             # P198bs — Attached List / Attached Schedule is an ancillary
             # page that lists the pallets / containers / cargo breakdown
             # of the MAIN Bill of Lading. It is not an independently
-            # presented document under UCP 600, so "ALL DOCUMENTS MUST
+            # presented document under , so "ALL DOCUMENTS MUST
             # SHOW LC NUMBER / DATE / BANK" does not apply to it. Same
             # for an Attached Schedule, cargo manifest page, pallet
             # manifest, or packing insert.
@@ -6997,9 +6997,9 @@ def run(
         _lc_ccy = _lc_ccy_m.group(1) if _lc_ccy_m else ''
 
         # Tolerance from F39A (plus/minus percentage) or F39B (max credit amount)
-        # UCP 600 Art 30(b): if no tolerance stated, default is 5% plus/minus
-        _tol_plus = 5.0   # default per UCP 600
-        _tol_minus = 5.0  # default per UCP 600
+        # : if no tolerance stated, default is 5% plus/minus
+        _tol_plus = 5.0 # default per 
+        _tol_minus = 5.0 # default per 
         _tol_39a = _get_lc_field_value(step06_result, '39A')
         _tol_39b = _get_lc_field_value(step06_result, '39B')
         if _tol_39a:
@@ -7491,7 +7491,7 @@ def run(
                 pass
 
     # P163 — Cross-document "documents dated prior to LC issuance" check.
-    # Per UCP 600 Art 14(i): every submitted shipping document must be
+    # : every submitted shipping document must be
     # dated on or AFTER the LC issue date (F31C). If any doc is pre-dated,
     # it is a discrepancy for that doc.
     # Runs AFTER per-packet verdicts so we can compare each packet's
@@ -8271,7 +8271,7 @@ def run(
     # When the BL shipper field reads "<AGENT> ON BEHALF OF <BENEFICIARY>"
     # (or similar agency wording — "FOR ACCOUNT OF", "C/O", "PER",
     # "AS AGENT FOR"), the beneficiary IS named on the BL face. Under
-    # standard commodity-trade practice (UCP 600 / ISBP 821) this
+    # standard commodity-trade practice ( / ) this
     # agency construction is acceptable — the BL identifies the
     # beneficiary as the principal for whom the agent is shipping.
     # The LLM often reads these literally and FAILs the row; this
@@ -8345,7 +8345,7 @@ def run(
                         f"Beneficiary '{_bene_for_rescue}' is named on the "
                         f"BL shipper field via an agency construction "
                         f"(e.g. 'on behalf of' / 'for account of'). "
-                        f"Under UCP 600 / ISBP 821 this identifies the "
+                        f"identifies the "
                         f"beneficiary as principal — acceptable."
                     )
                     _set(row, "findings", _findings)
@@ -8697,7 +8697,7 @@ def run(
                         f"Proforma reference {_lc_pro_ref_raw} matches but "
                         f"DATE DIFFERS: LC requires {_lc_pro_date_raw}; "
                         f"invoice ({_pkt_label}) shows {_inv_date_raw}. "
-                        f"Under UCP 600 Art 18(c), 'strictly as per' "
+                        f"'strictly as per' "
                         f"binds both ref and date — different proforma "
                         f"date is a documentary discrepancy."
                     )
@@ -8828,7 +8828,7 @@ def run(
 
                 if not (_has_master_agency_text or _is_master_agency_structured):
                     continue
-                # Under UCP 600 Art 20/22, master-agency signing is
+                # master-agency signing is
                 # valid for both regular marine and charter-party
                 # BLs. If the condition is permissive about CPBL
                 # or does not prohibit it, PASS.
@@ -8859,7 +8859,7 @@ def run(
                 _set(row, "compliance", "PASS")
                 _findings = (
                     f"BL signed by agent for/on behalf of the master — "
-                    f"this is the UCP 600 Art 20/22 standard signing "
+                    f"this is the /22 standard signing "
                     f"format for charter party and marine/ocean BLs. "
                     f"Not a freight forwarder's BL."
                     + (f" Evidence: structured signing_type='{_signing}'." if _is_master_agency_structured else "")
@@ -8893,7 +8893,7 @@ def run(
     # prohibited tokens. If NONE of the prohibited tokens are present
     # on the BL, flip FAIL to PASS — the BL is demonstrably clean.
     #
-    # Rationale: under UCP 600, a BL that does not carry "FIATA",
+    # Rationale: under , a BL that does not carry "FIATA",
     # "NVOCC", or an explicit "FREIGHT FORWARDER" / "HOUSE" marking
     # is compliant with a "must not be FF / NVOCC / FIATA" rule,
     # regardless of the signing format. The LLM frequently echoes
@@ -9047,7 +9047,7 @@ def run(
                 #     own agent → this IS a house BL.
                 #   • "As agent for master" / "on behalf of the
                 #     master" / "for the carrier" / "for the owner"
-                #     → NOT a house BL (master-agency, UCP 600 Art 20).
+                # → NOT a house BL (master-agency, ).
                 # Also honour structured bl_subtype flags from step03
                 # (is_house_bl, issuer_type=house_bl, signing_type=
                 # forwarder_signed). If any of these say "house",
@@ -9096,7 +9096,7 @@ def run(
 
                     # P198ck — NO signing-capacity proof at all → treat
                     # as house BL. A legitimate master / carrier / owner
-                    # BL signed under UCP 600 Art 20 MUST declare the
+                    # BL signed MUST declare the
                     # signing capacity ("as master", "as carrier", "as
                     # agent for <master/carrier/owner>", "for and on
                     # behalf of the <master/carrier/owner>"). If none
@@ -9400,7 +9400,7 @@ def run(
                 _msg = (
                     f"BL carries Terms & Conditions on reverse / attached — "
                     f"not a blank-back BL. Evidence on document: "
-                    f"{', '.join(_found_terms[:3])}. Under UCP 600 a BL "
+                    f"{', '.join(_found_terms[:3])}. Under a BL "
                     f"with terms printed overleaf or attached as a "
                     f"contract of carriage is a long-form / full-form BL."
                 )
@@ -9627,7 +9627,7 @@ def run(
     # authority on "BL must show FREIGHT PREPAID" / "FREIGHT COLLECT"
     # conditions. Runs after every other rescue and IGNORES prior-
     # rescue flags, because freight payability is a hard documentary
-    # requirement under UCP 600 Art 27 / Art 20(a) and cannot be
+    # requirement / Art 20(a) and cannot be
     # overridden by signing-type / prohibition / permissive rescues.
     #
     # Rules:
@@ -9754,7 +9754,7 @@ def run(
                         _msg = (
                             f"Strict adjacency verified: BL shows "
                             f"'{_rk}' literally (on {_ent['hits'][0]}). "
-                            f"Tokens adjacent per UCP 600 Art 27 / 20(a)."
+                            f"Tokens adjacent "
                         )
                         _set(row, "findings", _msg)
                         _set(row, "result", _msg[:200])
@@ -9902,7 +9902,7 @@ def run(
                     # hallucinated PASS without literal evidence.
                     _msg = (
                         f"Shipping Company Certificate does not "
-                        f"carry {phrase}. Under UCP 600 Art 14(d) "
+                        f"carry {phrase}. "
                         f"the required statement must appear on "
                         f"the face of the document. The {label} "
                         f"required by the LC condition is absent."
@@ -10067,7 +10067,7 @@ def run(
                         _msg = (
                             f"LC issuing bank '{_hit_tok}' is present on "
                             f"the draft text — this is the drawee under "
-                            f"UCP 600 Art 6 (a draft under an LC is "
+                            f" (a draft under an LC is "
                             f"drawn on the issuing bank). A 'Pay to the "
                             f"order of <bank>' line on the draft names "
                             f"the PAYEE (collecting bank), which is a "
@@ -10168,7 +10168,7 @@ def run(
                 _msg = (
                     f"AWB is an original under IATA Resolution 600a "
                     f"(Copies 1, 2 and 3 are originals with equal "
-                    f"validity). Under UCP 600 Art 23, any original "
+                    f"validity). any original "
                     f"AWB presented satisfies the 'Original for "
                     f"Consignor / Shipper' requirement — the specific "
                     f"distribution label (Original 3 For Shipper) is "
@@ -10365,9 +10365,8 @@ def run(
     # government-authorized bodies (customs, inspection bureaus,
     # trade promotion councils, ministries of commerce) — especially
     # on FTA preferential CoOs (China-Pakistan FTA, ASEAN, GCC,
-    # etc.). UCP 600 Art 14(c) recognizes form compliance with the
-    # condition, not a strict literal-issuer match. Under ISBP 745
-    # ¶L a CoO issued by a competent authority of the export country
+    # etc.). recognizes form compliance with the
+    # condition, not a strict literal-issuer match. Under     # ¶L a CoO issued by a competent authority of the export country
     # (including customs / CCPIT / CIQ / Ministry / Board of
     # Investment) satisfies the "Chamber of Commerce" requirement
     # unless the LC specifically excludes such issuers.
@@ -10477,7 +10476,7 @@ def run(
                 _msg = (
                     f"Certificate of Origin issued by '{_eq}' — a "
                     f"government-authorized issuer in the country of "
-                    f"exporter. Under UCP 600 Art 14(c) and ISBP 745, "
+                    f"exporter. "
                     f"a CoO from a competent authority (Customs / "
                     f"Trade Promotion Council / Inspection Bureau / "
                     f"Ministry) satisfies a 'Chamber of Commerce in "
@@ -10692,7 +10691,7 @@ def run(
     # document is rarely submitted with the shipping docs — instead
     # the PI reference is CITED on the Commercial Invoice's goods
     # description / reference field. Presenter's intent: prove the
-    # PI exists by quoting it on the CI. Under UCP 600 this counts
+    # PI exists by quoting it on the CI. Under this counts
     # as "present in the submission".
     #
     # Without this check, when no separate PI packet exists the
@@ -10904,7 +10903,7 @@ def run(
                 _dt_hit, _raw_hit, _src_hit = _best_hit
                 _msg = (
                     f"Proforma Invoice reference is cited in the "
-                    f"submission on the {_dt_hit}. Under UCP 600 the "
+                    f"submission on the {_dt_hit}. Under the "
                     f"PI is typically quoted on the Commercial Invoice "
                     f"rather than submitted as a standalone document — "
                     f"the citation satisfies the 'must be present in "

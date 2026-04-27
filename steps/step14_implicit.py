@@ -163,7 +163,7 @@ DEFAULT_CHECKS_CONFIG = {
     "presentation_period": {
         "enabled": True,
         "name": "Period for Presentation (F48)",
-        "description": "Documents must be presented within stipulated period after shipment. Default 21 days per UCP 600.",
+        "description": "Documents must be presented within stipulated period after shipment. Default 21 days per.",
         "category": "dates",
         "severity": "hard",
     },
@@ -1203,7 +1203,7 @@ def _hybrid_amount_check(lc_amount: float, lc_currency: str, tol_plus: float, to
                 result=(f"Draft {lc_currency} {doc_amount:,.2f} vs "
                         f"invoices total {lc_currency} {inv_total:,.2f} "
                         f"— not cross-checked (partial shipments and "
-                        f"tranche drafts are permitted under UCP 600)."),
+                        f"tranche drafts are permitted)."),
                 compliance="REVIEW", severity="soft")
         elif doc_amount > max_amount:
             return CheckResult(check_id=check_id, clause_ref="F32B",
@@ -1342,7 +1342,7 @@ RULES:
                 "prompt": f"""You are a trade finance document examiner. Verify the Commercial Invoice amount against the LC.
 
 LC Amount & Currency: {amount_str}
-LC Tolerance (F39A): {tol_str if tol_str else 'Not specified — standard 5% under UCP 600 Art 30b'}
+LC Tolerance (F39A): {tol_str if tol_str else 'Not specified — standard 5% b'}
 Partial Shipment (F43P): {partial if partial else 'Not specified'}
 
 RULES:
@@ -1442,8 +1442,8 @@ RULES:
 
 LC Transshipment Condition (F43T): {ts}
 
-━━━ UCP 600 DEFINITION OF TRANSSHIPMENT (CRITICAL — READ FIRST) ━━━
-UCP 600 Art 19(b) / 20(b) define transshipment as:
+━━━ DEFINITION OF TRANSSHIPMENT (CRITICAL — READ FIRST) ━━━
+ / 20(b) define transshipment as:
    "Unloading from one means of conveyance and reloading to ANOTHER
     means of conveyance during the carriage from the place of dispatch
     / port of loading to the place of final destination / port of
@@ -1490,7 +1490,7 @@ Common false-positive pattern (DO NOT fail this):
 1. If LC says "ALLOWED" / "PERMITTED":
    - Transshipment (if any) is acceptable → PASS regardless.
 2. If LC says "NOT ALLOWED" / "PROHIBITED":
-   - Apply the UCP 600 transshipment definition above.
+   - Apply the transshipment definition above.
    - FAIL only when you can identify EXPLICIT evidence of TWO
      DIFFERENT vessels + a mid-journey reload.
    - If the BL shows only "AS AT" / carrier-office / same-vessel
@@ -1806,7 +1806,7 @@ RULES:
             tasks.append({
                 "prompt": f"""You are a trade finance document examiner. Check if documents were presented within the required period after shipment.
 
-LC Period for Presentation (F48): {period_str if period_str else 'Not specified — default 21 days per UCP 600'}
+LC Period for Presentation (F48): {period_str if period_str else 'Not specified — default 21 days per '}
 Presentation period: {period_days} days after shipment date
 
 TWO DOCUMENTS ARE PROVIDED BELOW:
@@ -1821,7 +1821,7 @@ RULES:
 2. The SHIPMENT DATE is on the Bill of Lading (look for "SHIPPED ON BOARD" date, or "Date of Issue" at bottom of BL)
 3. Calculate: Presentation_Date must be <= (Shipment_Date + {period_days} days)
 4. If documents were presented MORE than {period_days} days after shipment → "LATE PRESENTATION" → FAIL
-5. If F48 is blank, UCP 600 defaults to 21 days
+5. If F48 is blank, defaults to 21 days
 6. IMPORTANT: Do NOT say "shipment date missing" if the BL text below shows a date. Look carefully for dates like "30/01/2026", "JANUARY 30, 2026", "SHIPPED ON BOARD 30/01/2026" etc.
 7. Extract: presentation date from cover (preferably RECEIVED stamp), shipment date from BL, and the day count""",
                 "doc_text": combined_text,
@@ -1950,7 +1950,7 @@ def run(
             # SENDING date (when the negotiating bank dispatched), not
             # the receipt date — so we must NEVER use it for this check.
             f48 = str(lc_fields.get('48', lc_fields.get('F48', '')) or '')
-            # Default presentation period per UCP 600 Art 14(c) = 21 days.
+            # Default presentation period = 21 days.
             #
             # P198de — F48 day-count parser. SWIFT F48 / Alliance/BAHL
             # notation commonly writes the period as
@@ -2436,7 +2436,7 @@ def run(
                 ))
 
     # P198dd — Removed cross-link "Late Presentation → LC Expired".
-    # Late presentation (>21 days from shipment) is a UCP 600 Art
+    # Late presentation (>21 days from shipment) is a Art
     # 14(c) violation, NOT an LC-expiry event. The two are separate
     # documentary requirements. Auto-flagging "LC EXPIRED" purely
     # because the 21-day rule was missed produced false FAILs on
