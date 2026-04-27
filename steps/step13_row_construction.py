@@ -254,6 +254,40 @@ def _build_rows_from_decomposed(decomposed_clauses: list) -> List[VerificationRo
                             implicit_type=implicit_type,
                             original_clause_text=original_text,
                         ))
+                    # P198dl — F45A proforma invoice number/date
+                    # OPPORTUNISTIC clone to Packing List. Banks
+                    # do not require the PL to carry the proforma
+                    # reference, but if it does, the values must
+                    # match the LC's F45A. Cloned with the
+                    # '-PL-OPT' marker so step 14's pre-processor
+                    # silently skips (N/A) when the PL carries no
+                    # proforma reference, and lets the LLM verify
+                    # the match when the PL does carry one.
+                    _is_proforma = (
+                        ('PROFORMA' in _cond_u
+                         or 'PRO-FORMA' in _cond_u
+                         or 'PRO FORMA' in _cond_u)
+                        and any(k in _cond_u for k in (
+                            'NUMBER', 'NO.', 'NO ', 'NO:',
+                            'DATE', 'DATED', '#'))
+                    )
+                    if _is_proforma:
+                        row_counter += 1
+                        rows.append(VerificationRow(
+                            row_id=f"R{row_counter:04d}",
+                            clause_ref=clause_ref,
+                            field_tag=field_tag,
+                            condition_id=cond_id + '-PL-OPT',
+                            condition_text=cond_text,
+                            found_text="Nil",
+                            document_checked='Packing List',
+                            result="Pending Verification",
+                            compliance="PENDING",
+                            look_for_value=look_for,
+                            is_implicit=is_implicit,
+                            implicit_type=implicit_type,
+                            original_clause_text=original_text,
+                        ))
             except Exception:
                 pass
 

@@ -5697,6 +5697,104 @@ def run(
                     return p
             return None
 
+        def _load_mt_side_swift_advice(out_dir):
+            # P198dk — Fallback for older jobs whose MT799/MT999
+            # packets live on the MT side (step03) and were never
+            # copied to shipping. Reads step03 packets + step02
+            # cleaned_text and returns a minimal packet list.
+            if not out_dir:
+                return []
+            try:
+                from pathlib import Path as _Path
+                _job = _Path(out_dir).parent
+                _s3p = _job / 'step03' / 'step03_result.json'
+                _s2p = _job / 'step02' / 'step02_result.json'
+                if not _s3p.exists():
+                    return []
+                with open(_s3p, 'r', encoding='utf-8') as _f:
+                    _s3 = json.load(_f)
+                _pt = {}
+                if _s2p.exists():
+                    with open(_s2p, 'r', encoding='utf-8') as _f:
+                        _s2 = json.load(_f)
+                    for _pp in _s2.get('pages', []):
+                        _pn = _pp.get('page_number')
+                        if _pn is not None:
+                            _pt[_pn] = (_pp.get('cleaned_text')
+                                        or _pp.get('raw_text') or '')
+                _out = []
+                for _pk in _s3.get('packets', []):
+                    _dtu = (_pk.get('document_type') or '').upper()
+                    if not any(k in _dtu for k in ('MT799', 'MT 799',
+                                                    'MT999', 'MT 999',
+                                                    'FIN.799', 'FIN.999')):
+                        continue
+                    _pages = (_pk.get('page_numbers')
+                              or [_p.get('page_number')
+                                  for _p in (_pk.get('pages') or [])])
+                    _txt = '\n\n'.join(_pt.get(_pn, '') for _pn in _pages
+                                       if _pn is not None)
+                    _out.append({
+                        'packet_id': _pk.get('packet_id'),
+                        'document_type': _pk.get('document_type'),
+                        'page_numbers': _pages,
+                        'document_text': _txt,
+                        'source_mt': 'MT799',
+                        'is_swift_advice_copy': True,
+                        '_loaded_from_mt_side': True,
+                    })
+                return _out
+            except Exception:
+                return []
+
+        def _evaluate_swift_advice_content(pkt):
+            # P198dk — A genuine post-negotiation SWIFT advice carries
+            # shipment evidence (vessel/voyage/IMO/BL/ports/container/
+            # seal) and a negotiation amount. An issuance-time
+            # advising-bank notification (e.g. 'WE HAVE TODAY ADVISED
+            # THE LC') carries none of those — it must not satisfy a
+            # F47A clause that demands negotiation-time evidence.
+            _txt = (pkt.get('document_text') or pkt.get('cleaned_text')
+                    or pkt.get('refined_text') or '')
+            if not _txt:
+                return False, 'no readable text in MT799/MT999'
+            _u = _txt.upper()
+            _issuance = (
+                r'WE\s+HAVE\s+(?:TODAY\s+)?ADVISED\s+THE\s+(?:LC|L/?C|CREDIT)',
+                r'(?:WE\s+HAVE\s+)?ADVISED\s+THE\s+(?:ABOVE\s+)?'
+                r'(?:MENTIONED\s+)?(?:LETTERS?\s+OF\s+CREDIT|LCS?|L/?CS?)',
+                r'WITHOUT\s+ADDING\s+OUR\s+CONFIRMATION',
+                r'KINDLY\s+UPDATE\s+YOUR\s+RECORDS',
+                r'KINDLY\s+MARK\s+YOUR\s+RECORDS',
+            )
+            for _pat in _issuance:
+                if re.search(_pat, _u):
+                    return False, ('MT799/MT999 reads as an LC-issuance / '
+                                   'advising-bank notification, not a '
+                                   'post-negotiation advice')
+            _evid = {
+                'vessel': r'\bVESSEL\b|\bM\.?\s*V\.?\s+[A-Z]|\bMV\s+[A-Z]',
+                'voyage': r'\bVOYAGE\b',
+                'IMO': r'\bIMO\b',
+                'BL number': r'\bB\s*/\s*L\b|\bBILL\s+OF\s+LADING\b',
+                'container': r'\bCONTAINER\b',
+                'seal': r'\bSEAL\b',
+                'port of loading': r'\bPORT\s+OF\s+LOADING\b',
+                'port of discharge': r'\bPORT\s+OF\s+DISCHARGE\b',
+                'negotiation amount': (r'\bAMOUNT\s+OF\s+NEGOTIATION\b|'
+                                       r'\bNEGOTIATION\s+AMOUNT\b|'
+                                       r'\bNEGOTIATED\s+AMOUNT\b'),
+            }
+            _found = [k for k, _r in _evid.items() if re.search(_r, _u)]
+            if len(_found) >= 2:
+                return True, ('contains negotiation evidence: '
+                              + ', '.join(_found))
+            return False, ('MT799/MT999 lacks the negotiation-time '
+                           'fields required by F47A — found '
+                           + (', '.join(_found) if _found else 'none')
+                           + ' of {vessel, voyage, IMO, BL number, '
+                           'container, seal, ports, negotiation amount}')
+
         for row in rows:
             try:
                 _comp = (row.get('compliance', '') or '').upper()
@@ -5816,6 +5914,12 @@ def run(
                     # Target = MT799 / MT999 / authenticated SWIFT advice
                     row['document_checked'] = 'MT799/MT999 SWIFT Advice'
                     sw_pkt = _has_swift_advice_packet(packets)
+                    # P198dk — Older jobs whose MT799/MT999 packets
+                    # were never copied to shipping_packets: load them
+                    # from step03 with text attached from step02.
+                    if not sw_pkt:
+                        _mt_pkts = _load_mt_side_swift_advice(output_dir)
+                        sw_pkt = _has_swift_advice_packet(_mt_pkts)
                     if not sw_pkt:
                         row['compliance'] = 'FAIL'
                         msg = (
@@ -5841,31 +5945,127 @@ def run(
                             f"N/A->FAIL (no MT799/MT999 in submission)"
                         )
                     else:
-                        row['compliance'] = 'PASS'
-                        msg = (
-                            f"Authenticated SWIFT advice "
-                            f"({sw_pkt.get('document_type')}) from the "
-                            f"negotiating bank is present in the "
-                            f"submission, accompanying the original "
-                            f"documents as required by F47A."
-                        )
-                        row['findings'] = msg
-                        row['result'] = msg[:200]
-                        row['found_text'] = msg[:200]
-                        row['verification_notes'] = (
-                            f"P198da F47A SWIFT-advice: "
-                            f"{sw_pkt.get('document_type')} present"
-                        )
-                        _progress(
-                            f"  [P198da F47A SWIFT] {row.get('row_id','?')}: "
-                            f"N/A->PASS (SWIFT advice {sw_pkt.get('document_type')} "
-                            f"present)"
-                        )
+                        # P198dk — Content-check the SWIFT advice. A
+                        # genuine post-negotiation advice contains
+                        # shipment evidence; an issuance-time advising-
+                        # bank notification does not satisfy F47A-14.
+                        _ok, _why = _evaluate_swift_advice_content(sw_pkt)
+                        if _ok:
+                            row['compliance'] = 'PASS'
+                            msg = (
+                                f"Authenticated SWIFT advice "
+                                f"({sw_pkt.get('document_type')}) from the "
+                                f"negotiating bank is present in the "
+                                f"submission and carries the negotiation-"
+                                f"time evidence required by F47A "
+                                f"({_why})."
+                            )
+                            row['findings'] = msg
+                            row['result'] = msg[:200]
+                            row['found_text'] = msg[:200]
+                            row['verification_notes'] = (
+                                f"P198dk F47A SWIFT-advice: "
+                                f"{sw_pkt.get('document_type')} present, "
+                                f"{_why}"
+                            )
+                            _progress(
+                                f"  [P198dk F47A SWIFT] {row.get('row_id','?')}: "
+                                f"N/A->PASS ({_why})"
+                            )
+                        else:
+                            row['compliance'] = 'FAIL'
+                            _pages = sw_pkt.get('page_numbers') or []
+                            _ploc = (f" on page {_pages[0]}"
+                                     if len(_pages) == 1 else
+                                     (f" on pages {_pages[0]}-{_pages[-1]}"
+                                      if _pages else ''))
+                            msg = (
+                                f"A {sw_pkt.get('document_type')} message "
+                                f"is present in the submission"
+                                f"{_ploc}, but it does not satisfy F47A: "
+                                f"{_why}. The clause requires an "
+                                f"authenticated SWIFT advice from the "
+                                f"negotiating bank on the date of "
+                                f"negotiation stating amount of "
+                                f"negotiation, BL number, vessel, voyage, "
+                                f"IMO, ports, container/seal numbers and "
+                                f"date of dispatch."
+                            )
+                            row['findings'] = msg
+                            row['result'] = msg[:200]
+                            row['found_text'] = msg[:200]
+                            row['verification_notes'] = (
+                                f"P198dk F47A SWIFT-advice: "
+                                f"{sw_pkt.get('document_type')} present "
+                                f"but content mismatch — {_why}"
+                            )
+                            _progress(
+                                f"  [P198dk F47A SWIFT] {row.get('row_id','?')}: "
+                                f"N/A->FAIL ({_why})"
+                            )
             except Exception as _e:
                 try:
                     print(f"[P198da F47A pre-processor] {row.get('row_id','?')}: {_e}")
                 except Exception:
                     pass
+    except Exception:
+        pass
+
+    # ── P198dl — F45A proforma OPPORTUNISTIC check on Packing List ──
+    # Step 13 emits cloned PL rows with condition_id ending in
+    # '-PL-OPT' for F45A proforma invoice number / date conditions.
+    # When the Packing List carries no proforma reference at all,
+    # this opportunistic check is silently skipped (N/A); when it
+    # does carry one, the LLM verifies the match normally.
+    try:
+        _pl_pkt = None
+        for _p in packets:
+            if not isinstance(_p, dict):
+                continue
+            _dt = (_p.get('document_type') or '').lower()
+            if 'packing list' in _dt:
+                _pl_pkt = _p
+                break
+        _pl_text = ''
+        if _pl_pkt:
+            _pl_text = (_pl_pkt.get('refined_text')
+                        or _pl_pkt.get('cleaned_text')
+                        or _pl_pkt.get('document_text') or '')
+        _pl_u = (_pl_text or '').upper()
+        _pl_has_proforma = bool(
+            re.search(r'\bPRO\s*[\-]?\s*FORMA\b', _pl_u)
+            or re.search(r'\bP/?\s*INVOICE\b', _pl_u)
+            or re.search(r'\bPI\s+(?:NO\.?|#|NUMBER)', _pl_u)
+        )
+        for row in rows:
+            cid = (row.get('condition_id') or '')
+            if not cid.endswith('-PL-OPT'):
+                continue
+            if _pl_has_proforma:
+                # PL carries a proforma reference — let the LLM
+                # verify the match normally. No pre-decision here.
+                continue
+            row['compliance'] = 'N/A'
+            row['result'] = ('Not applicable — Packing List does not '
+                             'carry proforma invoice number/date')
+            row['found_text'] = 'N/A'
+            row['findings'] = (
+                "The Packing List does not display a proforma invoice "
+                "number or date. F45A's proforma reference is verified "
+                "on the Commercial Invoice as required; matching it "
+                "against the Packing List is opportunistic and only "
+                "applies when the Packing List actually carries the "
+                "reference."
+            )
+            row['verification_notes'] = (
+                'P198dl proforma-on-PL: PL has no proforma reference; '
+                'opportunistic check skipped'
+            )
+            row['_p198da_handled'] = True
+            _progress(
+                f"  [P198dl proforma-on-PL] {row.get('row_id','?')}: "
+                f"PENDING->N/A (no proforma on PL)"
+            )
     except Exception:
         pass
 
