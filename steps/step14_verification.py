@@ -5662,8 +5662,17 @@ def run(
             return None
 
         def _has_swift_advice_packet(pkts):
+            # P198db — Detect MT799 / MT999 SWIFT advice packets
+            # routed to the shipping side. New jobs include them
+            # via the server-side fix that copies non-amendment
+            # MT799/MT999 packets to shipping_packets with
+            # is_swift_advice_copy=True / source_mt='MT799'.
+            # Older jobs without that routing will only find them
+            # by document_type matching.
             for p in pkts or []:
-                dt = (p.get('document_type') or '').lower() if isinstance(p, dict) else ''
+                if not isinstance(p, dict):
+                    continue
+                dt = (p.get('document_type') or '').lower()
                 if any(k in dt for k in ('mt799', 'mt 799', 'mt999',
                                           'mt 999', 'fin.799', 'fin.999',
                                           'free format message',
@@ -5671,6 +5680,10 @@ def run(
                                           'authenticated swift',
                                           'swift advice',
                                           'swift message')):
+                    return p
+                if str(p.get('source_mt') or '').upper() in ('MT799', 'MT999'):
+                    return p
+                if p.get('is_swift_advice_copy'):
                     return p
             return None
 

@@ -194,6 +194,69 @@ def _build_rows_from_decomposed(decomposed_clauses: list) -> List[VerificationRo
                 original_clause_text=original_text,
             ))
 
+            # P198dc — F45A goods-description / quantity fan-out to
+            # Packing List. The LC's goods description AND quantity
+            # are typically required to appear on BOTH the Commercial
+            # Invoice and the Packing List; UCP 600 Art 14(e) allows
+            # the Packing List to carry the goods description in
+            # general terms not conflicting with the credit, but in
+            # practice banks expect the same product name and the
+            # same quantity on both documents.
+            #
+            # When step 12 emits an F45A condition targeting the
+            # Commercial Invoice for the goods description or the
+            # quantity, clone the row with document_checked set to
+            # 'Packing List' so step 14 verifies it on both docs.
+            # Skip price / Incoterms / proforma-citation rows (those
+            # are CI-only).
+            try:
+                _ftag_u = (field_tag or '').upper()
+                _doc_u = (doc_to_check or '').upper()
+                _cond_u = (cond_text or '').upper()
+                if ('45A' in _ftag_u and 'COMMERCIAL INVOICE' in _doc_u):
+                    # Sub-type detection
+                    _is_goods = any(k in _cond_u for k in (
+                        'GOODS DESCRIPTION', 'DESCRIPTION OF GOODS',
+                        'PRODUCT NAME', 'PRODUCT DESCRIPTION',
+                        'MERCHANDISE', 'COMMODITY',
+                        'GOODS MUST', 'DESCRIPTION MUST',
+                    ))
+                    _is_qty = any(k in _cond_u for k in (
+                        'QUANTITY', 'NUMBER OF UNITS', 'NUMBER OF PIECES',
+                        'TOTAL QUANTITY', 'TOTAL UNITS', 'NET WEIGHT',
+                        'GROSS WEIGHT', 'TOTAL WEIGHT', 'METRIC TONS',
+                        'NO. OF PCS', 'NO. OF UNITS',
+                        'NO OF PCS', 'NO OF UNITS',
+                    ))
+                    # Reject price / incoterms / citation conditions
+                    _is_price_or_other = any(k in _cond_u for k in (
+                        'UNIT PRICE', 'PER PC', 'PER PIECE', 'PER UNIT',
+                        'PER MT', 'PER KG', 'AT THE RATE',
+                        'INCOTERMS', 'CFR', 'CIF', 'FOB', 'EXW', 'DDP',
+                        'PROFORMA', 'PRO-FORMA', 'PRO FORMA',
+                        'TOTAL VALUE', 'TOTAL AMOUNT', 'INVOICE VALUE',
+                        'STRICTLY AS PER', 'STRICTLY AS PER BENEFICIARY',
+                    ))
+                    if (_is_goods or _is_qty) and not _is_price_or_other:
+                        row_counter += 1
+                        rows.append(VerificationRow(
+                            row_id=f"R{row_counter:04d}",
+                            clause_ref=clause_ref,
+                            field_tag=field_tag,
+                            condition_id=cond_id + '-PL',
+                            condition_text=cond_text,
+                            found_text="Nil",
+                            document_checked='Packing List',
+                            result="Pending Verification",
+                            compliance="PENDING",
+                            look_for_value=look_for,
+                            is_implicit=is_implicit,
+                            implicit_type=implicit_type,
+                            original_clause_text=original_text,
+                        ))
+            except Exception:
+                pass
+
     return rows
 
 

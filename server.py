@@ -1872,6 +1872,18 @@ def _do_regenerate(job_id: str):
         if any(x in dt for x in ['lc', 'letter of credit', 'amendment', 'mt7']):
             pkt_copy['mt_type'] = 'MT707' if 'amend' in dt else 'MT700'
             mt_packets.append(pkt_copy)
+            # P198db — Also keep a shipping-side copy of MT799 /
+            # MT999 free-format messages so step 14's F47A-9
+            # SWIFT-advice check (P198da) can find them on the
+            # shipping side. LC-amendment routing is unaffected.
+            if ('mt799' in dt or 'mt 799' in dt or 'fin.799' in dt
+                    or 'mt999' in dt or 'mt 999' in dt or 'fin.999' in dt
+                    or 'free format' in dt or 'free-format' in dt):
+                _ship_copy = dict(pkt)
+                _ship_copy['mt_type'] = 'shipping'
+                _ship_copy['source_mt'] = 'MT799'
+                _ship_copy['is_swift_advice_copy'] = True
+                shipping_packets.append(_ship_copy)
         else:
             pkt_copy['mt_type'] = 'shipping'
             shipping_packets.append(pkt_copy)
@@ -3066,12 +3078,37 @@ def _process_pipeline(job_id: str):
                         _pkt_copy['source_mt'] = 'MT799'
                         _pkt_copy['is_799_amendment'] = True
                         _p(f"  pkt {_pkt.get('packet_id','?')} pages={_pkt.get('page_numbers',[])} → MT799 amendment (promoted to MT707)")
+                        _mt_packets.append(_pkt_copy)
                     else:
                         _pkt_copy['mt_type'] = 'MT799'
                         _pkt_copy['source_mt'] = 'MT799'
                         _pkt_copy['is_799_amendment'] = False
                         _p(f"  pkt {_pkt.get('packet_id','?')} pages={_pkt.get('page_numbers',[])} → MT799 free format")
-                    _mt_packets.append(_pkt_copy)
+                        _mt_packets.append(_pkt_copy)
+                        # P198db — Also keep a SHIPPING-side copy of
+                        # non-amendment MT799 / MT999 packets. The
+                        # beneficiary may attach a copy of the
+                        # negotiating bank's authenticated SWIFT
+                        # advice to satisfy F47A-9 ("copy of such
+                        # SWIFT message must accompany original
+                        # documents"). Without a shipping-side
+                        # copy, step 8/9/14 never see the SWIFT
+                        # advice and the F47A-9 check (P198da) is
+                        # forced to FAIL even when the SWIFT advice
+                        # IS in the presentation.
+                        _ship_copy = dict(_pkt_copy)
+                        _ship_copy['mt_type'] = 'shipping'
+                        _ship_copy['document_type'] = (
+                            _pkt.get('document_type') or 'MT799'
+                        )
+                        _ship_copy['source_mt'] = 'MT799'
+                        _ship_copy['is_swift_advice_copy'] = True
+                        _shipping_packets.append(_ship_copy)
+                        _p(
+                            f"  pkt {_pkt.get('packet_id','?')} also "
+                            f"copied to shipping (MT799 SWIFT advice "
+                            f"for F47A-9 check)"
+                        )
                     _prev_packet = _pkt_copy
                     continue
 
