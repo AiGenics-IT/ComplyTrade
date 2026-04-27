@@ -4386,11 +4386,10 @@ def _call_vlm(
                         parsed["compliance"] = "pass"
                         parsed["verdict"] = "PASS"
                         parsed["findings"] = (
-                            f"Reference '{_needle}' IS present on document "
-                            f"(OCR-normalised match). Original LLM finding said "
-                            f"not found, but the identifier appears after "
-                            f"OCR character-confusion handling (O↔0, I↔1, etc.). "
-                            f"(P135 override)"
+                            f"Reference '{_needle}' IS present on the "
+                            f"document via OCR-normalised match. The "
+                            f"identifier appears after character-confusion "
+                            f"handling (O↔0, I↔1, etc.)."
                         )
                         parsed["result"] = parsed["findings"][:600]
                         parsed["_post_check"] = "P135_reference_found_override"
@@ -4591,8 +4590,7 @@ def _call_vlm(
                     parsed["verdict"] = "PASS"
                     parsed["findings"] = (
                         f"Date IS present on document: {_val} "
-                        f"(from {_src}). LLM's 'no date found' was incorrect. "
-                        f"(P138 override)"
+                        f"(from {_src})."
                     )
                     parsed["result"] = parsed["findings"][:600]
                     parsed["_post_check"] = "P138_date_found_override"
@@ -4856,6 +4854,18 @@ def _build_tasks(
     for row in rows:
         row_id = _get(row, "row_id", "?")
         compliance = _get(row, "compliance", "PENDING")
+
+        # P198da — F47A pre-processor already finalised this row
+        # (compliance + finding set deterministically). Skip task
+        # building so the LLM and downstream drop rules don't
+        # overwrite the verdict.
+        if row.get('_p198da_handled'):
+            tasks.append({
+                "row": row,
+                "skip": True,
+                "reason": "p198da_handled",
+            })
+            continue
 
         # Skip rows already marked N/A (informational)
         if compliance == "N/A":
@@ -5717,6 +5727,15 @@ def run(
 
                 if not (_is_charges or _is_swift):
                     continue
+                # P198da — protect this row from later drop /
+                # _seen_missing dedup logic. The pre-processor has
+                # already determined the correct verdict; downstream
+                # P169 / drop-from-report rules don't know about
+                # synthetic doc types like 'MT799/MT999 SWIFT
+                # Advice' or 'Documentary Remittance' for this
+                # specific charges-statement check, so they must
+                # not strip the row.
+                row['_p198da_handled'] = True
 
                 if _is_charges:
                     # Target = Documentary Remittance
@@ -5941,6 +5960,17 @@ def run(
 
         if reason == "informational":
             # Already N/A, leave as-is
+            continue
+
+        if reason == "p198da_handled":
+            # P198da — already finalised. Don't touch.
+            continue
+
+        # P198da — protect rows already finalised by the F47A
+        # pre-processor. These rows have synthetic doc-types
+        # (e.g. 'MT799/MT999 SWIFT Advice') that the P169 drop
+        # rules don't recognise, but the verdict is correct.
+        if row.get('_p198da_handled'):
             continue
 
         if reason in ("doc_not_found", "no_shipping_docs"):
@@ -6702,7 +6732,7 @@ def run(
                 _set(row, "result", f"Text found in document: {phrase[:80]}")
                 _set(row, "verification_notes",
                      f"Deterministic override: required text '{phrase[:80]}' "
-                     f"found in document — VLM false FAIL corrected")
+                     f"found in document — earlier FAIL verdict corrected")
                 _progress(f"  {row_id}: FAIL->PASS (text '{phrase[:50]}' found in doc)")
                 break
 
@@ -7451,8 +7481,8 @@ def run(
                          f"Cannot determine staleness deterministically: {', '.join(_missing)} "
                          f"not available on document. Stale check requires "
                          f"DR receiving_date and BL on-board date. Manual check required. "
-                         f"(P170 — earlier LLM reasoning citing form type / blank back / "
-                         f"house / claused is irrelevant for staleness.)")
+                         f"Form type / blank back / house / claused signals are "
+                         f"irrelevant for staleness.")
                     _set(row, 'result', _get(row, 'findings', '')[:200])
         except Exception as _e:
             try:
@@ -9871,14 +9901,11 @@ def run(
                     # doesn't carry it — force FAIL. The LLM
                     # hallucinated PASS without literal evidence.
                     _msg = (
-                        f"Shipping Company Certificate is missing "
-                        f"{phrase}. The LLM previously PASSed this "
-                        f"check without literal evidence on the "
-                        f"document; under UCP 600 Art 14(d) the "
-                        f"required statement must appear on the "
-                        f"face of the document. The certificate "
-                        f"submitted does not carry the {label} "
-                        f"required by the LC condition."
+                        f"Shipping Company Certificate does not "
+                        f"carry {phrase}. Under UCP 600 Art 14(d) "
+                        f"the required statement must appear on "
+                        f"the face of the document. The {label} "
+                        f"required by the LC condition is absent."
                     )
                     _set(row, "compliance", "FAIL")
                     _set(row, "findings", _msg)
@@ -10611,9 +10638,9 @@ def run(
                         f"Unit price for {_mdl} verified on {_pl}: "
                         f"{_req_cur} {_got:.2f} per PC matches the "
                         f"required rate {_req_cur} {_req_price:.2f}. "
-                        f"(Multi-item partial shipment — the earlier "
-                        f"LLM finding compared against a different "
-                        f"model on a different invoice packet.)"
+                        f"Multi-item partial shipment — the earlier "
+                        f"finding compared against a different model "
+                        f"on a different invoice packet."
                     )
                     _set(row, "compliance", "PASS")
                     _set(row, "findings", _msg)

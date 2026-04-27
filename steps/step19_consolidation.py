@@ -402,9 +402,12 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
                     continue
                 if not vr.condition and not vr.findings and not vr.document_checked:
                     continue
+                # P198dg — store the FULL clause/condition/findings
+                # text in the consolidated entries (no truncation).
+                # The report layer wraps long text in cells.
                 entry = {
                     'clause_ref': cg.clause_ref,
-                    'clause_text': cg.clause_text[:200],
+                    'clause_text': cg.clause_text,
                     'condition': vr.condition,
                     'findings': vr.findings,
                     'result': vr.result,
@@ -435,8 +438,8 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
                         _seen_review.add(_dedup_key)
                         review_items.append({
                             'clause_ref': cg.clause_ref,
-                            'clause_text': _clause_text[:200],
-                            'condition': _clause_text[:150],
+                            'clause_text': _clause_text,
+                            'condition': _clause_text,
                             'findings': 'Clause not decomposed — requires manual review',
                             'result': 'MANUAL REVIEW NEEDED',
                             'document_checked': 'All Documents',

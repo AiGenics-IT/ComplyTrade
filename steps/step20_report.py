@@ -496,8 +496,13 @@ def _build_executive_summary(
         ]
         _cf_rows = [_cf_hdr]
         for i, cf in enumerate(critical_findings[:30], 1):
+            # P198dg — show full finding text in the executive
+            # summary. Prefer the 'findings' field (longer and more
+            # informative) over the truncated 'result' summary, and
+            # don't cap it. ReportLab Paragraph wraps long text
+            # gracefully across cell rows.
             finding = _esc(_safe_str(
-                cf.get('result', '') or cf.get('condition', '') or cf.get('findings', ''), 500))
+                cf.get('findings', '') or cf.get('result', '') or cf.get('condition', ''), 100000))
             _cf_clause_ref = cf.get("clause_ref", "")
             _cf_anchor = _clause_anchor(_cf_clause_ref)
             # Wrap the clause reference in a hyperlink that jumps to the
@@ -752,7 +757,9 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
 
             for ri, row in enumerate(real_rows):
                 compliance_val = str(row.get('compliance', '')).lower()
-                result_val = _safe_str(row.get('result', ''), 200)
+                # P198dg — no user-visible truncation. The full
+                # text is preserved; ReportLab wraps in the cell.
+                result_val = _safe_str(row.get('result', ''), 100000)
                 _is_fail = compliance_val in ('fail', 'false', 'not complied', 'non_compliant')
                 _is_pass = compliance_val in ('pass', 'complied')
                 _is_rev = compliance_val in ('review', 'warning', 'review_required', 'review required')
@@ -765,13 +772,13 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
                 _cond_text = row.get('condition', '') or row.get('condition_text', '') or row.get('result', '')
                 _find_text = row.get('findings', '') or row.get('found_text', '')
                 _tbl_data.append([
-                    Paragraph(f'<font size="7.5">{_esc(_safe_str(_cond_text, 500))}</font>',
+                    Paragraph(f'<font size="7.5">{_esc(_safe_str(_cond_text, 100000))}</font>',
                               styles['CellTextSmall']),
-                    Paragraph(f'<font size="7"><i>{_esc(_safe_str(_find_text, 600))}</i></font>',
+                    Paragraph(f'<font size="7"><i>{_esc(_safe_str(_find_text, 100000))}</i></font>',
                               styles['CellTextSmall']),
-                    Paragraph(f'<font size="7">{_esc(_safe_str(row.get("document_checked", ""), 120))}</font>',
+                    Paragraph(f'<font size="7">{_esc(_safe_str(row.get("document_checked", ""), 200))}</font>',
                               styles['CellTextSmall']),
-                    Paragraph(f'<font size="7.5">{_esc(_safe_str(result_val, 200))}</font>',
+                    Paragraph(f'<font size="7.5">{_esc(_safe_str(result_val, 100000))}</font>',
                               styles['CellTextSmall']),
                     Paragraph(f'<b><font size="8" color="{_sc}">{_s}</font></b>',
                               styles['CellTextSmall']),
