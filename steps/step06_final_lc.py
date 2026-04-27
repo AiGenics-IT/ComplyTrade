@@ -2777,6 +2777,54 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             else:
                 _cf['48'] = f"{_existing_f48}\n{_rescued_days}".strip() if _existing_f48 else _rescued_days
 
+    # P198df — Display normalisation for F48. SWIFT BAHL notation
+    # writes the period as "15/FRM SHIPMENT DATE BUT WITH IN EXPIRY"
+    # — a slash form with "FRM" / "WITH IN" abbreviations that
+    # reads awkwardly in the final LC report. Rewrite it to a
+    # clean English form ("15 days from shipment date but within
+    # expiry") so the consolidated final LC is readable, while
+    # keeping the original numeric value and intent intact. Skips
+    # already-clean wording (e.g. "21 DAYS FROM SHIPMENT DATE").
+    try:
+        _f48_v = str(_cf.get('48', '') or '').strip()
+        if _f48_v:
+            _norm = _f48_v
+            # Slash form: "15/FROM SHIPMENT DATE BUT WITHIN EXPIRY"
+            #         or "21/FRM SHIPMENT DATE BUT WITH IN EXPIRY"
+            _slash_m = re.match(
+                r'^\s*(\d{1,3})\s*/\s*(FROM|FRM)\s+(.+)$',
+                _norm,
+                flags=re.IGNORECASE,
+            )
+            if _slash_m:
+                _norm = (
+                    f"{_slash_m.group(1)} days from "
+                    f"{_slash_m.group(3).strip()}"
+                )
+            # Abbreviation cleanup that applies regardless of form:
+            #   FRM    → from
+            #   WITH IN → within
+            #   B/L DATE / SHIPMENT DATE: leave date words intact
+            _norm = re.sub(r'\bFRM\b', 'from', _norm, flags=re.IGNORECASE)
+            _norm = re.sub(r'\bWITH\s+IN\b', 'within', _norm, flags=re.IGNORECASE)
+            # Drop the ALL-CAPS look so it reads naturally. Only
+            # rewrite when the source was the BAHL slash/abbrev form
+            # (i.e. we actually changed something) to avoid touching
+            # already-clean wording.
+            if _norm != _f48_v:
+                # Title-cased English with a leading number form.
+                _final_lower = _norm.lower()
+                _cf['48'] = _final_lower
+                _progress(
+                    f"  P198df: F48 reformatted "
+                    f"{_f48_v!r} -> {_final_lower!r}"
+                )
+    except Exception as _e:
+        try:
+            _progress(f"  P198df F48 reformat exception: {_e}")
+        except Exception:
+            pass
+
     # 2c. Run full cleanup on ALL consolidated fields (not just amended ones)
     for _tag in list(_cf.keys()):
         if _tag.startswith('_'):
