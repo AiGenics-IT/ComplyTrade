@@ -2582,9 +2582,18 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     all_page_data.sort(key=lambda x: x[0])
 
     # ── Step 0a: Detect "Page X of Y" on each page for Fusion grouping ──
+    # P198dh — also accept slash form "Page X/Y" (common on
+    # surveyor / inspection certificate footers, e.g. "Page 1/4",
+    # "Page 2/4"). Without this, multi-page docs whose footer uses
+    # the slash form silently break apart at page 4 (the system
+    # only saw "Page X of Y" wording).
     _page_of_total = {}  # page_number -> (x, y) where "Page X of Y"
+    _PAGE_XY_RE = re.compile(
+        r'Page\s+(\d+)\s*(?:of|/)\s*(\d+)',
+        re.IGNORECASE,
+    )
     for pg_num, _, text in all_page_data:
-        m = re.search(r'Page\s+(\d+)\s+of\s+(\d+)', text or '', re.IGNORECASE)
+        m = _PAGE_XY_RE.search(text or '')
         if m:
             _page_of_total[pg_num] = (int(m.group(1)), int(m.group(2)))
 
@@ -3695,7 +3704,7 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         for pg_cls in pkt.pages:
             pg_num = pg_cls.get('page_number', 0) if isinstance(pg_cls, dict) else 0
             pg_text = page_text_map.get(pg_num, {}).get('cleaned_text', '') if pg_num else ''
-            _pxy = re.search(r'Page\s+(\d+)\s+of\s+(\d+)', pg_text, re.IGNORECASE)
+            _pxy = re.search(r'Page\s+(\d+)\s*(?:of|/)\s*(\d+)', pg_text, re.IGNORECASE)
             if _pxy and int(_pxy.group(2)) > 1:
                 _page_x = int(_pxy.group(1))
                 _page_y = int(_pxy.group(2))
