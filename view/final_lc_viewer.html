@@ -33,7 +33,16 @@
         .field-value textarea.modified { border-color: #f59e0b; background: #fffbeb; }
         .field-row.amended-row { background: linear-gradient(90deg, #fffbeb, #fef9c3) !important; }
         .field-row.amended-row:hover { background: linear-gradient(90deg, #fef9c3, #fef3c7) !important; }
-        .amended-pill { display: inline-block; font-size: 0.62em; font-weight: 800; padding: 1px 7px; border-radius: 10px; background: #fef3c7; color: #92400e; border: 1px solid #fde68a; letter-spacing: 0.04em; vertical-align: middle; margin-left: 6px; text-transform: uppercase; }
+        .amended-pill { display: inline-block; font-size: 0.62em; font-weight: 800; padding: 1px 7px; border-radius: 10px; background: #fef3c7; color: #92400e; border: 1px solid #fde68a; letter-spacing: 0.04em; vertical-align: middle; margin-left: 6px; text-transform: uppercase; cursor: help; position: relative; }
+        .amended-pill:hover .amend-tt { display: block; }
+        .amend-tt { display: none; position: absolute; left: 0; top: 100%; margin-top: 4px; z-index: 50; background: #1e293b; color: #f1f5f9; border: 1px solid #475569; border-radius: 8px; padding: 14px 16px; min-width: 420px; max-width: 640px; max-height: 480px; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.25); font-size: 14px; font-weight: 500; letter-spacing: 0; text-transform: none; line-height: 1.55; text-align: left; white-space: normal; cursor: text; }
+        .amend-tt h4 { margin: 0 0 8px 0; font-size: 15px; color: #fbbf24; font-weight: 700; }
+        .amend-tt .amend-block { padding: 10px 0; border-top: 1px solid #334155; }
+        .amend-tt .amend-block:first-of-type { border-top: 0; padding-top: 0; }
+        .amend-tt .amend-block .hd { color: #cbd5e1; font-size: 13px; font-weight: 600; margin: 6px 0 4px 0; }
+        .amend-tt .amend-block .hd b { color: #fbbf24; }
+        .amend-tt .amend-block .old { color: #fca5a5; font-family: 'Fira Code', Consolas, monospace; font-size: 13px; padding: 6px 10px; background: #422; border-radius: 4px; margin: 2px 0; word-break: break-word; }
+        .amend-tt .amend-block .new { color: #86efac; font-family: 'Fira Code', Consolas, monospace; font-size: 13px; padding: 6px 10px; background: #122; border-radius: 4px; margin: 2px 0; word-break: break-word; }
         .clause-row.amended-clause { background: linear-gradient(90deg, #fffbeb, #fef9c3) !important; border-left: 3px solid #f59e0b; }
         .clause-row { padding: 12px 20px; border-bottom: 1px solid #e2e8f0; display: flex; gap: 12px; }
         .clause-row:nth-child(even) { background: #f8fafc; }
@@ -134,6 +143,7 @@ let originalData = {};
 let modifiedFields = {};
 let changeCount = 0;
 let amendedFields = [];
+let amendmentLog = [];
 
 const TAG_NAMES = {
     '20':'Documentary Credit Number',
@@ -141,10 +151,12 @@ const TAG_NAMES = {
     '23':'Reference to Pre-Advice',
     '26E':'Number of Amendment',
     '27':'Sequence of Total',
-    '30':'Date of Amendment',
+    '30':'Date',
     '31C':'Date of Issue',
     '31D':'Date and Place of Expiry',
+    '31E':'New Date of Expiry',
     '32B':'Currency Code, Amount',
+    '32C':'Increase / Decrease of Amount',
     '33B':'Additional Amount Covered',
     '34B':'New Documentary Credit Amount',
     '39A':'Percentage Credit Amount Tolerance',
@@ -156,12 +168,13 @@ const TAG_NAMES = {
     '41D':'Available With / By',
     '42A':'Drawee',
     '42C':'Drafts at',
+    '42D':'Drawee',
     '42M':'Mixed Payment Details',
-    '42P':'Negotiation/Deferred Payment Details',
+    '42P':'Negotiation / Deferred Payment Details',
     '43P':'Partial Shipments',
     '43T':'Transshipment',
-    '44A':'Place of Taking in Charge',
-    '44B':'Place of Final Destination',
+    '44A':'Place of Taking in Charge / Dispatch / Receipt',
+    '44B':'Place of Final Destination / Delivery',
     '44C':'Latest Date of Shipment',
     '44D':'Shipment Period',
     '44E':'Port of Loading / Airport of Departure',
@@ -174,23 +187,49 @@ const TAG_NAMES = {
     '47B':'Additional Conditions (Amendment)',
     '48':'Period for Presentation',
     '49':'Confirmation Instructions',
+    '49G':'Special Payment Conditions for Beneficiary',
+    '49H':'Special Payment Conditions for Bank',
+    '49M':'Mixed Payment Details',
+    '49N':'Negotiation / Deferred Payment Details',
     '50':'Applicant',
+    '50B':'Non-Bank Issuer',
+    '50C':'Applicant',
+    '50G':'Applicant',
+    '50H':'Applicant',
+    '50N':'Applicant',
     '51A':'Applicant Bank',
     '51D':'Applicant Bank',
     '52A':'Issuing Bank',
+    '52B':'Issuing Bank',
     '52D':'Issuing Bank',
     '53A':'Reimbursing Bank',
+    '53B':'Reimbursing Bank',
     '53D':'Reimbursing Bank',
+    '54A':"Reimbursing Bank's Correspondent",
+    '54B':"Reimbursing Bank's Correspondent",
+    '54D':"Reimbursing Bank's Correspondent",
+    '56A':'Intermediary Bank',
+    '56C':'Intermediary Bank',
+    '56D':'Intermediary Bank',
     '57A':'Advise Through Bank',
+    '57B':'Advise Through Bank',
+    '57C':'Advise Through Bank',
     '57D':'Advise Through Bank',
     '58A':'Requested Confirmation Party',
+    '58B':'Requested Confirmation Party',
     '58D':'Requested Confirmation Party',
     '59':'Beneficiary',
+    '59A':'Beneficiary',
+    '59F':'Beneficiary',
+    '71A':'Details of Charges',
     '71B':'Charges',
     '71D':'Charges',
     '72':'Sender to Receiver Information',
+    '72Z':'Sender to Receiver Information',
+    '73':'General Information',
     '77A':'Delivery of Documents and Settlement',
-    '78':'Instructions to the Paying/Accepting/Negotiating Bank',
+    '77J':'Reimbursement Conditions',
+    '78':'Instructions to the Paying / Accepting / Negotiating Bank',
     '79':'Narrative',
 };
 
@@ -207,6 +246,7 @@ async function loadData() {
         const lc = data.consolidated_lcs.find(l => l.lc_number === lcNumber) || data.consolidated_lcs[0];
         const cf = (lc.data || lc).consolidated_fields || lc.consolidated_fields || {};
         amendedFields = cf._amended_fields || [];
+        amendmentLog = (lc.data && lc.data.amendment_log) || lc.amendment_log || [];
         const clauses = {};
 
         // Separate standalone fields from clause fields
@@ -238,6 +278,32 @@ async function loadData() {
     }
 }
 
+function buildAmendTooltip(tag) {
+    // Build the tooltip HTML showing every amendment that touched this tag.
+    const blocks = [];
+    for (const rec of (amendmentLog || [])) {
+        const fields = rec.fields_changed || [];
+        if (!fields.includes(tag)) continue;
+        const det = (rec.change_details || {})[tag] || {};
+        const old_v = det.old !== undefined ? String(det.old) : '';
+        const new_v = det.new !== undefined ? String(det.new) : '';
+        const num = rec.amendment_number || '?';
+        const dt  = rec.amendment_date || '';
+        let block = `<div class="amend-block">`;
+        block += `<div class="hd"><b>Amendment #${esc(String(num))}</b>`;
+        if (dt) block += ` &middot; ${esc(dt)}`;
+        block += `</div>`;
+        if (old_v) block += `<div class="hd">Before:</div><div class="old">${esc(old_v)}</div>`;
+        if (new_v) block += `<div class="hd">After:</div><div class="new">${esc(new_v)}</div>`;
+        block += `</div>`;
+        blocks.push(block);
+    }
+    if (!blocks.length) {
+        return `<div class="amend-tt"><h4>Amended</h4><div>No detailed audit available.</div></div>`;
+    }
+    return `<div class="amend-tt"><h4>Amendment History &mdash; Field ${esc(tag)}</h4>${blocks.join('')}</div>`;
+}
+
 function renderLC(fields, clauses) {
     let html = '';
 
@@ -255,8 +321,11 @@ function renderLC(fields, clauses) {
         const val = fields[tag] || '';
         const rows = Math.max(1, Math.ceil(val.length / 80));
         const isAmended = amendedFields.includes(tag);
+        const _pill = isAmended
+            ? ` <span class="amended-pill">AMENDED${buildAmendTooltip(tag)}</span>`
+            : '';
         html += `<div class="field-row${isAmended ? ' amended-row' : ''}">
-            <div class="field-tag">${tag}${isAmended ? ' <span class="amended-pill">AMENDED</span>' : ''}</div>
+            <div class="field-tag">${tag}${_pill}</div>
             <div class="field-name">${esc(name)}</div>
             <div class="field-value">
                 <textarea id="field_${tag}" rows="${rows}" onchange="markModified('field_${tag}','${tag}')">${esc(val)}</textarea>
@@ -271,7 +340,10 @@ function renderLC(fields, clauses) {
         const name = TAG_NAMES[tag] || tag;
         const isAmended = amendedFields.includes(tag);
         html += '<div class="section">';
-        html += `<div class="section-header" onclick="toggleSection(this)"><span>Field ${tag}: ${esc(name)}${isAmended ? ' <span class="amended-pill" style="font-size:.7em">AMENDED</span>' : ''}</span><span class="toggle">-</span></div>`;
+        const _sectionPill = isAmended
+            ? ` <span class="amended-pill" style="font-size:.7em">AMENDED${buildAmendTooltip(tag)}</span>`
+            : '';
+        html += `<div class="section-header" onclick="toggleSection(this)"><span>Field ${tag}: ${esc(name)}${_sectionPill}</span><span class="toggle">-</span></div>`;
         html += '<div class="section-body">';
         for (let i = 0; i < clauseList.length; i++) {
             const clause = clauseList[i];

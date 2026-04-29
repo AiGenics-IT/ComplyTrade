@@ -1369,6 +1369,111 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
                 # Unknown all-uppercase label — fall back to Title Case
                 document_type = document_type.title()
 
+    # ── P198dp — Documentary Remittance false-positive guard ──
+    # A genuine bank covering schedule / Documentary Remittance shows
+    # bank letterhead AND payment-claim language ("WE ENCLOSE FOR
+    # NEGOTIATION/PAYMENT", "TOTAL AMOUNT CLAIMED", "PRESENTATION
+    # NUMBER", "OUR/YOUR REFERENCE NO", "REMIT FUNDS", "CLAIM
+    # REIMBURSEMENT", etc.). Pages that arrive at "Documentary
+    # Remittance" via aggressive canonicalization (step03 maps any
+    # "Covering Letter" → "Document Remittance"; step08 maps
+    # "COVERING LETTER" → "Documentary Remittance") — including
+    # seller/freight-forwarder email cover notes that just say
+    # "Attached doc for your reference. Thanks!" — must NOT keep
+    # the DR label since they are not the negotiating bank's
+    # covering schedule. Without this guard, downstream checks
+    # (charges-on-DR, presentation-period-on-DR, LC-expiry-on-DR)
+    # mis-anchor on the wrong page and produce false PASS/FAIL.
+    if document_type == 'Documentary Remittance':
+        _u = (glm_text or '').upper()
+        _dr_real_signals = [
+            r'WE\s+ENCLOSE\s+(?:THE\s+)?(?:FOLLOWING\s+|ABOVE\s+)?'
+            r'DOCUMENTS?(?:\s+(?:FOR|DRAWN))?',
+            r'WE\s+ARE\s+PLEASED\s+TO\s+ENCLOSE',
+            r'WE\s+HEREBY\s+ENCLOSE',
+            r'ENCLOSED\s+HEREWITH',
+            r'PRESENTATION\s+(?:NUMBER|NO\.?|DATE|AMOUNT)',
+            r'TOTAL\s+(?:AMOUNT\s+)?CLAIMED',
+            r'PRINCIPAL\s+AMOUNT\s+(?:CLAIMED|EUR|USD|GBP)',
+            r'AMOUNTS?\s+CLAIMED\s*[:\n]',
+            r'YOUR\s+DOCUMENTARY\s+CREDIT\s+NO',
+            r'OUR\s+REFERENCE\s+NO',
+            r'REMIT\s+FUNDS\s+TO\s+(?:OUR\s+)?CORRESPONDENT',
+            r'(?:UPON|FOR)\s+SETTLEMENT\s+PLEASE\s+REMIT',
+            r'QUOTING\s+OUR\s+REFERENCE',
+            r'CLAIM\s+REIMBURSEMENT',
+            r'COVERING\s+(?:LETTER|SCHEDULE)',
+            r'DOCUMENTARY\s+REMITTANCE',
+            r'L/?C\s+BILLS?\s+SCHEDULE',
+            r'(?:DOCUMENT|EXPORT\s+DC)\s+PRESENTATION\s+SCHEDULE',
+            r'SCHEDULE\s+OF\s+PRESENTATION',
+            r'BILLS?\s+REMITTANCE\s+LETTER',
+            # Bank-presentation structural / short-form signals (Habib
+            # Canadian, Maybank etc. write 'Our Ref.', 'Your DC Ref.',
+            # 'L/C Issuing Bank', 'Reimbursing Bank', 'Mail To' as
+            # labelled fields of the covering schedule).
+            r'\bL/?C\s+ISSUING\s+BANK\b',
+            r'\bREIMBURSING\s+BANK\b',
+            r'\bYOUR\s+DC\s+REF\b',
+            r'\bOUR\s+REF\.\s',
+            r'\bPAYMENT\s+INSTRUCTION\b',
+            r'\bBILL\s+AMOUNT\b',
+            r'DOCUMENTS?\s+SENT\s+TO\s+YOU\s+ON\s+APPROVAL',
+            r'DRAWING\s+AMOUNT\s+(?:HAS\s+BEEN\s+)?(?:DULY\s+)?ENDORSED',
+            r'PRESENTATION\s+IS\s+SUBJECT\s+TO',
+            r'ADVISING\s+CHARGES?\s+AND\s+CONFIRMATION\s+CHARGES?',
+        ]
+        _signal_count = sum(1 for _p in _dr_real_signals
+                            if re.search(_p, _u))
+        # Bank letterhead — broad pattern: any well-known bank name OR
+        # a SWIFT BIC line at the top of the page.
+        _bank_letterhead = bool(re.search(
+            r'\b(?:MAYBANK|MALAYAN\s+BANKING|BANK\s+AL\s+HABIB|'
+            r'HABIB\s+BANK|HBL\b|UBL\b|UNITED\s+BANK\s+LIMITED|'
+            r'MEEZAN\s+BANK|FAYSAL\s+BANK|MCB\b|ALLIED\s+BANK|'
+            r'STANDARD\s+CHARTERED|HSBC|CITIBANK|JP\s*MORGAN|'
+            r'J\.P\.\s*MORGAN|BARCLAYS|DEUTSCHE\s+BANK|RBC\b|'
+            r'ROYAL\s+BANK|BNP\s+PARIBAS|COMMERZBANK|MIZUHO|'
+            r'BANK\s+OF\s+CHINA|ICBC|BANCO\b|CHINA\s+CONSTRUCTION|'
+            r'WELLS\s+FARGO|BANK\s+OF\s+AMERICA|UNICREDIT|'
+            r'SOCIETE\s+GENERALE|CREDIT\s+SUISSE|UBS\b|'
+            r'NATIONAL\s+BANK|COMMERCIAL\s+BANK)\b', _u))
+        _swift_header = bool(re.search(
+            r'\bSWIFT\s*:\s*[A-Z]{6,11}\b', _u))
+        # Email cover note signal: From:<email> + Subject: together
+        _is_email = bool(
+            re.search(r'\bFROM\s*:\s*[^\n]*@', _u)
+            and re.search(r'\bSUBJECT\s*:', _u)
+        )
+
+        # Demote unless real bank covering schedule shape:
+        #   - non-email: ≥2 strong signals, OR bank letterhead + ≥1
+        #     signal, OR SWIFT header + ≥1 signal.
+        #   - email cover note (From:<email> + Subject:): require
+        #     ≥3 strong signals. Emails routinely mention banks /
+        #     L/C issuing bank as reference text, so 1 signal +
+        #     bank-name match is not enough to call them DR.
+        if _is_email:
+            _is_real_dr = _signal_count >= 3
+        else:
+            _is_real_dr = (
+                _signal_count >= 2
+                or (_bank_letterhead and _signal_count >= 1)
+                or (_swift_header and _signal_count >= 1)
+            )
+        if not _is_real_dr:
+            _was = document_type
+            document_type = 'Covering Letter'
+            try:
+                print(
+                    f"  [P198dp DR-guard] {packet.get('packet_id','?')} "
+                    f"({_was} -> {document_type}): signals={_signal_count}, "
+                    f"bank_letterhead={_bank_letterhead}, "
+                    f"swift_header={_swift_header}, email={_is_email}"
+                )
+            except Exception:
+                pass
+
     elapsed = time.time() - start
 
     classified = ClassifiedPacket(

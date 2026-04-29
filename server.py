@@ -1712,6 +1712,11 @@ def get_result(job_id: str):
                 'Additional_Conditions_count': _47a_count,
                 'consolidated_fields': _clean_cf,
                 'clauses': {k: [c if isinstance(c,dict) else {'text':str(c)} for c in v] if isinstance(v,list) else v for k,v in _clauses.items()},
+                # P198dr — Amendment audit log with per-field old/new
+                # values, amendment number and amendment date so the
+                # final-LC viewer can render a "from amendment N: old
+                # → new" tooltip on hover for amended fields.
+                'amendment_log': flc.get('amendment_log', []),
             }
         })
 
@@ -2504,15 +2509,24 @@ def verify_status(verification_id: str):
                 15: 'validation', 16: 'validation', 17: 'validation',
                 18: 'validation', 19: 'summary', 20: 'saving',
             }
+            # P198dq — Send the FULL progress log, not the last 100.
+            # The UI tracks a cumulative `lastLogCount` and uses it as
+            # an array index into the response. Once the server's
+            # log exceeded 100 messages, the truncation made
+            # `lastLogCount > response.length`, so the UI's "append
+            # new lines" branch never fired again — the log appeared
+            # stuck on the last visible line under the progress bar
+            # while the pipeline kept running. Returning the full
+            # list keeps the index alignment correct.
             progress_log = []
-            for p in job['progress'][-100:]:
+            for p in job['progress']:
                 _sm = _re.search(r'Step (\d+)', p)
                 _step = int(_sm.group(1)) if _sm else job['current_step']
                 progress_log.append({'message': p, 'stage': _step_stages.get(_step, 'validation')})
             return {
                 'status': job['status'] if job['status'] in ('completed', 'failed') else 'processing',
                 'current_step': job['current_step'],
-                'progress': job['progress'][-100:],
+                'progress': job['progress'],
                 'progress_log': progress_log,
                 'message': job['progress'][-1] if job['progress'] else '',
             }
