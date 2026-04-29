@@ -35,14 +35,15 @@
         .field-row.amended-row:hover { background: linear-gradient(90deg, #fef9c3, #fef3c7) !important; }
         .amended-pill { display: inline-block; font-size: 0.62em; font-weight: 800; padding: 1px 7px; border-radius: 10px; background: #fef3c7; color: #92400e; border: 1px solid #fde68a; letter-spacing: 0.04em; vertical-align: middle; margin-left: 6px; text-transform: uppercase; cursor: help; position: relative; }
         .amended-pill:hover .amend-tt { display: block; }
-        .amend-tt { display: none; position: absolute; left: 0; top: 100%; margin-top: 4px; z-index: 50; background: #1e293b; color: #f1f5f9; border: 1px solid #475569; border-radius: 8px; padding: 14px 16px; min-width: 420px; max-width: 640px; max-height: 480px; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.25); font-size: 14px; font-weight: 500; letter-spacing: 0; text-transform: none; line-height: 1.55; text-align: left; white-space: normal; cursor: text; }
+        .amend-tt { display: none; position: absolute; left: 0; top: 100%; margin-top: 4px; z-index: 50; background: #1e293b; color: #f1f5f9; border: 1px solid #475569; border-radius: 8px; padding: 14px 16px; min-width: 460px; max-width: 720px; max-height: 540px; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.25); font-size: 14px; font-weight: 500; letter-spacing: 0; text-transform: none; line-height: 1.55; text-align: left; white-space: normal; cursor: text; }
         .amend-tt h4 { margin: 0 0 8px 0; font-size: 15px; color: #fbbf24; font-weight: 700; }
         .amend-tt .amend-block { padding: 10px 0; border-top: 1px solid #334155; }
         .amend-tt .amend-block:first-of-type { border-top: 0; padding-top: 0; }
         .amend-tt .amend-block .hd { color: #cbd5e1; font-size: 13px; font-weight: 600; margin: 6px 0 4px 0; }
         .amend-tt .amend-block .hd b { color: #fbbf24; }
-        .amend-tt .amend-block .old { color: #fca5a5; font-family: 'Fira Code', Consolas, monospace; font-size: 13px; padding: 6px 10px; background: #422; border-radius: 4px; margin: 2px 0; word-break: break-word; }
-        .amend-tt .amend-block .new { color: #86efac; font-family: 'Fira Code', Consolas, monospace; font-size: 13px; padding: 6px 10px; background: #122; border-radius: 4px; margin: 2px 0; word-break: break-word; }
+        .amend-tt .amend-block .diff-pane { max-height: 200px; overflow-y: auto; padding: 4px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; }
+        .amend-tt .amend-block .old { color: #fca5a5; font-family: 'Fira Code', Consolas, monospace; font-size: 13px; padding: 5px 9px; background: #422; border-left: 3px solid #f87171; border-radius: 3px; margin: 3px 0; word-break: break-word; white-space: pre-wrap; }
+        .amend-tt .amend-block .new { color: #86efac; font-family: 'Fira Code', Consolas, monospace; font-size: 13px; padding: 5px 9px; background: #122; border-left: 3px solid #22c55e; border-radius: 3px; margin: 3px 0; word-break: break-word; white-space: pre-wrap; }
         .clause-row.amended-clause { background: linear-gradient(90deg, #fffbeb, #fef9c3) !important; border-left: 3px solid #f59e0b; }
         .clause-row { padding: 12px 20px; border-bottom: 1px solid #e2e8f0; display: flex; gap: 12px; }
         .clause-row:nth-child(even) { background: #f8fafc; }
@@ -278,8 +279,45 @@ async function loadData() {
     }
 }
 
+function diffLines(oldText, newText) {
+    // Line/clause-level diff. Returns the set of lines present only
+    // in old (removed) and only in new (added). Common lines are
+    // suppressed so the tooltip shows ONLY what actually changed.
+    const norm = s => (s || '').split(/\r?\n/)
+        .map(l => l.replace(/\s+/g, ' ').trim())
+        .filter(l => l);
+    const oldLines = norm(oldText);
+    const newLines = norm(newText);
+    const oldCounts = {}, newCounts = {};
+    for (const l of oldLines) oldCounts[l] = (oldCounts[l] || 0) + 1;
+    for (const l of newLines) newCounts[l] = (newCounts[l] || 0) + 1;
+    const removed = [];
+    const added = [];
+    for (const l of oldLines) {
+        if ((newCounts[l] || 0) <= 0) {
+            removed.push(l);
+        } else {
+            newCounts[l]--;
+        }
+    }
+    // rebuild newCounts from scratch for the second pass
+    for (const k in newCounts) delete newCounts[k];
+    for (const l of newLines) newCounts[l] = (newCounts[l] || 0) + 1;
+    for (const l of oldLines) {
+        if ((newCounts[l] || 0) > 0) newCounts[l]--;
+    }
+    for (const l of newLines) {
+        if ((newCounts[l] || 0) > 0) {
+            added.push(l);
+            newCounts[l]--;
+        }
+    }
+    return { removed, added };
+}
+
 function buildAmendTooltip(tag) {
-    // Build the tooltip HTML showing every amendment that touched this tag.
+    // Build the tooltip HTML showing only what each amendment changed
+    // (added / removed lines), not the full Before/After content.
     const blocks = [];
     for (const rec of (amendmentLog || [])) {
         const fields = rec.fields_changed || [];
@@ -289,12 +327,33 @@ function buildAmendTooltip(tag) {
         const new_v = det.new !== undefined ? String(det.new) : '';
         const num = rec.amendment_number || '?';
         const dt  = rec.amendment_date || '';
+        const { removed, added } = diffLines(old_v, new_v);
+
         let block = `<div class="amend-block">`;
         block += `<div class="hd"><b>Amendment #${esc(String(num))}</b>`;
         if (dt) block += ` &middot; ${esc(dt)}`;
         block += `</div>`;
-        if (old_v) block += `<div class="hd">Before:</div><div class="old">${esc(old_v)}</div>`;
-        if (new_v) block += `<div class="hd">After:</div><div class="new">${esc(new_v)}</div>`;
+
+        if (!removed.length && !added.length) {
+            if (!old_v && new_v) {
+                block += `<div class="hd">Added:</div><div class="diff-pane"><div class="new">${esc(new_v)}</div></div>`;
+            } else if (old_v && !new_v) {
+                block += `<div class="hd">Removed:</div><div class="diff-pane"><div class="old">${esc(old_v)}</div></div>`;
+            } else {
+                block += `<div class="hd" style="color:#94a3b8">No textual change (formatting / whitespace only)</div>`;
+            }
+        } else {
+            if (removed.length) {
+                block += `<div class="hd">Removed:</div><div class="diff-pane">`;
+                for (const l of removed) block += `<div class="old">${esc(l)}</div>`;
+                block += `</div>`;
+            }
+            if (added.length) {
+                block += `<div class="hd">Added:</div><div class="diff-pane">`;
+                for (const l of added) block += `<div class="new">${esc(l)}</div>`;
+                block += `</div>`;
+            }
+        }
         block += `</div>`;
         blocks.push(block);
     }

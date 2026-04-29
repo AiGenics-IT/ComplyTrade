@@ -1754,7 +1754,7 @@ If there are also other changes (word changes, amount increases, field replaceme
                         base_fields[_add_tag] = new_val
                         record.fields_changed.append(_add_tag)
                         record.change_details[_add_tag] = {
-                            'old': old_val[:200], 'new': new_val[:200],
+                            'old': old_val, 'new': new_val,
                             'operation': 'llm_add_clause',
                         }
                         if _progress:
@@ -1773,7 +1773,7 @@ If there are also other changes (word changes, amount increases, field replaceme
                             if _old != _v:
                                 record.fields_changed.append(_norm_k)
                                 record.change_details[_norm_k] = {
-                                    'old': _old[:200], 'new': _v[:200],
+                                    'old': _old, 'new': _v,
                                     'operation': 'llm_amendment',
                                 }
 
@@ -1844,8 +1844,8 @@ If there are also other changes (word changes, amount increases, field replaceme
                         if old_val != new_val:
                             record.fields_changed.append(tag)
                             record.change_details[tag] = {
-                                'old': old_val[:200],
-                                'new': new_val[:200],
+                                'old': old_val,
+                                'new': new_val,
                                 'operation': 'vlm_amendment',
                             }
                     if _progress:
