@@ -2860,10 +2860,36 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             # P198ej — Only add pages with SWIFT-message structure
             # to the current group. A page that has neither a new
             # Message Details header nor SWIFT continuation content
-            # (F-tags, narrative, block markers) is NOT part of the
-            # message — even when within the report's page-count
-            # window. End the current group at this page.
-            if pg_num not in _msg_detail_pages and not _page_has_swift_struct.get(pg_num):
+            # is NOT part of the message — even when within the
+            # report's page-count window.
+            #
+            # P198en — Sequential continuation override. The
+            # Alliance Message Management report's tail page often
+            # carries only "Report Footer / End of Report / Number
+            # of Entities" with no SWIFT field tags, but it shares
+            # the SAME `Page X of Y` pagination as the message it
+            # belongs to (e.g. MT707 = Page 1/3 + Page 2/3 + Report
+            # Footer = Page 3/3). When the immediately-previous
+            # page is in the current BAHL group AND has Page X-1
+            # of Y AND this page has Page X of Y with the SAME Y,
+            # accept it as the next page of the same message
+            # regardless of SWIFT-content gate.
+            _is_sequential_cont = False
+            if (current_group_id is not None
+                and pg_num in _page_of_total
+                and current_group_id in _bahl_messages
+                and _bahl_messages[current_group_id]['pages']):
+                _prev_pn = _bahl_messages[current_group_id]['pages'][-1]
+                if _prev_pn in _page_of_total:
+                    _cur_x, _cur_y = _page_of_total[pg_num]
+                    _prev_x, _prev_y = _page_of_total[_prev_pn]
+                    if (_prev_y == _cur_y and _cur_x > 1
+                        and _prev_x == _cur_x - 1):
+                        _is_sequential_cont = True
+
+            if (pg_num not in _msg_detail_pages
+                and not _page_has_swift_struct.get(pg_num)
+                and not _is_sequential_cont):
                 current_group_id = None
                 continue
 

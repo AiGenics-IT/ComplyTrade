@@ -79,12 +79,11 @@ def detect_xy(text):
 
 
 def simulate_grouping(pages):
-    """Mirror the live step03 grouping after P198eg + P198ej.
+    """Mirror the live step03 grouping after P198eg + P198ej + P198en.
     pages: list of (page_number, text)."""
     sorted_pages = sorted(pages, key=lambda x: x[0])
     actual_max = max((pn for pn, _ in sorted_pages), default=0)
 
-    # Build msg_detail_pages and page_xy
     msg_detail_pages = {}
     page_xy = {}
     page_has_swift = {}
@@ -102,7 +101,6 @@ def simulate_grouping(pages):
     if len(msg_detail_pages) < 2:
         return {}, []
 
-    # Compute bahl_max_page (capped at actual_max — P198ej fix)
     bahl_max = 0
     for pn in sorted(msg_detail_pages):
         if pn in page_xy:
@@ -136,8 +134,21 @@ def simulate_grouping(pages):
                     'msg_num_in_report': msg_num,
                 }
                 cur_grp = next_id
-        # P198ej — drop non-SWIFT pages
-        if pn not in msg_detail_pages and not page_has_swift.get(pn):
+
+        # P198en — sequential-continuation override
+        is_sequential_cont = False
+        if (cur_grp is not None and pn in page_xy
+            and bahl.get(cur_grp, {}).get('pages')):
+            prev_pn = bahl[cur_grp]['pages'][-1]
+            if prev_pn in page_xy:
+                cx, cy = page_xy[pn]
+                px, py = page_xy[prev_pn]
+                if py == cy and cx > 1 and px == cx - 1:
+                    is_sequential_cont = True
+
+        if (pn not in msg_detail_pages
+            and not page_has_swift.get(pn)
+            and not is_sequential_cont):
             cur_grp = None
             continue
         if cur_grp is not None:
@@ -426,6 +437,38 @@ SCENARIOS = [
         # Only 1 BAHL message header → BAHL not triggered (need ≥2)
         0,
         set(),
+    ),
+    (
+        'USER\'S CASE — job 455d7422: MT707 spans Page 1/3 + 2/3 + 3/3 '
+        '(where p3 is just "Report Footer / End of Report") — page 10 '
+        'must merge into the MT707 group via sequential X of Y rule',
+        [
+            (1, 'Header'), (2, 'Header'),
+            (3, syn_swift_msg_page(1, '700', (1, 5), body='F31C: 250101')),
+            (4, syn_swift_cont_page((2, 5))),
+            (5, syn_swift_cont_page((3, 5))),
+            (6, syn_swift_cont_page((4, 5))),
+            (7, syn_swift_cont_page((5, 5))),
+            # MT707 page 1/3 (Message Details + F-tags)
+            (8, syn_swift_msg_page(1, '707', (1, 3),
+                                    body='F31C: 260119\nF26E: 1')),
+            # MT707 page 2/3 (continuation, F-tags + narrative)
+            (9, syn_swift_cont_page(
+                (2, 3),
+                body='F31D: Date and Place of Expiry\nF44C: Latest Date')),
+            # MT707 page 3/3 — Alliance Report Footer, NO SWIFT field
+            # tags but same Y pagination → must merge via P198en
+            (10, """Report Footer
+Number of Entities
+1
+End of Report
+
+Page 3 of 3"""),
+            (11, syn_shipping_page('Document Remittance')),
+        ],
+        2,  # MT700 (pp 3-7) + MT707 (pp 8-10)
+        # Page 10 should be in BAHL pages
+        {3, 4, 5, 6, 7, 8, 9, 10},
     ),
 ]
 

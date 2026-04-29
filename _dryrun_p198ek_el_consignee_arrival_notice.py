@@ -70,20 +70,20 @@ def check_b_passes(_cond_up, _doc_up):
 
 
 def is_arrival_notice(text):
-    """Mirror of step08 P198el. Returns True if the page should
-    be classified as 'Document Arrival Notice'."""
+    """Mirror of step08 P198el (refined per P198em).
+    Returns True ONLY when the page has both a DOCUMENT ARRIVAL
+    NOTICE header AND a DISCREPANCIES block — without the
+    discrepancies block, the page is functionally a Documentary
+    Remittance / covering schedule and must keep that label."""
     u = (text or '').upper()
     has_header = bool(re.search(
         r'(?:^|\n)\s*DOCUMENT(?:S)?\s+ARRIVAL\s+NOTICE\b',
         u, re.MULTILINE))
-    has_received = bool(re.search(
-        r'(?:RECEIVED\s+THE\s+ORIGINAL\s+DOCUMENTS|'
-        r'WE\s+HAVE\s+RECEIVED\s+THE\s+(?:ORIGINAL\s+)?DOCUMENTS)', u))
     has_discrepancies = bool(re.search(
         r'\bDISCREPANC(?:Y|IES)\s+(?:NOTED|FOUND|OBSERVED)\b'
         r'|(?:^|\n)\s*DISCREPANCIES?\s*[:\-]?\s*\n',
         u, re.MULTILINE))
-    return has_header and (has_received or has_discrepancies)
+    return has_header and has_discrepancies
 
 
 # ─── Test data ──────────────────────────────────────────────────────
@@ -194,6 +194,35 @@ EL_SCENARIOS = [
      False),
     ('Document Arrival Notice header but NO discrepancy / received signal',
      'DOCUMENT ARRIVAL NOTICE\nThis is a generic notice.',
+     False),
+    # P198em refinement — these new scenarios encode the user\'s nuance:
+    # "a DOCUMENT ARRIVAL NOTICE without discrepancies IS a Documentary
+    # Remittance" — so it must NOT be relabeled to Document Arrival
+    # Notice.
+    ('UBL "DOCUMENT ARRIVAL NOTICE" header + "RECEIVED THE ORIGINAL '
+     'DOCUMENTS" but NO DISCREPANCIES list — must NOT relabel '
+     '(stays Documentary Remittance)',
+     'UNITED BANK LIMITED\nDOCUMENT ARRIVAL NOTICE\n'
+     'PLEASE BE ADVISED THAT WE HAVE RECEIVED THE ORIGINAL DOCUMENTS '
+     'FROM HABIB BANK AG ZURICH.\n'
+     'AMOUNT: USD 100,000\nVESSEL: SHIP A\n'
+     'KINDLY ACKNOWLEDGE.\n'
+     'No discrepancies — clean presentation.',
+     False),
+    ('UBL "DOCUMENT ARRIVAL NOTICE" + DISCREPANCIES → relabel '
+     '(P198el / P198em positive case)',
+     'UNITED BANK LIMITED\nDOCUMENT ARRIVAL NOTICE\n'
+     'PLEASE BE ADVISED THAT WE HAVE RECEIVED THE ORIGINAL DOCUMENTS '
+     'FROM HABIB BANK AG ZURICH.\n'
+     'DISCREPANCIES NOTED:\n'
+     '1. INVOICE NOT SHOWING INCOTERMS\n'
+     '2. STALE BL PRESENTED',
+     True),
+    ('Bank covering schedule that says "documents arrived" in passing '
+     '— no header line, no discrepancies — stays Documentary Remittance',
+     'Maybank Trade Finance\nThe documents arrived today.\n'
+     'WE ENCLOSE THE FOLLOWING DOCUMENTS FOR NEGOTIATION/PAYMENT\n'
+     'TOTAL AMOUNT CLAIMED: USD 50,000',
      False),
     ('Discrepancies list but NO arrival-notice header',
      'BANK COVERING LETTER\nDISCREPANCIES NOTED:\n1. ABC\n2. DEF',

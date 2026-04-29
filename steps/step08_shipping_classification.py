@@ -1450,18 +1450,24 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
                 pass
             document_type = 'Detailed Message'
 
-    # ── P198el — "Document Arrival Notice" recognition ──
-    # UBL / HBL / other issuing-bank notifications to the applicant
-    # that say "DOCUMENT ARRIVAL NOTICE" + "PLEASE BE ADVISED THAT
-    # WE HAVE RECEIVED THE ORIGINAL DOCUMENTS FROM ..." + a
-    # DISCREPANCIES list are NOT Documentary Remittances. They are
-    # the issuing bank's discrepancy / arrival notification to the
-    # applicant. The VLM at step08 force-fits them to "Documentary
-    # Remittance" because that's the closest doc-type in the LC's
-    # required-documents list. Detect the structural signals and
-    # keep this as its own canonical type so downstream verification
-    # doesn't mis-anchor charges-on-DR / presentation-period checks
-    # on a non-DR page.
+    # ── P198el — "Document Arrival Notice (with discrepancies)" ──
+    # UBL / HBL / issuing-bank notifications to the applicant that
+    # say "DOCUMENT ARRIVAL NOTICE" + a DISCREPANCIES list are
+    # discrepancy notices, NOT Documentary Remittances. They are
+    # the issuing bank's flag of issues with the presentation.
+    #
+    # IMPORTANT (P198em refinement): a "DOCUMENT ARRIVAL NOTICE"
+    # WITHOUT a discrepancies list is functionally a Documentary
+    # Remittance / covering schedule (the bank acknowledging
+    # receipt of the documents with no issues), and should keep
+    # the Documentary Remittance classification so downstream
+    # F47A charges-on-DR / presentation-period checks anchor on
+    # it as expected.
+    #
+    # The relabel therefore requires BOTH the arrival-notice
+    # header AND a discrepancies block. Without discrepancies, the
+    # page stays as Documentary Remittance (or whatever the VLM
+    # / DR-guard chose).
     if document_type in (
         'Documentary Remittance', 'Document Remittance',
         'Covering Letter', 'Covering Schedule',
@@ -1472,25 +1478,18 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
             r'(?:^|\n)\s*DOCUMENT(?:S)?\s+ARRIVAL\s+NOTICE\b',
             _ux2, re.MULTILINE,
         ))
-        _has_received_from = bool(re.search(
-            r'(?:RECEIVED\s+THE\s+ORIGINAL\s+DOCUMENTS|'
-            r'WE\s+HAVE\s+RECEIVED\s+THE\s+(?:ORIGINAL\s+)?DOCUMENTS)',
-            _ux2,
-        ))
         _has_discrepancies_block = bool(re.search(
             r'\bDISCREPANC(?:Y|IES)\s+(?:NOTED|FOUND|OBSERVED)\b'
             r'|(?:^|\n)\s*DISCREPANCIES?\s*[:\-]?\s*\n',
             _ux2, re.MULTILINE,
         ))
-        if (_has_arrival_header
-            and (_has_received_from or _has_discrepancies_block)):
+        if _has_arrival_header and _has_discrepancies_block:
             try:
                 print(
-                    f"  [P198el arrival-notice] "
+                    f"  [P198el arrival-notice-with-discrepancies] "
                     f"{packet.get('packet_id','?')} "
                     f"({document_type} -> Document Arrival Notice): "
                     f"header={_has_arrival_header}, "
-                    f"received_from={_has_received_from}, "
                     f"discrepancies={_has_discrepancies_block}"
                 )
             except Exception:
