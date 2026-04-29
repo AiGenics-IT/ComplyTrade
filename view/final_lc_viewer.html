@@ -279,45 +279,109 @@ async function loadData() {
     }
 }
 
-function diffLines(oldText, newText) {
-    // Line/clause-level diff. Returns the set of lines present only
-    // in old (removed) and only in new (added). Common lines are
-    // suppressed so the tooltip shows ONLY what actually changed.
+function splitClauses(text) {
+    // Split a multi-clause field (45A/46A/47A/78/79) into numbered
+    // clauses keyed by their number. Recognises forms "1)", "1.", "(1)".
+    // Returns { '1': '...', '2': '...', ... } and also a `_preamble`
+    // for any leading prose before the first numbered clause.
+    const out = {};
+    if (!text) return out;
+    const norm = (text + '').replace(/\r\n/g, '\n').trim();
+    const re = /(?:^|\n)\s*\(?(\d{1,3})[\)\.]\s+([\s\S]*?)(?=(?:\n\s*\(?\d{1,3}[\)\.]\s+)|$)/g;
+    let m;
+    let firstStart = -1;
+    while ((m = re.exec(norm)) !== null) {
+        if (firstStart === -1) firstStart = m.index;
+        const num = m[1];
+        const body = m[2].replace(/\s+/g, ' ').trim();
+        out[num] = body;
+    }
+    if (firstStart > 0) {
+        const preamble = norm.slice(0, firstStart).replace(/\s+/g, ' ').trim();
+        if (preamble) out._preamble = preamble;
+    } else if (firstStart === -1) {
+        const all = norm.replace(/\s+/g, ' ').trim();
+        if (all) out._preamble = all;
+    }
+    return out;
+}
+
+function diffClauses(oldText, newText) {
+    // Try clause-by-clause diff first. Falls back to line-by-line.
+    // Returns { mode: 'clause' | 'line' | 'whole',
+    //          changed: [{n, oldText, newText, status}],
+    //          removed: [...lines], added: [...lines] }
+    const o = splitClauses(oldText);
+    const n = splitClauses(newText);
+    const oKeys = Object.keys(o).filter(k => k !== '_preamble');
+    const nKeys = Object.keys(n).filter(k => k !== '_preamble');
+
+    if (oKeys.length || nKeys.length) {
+        const allKeys = Array.from(new Set([...oKeys, ...nKeys]))
+            .sort((a, b) => parseInt(a) - parseInt(b));
+        const changed = [];
+        for (const k of allKeys) {
+            const ov = o[k] || '';
+            const nv = n[k] || '';
+            if (ov === nv) continue;
+            let status;
+            if (!ov && nv) status = 'added';
+            else if (ov && !nv) status = 'removed';
+            else status = 'modified';
+            changed.push({ n: k, oldText: ov, newText: nv, status });
+        }
+        // Preamble change?
+        if ((o._preamble || '') !== (n._preamble || '')) {
+            changed.unshift({
+                n: 'preamble',
+                oldText: o._preamble || '',
+                newText: n._preamble || '',
+                status: !o._preamble ? 'added' : (!n._preamble ? 'removed' : 'modified'),
+            });
+        }
+        if (changed.length) return { mode: 'clause', changed };
+    }
+
+    // Line-by-line fallback (no recognisable clause numbering)
     const norm = s => (s || '').split(/\r?\n/)
         .map(l => l.replace(/\s+/g, ' ').trim())
         .filter(l => l);
     const oldLines = norm(oldText);
     const newLines = norm(newText);
-    const oldCounts = {}, newCounts = {};
-    for (const l of oldLines) oldCounts[l] = (oldCounts[l] || 0) + 1;
+    const newCounts = {};
     for (const l of newLines) newCounts[l] = (newCounts[l] || 0) + 1;
     const removed = [];
-    const added = [];
-    for (const l of oldLines) {
-        if ((newCounts[l] || 0) <= 0) {
-            removed.push(l);
-        } else {
-            newCounts[l]--;
-        }
-    }
-    // rebuild newCounts from scratch for the second pass
-    for (const k in newCounts) delete newCounts[k];
-    for (const l of newLines) newCounts[l] = (newCounts[l] || 0) + 1;
     for (const l of oldLines) {
         if ((newCounts[l] || 0) > 0) newCounts[l]--;
+        else removed.push(l);
     }
+    const oldCounts = {};
+    for (const l of oldLines) oldCounts[l] = (oldCounts[l] || 0) + 1;
+    const added = [];
     for (const l of newLines) {
-        if ((newCounts[l] || 0) > 0) {
-            added.push(l);
-            newCounts[l]--;
-        }
+        if ((oldCounts[l] || 0) > 0) oldCounts[l]--;
+        else added.push(l);
     }
-    return { removed, added };
+    if (removed.length || added.length) return { mode: 'line', removed, added };
+
+    // Nothing useful at line level — fall back to whole-field
+    return { mode: 'whole' };
+}
+
+function cleanAmendDate(raw) {
+    // Strip 'Date of Amendment\n' label and SWIFT YYMMDD prefix if
+    // present. "Date of Amendment\n251230 2025 Dec 30" -> "30-Dec-2025"
+    if (!raw) return '';
+    let s = String(raw).replace(/^[^\d]*Date\s+of\s+Amendment\s*[:\n]?\s*/i, '');
+    s = s.replace(/^\d{6}\s+/, '');  // drop SWIFT YYMMDD prefix
+    s = s.replace(/\s+/g, ' ').trim();
+    // "2025 Dec 30" -> "30-Dec-2025"
+    const m = s.match(/^(\d{4})\s+([A-Za-z]+)\s+(\d{1,2})$/);
+    if (m) return `${m[3].padStart(2,'0')}-${m[2]}-${m[1]}`;
+    return s;
 }
 
 function buildAmendTooltip(tag) {
-    // Build the tooltip HTML showing only what each amendment changed
-    // (added / removed lines), not the full Before/After content.
     const blocks = [];
     for (const rec of (amendmentLog || [])) {
         const fields = rec.fields_changed || [];
@@ -326,32 +390,56 @@ function buildAmendTooltip(tag) {
         const old_v = det.old !== undefined ? String(det.old) : '';
         const new_v = det.new !== undefined ? String(det.new) : '';
         const num = rec.amendment_number || '?';
-        const dt  = rec.amendment_date || '';
-        const { removed, added } = diffLines(old_v, new_v);
+        const dt  = cleanAmendDate(rec.amendment_date || '');
+        const diff = diffClauses(old_v, new_v);
 
         let block = `<div class="amend-block">`;
         block += `<div class="hd"><b>Amendment #${esc(String(num))}</b>`;
         if (dt) block += ` &middot; ${esc(dt)}`;
         block += `</div>`;
 
-        if (!removed.length && !added.length) {
-            if (!old_v && new_v) {
-                block += `<div class="hd">Added:</div><div class="diff-pane"><div class="new">${esc(new_v)}</div></div>`;
-            } else if (old_v && !new_v) {
-                block += `<div class="hd">Removed:</div><div class="diff-pane"><div class="old">${esc(old_v)}</div></div>`;
-            } else {
-                block += `<div class="hd" style="color:#94a3b8">No textual change (formatting / whitespace only)</div>`;
+        if (diff.mode === 'clause') {
+            for (const c of diff.changed) {
+                const label = (c.n === 'preamble') ? 'Preamble' : `Clause ${c.n}`;
+                if (c.status === 'added') {
+                    block += `<div class="hd">${label} &mdash; Added</div>`;
+                    block += `<div class="diff-pane"><div class="new">${esc(c.newText)}</div></div>`;
+                } else if (c.status === 'removed') {
+                    block += `<div class="hd">${label} &mdash; Removed</div>`;
+                    block += `<div class="diff-pane"><div class="old">${esc(c.oldText)}</div></div>`;
+                } else {
+                    block += `<div class="hd">${label} &mdash; Modified</div>`;
+                    block += `<div class="diff-pane">`;
+                    block += `<div class="old">${esc(c.oldText)}</div>`;
+                    block += `<div class="new">${esc(c.newText)}</div>`;
+                    block += `</div>`;
+                }
+            }
+        } else if (diff.mode === 'line') {
+            if (diff.removed.length) {
+                block += `<div class="hd">Removed</div><div class="diff-pane">`;
+                for (const l of diff.removed) block += `<div class="old">${esc(l)}</div>`;
+                block += `</div>`;
+            }
+            if (diff.added.length) {
+                block += `<div class="hd">Added</div><div class="diff-pane">`;
+                for (const l of diff.added) block += `<div class="new">${esc(l)}</div>`;
+                block += `</div>`;
             }
         } else {
-            if (removed.length) {
-                block += `<div class="hd">Removed:</div><div class="diff-pane">`;
-                for (const l of removed) block += `<div class="old">${esc(l)}</div>`;
-                block += `</div>`;
-            }
-            if (added.length) {
-                block += `<div class="hd">Added:</div><div class="diff-pane">`;
-                for (const l of added) block += `<div class="new">${esc(l)}</div>`;
-                block += `</div>`;
+            // mode === 'whole' — old/new are identical (or both empty)
+            if (!old_v && new_v) {
+                block += `<div class="hd">Added</div><div class="diff-pane"><div class="new">${esc(new_v)}</div></div>`;
+            } else if (old_v && !new_v) {
+                block += `<div class="hd">Removed</div><div class="diff-pane"><div class="old">${esc(old_v)}</div></div>`;
+            } else if (old_v && new_v && old_v === new_v) {
+                // Likely a stale truncated audit record — show full
+                // Before/After so the user sees what was captured.
+                block += `<div class="hd" style="color:#fbbf24">Audit captured identical values (regenerate FLC for fresh diff)</div>`;
+                block += `<div class="hd">Before</div><div class="diff-pane"><div class="old">${esc(old_v)}</div></div>`;
+                block += `<div class="hd">After</div><div class="diff-pane"><div class="new">${esc(new_v)}</div></div>`;
+            } else {
+                block += `<div class="hd" style="color:#94a3b8">No textual change recorded</div>`;
             }
         }
         block += `</div>`;
