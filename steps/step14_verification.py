@@ -2550,6 +2550,60 @@ def _deterministic_verify(
                                 _has_endorsement = True
                                 _endorsement_snippet = _m.group(0)[:140]
                                 break
+                        # P198ei — Compact-match fallback. When the
+                        # consignee field is just "TO ORDER" (blank-
+                        # endorsable) AND the BL document text
+                        # contains "TO (THE) ORDER OF <KEY>" anywhere
+                        # (e.g. on a continuation page that lists the
+                        # bank as ALSO NOTIFY / TO ORDER OF <bank>),
+                        # accept it as the endorsement target. Uses
+                        # whitespace+punctuation-insensitive matching
+                        # so "ALHABIB" matches "AL HABIB" / "AL-HABIB".
+                        if not _has_endorsement:
+                            def _compact_party_local(s):
+                                return re.sub(
+                                    r'[\s\-_.,;:\'"/\\]+', '',
+                                    (s or '').upper())
+                            _key_compact = _compact_party_local(_key)
+                            _dt_compact = _compact_party_local(_dt_u)
+                            if _key_compact and _key_compact in _dt_compact:
+                                # Confirm the key appears AFTER a
+                                # "TO (THE) ORDER OF" / "ENDORSED" /
+                                # "PAY TO" phrase (not just anywhere)
+                                # by walking the compact text. Build
+                                # an index of "endorsement-style
+                                # phrases" present in the compact
+                                # text; if any phrase is followed by
+                                # the compact key within 80 chars,
+                                # accept as endorsement.
+                                _phrase_anchors = (
+                                    'TOTHEORDEROF',
+                                    'TOORDEROF',
+                                    'ENDORSEDTO',
+                                    'ENDORSEDIN',
+                                    'ENDORSEDFOR',
+                                    'PAYTOORDEROF',
+                                    'PAYTOTHEORDEROF',
+                                    'FORANDONBEHALFOF',
+                                    'DELIVERTO',
+                                )
+                                for _ph in _phrase_anchors:
+                                    _i = _dt_compact.find(_ph)
+                                    while _i != -1:
+                                        _j = _dt_compact.find(
+                                            _key_compact,
+                                            _i + len(_ph),
+                                            _i + len(_ph) + 80)
+                                        if _j != -1:
+                                            _has_endorsement = True
+                                            _endorsement_snippet = (
+                                                f"compact-match {_ph} "
+                                                f"... {_key_compact} "
+                                                f"(within 80 chars)")
+                                            break
+                                        _i = _dt_compact.find(_ph, _i + 1)
+                                    if _has_endorsement:
+                                        break
                     if _has_endorsement:
                         return {
                             'verdict': 'PASS',
