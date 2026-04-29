@@ -4302,7 +4302,20 @@ def _call_vlm(
                     # Match if consignee contains target key. Don't require
                     # "TO ORDER" wording — sometimes the LC just says
                     # "consigned to X" without the "to order" phrasing.
-                    if _cons_txt and _target_key and _target_key in _cons_txt:
+                    # P198ed — Bank-name space-insensitive matching.
+                    # LC "BANK ALHABIB" must match BL "BANK AL HABIB"
+                    # / "BANK AL-HABIB". The same goes for "TO ORDER
+                    # OF" vs "TO THE ORDER OF" — both are equivalent
+                    # in LC compliance. Compare by stripping ALL
+                    # whitespace and punctuation, not just collapsing.
+                    def _compact(s):
+                        return re.sub(
+                            r'[\s\-_.,;:\'"/\\]+', '',
+                            (s or '').upper())
+                    _target_compact = _compact(_target_key)
+                    _cons_compact = _compact(_cons_txt)
+                    if (_cons_compact and _target_compact
+                            and _target_compact in _cons_compact):
                         parsed["compliance"] = "pass"
                         parsed["verdict"] = "PASS"
                         parsed["findings"] = (
@@ -4319,12 +4332,11 @@ def _call_vlm(
                         # cleanly but the BL text says "Consignee\n...\nTO
                         # ORDER OF:\nBANK AL HABIB LTD.\nKARACHI".
                         _dt_up = document_text.upper()
-                        _target_key_collapsed = re.sub(r'\s+', ' ', _target_key).strip()
-                        # Normalize document whitespace to one space for search
-                        _dt_flat = re.sub(r'\s+', ' ', _dt_up)
-                        _has_to_order = 'TO ORDER' in _dt_flat
-                        _has_target = _target_key_collapsed in _dt_flat
-                        _has_consignee_header = 'CONSIGNEE' in _dt_flat
+                        _dt_compact = _compact(_dt_up)
+                        _has_to_order = 'TOORDER' in _dt_compact
+                        _has_target = (_target_compact
+                                       and _target_compact in _dt_compact)
+                        _has_consignee_header = 'CONSIGNEE' in _dt_compact
                         if _has_target and (_has_to_order or _has_consignee_header):
                             parsed["compliance"] = "pass"
                             parsed["verdict"] = "PASS"
@@ -8907,14 +8919,52 @@ def run(
                     )
                     # Also try to isolate a date token so any surrounding
                     # commentary is dropped entirely.
+                    # P198ec — Month-name token must be an ACTUAL
+                    # month abbreviation, not any [A-Z]+. Otherwise
+                    # the word "DATED" (in "...PI2504022 DATED
+                    # 2025-04-19") gets matched as a month and the
+                    # token "22 DATED 2025" beats the real ISO
+                    # "2025-04-19" elsewhere in the same string.
+                    # Bare \d{6}/\d{8} patterns also require word
+                    # boundaries so digit runs INSIDE references
+                    # like "PI2504022" don't get parsed as SWIFT
+                    # YYMMDD dates.
+                    _MONTH_NAMES = (
+                        r'(?:JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|'
+                        r'APR(?:IL)?|MAY|JUN(?:E)?|JUL(?:Y)?|'
+                        r'AUG(?:UST)?|SEP(?:T(?:EMBER)?)?|'
+                        r'OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)'
+                    )
                     _DATE_TOKEN_RE = re.compile(
-                        r'(?:[A-Z]+\.?\s*\d{1,2}[,\s]+\d{2,4}|'
-                        r'\d{1,2}[\s\-./]+[A-Z]+\.?[\s\-./]+\d{2,4}|'
+                        r'(?:' + _MONTH_NAMES + r'\.?\s*\d{1,2}[,\s]+\d{2,4}|'
+                        r'\d{1,2}[\s\-./]+' + _MONTH_NAMES + r'\.?[\s\-./]+\d{2,4}|'
                         r'\d{4}[-./]\d{1,2}[-./]\d{1,2}|'
                         r'\d{1,2}[-./]\d{1,2}[-./]\d{2,4}|'
-                        r'\d{6}|\d{8})',
+                        r'\b\d{6}\b|\b\d{8}\b)',
                         flags=re.IGNORECASE,
                     )
+                    # P198ec — Prefer month-name tokens (the most
+                    # reliable form) over bare digit runs / SWIFT
+                    # YYMMDD when picking a single token from
+                    # noisy text.
+                    _MONTH_NAME_TOKEN_RE = re.compile(
+                        r'(?:' + _MONTH_NAMES + r'\.?\s*\d{1,2}[,\s]+\d{2,4}|'
+                        r'\d{1,2}[\s\-./]+' + _MONTH_NAMES + r'\.?[\s\-./]+\d{2,4})',
+                        flags=re.IGNORECASE,
+                    )
+
+                    def _best_date_token(text):
+                        """Find the most reliable date token in noisy
+                        text. Prefer month-name tokens; fall back to
+                        any token. Returns the token string or ''."""
+                        if not text:
+                            return ''
+                        s = str(text).upper()
+                        m = _MONTH_NAME_TOKEN_RE.search(s)
+                        if m:
+                            return m.group(0)
+                        m = _DATE_TOKEN_RE.search(s)
+                        return m.group(0) if m else ''
 
                     def _norm_date_raw(s):
                         s0 = str(s or '').upper()
@@ -8949,19 +8999,19 @@ def run(
                         )
                         if not _ref_match:
                             continue
-                        # P198cn — Re-parse invoice date after stripping
-                        # noise tokens (EACH DATED / DATED / etc.) so
-                        # the parsed-value comparison doesn't fall into
-                        # the raw-fallback path for benign wrappers.
+                        # P198cn / P198ec — Re-parse invoice date.
+                        # Use _best_date_token which prefers month-name
+                        # tokens over bare digit runs that may have
+                        # come from a reference like "PI2504022".
                         if not _inv_date and _inv_date_raw:
-                            _tok = _DATE_TOKEN_RE.search(str(_inv_date_raw).upper())
-                            if _tok:
-                                _inv_date = _pro_parse(_tok.group(0))
+                            _best = _best_date_token(_inv_date_raw)
+                            if _best:
+                                _inv_date = _pro_parse(_best)
                         _lc_pro_date_local = _lc_pro_date
                         if not _lc_pro_date_local and _lc_pro_date_raw:
-                            _tok_lc = _DATE_TOKEN_RE.search(str(_lc_pro_date_raw).upper())
-                            if _tok_lc:
-                                _lc_pro_date_local = _pro_parse(_tok_lc.group(0))
+                            _best_lc = _best_date_token(_lc_pro_date_raw)
+                            if _best_lc:
+                                _lc_pro_date_local = _pro_parse(_best_lc)
                         # Compare dates: first by parsed value (robust),
                         # fall back to raw-string match when parsing
                         # fails or is ambiguous.
