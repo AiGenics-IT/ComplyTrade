@@ -236,6 +236,57 @@ DECISIVE RULES (apply in order):
      "EXPORT DC DOCUMENT PRESENTATION SCHEDULE" with document list + CBC +
      amount + maturity → "Document Remittance" (NOT an LC).
 
+7b. EMAIL COVER NOTES — Forwarder / beneficiary / logistics-company emails
+    travelling with shipment-related attachments (CRITICAL — read carefully):
+
+    A page with email headers (`From: <name@domain>`, `Sent: <date>`,
+    `To:`, `Cc:`, `Subject:`, `Attachments:`) is an EMAIL. Look at WHO
+    sent it and WHAT the body says — do NOT just look at the subject
+    line.
+
+    "COVER NOTE NO." / "COVER NOTE NUMBER" / "OPEN POLICY NO." /
+    "OPEN POLICY NUMBER" appearing in the SUBJECT or body is the
+    INSURANCE COMPANY's reference number for the open-policy
+    cover note covering this shipment. It is NOT the document's
+    title. Do NOT treat it as if the email is a "Cover Note" or
+    "Covering Letter" because that phrase appears in the subject.
+
+    Classify as "Shipment Advice" (NOT "Covering Letter" and NOT
+    "Document Remittance" / "Documentary Remittance") when ALL of:
+      • The page has email-style headers (From / Sent / Subject)
+      • The sender is a forwarder / logistics company / beneficiary
+        (sender title "Logistics Executive" / "Logistics Manager" /
+        "Shipping Coordinator", or domains like @samling.com.my,
+        @globallogistics.com, @TREEONE..., or any beneficiary
+        company domain)
+      • The body OR subject references an LC number AND any of:
+        - "OPEN POLICY NO" / "COVER NOTE NO" reference
+        - "Attached doc for your reference" / "PFA" /
+          "Please find attached"
+        - shipment fields (BL no, vessel, ETA, ETD, ports, value)
+
+    Classify as "Document Remittance" / "Covering Schedule" ONLY
+    when the page carries the BANK-side payment-claim language
+    ("WE ENCLOSE FOR NEGOTIATION/PAYMENT", "TOTAL AMOUNT
+    CLAIMED", "PRESENTATION NUMBER", "L/C ISSUING BANK" used as
+    a structural form field on bank letterhead, "REIMBURSING
+    BANK", "PAYMENT INSTRUCTION"). Without those signals, an
+    email — even one that says "Cover Note No." or comes from a
+    bank — is NOT a Documentary Remittance.
+
+    Examples:
+      • Subject "COVER NOTE NO.2025-12-212-M01001DT00001322" + body
+        "Attached doc for your reference. Thanks! LC Number: ..."
+        from sender "siekml@samling.com.my" with title "Logistics
+        Executive" → "Shipment Advice"
+      • Subject "Insurance Cover Request" + body listing
+        BL/vessel/ports/invoice value with LC reference, sent to
+        the insurance company → "Shipment Advice"
+      • A bank email "We enclose the following documents for
+        negotiation/payment: 3 BL, 8 CI, 2 BoE; Total Amount
+        Claimed USD 33,203.85; Our Reference No: ..." →
+        "Document Remittance"
+
 8. Surveyor / weight / quality reports — USE EXACT TITLE:
    - "WEIGHT / QUALITY CERTIFICATE" → "Weight / Quality Certificate".
    - "QUALITY / ANALYSIS" (only test results, no weight) → "Quality / Analysis"
