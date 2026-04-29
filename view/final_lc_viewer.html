@@ -33,17 +33,19 @@
         .field-value textarea.modified { border-color: #f59e0b; background: #fffbeb; }
         .field-row.amended-row { background: linear-gradient(90deg, #fffbeb, #fef9c3) !important; }
         .field-row.amended-row:hover { background: linear-gradient(90deg, #fef9c3, #fef3c7) !important; }
-        .amended-pill { display: inline-block; font-size: 0.62em; font-weight: 800; padding: 1px 7px; border-radius: 10px; background: #fef3c7; color: #92400e; border: 1px solid #fde68a; letter-spacing: 0.04em; vertical-align: middle; margin-left: 6px; text-transform: uppercase; cursor: help; position: relative; }
-        .amended-pill:hover .amend-tt { display: block; }
-        .amend-tt { display: none; position: absolute; left: 0; top: 100%; margin-top: 4px; z-index: 50; background: #1e293b; color: #f1f5f9; border: 1px solid #475569; border-radius: 8px; padding: 14px 16px; min-width: 460px; max-width: 720px; max-height: 540px; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.25); font-size: 14px; font-weight: 500; letter-spacing: 0; text-transform: none; line-height: 1.55; text-align: left; white-space: normal; cursor: text; }
-        .amend-tt h4 { margin: 0 0 8px 0; font-size: 15px; color: #fbbf24; font-weight: 700; }
-        .amend-tt .amend-block { padding: 10px 0; border-top: 1px solid #334155; }
-        .amend-tt .amend-block:first-of-type { border-top: 0; padding-top: 0; }
-        .amend-tt .amend-block .hd { color: #cbd5e1; font-size: 13px; font-weight: 600; margin: 6px 0 4px 0; }
-        .amend-tt .amend-block .hd b { color: #fbbf24; }
-        .amend-tt .amend-block .diff-pane { max-height: 200px; overflow-y: auto; padding: 4px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; }
-        .amend-tt .amend-block .old { color: #fca5a5; font-family: 'Fira Code', Consolas, monospace; font-size: 13px; padding: 5px 9px; background: #422; border-left: 3px solid #f87171; border-radius: 3px; margin: 3px 0; word-break: break-word; white-space: pre-wrap; }
-        .amend-tt .amend-block .new { color: #86efac; font-family: 'Fira Code', Consolas, monospace; font-size: 13px; padding: 5px 9px; background: #122; border-left: 3px solid #22c55e; border-radius: 3px; margin: 3px 0; word-break: break-word; white-space: pre-wrap; }
+        .amended-pill { display: inline-block; font-size: 0.62em; font-weight: 800; padding: 1px 7px; border-radius: 10px; background: #fef3c7; color: #92400e; border: 1px solid #fde68a; letter-spacing: 0.04em; vertical-align: middle; margin-left: 6px; text-transform: uppercase; cursor: help; }
+        .amended-pill .amend-tt { display: none; }   /* never inline-render */
+        #globalAmendTt { display: none; position: fixed; z-index: 9999; background: #1e293b; color: #f1f5f9; border: 1px solid #475569; border-radius: 8px; padding: 14px 16px; min-width: 460px; max-width: 720px; max-height: 540px; overflow-y: auto; overscroll-behavior: contain; box-shadow: 0 10px 25px rgba(0,0,0,0.4); font-size: 14px; font-weight: 500; letter-spacing: 0; text-transform: none; line-height: 1.55; text-align: left; white-space: normal; cursor: text; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        #globalAmendTt.show { display: block; }
+        #globalAmendTt h4 { margin: 0 0 8px 0; font-size: 15px; color: #fbbf24; font-weight: 700; }
+        #globalAmendTt .amend-block { padding: 10px 0; border-top: 1px solid #334155; }
+        #globalAmendTt .amend-block:first-of-type { border-top: 0; padding-top: 0; }
+        #globalAmendTt .amend-block .hd { color: #cbd5e1; font-size: 13px; font-weight: 600; margin: 6px 0 4px 0; }
+        #globalAmendTt .amend-block .hd b { color: #fbbf24; }
+        #globalAmendTt .amend-block .ops-line { color: #fbbf24; font-size: 13px; font-weight: 600; margin: 4px 0 6px 0; padding: 6px 10px; background: #422f00; border-radius: 4px; border-left: 3px solid #f59e0b; }
+        #globalAmendTt .amend-block .diff-pane { max-height: 200px; overflow-y: auto; overscroll-behavior: contain; padding: 4px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; }
+        #globalAmendTt .amend-block .old { color: #fca5a5; font-family: 'Fira Code', Consolas, monospace; font-size: 13px; padding: 5px 9px; background: #422; border-left: 3px solid #f87171; border-radius: 3px; margin: 3px 0; word-break: break-word; white-space: pre-wrap; }
+        #globalAmendTt .amend-block .new { color: #86efac; font-family: 'Fira Code', Consolas, monospace; font-size: 13px; padding: 5px 9px; background: #122; border-left: 3px solid #22c55e; border-radius: 3px; margin: 3px 0; word-break: break-word; white-space: pre-wrap; }
         .clause-row.amended-clause { background: linear-gradient(90deg, #fffbeb, #fef9c3) !important; border-left: 3px solid #f59e0b; }
         .clause-row { padding: 12px 20px; border-bottom: 1px solid #e2e8f0; display: flex; gap: 12px; }
         .clause-row:nth-child(even) { background: #f8fafc; }
@@ -80,6 +82,7 @@
     </style>
 </head>
 <body>
+    <div id="globalAmendTt"></div>
     <div class="header">
         <div>
             <img src="/logo.png" alt="AiGenics" style="height:35px;margin-right:15px;vertical-align:middle;">
@@ -398,6 +401,16 @@ function buildAmendTooltip(tag) {
         if (dt) block += ` &middot; ${esc(dt)}`;
         block += `</div>`;
 
+        // SWIFT operation tokens (DELETE / ADD / REPLACE / REPALL)
+        const ops = det.ops || [];
+        if (ops.length) {
+            const opsText = ops.map(o => {
+                const verb = (o.op || '').toUpperCase();
+                return o.target ? `${verb} ${o.target}` : verb;
+            }).join(' &middot; ');
+            block += `<div class="ops-line">Operations: ${opsText}</div>`;
+        }
+
         if (diff.mode === 'clause') {
             for (const c of diff.changed) {
                 const label = (c.n === 'preamble') ? 'Preamble' : `Clause ${c.n}`;
@@ -450,6 +463,48 @@ function buildAmendTooltip(tag) {
     }
     return `<div class="amend-tt"><h4>Amendment History &mdash; Field ${esc(tag)}</h4>${blocks.join('')}</div>`;
 }
+
+// Portal-rendered tooltip — escapes any clipping ancestor
+// (e.g. .section { overflow: hidden }) by living at body level.
+let _ttHideTimer = null;
+document.addEventListener('mouseover', (e) => {
+    const pill = e.target.closest('.amended-pill');
+    const inGtt = e.target.closest('#globalAmendTt');
+    if (pill) {
+        clearTimeout(_ttHideTimer);
+        const inner = pill.querySelector('.amend-tt');
+        const gtt = document.getElementById('globalAmendTt');
+        if (!inner || !gtt) return;
+        gtt.innerHTML = inner.innerHTML;
+        const r = pill.getBoundingClientRect();
+        // Position below the pill, clamp to viewport.
+        const ttW = 720, ttH = 540;
+        let left = Math.max(8, r.left);
+        if (left + ttW > window.innerWidth - 8)
+            left = Math.max(8, window.innerWidth - ttW - 8);
+        let top = r.bottom + 4;
+        if (top + ttH > window.innerHeight - 8)
+            top = Math.max(8, r.top - ttH - 4);
+        gtt.style.left = left + 'px';
+        gtt.style.top = top + 'px';
+        gtt.classList.add('show');
+    } else if (inGtt) {
+        clearTimeout(_ttHideTimer);
+    }
+});
+document.addEventListener('mouseout', (e) => {
+    const pill = e.target.closest('.amended-pill');
+    const inGtt = e.target.closest('#globalAmendTt');
+    if (!pill && !inGtt) return;
+    // Only hide if the relatedTarget is neither pill nor tooltip
+    const to = e.relatedTarget;
+    if (to && (to.closest('.amended-pill') || to.closest('#globalAmendTt'))) return;
+    clearTimeout(_ttHideTimer);
+    _ttHideTimer = setTimeout(() => {
+        const gtt = document.getElementById('globalAmendTt');
+        if (gtt) gtt.classList.remove('show');
+    }, 180);
+});
 
 function renderLC(fields, clauses) {
     let html = '';

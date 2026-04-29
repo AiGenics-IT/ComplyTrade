@@ -635,6 +635,85 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
 
 # == Amendment text operations ================================================
 
+def _extract_swift_ops(amd_text: str) -> list:
+    """P198du — Parse SWIFT amendment operation tokens out of an
+    amendment value so the audit log can carry an explicit list of
+    what each amendment did. Surfaces tokens like /DELETE/, /ADD/,
+    /REPALL/, /DEL/ together with the target clause numbers when
+    present (e.g. 'CLAUSE 6', 'CLAUSE NO. 7'). The tooltip in the
+    final-LC viewer reads these and shows e.g. 'DELETE Clause 6'."""
+    ops = []
+    if not amd_text:
+        return ops
+    t = str(amd_text)
+    # Normalize fancy quotes
+    t = (t.replace('‘', "'").replace('’', "'")
+          .replace('“', '"').replace('”', '"')
+          .replace("''", '"'))
+
+    def _clause_targets(scope: str):
+        return [m.group(1) for m in
+                re.finditer(r'CLAUSE\s+(?:NO\.?\s+)?(\d+)',
+                             scope, re.IGNORECASE)]
+
+    # /DELETE/ or /DEL/ — typically followed by CLAUSE N or
+    # 'PLEASE READ WORDS IN FIELD ... AS DELETED'
+    for m in re.finditer(r'/DEL(?:ETE)?/([^/]*?)(?=/[A-Z]+/|$)',
+                          t, re.IGNORECASE | re.DOTALL):
+        scope = m.group(1) or ''
+        targets = _clause_targets(scope)
+        if targets:
+            for tgt in targets:
+                ops.append({'op': 'DELETE', 'target': f'Clause {tgt}'})
+        else:
+            # Try to capture a quoted phrase to delete
+            qm = re.search(r"['\"]([^'\"]+)['\"]\s*AS\s+DELETED",
+                           scope, re.IGNORECASE)
+            if qm:
+                ops.append({'op': 'DELETE',
+                            'target': f"Words: {qm.group(1).strip()}"})
+            else:
+                ops.append({'op': 'DELETE'})
+
+    # /ADD/ — typically followed by CLAUSE N or new clause text
+    for m in re.finditer(r'/ADD/([^/]*?)(?=/[A-Z]+/|$)',
+                          t, re.IGNORECASE | re.DOTALL):
+        scope = m.group(1) or ''
+        targets = _clause_targets(scope)
+        if targets:
+            for tgt in targets:
+                ops.append({'op': 'ADD', 'target': f'Clause {tgt}'})
+        else:
+            ops.append({'op': 'ADD'})
+
+    # /REPALL/ — full-field replacement
+    if re.search(r'/REPALL/', t, re.IGNORECASE):
+        ops.append({'op': 'REPLACE-ALL'})
+
+    # "TO READ AS '<new>' INSTEAD OF '<old>'" — narrative-form replacement
+    for m in re.finditer(
+        r'(?:CLAUSE\s+(?:NO\.?\s+)?(\d+)\s+)?'
+        r'TO\s+READ\s+AS\s*[\'"]([^\'"]+)[\'"]'
+        r'(?:\s*(?:I/?O|INSTEAD\s+OF)\s*[\'"]([^\'"]+)[\'"])?',
+        t, re.IGNORECASE | re.DOTALL):
+        cl = m.group(1)
+        ops.append({
+            'op': 'REPLACE',
+            'target': f'Clause {cl}' if cl else None,
+        })
+
+    # De-dupe while preserving order
+    seen = set()
+    out = []
+    for o in ops:
+        key = (o.get('op'), o.get('target'))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(o)
+    return out
+
+
 def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
     """
     Apply amendment operations to base field text.
@@ -1525,7 +1604,12 @@ def _apply_amendment(
             base_fields[actual_tag] = new_val
             if old_val != new_val:
                 record.fields_changed.append(actual_tag)
-                record.change_details[actual_tag] = {'old': old_val, 'new': new_val, 'operation': 'text_amendment'}
+                record.change_details[actual_tag] = {
+                    'old': old_val,
+                    'new': new_val,
+                    'operation': 'text_amendment',
+                    'ops': _extract_swift_ops(amd_val),
+                }
         else:
             # Strip common field labels that bleed into values
             clean_val = re.sub(
