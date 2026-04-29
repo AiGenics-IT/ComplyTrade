@@ -2668,18 +2668,56 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     # ── Step 0a: Detect "Page X of Y" on each page for Fusion grouping ──
     # P198dh — also accept slash form "Page X/Y" (common on
     # surveyor / inspection certificate footers, e.g. "Page 1/4",
-    # "Page 2/4"). Without this, multi-page docs whose footer uses
-    # the slash form silently break apart at page 4 (the system
-    # only saw "Page X of Y" wording).
+    # "Page 2/4").
+    # P198ef — also accept BARE pagination footers without the
+    # "Page" prefix: "1 of 2" / "2 of 2" / "1/2" appearing on
+    # their own line near the end of the page. Carrier-issued BLs
+    # (PIL, Maersk, MSC, etc.) commonly print a bare "1 of 2" /
+    # "2 of 2" footer; without this, the BL splits into two
+    # separate packets and the F46A notify-party check fails on
+    # one half ("notify is BANK only / Applicant only") even when
+    # the BL physically has both parties.
     _page_of_total = {}  # page_number -> (x, y) where "Page X of Y"
     _PAGE_XY_RE = re.compile(
         r'Page\s+(\d+)\s*(?:of|/)\s*(\d+)',
         re.IGNORECASE,
     )
-    for pg_num, _, text in all_page_data:
-        m = _PAGE_XY_RE.search(text or '')
+    # Bare footer form: anchored to a line end, X/Y both small
+    # numbers (1-99), Y >= X, NOT preceded by an alphanumeric
+    # word (so "1 of 2 boxes" / "13/02/2026" don't match).
+    _BARE_XY_RE = re.compile(
+        r'(?:^|\n)\s*(\d{1,2})\s+of\s+(\d{1,2})\s*(?=\n|$)',
+        re.IGNORECASE | re.MULTILINE,
+    )
+    _BARE_XY_SLASH_RE = re.compile(
+        r'(?:^|\n)\s*(\d{1,2})\s*/\s*(\d{1,2})\s*(?=\n|$)',
+        re.MULTILINE,
+    )
+
+    def _detect_page_xy(text):
+        """Return (X, Y) if a 'Page X of Y' / bare 'X of Y' / 'X/Y'
+        pagination footer is present, else None."""
+        if not text:
+            return None
+        # Primary: "Page X of Y" / "Page X/Y" anywhere
+        m = _PAGE_XY_RE.search(text)
         if m:
-            _page_of_total[pg_num] = (int(m.group(1)), int(m.group(2)))
+            return int(m.group(1)), int(m.group(2))
+        # Fallback: scan only the LAST 400 chars of the page for a
+        # bare footer pattern. This avoids false matches in body
+        # prose like "1 of 2 boxes contain..." or date strings.
+        tail = text[-400:]
+        for _re in (_BARE_XY_RE, _BARE_XY_SLASH_RE):
+            for _m in _re.finditer(tail):
+                _x, _y = int(_m.group(1)), int(_m.group(2))
+                if 1 <= _x <= _y <= 99:
+                    return _x, _y
+        return None
+
+    for pg_num, _, text in all_page_data:
+        result = _detect_page_xy(text or '')
+        if result:
+            _page_of_total[pg_num] = result
 
     # ── Step 0a-bis: BAHL multi-message report detection ──
     # BAHL (Bank Al Habib) PDFs bundle multiple SWIFT messages (MT700, MT707,
