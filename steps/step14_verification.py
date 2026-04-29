@@ -2579,7 +2579,18 @@ def _deterministic_verify(
                     }
 
                 # Consignee names a party. Does it contain the target key?
-                if _key in _cons_clean:
+                # P198ee — Compare after stripping ALL whitespace and
+                # punctuation so "BANK ALHABIB" / "BANK AL HABIB" /
+                # "BANK AL-HABIB" all collapse to the same compact
+                # form. Substring match on the compact form (not the
+                # raw form) is the bank-grade rule for this check.
+                def _compact_party(s):
+                    return re.sub(
+                        r'[\s\-_.,;:\'"/\\]+', '',
+                        (s or '').upper())
+                _key_compact = _compact_party(_key)
+                _cons_compact = _compact_party(_cons_clean)
+                if _key_compact and _key_compact in _cons_compact:
                     return {
                         'verdict': 'PASS',
                         'quote': f"consignee = {_cons_txt[:200]}",
