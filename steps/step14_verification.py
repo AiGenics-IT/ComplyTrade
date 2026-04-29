@@ -7416,17 +7416,69 @@ def run(
             _nm = re.search(r'NOTIFY\s+PARTY[:\s]*(.*?)(?:PRE[\-\s]CARRIAGE|OCEAN\s+VESSEL|PORT\s+OF|PLACE\s+OF|\Z)', _doc_up, re.DOTALL)
             if _nm:
                 _notify_section = _nm.group(1)
-            # Get issuing bank name
-            _lc_pf = step06_result.get('final_lc', step06_result).get('consolidated_fields', step06_result.get('consolidated_fields', {}))
-            _ib = str(_lc_pf.get('52A', _lc_pf.get('51A', _lc_pf.get('42D', '')))).split('\n')[0].strip()
-            if _ib and _notify_section:
-                _ib_keywords = [w for w in _ib.upper().split() if len(w) >= 3 and w not in ('THE', 'AND', 'LTD', 'LIMITED')]
-                _found = sum(1 for w in _ib_keywords if w in _notify_section)
-                if _ib_keywords and _found < len(_ib_keywords) * 0.5:
-                    _set(row, "compliance", "FAIL")
-                    _set(row, "result", f"Notify party does not show issuing bank '{_ib[:40]}'")
-                    _set(row, "findings", f"BL notify party does not include '{_ib[:40]}'")
-                    _progress(f"  {row_id}: PASS->FAIL (issuing bank not in notify party)")
+            # P198ez — Combine ALL issuing-bank fields (52A/52D/51A/51D/
+            # 42A/42D) and use ALL their lines as keyword candidates,
+            # not just the first line. F52A in MT700 is typically just
+            # the BIC ("UNILPKKA") on line 1 followed by the bank's
+            # human-readable name on line 2 ("UNITED BANK LIMITED")
+            # and city on line 3 ("KARACHI PK"). Bills of Lading print
+            # the human-readable name in the notify-party box, NOT the
+            # SWIFT BIC. Matching only against the BIC produced false
+            # FAILs even when the BL clearly named the issuing bank.
+            _lc_pf = step06_result.get('final_lc', step06_result).get(
+                'consolidated_fields', step06_result.get('consolidated_fields', {}))
+            _ib_blob_parts = []
+            for _bf in ('52A', '52D', '51A', '51D', '42A', '42D'):
+                _v = _lc_pf.get(_bf, '')
+                if isinstance(_v, dict):
+                    _v = _v.get('value', '') or _v.get('text', '')
+                if isinstance(_v, list):
+                    _v = ' '.join(str(x) for x in _v)
+                if _v:
+                    _ib_blob_parts.append(str(_v))
+            _ib_blob = '\n'.join(_ib_blob_parts).upper()
+            _ib_first = _ib_blob.split('\n', 1)[0].strip() if _ib_blob else ''
+            if _ib_blob and _notify_section:
+                # P198ez — Build the search corpus. Start with the
+                # strict NOTIFY-PARTY section, but EXTEND to the whole
+                # document when the notify box says "SEE ATTACHED
+                # RIDER" / "AS PER ATTACHED" / similar — the actual
+                # notify info is on the rider page (which is now part
+                # of the same packet thanks to P198eu's BL+Attached-
+                # List merge). Also extend when the strict section is
+                # too short (< 80 chars) to carry a real bank entry.
+                _ns_norm = re.sub(r'\s+', ' ', _notify_section).strip()
+                _ns_redirect = bool(re.search(
+                    r'(?:SEE|AS\s+PER|REFER\s+TO)\s+(?:THE\s+)?'
+                    r'(?:ATTACHED|ATTACH(?:ED)?\s+RIDER|RIDER|ATTACHED\s+LIST|'
+                    r'ATTACHMENT|ANNEX(?:URE)?|SCHEDULE|SHEET|'
+                    r'SPECIFICATION)',
+                    _ns_norm, re.IGNORECASE))
+                _search_corpus = (
+                    _doc_up if (_ns_redirect or len(_ns_norm) < 80)
+                    else _notify_section
+                )
+                # BIC (8 or 11-char SWIFT code) — instant pass if literal
+                # appears anywhere in the corpus.
+                _bic_m = re.search(r'\b([A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b', _ib_first)
+                _bic = _bic_m.group(1) if _bic_m else ''
+                if _bic and _bic in _search_corpus:
+                    pass  # BIC literal present → PASS
+                else:
+                    _ib_keywords = [
+                        w for w in re.findall(r'[A-Z][A-Z\-]{2,}', _ib_blob)
+                        if len(w) >= 3
+                        and w not in ('THE', 'AND', 'LTD', 'LIMITED', 'PVT',
+                                       'PRIVATE', 'BANK', 'CO', 'COMPANY',
+                                       'KARACHI', 'PK', 'PAKISTAN')
+                    ]
+                    if _ib_keywords:
+                        _found = sum(1 for w in _ib_keywords if w in _search_corpus)
+                        if _found < max(1, len(_ib_keywords) * 0.4):
+                            _set(row, "compliance", "FAIL")
+                            _set(row, "result", f"Notify party does not show issuing bank '{_ib_first[:40]}'")
+                            _set(row, "findings", f"BL notify party does not include '{_ib_first[:40]}'")
+                            _progress(f"  {row_id}: PASS->FAIL (issuing bank not in notify party)")
 
     # NOTE: Section 5c3 (hard-coded FAIL->PASS overrides for specific evidence
     # patterns — Bunge name change, Pacific NW agent-for-master, "SEE OVERLEAF"
@@ -10501,6 +10553,27 @@ def run(
                 "sailing / departure date is NOT the ETA.",
             ),
         ]
+        # P198ew — Build a set-level "SCC corpus" by concatenating the
+        # text of EVERY Shipping Company Certificate packet in the
+        # submission. The LC requirement "SCC must state X" is
+        # satisfied when ANY SCC in the bundle carries X (multiple
+        # SCCs are common in a multi-BL shipment — one per BL — and
+        # not every copy needs to be checked individually). Without
+        # this, a misclassified packet that lacks the text causes a
+        # false FAIL even though a sibling SCC carries the correct
+        # statement.
+        _scc_corpus_up = ""
+        try:
+            for _t in vlm_tasks:
+                _t_dt = (_t.get("document_type") or '').lower()
+                if 'shipping company' not in _t_dt:
+                    continue
+                _t_text = (_t.get("document_text") or "")
+                if _t_text:
+                    _scc_corpus_up += "\n" + _t_text.upper()
+        except Exception:
+            _scc_corpus_up = ""
+
         for task in vlm_tasks:
             row = task["row"]
             _row_id = task.get("row_id", "?")
@@ -10519,10 +10592,29 @@ def run(
                     if not cond_re.search(_cond):
                         continue
                     if doc_re.search(_doc_text_up):
-                        # Literal evidence is on the doc — keep PASS.
+                        # Literal evidence is on THIS doc — keep PASS.
                         continue
-                    # Condition demands this content but document
-                    # doesn't carry it — force FAIL. The LLM
+                    # P198ew — fall back to the corpus check before
+                    # demoting. If ANOTHER SCC in the bundle carries
+                    # the required statement, the LC requirement is
+                    # satisfied at the document-set level. Keep PASS
+                    # and annotate so the audit trail is clear.
+                    if _scc_corpus_up and doc_re.search(_scc_corpus_up):
+                        _existing_notes = _get(row, "verification_notes", "")
+                        _ann = (
+                            f"P198ew set-level SCC: '{label}' is on "
+                            f"another SCC in the bundle — keeping PASS"
+                        )
+                        _set(row, "verification_notes",
+                             (_existing_notes + "; " + _ann).strip("; ")
+                             if _existing_notes else _ann)
+                        _progress(
+                            f"  [P198cz SCC-strict] {_row_id}: "
+                            f"PASS retained ({label} satisfied by sibling SCC)"
+                        )
+                        continue
+                    # Condition demands this content but NO SCC in the
+                    # bundle carries it — force FAIL. The LLM
                     # hallucinated PASS without literal evidence.
                     _msg = (
                         f"Shipping Company Certificate does not "

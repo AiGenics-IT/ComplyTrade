@@ -944,8 +944,15 @@ def _hybrid_date_check(check_id: str, clause_ref: str, lc_date_str: str,
 
 
 def _hybrid_amount_check(lc_amount: float, lc_currency: str, tol_plus: float, tol_minus: float,
-                          pkt: Dict, check_id: str, check_type: str, inv_amounts_str: str) -> CheckResult:
-    """VLM extracts amount, Python compares."""
+                          pkt: Dict, check_id: str, check_type: str, inv_amounts_str: str,
+                          advance_info: Dict = None) -> CheckResult:
+    """VLM extracts amount, Python compares.
+
+    advance_info — when provided, signals that the LC has a split-payment
+    structure (e.g. 80% advance + 20% on documents). The cover_vs_invoice
+    and draft_vs_invoice checks then compare against the NET amount (the
+    portion claimed against documents), not the full invoice total.
+    """
     doc_type = pkt.get('document_type', 'Unknown')
     doc_text = _get_doc_text(pkt)
     image_path = (pkt.get('page_image_paths', [None]) or [None])[0]
@@ -1150,6 +1157,37 @@ def _hybrid_amount_check(lc_amount: float, lc_currency: str, tol_plus: float, to
         # Compare draft to invoice total — NOT LC amount
         inv_total = _parse_amount(inv_amounts_str)
 
+        # P198et — Split-payment LC. The Draft is drawn for the NET
+        # portion only (e.g. 20% of LC), NOT the invoice total. The
+        # invoice carries 100% of the LC value with a "LESS X% advance"
+        # deduction line and a "Net Payable" = net amount that matches
+        # the draft. Use the expected_net from advance_info as the
+        # comparison anchor in this scenario.
+        if advance_info and advance_info.get('is_advance_split'):
+            _exp_net = advance_info.get('expected_net') or 0.0
+            _ccy = advance_info.get('currency') or lc_currency
+            _apc = advance_info.get('advance_pct')
+            _npc = advance_info.get('net_pct')
+            _tol = max(0.50, _exp_net * 0.005)  # 0.5% or 50 cents
+            if _exp_net > 0 and abs(doc_amount - _exp_net) <= _tol:
+                return CheckResult(check_id=check_id, clause_ref="F46A",
+                    condition=f"Draft drawn for net portion ({_npc}% of LC) under split-payment terms",
+                    document_checked=doc_type,
+                    findings=f"Draft: {_ccy} {doc_amount:,.2f}",
+                    result=(f"Draft {_ccy} {doc_amount:,.2f} = NET {_npc}% "
+                            f"of LC ({_apc}% paid via advance SWIFT). "
+                            f"Expected: {_ccy} {_exp_net:,.2f} -- matches."),
+                    compliance="PASS", severity="hard")
+            elif _exp_net > 0:
+                return CheckResult(check_id=check_id, clause_ref="F46A",
+                    condition=f"Draft drawn for net portion ({_npc}% of LC) under split-payment terms",
+                    document_checked=doc_type,
+                    findings=f"Draft: {_ccy} {doc_amount:,.2f} vs expected NET {_ccy} {_exp_net:,.2f}",
+                    result=(f"Draft amount {_ccy} {doc_amount:,.2f} does not match "
+                            f"expected NET {_npc}% of LC = {_ccy} {_exp_net:,.2f} "
+                            f"(advance {_apc}% paid via SWIFT)."),
+                    compliance="FAIL", severity="hard")
+
         # P187 — Tenor-duplicate correction. When a Draft / Bill of
         # Exchange page carries BOTH "First of Exchange" and "Second of
         # Exchange" for the same underlying draft, the summariser
@@ -1218,6 +1256,39 @@ def _hybrid_amount_check(lc_amount: float, lc_currency: str, tol_plus: float, to
 
     elif check_type == 'cover_vs_invoice':
         inv_total = _parse_amount(inv_amounts_str)
+
+        # P198et — Split-payment LC. The Negotiating Bank Covering
+        # Schedule (Documentary Remittance) shows the NET claiming
+        # amount (e.g. 20% of LC), not the full invoice total. The
+        # bank only claims what wasn't already paid via the advance
+        # SWIFT. Comparing cover to invoice total in this scenario
+        # is BY DESIGN a mismatch — not a discrepancy.
+        if advance_info and advance_info.get('is_advance_split'):
+            _exp_net = advance_info.get('expected_net') or 0.0
+            _ccy = advance_info.get('currency') or lc_currency
+            _apc = advance_info.get('advance_pct')
+            _npc = advance_info.get('net_pct')
+            _tol = max(0.50, _exp_net * 0.005)
+            if _exp_net > 0 and abs(doc_amount - _exp_net) <= _tol:
+                return CheckResult(check_id=check_id, clause_ref="F46A",
+                    condition=f"Cover schedule shows net claiming amount ({_npc}% of LC)",
+                    document_checked=doc_type,
+                    findings=f"Cover: {_ccy} {doc_amount:,.2f}",
+                    result=(f"Cover {_ccy} {doc_amount:,.2f} = NET {_npc}% "
+                            f"claiming amount under split-payment terms "
+                            f"({_apc}% advance paid via SWIFT). "
+                            f"Expected: {_ccy} {_exp_net:,.2f} -- matches."),
+                    compliance="PASS", severity="soft")
+            elif _exp_net > 0:
+                return CheckResult(check_id=check_id, clause_ref="F46A",
+                    condition=f"Cover schedule should show net claiming amount ({_npc}% of LC)",
+                    document_checked=doc_type,
+                    findings=f"Cover: {_ccy} {doc_amount:,.2f} vs expected NET {_ccy} {_exp_net:,.2f}",
+                    result=(f"Cover schedule shows {_ccy} {doc_amount:,.2f} but "
+                            f"expected NET {_npc}% of LC = {_ccy} {_exp_net:,.2f} "
+                            f"under the F46A advance-payment terms."),
+                    compliance="FAIL", severity="soft")
+
         if inv_total and abs(doc_amount - inv_total) <= 0.01:
             return CheckResult(check_id=check_id, clause_ref="F32B",
                 condition="Cover schedule must match invoice total", document_checked=doc_type,
@@ -2220,6 +2291,24 @@ def run(
                 tol_plus = max(tol_plus, 10.0)
                 tol_minus = max(tol_minus, 10.0)
 
+            # P198et — Detect split-payment LC. Built once and threaded
+            # into every _hybrid_amount_check below.
+            _advance_info = None
+            try:
+                from steps.step14_verification import _detect_advance_payment_terms
+                _advance_info = _detect_advance_payment_terms(
+                    {'consolidated_fields': lc_fields})
+                if _advance_info:
+                    progress_fn(
+                        f"  [amount_currency] split-payment LC detected: "
+                        f"{_advance_info['advance_pct']}% advance + "
+                        f"{_advance_info['net_pct']}% net = "
+                        f"{_advance_info.get('currency','')} "
+                        f"{_advance_info['expected_net']:,.2f} expected "
+                        f"on cover/draft")
+            except Exception:
+                _advance_info = None
+
             if lc_amount:
                 # P69: Helper — run the amount check across all matched
                 # packets of a given doc-class, but emit ONLY ONE row to
@@ -2243,6 +2332,7 @@ def run(
                         _r = _hybrid_amount_check(
                             lc_amount, lc_currency, tol_plus, tol_minus, _p,
                             'amount_currency', check_type, _inv_amounts_str_local,
+                            advance_info=_advance_info,
                         )
                         _rk = _rank.get(str(_r.compliance).upper(), 3)
                         if _rk < _best_rank:

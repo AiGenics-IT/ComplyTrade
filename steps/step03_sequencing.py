@@ -2726,7 +2726,26 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     # "Message Details #N" headers with its own "Identifier: fin.XXX".
     # If we detect this format, we split by message boundary instead of
     # "Page X of Y" grouping (which would lump all 43 pages as one MT799).
-    _BAHL_MSG_DETAIL_RE = re.compile(r'Message\s+Details\s+#\s*(\d+)', re.IGNORECASE)
+    # P198ey — BAHL Alliance reports use TWO header styles in the same
+    # PDF:
+    #   • Output messages (received MT999/MT799 advices, etc.) print
+    #     "Message Details #<N>" — caught by the original regex.
+    #   • Input messages (the OUTGOING LC / Amendment that the bank
+    #     itself sent — MT700/MT707) print just "Message <N>"
+    #     followed immediately by "Message Identifier" on the next
+    #     line. No "Details #" in the header.
+    # Without recognising both styles, the LC pages of a mixed report
+    # don't get a "Message #N" boundary and collapse into the previous
+    # MT999 group. The combined regex below matches both — the
+    # alternation requires "Message" followed by either "Details #N"
+    # OR a bare "<N>" with "Message Identifier" close behind (so a
+    # random "Message Text" / "Message Header" subheading inside a
+    # message body does NOT trigger a false split).
+    _BAHL_MSG_DETAIL_RE = re.compile(
+        r'Message\s+Details\s+#\s*(\d+)|'
+        r'Message\s+(\d{2,})\s*\n\s*Message\s+Identifier',
+        re.IGNORECASE,
+    )
     _BAHL_IDENTIFIER_RE = re.compile(r'Identifier\s*:\s*fin\.(\d{3})', re.IGNORECASE)
     _BAHL_FIN_TO_MT = {
         '700': 'LC', '701': 'LC', '705': 'LC',
@@ -2747,7 +2766,10 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         if not text:
             continue
         for m in _BAHL_MSG_DETAIL_RE.finditer(text):
-            msg_num = int(m.group(1))
+            # P198ey — alternation: group(1) = "Message Details #N" form,
+            # group(2) = "Message <N>\nMessage Identifier" form.
+            _raw = m.group(1) or m.group(2)
+            msg_num = int(_raw)
             if pg_num not in _msg_detail_pages:
                 _msg_detail_pages[pg_num] = []
             _msg_detail_pages[pg_num].append(msg_num)
@@ -2839,13 +2861,18 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                 page_text = text or ''
                 _id_m = _BAHL_IDENTIFIER_RE.search(page_text)
                 page_fin = _id_m.group(1) if _id_m else ''
-                _start_new = (
-                    current_group_id is None
-                    or msg_num_in_report == 1  # report restart
-                    or (page_fin and current_group_id is not None and
-                        _bahl_messages.get(current_group_id, {}).get('fin')
-                        and page_fin != _bahl_messages[current_group_id]['fin'])
-                )
+                # P198ex — EVERY "Message Details #N" header starts a
+                # NEW group. Earlier logic kept consecutive messages
+                # grouped together when they shared the same fin (e.g.
+                # two separate MT999 advices each with its own
+                # "Message Details" header in one Alliance report)
+                # because the gate required a fin difference. That
+                # caused MT999/MT999/MT700/MT799 reports to collapse
+                # into MT999 (pages 1..7) + MT799 (8..9), masking the
+                # MT700 split entirely. Each occurrence = its own
+                # message, period — the fin and N are still recorded
+                # for downstream classification.
+                _start_new = True
                 if _start_new:
                     next_group_id += 1
                     _bahl_messages[next_group_id] = {
