@@ -134,7 +134,8 @@ def dr_guard_classify(initial_doc_type, glm_text):
                 or (_swift and _signal_count >= 1)
             )
         if not _is_real_dr:
-            document_type = 'Covering Letter'
+            # P198dy — email cover notes go to "Shipment Advice"
+            document_type = 'Shipment Advice' if _is_email else 'Covering Letter'
 
     return document_type
 
@@ -195,9 +196,10 @@ def main():
         (24, 'Packing List',           'Packing List'),            # untouched
         (26, 'Shipment Advice',        'Shipment Advice'),         # untouched
         # The two emails — step03 canonicalised them to "Document
-        # Remittance" / "Documentary Remittance"; the guard demotes.
-        (27, 'Documentary Remittance', 'Covering Letter'),
-        (29, 'Documentary Remittance', 'Covering Letter'),
+        # Remittance" / "Documentary Remittance"; the guard demotes
+        # email cover notes to "Shipment Advice" (P198dy).
+        (27, 'Documentary Remittance', 'Shipment Advice'),
+        (29, 'Documentary Remittance', 'Shipment Advice'),
     ]
     for pn, in_dt, expected in cases:
         text = real_pages.get(pn, '')
@@ -287,6 +289,60 @@ def main():
               and any(p.get('document_type') == 'Detailed Message' for p in m))
         tag = 'OK ' if ok else 'FAIL'
         print(f"   [{tag}] target='{target}' -> matched {len(m)} (Detailed Message included)")
+        if ok: pass_n += 1
+        else:  fail_n += 1
+
+    # ── E2. Email-vs-DR content discrimination ──
+    # The user's nuance: a covering schedule CAN be sent by email
+    # (e.g. a bank emailing the covering schedule to another bank).
+    # The guard must KEEP it as Documentary Remittance when the
+    # email body actually carries the bank-schedule structural fields,
+    # and only DEMOTE to Shipment Advice when the email is a bare
+    # cover note with no schedule content. Both kinds are emails;
+    # the discriminator is the body content (≥3 strong DR signals
+    # for emails).
+    print('\n--- E2. Email-vs-DR content discrimination ---')
+    e2_cases = [
+        # Bank covering schedule sent by email — strong DR content → KEEP DR
+        ('Bank-emailed covering schedule (real DR via email)', 'Documentary Remittance', """\
+From: trade.finance@maybank.com.my
+Sent: Wednesday, 15 April 2026 9:30 AM
+To: bahltradefin@bankalhabib.com
+Subject: Documentary Credit Schedule — LC 1023LC88616/2025
+Maybank Trade Finance
+Our Reference No: 99190WAM2747705
+Your Documentary Credit No: 1023LC88616/2025
+Total Amount Claimed: USD 33,203.85
+We enclose the following documents drawn under above LC for negotiation/payment:
+3 Bill of Lading
+8 Commercial Invoice
+2 Bill of Exchange
+Payment instruction: Remit funds to our correspondent.
+"""),
+        # Forwarder transmittal email — bare cover note → DEMOTE to Shipment Advice
+        ('Forwarder transmittal email (cover note only)', 'Shipment Advice', """\
+From: SiekML <siekml@samling.com.my>
+Sent: Friday, 13 February, 2026 11:26 AM
+To: ho.kutrading@outlook.com
+Subject: COVER NOTE NO.2025-12-212-M01001DT00001322
+Attached doc for your reference. Thanks!
+LC Number: 1023LC88616/2025 DATED 251215
+L/C ISSUING BANK: BANK AL HABIB LIMITED KARACHI, PAKISTAN
+"""),
+        # Bank email with only ONE strong signal → still DEMOTE (insufficient)
+        ('Email with only 1 DR signal — DEMOTE',
+         'Shipment Advice', """\
+From: bank@example.com
+Subject: Documents for LC 12345
+Hi, please find docs. Our reference no: ABC.
+"""),
+    ]
+    for name, expected, text in e2_cases:
+        out = dr_guard_classify('Documentary Remittance', text)
+        ok = (out == expected)
+        tag = 'OK ' if ok else 'FAIL'
+        print(f"   [{tag}] {name}")
+        print(f"        got='{out}' expected='{expected}'")
         if ok: pass_n += 1
         else:  fail_n += 1
 

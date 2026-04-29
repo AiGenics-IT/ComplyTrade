@@ -1541,10 +1541,26 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
             )
         if not _is_real_dr:
             _was = document_type
-            document_type = 'Covering Letter'
+            # P198dy — Demote target depends on shape:
+            #   - Email cover note (From:<email> + Subject:) referencing
+            #     an LC → "Shipment Advice". Bank workflow treats these
+            #     forwarder / logistics-company emails as the shipment
+            #     advice for that LC, even when the email body carries
+            #     just "Attached doc for your reference" + LC ref +
+            #     L/C Issuing Bank line. The actual shipment evidence
+            #     lives on the adjacent (attachment) page which is
+            #     ALREADY classified as Shipment Advice; this label
+            #     keeps the email together with that flow so F46A
+            #     shipment-advice checks don't ignore it.
+            #   - Anything else (plain transmittal letters, mis-routed
+            #     non-email pages) → "Covering Letter".
+            if _is_email:
+                document_type = 'Shipment Advice'
+            else:
+                document_type = 'Covering Letter'
             try:
                 print(
-                    f"  [P198dp DR-guard] {packet.get('packet_id','?')} "
+                    f"  [P198dy DR-guard] {packet.get('packet_id','?')} "
                     f"({_was} -> {document_type}): signals={_signal_count}, "
                     f"bank_letterhead={_bank_letterhead}, "
                     f"swift_header={_swift_header}, email={_is_email}"
