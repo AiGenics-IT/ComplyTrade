@@ -2767,11 +2767,49 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         # Find the max page number that has a "Page X of Y" matching the
         # BAHL report pagination. Pages beyond this are shipping docs.
         _bahl_max_page = 0
+        # P198ej — Highest page number actually present in this PDF.
+        # When a user uploads a SUBSET of a huge Alliance archive
+        # (e.g. "Page 1931 of 12905" in the footer of an MT707), the
+        # report-level math _bahl_max_page = pg_num + (Y - X) extends
+        # the boundary far beyond the user's PDF (5 + (12905 - 1931)
+        # = 10979) and every shipping page after the SWIFT messages
+        # gets swept into the BAHL group as Amendment / LC / etc.
+        # Cap _bahl_max_page at the actual highest page in the PDF.
+        _actual_max_page = max(
+            (pg for pg, _, _ in all_page_data), default=0)
         for pg_num in sorted(_msg_detail_pages.keys()):
             if pg_num in _page_of_total:
                 _x, _y = _page_of_total[pg_num]
                 # The report total (e.g., "Page 1 of 7") tells us the last page
                 _bahl_max_page = max(_bahl_max_page, pg_num + (_y - _x))
+        if _bahl_max_page > _actual_max_page:
+            _bahl_max_page = _actual_max_page
+
+        # P198ej — Build a per-page "has SWIFT-message structure"
+        # map. A page belongs to the current BAHL message only when
+        # it carries either a Message Details header (= start of
+        # message), or SWIFT continuation content (F-tags, narrative,
+        # block markers, message routing fields). Pages with none of
+        # these — even when within the report-page-count window —
+        # are NOT part of the SWIFT message and must not be grouped.
+        _swift_struct_re = re.compile(
+            r'(?:^|\n)\s*(?:'
+            r'(?::?F\d{2}[A-Z]?:|:\d{2}[A-Z]?:)|'  # F-tag fields
+            r'Narrative\s*\d?\s*:|'                 # narrative continuation
+            r'Block\s+[1-5]\b|'                     # SWIFT message blocks
+            r'Message\s+(?:Header|Identifier|Text)|'
+            r'Sender\s*(?:Institution)?\s*:|'
+            r'Receiver\s*(?:Institution)?\s*:|'
+            r'\bfin\.\d{3}\b|'
+            r'Transaction\s+Reference|'
+            r'Sequence\s+of\s+Total|'
+            r'Status\s*:\s*(?:Modified|Deletable|Read-Only|Acknowledged))',
+            re.IGNORECASE | re.MULTILINE,
+        )
+        _page_has_swift_struct = {}
+        for pg_num, _, text in all_page_data:
+            _page_has_swift_struct[pg_num] = bool(
+                text and _swift_struct_re.search(text))
 
         # P198eg — Each occurrence of "Message Details #N" starts a NEW
         # group, regardless of the N value. Earlier code keyed
@@ -2818,6 +2856,16 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                         _bahl_messages[next_group_id]['mt_type'] = (
                             _BAHL_FIN_TO_MT.get(page_fin, f'MT{page_fin}'))
                     current_group_id = next_group_id
+
+            # P198ej — Only add pages with SWIFT-message structure
+            # to the current group. A page that has neither a new
+            # Message Details header nor SWIFT continuation content
+            # (F-tags, narrative, block markers) is NOT part of the
+            # message — even when within the report's page-count
+            # window. End the current group at this page.
+            if pg_num not in _msg_detail_pages and not _page_has_swift_struct.get(pg_num):
+                current_group_id = None
+                continue
 
             if current_group_id is not None:
                 if current_group_id in _bahl_messages:

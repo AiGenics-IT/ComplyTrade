@@ -7173,10 +7173,23 @@ def run(
             if _order_m:
                 _order_party = _order_m.group(1).strip().rstrip('.,')
                 # Check if this party name appears after "ORDER" in the document
+                # P198ek — Compact-match the document text so keywords
+                # like "ALHABIB" (LC's compact form) match "AL HABIB"
+                # / "AL-HABIB" (BL's spaced/hyphenated form). Without
+                # this, the keyword "ALHABIB" never matched against
+                # "AL HABIB" in the BL text and the row falsely
+                # FAILed even when the BL clearly named the bank.
                 _doc_has_order_party = False
                 _order_keywords = [w for w in _order_party.split() if len(w) >= 3 and w not in ('THE', 'AND', 'LTD', 'LIMITED')]
                 if _order_keywords:
-                    _found_kw = sum(1 for w in _order_keywords if w in _doc_up)
+                    _doc_compact = re.sub(
+                        r'[\s\-_.,;:\'"/\\]+', '', (_doc_up or '').upper())
+                    _found_kw = 0
+                    for w in _order_keywords:
+                        w_compact = re.sub(
+                            r'[\s\-_.,;:\'"/\\]+', '', w.upper())
+                        if w in _doc_up or (w_compact and w_compact in _doc_compact):
+                            _found_kw += 1
                     _doc_has_order_party = _found_kw >= len(_order_keywords) * 0.6
                 if not _doc_has_order_party:
                     _set(row, "compliance", "FAIL")
