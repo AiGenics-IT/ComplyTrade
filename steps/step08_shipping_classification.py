@@ -1369,6 +1369,84 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
                 # Unknown all-uppercase label — fall back to Title Case
                 document_type = document_type.title()
 
+    # ── P198dx — Preserve "L/C Issuing Bank" label in summary ──
+    # When the source text uses the labelled form "L/C Issuing Bank"
+    # (or "LC Issuing Bank"), the VLM-generated document_summary
+    # often drops the "L/C" qualifier and just writes "Issuing
+    # Bank: ...", which loses information bank checkers rely on
+    # (the issuing bank in an L/C context is specifically the
+    # CREDIT-issuing bank, not any bank that issued the document
+    # in question). Restore the qualifier in the summary when the
+    # source text supports it.
+    if document_summary and glm_text:
+        _src_has_lc_issuing = bool(re.search(
+            r'\bL\s*/?\s*C\s+ISSUING\s+BANK\b', glm_text, re.IGNORECASE))
+        if _src_has_lc_issuing:
+            _new_sum = re.sub(
+                r'(?<!L/C\s)(?<!L/C-\s)(?<!LC\s)(?<![A-Z])'
+                r'\bIssuing\s+Bank\b',
+                'L/C Issuing Bank',
+                document_summary,
+            )
+            # Avoid double-prefixing if a substitution already had L/C
+            _new_sum = re.sub(r'\bL/C\s+L/C\s+Issuing\s+Bank\b',
+                              'L/C Issuing Bank', _new_sum)
+            if _new_sum != document_summary:
+                document_summary = _new_sum
+
+    # ── P198dx — "Detailed Message" recognition ──
+    # F46A clauses such as "BENEFICIARY CERTIFICATE CERTIFYING THAT
+    # THEY HAVE SENT DETAILED MESSAGE DIRECTLY TO THE APPLICANT BY
+    # FAX..." are satisfied by a beneficiary-issued fax / email titled
+    # "DETAILED MESSAGE" that carries vessel / B/L / ETA / value /
+    # delivery-agent details together with a "WE CERTIFY" line.
+    # Step03 / VLM often lands on "Shipment Advice" or "Beneficiary
+    # Certificate" for these pages — both correct in spirit but
+    # neither matches the user-visible label the LC clause expects.
+    # When the page carries the explicit "DETAILED MESSAGE" header
+    # AND beneficiary-certification language AND fax / shipment
+    # evidence, upgrade the doc-type so step14 routes it to either
+    # a Beneficiary Certificate clause or a Shipment Advice clause
+    # via the P198dx aliases.
+    if document_type in (
+        'Shipment Advice', 'Shipping Advice',
+        'Beneficiary Certificate', 'Beneficiary\'s Certificate',
+        'Documentary Remittance', 'Covering Letter', 'Covering Schedule',
+    ):
+        _ux = (glm_text or '').upper()
+        _has_dm_header = bool(re.search(
+            r'(?:^|\n)\s*DETAIL(?:ED)?\s+MESSAGE\b',
+            _ux, re.MULTILINE))
+        _has_bene_cert = bool(re.search(
+            r'\bWE\s+CERTIFY\b|CERTIFY(?:ING)?\s+(?:THE\s+)?GOODS\s+'
+            r'(?:TO\s+BE\s+)?(?:OF|ARE\s+OF)|'
+            r'\bWE\s+ARE\s+PLEASED\s+TO\s+INFORM\s+YOU\s+OF\s+OUR\s+SHIPMENT\b',
+            _ux))
+        _has_fax_or_email = bool(re.search(
+            r'\bFAX(?:\s*(?:NO\.?|NUMBER|#))?\s*[:.\d]|'
+            r'\bDIRECT(?:LY)?\s+TO\s+THE\s+APPLICANT\s+BY\s+FAX|'
+            r'\bSENT\s+BY\s+FAX\b',
+            _ux))
+        _has_shipment_evidence = bool(re.search(
+            r'\bB[/\s]*L\s+(?:NO\.?|NUMBER)|\bBILL\s+OF\s+LADING|'
+            r'\bVESSEL\b|\bETA\b|\bETD\b|\bSHIPPED\s+ON\s+BOARD\b',
+            _ux))
+        if (_has_dm_header
+            and _has_shipment_evidence
+            and (_has_bene_cert or _has_fax_or_email)):
+            try:
+                print(
+                    f"  [P198dx detailed-message] "
+                    f"{packet.get('packet_id','?')} "
+                    f"({document_type} -> Detailed Message): "
+                    f"header={_has_dm_header}, bene_cert={_has_bene_cert}, "
+                    f"fax={_has_fax_or_email}, shipment_evidence="
+                    f"{_has_shipment_evidence}"
+                )
+            except Exception:
+                pass
+            document_type = 'Detailed Message'
+
     # ── P198dp — Documentary Remittance false-positive guard ──
     # A genuine bank covering schedule / Documentary Remittance shows
     # bank letterhead AND payment-claim language ("WE ENCLOSE FOR

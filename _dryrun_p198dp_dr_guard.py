@@ -89,7 +89,16 @@ def evaluate(text):
 
 
 # ── Real job 406fec4f data ────────────────────────────────────────
-JOB = Path('results/406fec4f-afc1-4e94-8d9d-5868141dca8b')
+# P198dx — original test job 406fec4f was cleared from disk;
+# fall back to 53e62015 which has the same email-cover-note
+# pattern on its pages 27 + 29 (same SiekML / Samling content,
+# same Maybank Documentary Credit Schedule on page 13).
+_CANDIDATES = [
+    'results/53e62015-f805-4985-81e3-2b5de1daee65',
+    'results/406fec4f-afc1-4e94-8d9d-5868141dca8b',
+]
+JOB = next((Path(p) for p in _CANDIDATES if (Path(p) / 'step02').exists()),
+           Path(_CANDIDATES[0]))
 step02 = json.loads((JOB / 'step02' / 'step02_result.json').read_text(
     encoding='utf-8'))
 real_pages = {p['page_number']: (p.get('cleaned_text')

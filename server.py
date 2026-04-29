@@ -353,6 +353,26 @@ def get_extracted_text(job_id: str):
     _page_packet_pages = {}    # page -> list of ALL pages in the same packet
     _page_packet_id = {}       # page -> packet_id
     _page_original_type = {}   # page -> step3's ORIGINAL doc_type (before any step9 reclass)
+    # P198dx — Build a step08 page-level lookup so the demoted /
+    # upgraded doc-type from step08 (e.g. P198dp's DR-guard demotion
+    # of email cover notes from "Documentary Remittance" to
+    # "Covering Letter") is visible in the extracted-text view, not
+    # overridden by step03's earlier _canonical_doc_type collapse.
+    _s8_page_types = {}
+    for _cpkt in _s8.get('classified_packets', []) or []:
+        if not isinstance(_cpkt, dict):
+            continue
+        _s8_dt = _cpkt.get('document_type', '')
+        if not _s8_dt:
+            continue
+        _s8_pages = _cpkt.get('page_numbers') or [
+            _op.get('page_number') for _op in _cpkt.get('original_pages', [])
+            if isinstance(_op, dict) and _op.get('page_number') is not None
+        ]
+        for _pn in _s8_pages:
+            if _pn is not None:
+                _s8_page_types[_pn] = _s8_dt
+
     for pkt in s3.get('packets', []):
         if isinstance(pkt, dict):
             _bl_st = pkt.get('bl_subtype')
@@ -361,7 +381,12 @@ def get_extracted_text(job_id: str):
             _pkt_id = pkt.get('packet_id', '')
             for pn in pkt.get('page_numbers', []):
                 _s3_dt = pkt.get('document_type', 'unknown')
-                _page_types[pn] = _s3_dt
+                # Prefer step08's classification when it differs —
+                # step08 has the post-VLM, post-guard label
+                # (P198dp / P198dx) which is more authoritative
+                # than step03's pre-canonicalization. Keep step03's
+                # value as the "original_type" for the audit chain.
+                _page_types[pn] = _s8_page_types.get(pn, _s3_dt)
                 _page_original_type[pn] = _s3_dt
                 _page_copy[pn] = pkt.get('copy_status', '')
                 _page_copy_label[pn] = pkt.get('copy_label', '')

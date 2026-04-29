@@ -114,6 +114,20 @@ DOC_TYPE_ALIASES = {
         "beneficiary certificate", "beneficiary's certificate",
         "beneficiarys certificate", "beneficiary statement",
         "beneficiary's statement", "beneficiary declaration",
+        # P198dx — A "DETAILED MESSAGE" / fax copy from the
+        # beneficiary to the applicant is the document an F46A
+        # "BENEFICIARY CERTIFICATE CERTIFYING THAT THEY HAVE SENT
+        # DETAILED MESSAGE..." clause expects. The same physical
+        # page is also a shipment advice (it carries vessel / B/L
+        # / ETA / value); the alias appears in both groups so
+        # whichever target step12 picked, the matcher finds it.
+        "detailed message", "detail message",
+        "fax message", "fax copy of detailed message",
+        "beneficiary detailed message",
+        "shipment fax message",
+        "detailed shipment message",
+        "detailed shipping message",
+        "detail shipping message",
     ],
     "courier receipt": [
         "courier receipt", "courier waybill", "courier service receipt",
@@ -150,6 +164,15 @@ DOC_TYPE_ALIASES = {
         "insurance request", "insurance cover request",
         "insurance cover note request",
         "request for insurance cover",
+        # P198dx — Beneficiary's fax/email "Detailed Message" to the
+        # applicant carries vessel/B/L/ETA/value and IS the shipment
+        # advice the LC asks for, even when the page is titled
+        # "DETAILED MESSAGE" and labelled by step03 / VLM as such.
+        "detailed message", "detail message",
+        "fax message", "shipment fax message",
+        "detailed shipment message",
+        "detailed shipping message",
+        "detail shipping message",
         "insurance pre-advice", "insurance pre-advise",
         "insurance pre-advice notice", "insurance pre-advise notice",
         "insurance notification", "insurance advice",
@@ -375,6 +398,15 @@ def _find_matching_docs(doc_to_check: str, packets: list) -> list:
     _GENERIC_WORDS = {'certificate', 'document', 'list', 'report', 'note', 'letter',
                       'advice', 'receipt', 'bill', 'policy', 'schedule', 'declaration',
                       'form', 'certification', 'statement',  # P90: prevent Form 3 matching Form 7
+                      # P198dx — 'insurance' alone is too generic to be a
+                      # specific keyword. Without this, Tier-3 keyword
+                      # overlap matches 'Insurance Request' packets to
+                      # 'Insurance Policy' clause targets purely on the
+                      # shared word 'insurance', producing false PASSes.
+                      # Specific qualifiers like 'marine', 'cargo',
+                      # 'liability' etc. are NOT in this set so they
+                      # still drive correct fuzzy matches.
+                      'insurance',
                       }
     if target_keywords:
         _specific_keywords = target_keywords - _GENERIC_WORDS

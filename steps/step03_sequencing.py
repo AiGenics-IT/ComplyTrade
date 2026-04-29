@@ -2274,6 +2274,20 @@ _DOC_TYPE_SYNONYMS = {
     'Header Page': ['header page', 'header'],
     'Beneficiary Certificate': ['beneficiary certificate', 'beneficiarys certificate',
                                  "beneficiary's certificate"],
+    # P198dx — A "DETAILED MESSAGE" / fax-copy from the beneficiary
+    # to the applicant is the document an F46A "BENEFICIARY
+    # CERTIFICATE CERTIFYING THAT THEY HAVE SENT DETAILED MESSAGE..."
+    # clause expects. Keep its specific name (Detailed Message) so
+    # the UI shows the right label, and let step14's alias groups
+    # route it to both Beneficiary Certificate and Shipment Advice
+    # clause targets (the same physical page satisfies both).
+    'Detailed Message': ['detailed message', 'detail message',
+                          'fax message', 'fax copy of detailed message',
+                          'beneficiary detailed message',
+                          'shipment fax message',
+                          'detailed shipment message',
+                          'detailed shipping message',
+                          'detail shipping message'],
     'Port Clearance Certificate': ['port clearance certificate', 'port clearance'],
     'Tanker Cleanliness Certificate': ['tanker cleanliness certificate',
                                         'tank cleanliness certificate'],
