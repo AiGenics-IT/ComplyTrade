@@ -129,26 +129,43 @@ Given the document text below, output ONLY the canonical document
 type from this list. Pick the SINGLE best match. Do not explain.
 Just output the name verbatim.
 
+CRITICAL DISAMBIGUATION:
+- "COVER NOTE NO." / "COVER NOTE NUMBER" / "OPEN POLICY NO." in a
+  subject or body is an INSURANCE REFERENCE NUMBER (the insurance
+  company's reference for the open-policy cover note for this
+  shipment). It is NOT a title of the document itself.
+- An email whose subject is "COVER NOTE NO. <reference>" + LC
+  reference, or is from a forwarder / logistics company
+  ("Logistics Executive", "Logistics Manager", domains like
+  samling.com.my / globallogistics.com / TREEONE) and that
+  references an LC + either "Cover Note No" or "Open Policy No"
+  or just says "Attached doc for your reference" with the LC
+  reference, is a "Shipment Advice" (NOT "Covering Letter" and
+  NOT "Documentary Remittance").
+- A page is "Documentary Remittance" / "Covering Schedule" ONLY
+  when it carries the BANK-side payment-claim language
+  ("WE ENCLOSE DOCUMENTS FOR NEGOTIATION/PAYMENT",
+  "TOTAL AMOUNT CLAIMED", "PRESENTATION NUMBER",
+  "L/C ISSUING BANK" used as a structural form field with bank
+  letterhead, "REIMBURSING BANK", "PAYMENT INSTRUCTION", etc.).
+  Without those signals, an email is NOT a Documentary Remittance.
+- "Detailed Message" is a beneficiary's fax titled "DETAILED
+  MESSAGE" with shipment details (vessel/B/L/ETA) + a
+  "WE CERTIFY" or "WE ARE PLEASED TO INFORM YOU OF OUR SHIPMENT"
+  line.
+
 CANDIDATES:
-- Documentary Remittance   (a bank's covering schedule listing
-  enclosed documents for negotiation/payment, usually on bank
-  letterhead with "WE ENCLOSE", "TOTAL AMOUNT CLAIMED", "OUR
-  REFERENCE NO", "L/C ISSUING BANK", "REIMBURSING BANK",
-  "PAYMENT INSTRUCTION" etc.)
-- Shipment Advice          (a notification with shipment details:
-  vessel, B/L, ETA, port of loading/discharge, OR a forwarder /
-  beneficiary email cover note travelling alongside the shipment-
-  advice attachment, referencing the LC)
-- Detailed Message         (a beneficiary fax titled "DETAILED
-  MESSAGE" with shipment details + a "WE CERTIFY" line)
-- Beneficiary Certificate  (a short certification by the beneficiary)
+- Documentary Remittance
+- Shipment Advice
+- Detailed Message
+- Beneficiary Certificate
 - Bill of Lading
 - Commercial Invoice
 - Packing List
 - Insurance Policy
 - Insurance Certificate
-- Covering Letter           (a non-bank transmittal letter without
-  the bank-side payment-claim language)
+- Covering Letter (only for plain non-email transmittal letters
+  without LC + insurance/cover-note context)
 - Other
 
 DOCUMENT TEXT:
@@ -242,11 +259,11 @@ def main():
         ('p27 SiekML email cover note',
          'Documentary Remittance', real_pages.get(27, ''),
          'Shipment Advice',
-         ['Shipment Advice', 'Covering Letter']),
+         ['Shipment Advice']),
         ('p29 SiekML email cover note (duplicate of p27)',
          'Documentary Remittance', real_pages.get(29, ''),
          'Shipment Advice',
-         ['Shipment Advice', 'Covering Letter']),
+         ['Shipment Advice']),
         ('p26 real Shipment Advice (Magna-Foremost)',
          'Shipment Advice', real_pages.get(26, ''),
          'Shipment Advice',

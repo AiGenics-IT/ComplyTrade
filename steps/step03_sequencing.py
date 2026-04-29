@@ -1218,6 +1218,8 @@ a letterhead-only page; either continue the previous type, or use "Header Page".
 - "COMMERCIAL INVOICE" or "Invoice number:" -> "Commercial Invoice"
 - "PACKING LIST" or "PACKING SLIP" -> "Packing List" (Packing Slip is a synonym of Packing List, always classify as "Packing List")
 - Email with attachment list / "SEDNA" / covering letter -> "Document Remittance" or "Covering Letter"
+- IMPORTANT — "COVER NOTE NO." / "COVER NOTE NUMBER" in the subject or body is an INSURANCE COVER NOTE REFERENCE NUMBER (the insurance company's reference for the open-policy cover note for this shipment). It is NOT a description of the email itself. An email that references "COVER NOTE NO. <reference>" alongside an LC reference is a forwarder/beneficiary email transmitting the insurance cover note / shipment advice for that LC — classify it as "Shipment Advice" (NOT "Covering Letter" and NOT "Document Remittance"). The attachment travelling with the email carries the actual shipment-advice content.
+- Forwarder/logistics-company emails (sender domain like @samling.com.my, @globallogistics.com, @TREEONE..., or sender title "Logistics Executive" / "Logistics Manager") that reference an LC number and either an "OPEN POLICY NO" or a "COVER NOTE NO" or just say "Attached doc for your reference" + LC ref = "Shipment Advice".
 - ORIGINAL/COPY/NON-NEGOTIABLE stamps -> record in copy_status and copy_label
 - FIRST ORIGINAL/SECOND ORIGINAL/THIRD ORIGINAL -> separate copies of same document
 
