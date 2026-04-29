@@ -2773,26 +2773,61 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                 # The report total (e.g., "Page 1 of 7") tells us the last page
                 _bahl_max_page = max(_bahl_max_page, pg_num + (_y - _x))
 
-        current_msg_num = None
+        # P198eg — Each occurrence of "Message Details #N" starts a NEW
+        # group, regardless of the N value. Earlier code keyed
+        # _bahl_messages by the message-number-in-report (the N), so
+        # when a job concatenates TWO Alliance reports — each
+        # containing only one message starting with "Message Details
+        # #1" — both got assigned to _bahl_messages[1] and their
+        # pages were merged into a single MT700 group, hiding the
+        # MT707 split. Tracking each occurrence independently fixes
+        # this. Within a single multi-message report (#1, #2, #3...
+        # all in one document) the sequential groups still align
+        # one-to-one with the report's message ordering.
+        current_group_id = None
+        next_group_id = 0
         for pg_num, _, text in sorted_pages_list:
             # Stop assigning to BAHL messages once we pass the report boundary
             if _bahl_max_page > 0 and pg_num > _bahl_max_page:
                 break
 
-            # Check if this page starts a new message
+            # Check if this page starts a new message header
             if pg_num in _msg_detail_pages:
-                new_msgs = sorted(_msg_detail_pages[pg_num])
-                for nm in new_msgs:
-                    if nm not in _bahl_messages:
-                        _bahl_messages[nm] = {'pages': [], 'mt_type': '', 'fin': ''}
-                current_msg_num = new_msgs[-1]
+                msg_num_in_report = sorted(_msg_detail_pages[pg_num])[-1]
+                # Identify the fin.NNN on this page so we can detect
+                # whether this is genuinely a new message even when
+                # the in-report number repeats (= two separate
+                # Alliance reports concatenated).
+                page_text = text or ''
+                _id_m = _BAHL_IDENTIFIER_RE.search(page_text)
+                page_fin = _id_m.group(1) if _id_m else ''
+                _start_new = (
+                    current_group_id is None
+                    or msg_num_in_report == 1  # report restart
+                    or (page_fin and current_group_id is not None and
+                        _bahl_messages.get(current_group_id, {}).get('fin')
+                        and page_fin != _bahl_messages[current_group_id]['fin'])
+                )
+                if _start_new:
+                    next_group_id += 1
+                    _bahl_messages[next_group_id] = {
+                        'pages': [], 'mt_type': '', 'fin': page_fin,
+                        'msg_num_in_report': msg_num_in_report,
+                    }
+                    if page_fin:
+                        _bahl_messages[next_group_id]['mt_type'] = (
+                            _BAHL_FIN_TO_MT.get(page_fin, f'MT{page_fin}'))
+                    current_group_id = next_group_id
 
-            if current_msg_num is not None:
-                if current_msg_num in _bahl_messages:
-                    _bahl_messages[current_msg_num]['pages'].append(pg_num)
+            if current_group_id is not None:
+                if current_group_id in _bahl_messages:
+                    _bahl_messages[current_group_id]['pages'].append(pg_num)
 
-        # Extract fin.XXX identifier for each message
+        # Extract fin.XXX identifier for each message (fallback if
+        # the header page didn't carry it cleanly).
         for msg_num, msg_info in _bahl_messages.items():
+            if msg_info.get('fin'):
+                continue
             for pg_num in msg_info['pages']:
                 text = next((t for pn, _, t in all_page_data if pn == pg_num), '')
                 if text:

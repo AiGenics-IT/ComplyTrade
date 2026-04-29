@@ -1449,16 +1449,48 @@ def get_result(job_id: str):
 
     # Prefer Step 9 packets (has document-specific fields) over Step 8
     _shipping_pkts = s9.get('packets', s9.get('reconciled_packets', s8.get('packets', s8.get('classified_packets', []))))
+
+    # P198eh — Build a step08 page-type lookup so the identified-doc
+    # view shows step08's authoritative classification (after the
+    # P198dp/dy DR-guard demotion + P198dx Detailed Message
+    # upgrade). Step 3's _canonical_doc_type collapses "Covering
+    # Letter" → "Document Remittance" before any guard runs, so
+    # using step03's page type made the identified-doc view show
+    # email cover-note pages as "Document Remittance" while the
+    # extracted-text view (already fixed in P198dx) showed them
+    # correctly as "Shipment Advice" / "Covering Letter". Both
+    # views must be in sync.
+    _s8_page_type = {}
+    for _cpkt in s8.get('classified_packets', []) or []:
+        if not isinstance(_cpkt, dict):
+            continue
+        _s8_dt = _cpkt.get('document_type', '')
+        if not _s8_dt:
+            continue
+        _s8_pages = _cpkt.get('page_numbers') or [
+            _op.get('page_number') for _op in _cpkt.get('original_pages', [])
+            if isinstance(_op, dict) and _op.get('page_number') is not None
+        ]
+        for _pn in _s8_pages:
+            if _pn is not None:
+                _s8_page_type[_pn] = _s8_dt
+
     for pkt in _shipping_pkts:
         if not isinstance(pkt, dict): continue
-        # Get Step 3's classification for this packet's first page
+        # Get classification for this packet's first page
         _pages_field = pkt.get('original_pages', pkt.get('pages', []))
         _first_page = 0
         for _pg in (_pages_field if isinstance(_pages_field, list) else []):
             if isinstance(_pg, dict): _first_page = _pg.get('page_number', 0); break
             elif isinstance(_pg, int): _first_page = _pg; break
-        # Use Step 3 name (correct) over Step 8 VLM name (sometimes wrong)
-        doc_type = _s3_page_type.get(_first_page, pkt.get('document_type', 'unknown'))
+        # P198eh — Prefer step08's classification (post-VLM, post-
+        # guard) over step03's pre-canonicalised one. This is the
+        # SAME priority order the extracted-text view uses (P198dx),
+        # so both views show the same label.
+        doc_type = (
+            _s8_page_type.get(_first_page)
+            or _s3_page_type.get(_first_page, pkt.get('document_type', 'unknown'))
+        )
         # Extract page numbers from classification dicts inside 'pages'
         _pages_field = pkt.get('original_pages', pkt.get('pages', []))
         pg_nums = []
