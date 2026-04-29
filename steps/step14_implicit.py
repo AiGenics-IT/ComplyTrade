@@ -2104,7 +2104,12 @@ def run(
                             )
                     except Exception:
                         _expiry_date = None
-                    if _expiry_date and pres_date <= _expiry_date:
+                    # P198ev — pres_date may be a datetime (with hh:mm:ss)
+                    # while _expiry_date is a date. Comparing the two raises
+                    # TypeError on Python 3.11+. Normalise pres_date to a
+                    # plain date so the comparison succeeds.
+                    _pres_for_cmp = pres_date.date() if hasattr(pres_date, 'date') else pres_date
+                    if _expiry_date and _pres_for_cmp <= _expiry_date:
                         within = True
                         # Annotate so the output explains what happened
                         period_days_label = (

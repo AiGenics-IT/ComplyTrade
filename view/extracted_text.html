@@ -738,13 +738,38 @@ async function saveClassOverride() {
             })
         });
         if (r.ok) {
-            // Update local data
-            p.document_type = newType;
-            p.copy_status = newCopy;
-            // Refresh sidebar and toolbar
+            document.getElementById('edit-class-form').remove();
+            // P198eq — pull a fresh page payload from the server so EVERY
+            // panel (sidebar, toolbar, document-summary, packet-pages
+            // breakdown) reflects the new classification, not just the
+            // two locally-mutated fields. The override endpoint mirrors
+            // step03/step08/step09 to in-memory cache, so this fetch
+            // returns the post-edit state.
+            try {
+                const re = await fetch(`${API}/api/extracted-text/${jobId}?_=${Date.now()}`,
+                    {cache:'no-store', headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}});
+                if (re.ok) {
+                    const dd = await re.json();
+                    if (dd && Array.isArray(dd.pages)) {
+                        pages = dd.pages;
+                    }
+                }
+            } catch (_e) { /* fall through to local update */ }
+            // Belt-and-braces: also patch local copy in case the refetch
+            // failed (network blip etc.) — sel() below will render either way.
+            const cur = pages[si];
+            if (cur) {
+                cur.document_type = newType;
+                cur.copy_status   = newCopy;
+            }
             rList();
             sel(si);
-            document.getElementById('edit-class-form').remove();
+            // Close any open document-summary panel so it re-opens with
+            // the refreshed data on next click instead of stale content.
+            const _sp = document.getElementById('summary-panel');
+            if (_sp) _sp.remove();
+            const _so = document.getElementById('summary-overlay');
+            if (_so) _so.remove();
             alert('Classification updated. Re-run verification to apply changes.');
         } else {
             alert('Save failed: ' + r.status);

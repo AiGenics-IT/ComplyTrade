@@ -38,6 +38,9 @@ python _run_all_dryruns.py
 | P198dp | [_dryrun_p198dp_dr_guard.py](_dryrun_p198dp_dr_guard.py) | Documentary Remittance false-positive guard — real bank covering schedules KEEP, email cover notes / endorsement back pages / random docs DEMOTE | 15 scenarios (3 real job 406fec4f pages + 12 synthetic) |
 | P198dp-real | [_dryrun_p198dp_dr_guard_real_jobs.py](_dryrun_p198dp_dr_guard_real_jobs.py) | Sweeps every DR-tagged packet in `results/*/step08/` and reports KEEP / DEMOTE counts | 49 packets across the local results store |
 | P198dv | [_dryrun_p198dv_insurance_request_shipment_advice.py](_dryrun_p198dv_insurance_request_shipment_advice.py) | F46A clauses targeting "Shipment Advice" match pages classified as Insurance Request / Insurance Cover Request / Insurance Pre-Advise Notice / etc.; Insurance Policy clauses do NOT spuriously match these emails | 26 assertions incl. real job 38beca01 email body |
+| P198eo | [_dryrun_p198eo_awb_bl_split.py](_dryrun_p198eo_awb_bl_split.py) | Step 8 fuzzy matcher no longer maps "Airway Bill" / "Courier Receipt" to a "Bill of Lading" requirement via the shared `BILL` token — they're alien_documents when the LC has no AWB / Courier slot | 12 scenarios |
+| P198ep | [_dryrun_p198ep_bl_cargo_spec.py](_dryrun_p198ep_bl_cargo_spec.py) | "SPECIFICATION OF CARGO" rider pages keep their VLM label and route to the nearest BL via Rule 1b — not absorbed into a preceding Commercial Invoice / Covering Letter / Shipping Company Cert | 26 scenarios |
+| P198es | [_dryrun_p198es_awb_override_veto.py](_dryrun_p198es_awb_override_veto.py) | Step 8 AWB rule override is VETOED when the VLM said "Bill of Lading" — protects genuine BLs from being relabelled as alien AWBs by the over-loose lexical rule scorer | 18 scenarios |
 
 ## Conventions
 

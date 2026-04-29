@@ -641,6 +641,14 @@ def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tupl
         for i, ed in enumerate(expected_docs):
             if _is_courier_or_awb_label(ed.get('document_name', '')):
                 return i, ed.get('document_name', '')
+        # P198eo — No courier/AWB requirement in LC. This packet is an
+        # alien document (e.g. DHL DOX courier delivery, or an air freight
+        # shipment when the LC required a marine BL). DO NOT fall through
+        # to the fuzzy matcher below — it would wrongly map "Airway Bill"
+        # → "Bill of Lading" via the shared "BILL" token. AWB and BL are
+        # different shipping modes (air vs sea) and never substitute under
+        # UCP 600 / ISBP 745.
+        return -1, ""
 
     # Normalize: strip plurals and common words for better matching
     def _normalize(s):
@@ -999,13 +1007,35 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
     # When that happens we resolve to whichever label the LC's expected
     # document list actually requested, falling back to "Airway Bill".
     rule_override_type = None
+    # P198es — Veto guard. The lexical rule scorer over-matches AWB /
+    # Courier Receipt at 0.99 for ANY page mentioning "BILL OF LADING"
+    # / "BILL" / shipping content (the lexicon shares too many tokens
+    # across the AWB / BL / CR family). When the VLM has CONFIRMED a
+    # specific Bill of Lading classification, the override must NOT
+    # fire — otherwise every genuine BL on the planet gets relabelled
+    # as Airway Bill. Only let the override demote the VLM when the
+    # VLM itself said the page is in the AWB / Courier family OR was
+    # uncertain (Shipment Advice / Covering Letter / generic / unknown).
+    _vlm_dt_for_veto = ''
+    if vlm_result:
+        _vlm_dt_for_veto = (vlm_result.get('document_type') or '').strip().lower()
+    _vlm_says_bl = (
+        'bill of lading' in _vlm_dt_for_veto
+        or _vlm_dt_for_veto in {'b/l', 'bl', 'congenbill',
+                                 'master bill of lading', 'house bill of lading',
+                                 'ocean bill of lading', 'marine bill of lading',
+                                 'multimodal bill of lading',
+                                 'combined transport bill of lading'}
+    )
+
     if rule_matches:
         top_score = rule_matches[0].get('score', 0)
         top_names_at_99 = {m['document_name'] for m in rule_matches
                            if m.get('score', 0) >= 0.99}
 
         if top_score >= 0.99:
-            if {'Courier Receipt', 'Airway Bill'} & top_names_at_99:
+            if {'Courier Receipt', 'Airway Bill'} & top_names_at_99 \
+                    and not _vlm_says_bl:
                 # Resolve to whichever the LC asked for
                 preferred = None
                 for ed in expected_docs:

@@ -646,6 +646,183 @@ def _pkt_type(pkt: dict) -> str:
 # F47A context builder
 # ---------------------------------------------------------------------------
 
+# ── P198et — Advance-payment / split-payment LC detection ───────────
+#
+# A subset of LCs split the payment so an "advance" (e.g. 80%) is paid
+# OUT-OF-LC via a separate authenticated SWIFT, and the L/C is presented
+# only for the REMAINING amount (e.g. 20%). The CI carries the FULL LC
+# value plus a deduction line ("LESS: 80% ADVANCE PAYMENT RECEIVED AS
+# PER CLAUSE 46+A") and a net payable, while the Draft / Bill of
+# Exchange is drawn for the NET portion only — NOT the LC value. The
+# Negotiating Bank Covering Schedule is required to show all three
+# numbers (100% / 80% / 20%).
+#
+# Without explicit detection the system flags the Draft as a FAIL
+# (drawer amount != LC amount) and may also flag the CI as confusing.
+# The detector below extracts {advance_pct, net_pct, expected_advance,
+# expected_net} from F46A / F46B / F47A / F47B so the verification
+# prompt has the right numbers to check against.
+_ADVANCE_PCT_RE = re.compile(
+    r'(\d{1,3})\s*(?:PERCENT|PCT|%)\s+ADVANCE(?:\s+PAYMENT)?',
+    re.IGNORECASE,
+)
+_REMAINING_PCT_RE = re.compile(
+    r'REMAINING\s+(\d{1,3})\s*(?:PERCENT|PCT|%)',
+    re.IGNORECASE,
+)
+_NET_CLAIMING_PCT_RE = re.compile(
+    r'NET\s+CLAIMING\s*\(?\s*(\d{1,3})\s*(?:PERCENT|PCT|%)',
+    re.IGNORECASE,
+)
+_LESS_ADV_PCT_RE = re.compile(
+    r'(?:LESS|MINUS)\s+(\d{1,3})\s*(?:PERCENT|PCT|%)\s+(?:ADVANCE|ADV)',
+    re.IGNORECASE,
+)
+
+
+def _detect_advance_payment_terms(step06_result: dict):
+    """
+    Parse F46A / F46B / F47A / F47B for an advance-payment + remainder
+    payment structure (e.g. 80% advance + 20% on doc presentation).
+    Returns a dict with advance_pct / net_pct / expected_advance /
+    expected_net / lc_amount / currency, OR None when the LC is a
+    standard 100%-on-presentation credit.
+    """
+    if not step06_result or not isinstance(step06_result, dict):
+        return None
+    final_lc = step06_result.get("final_lc", step06_result)
+    if not isinstance(final_lc, dict):
+        return None
+    fields = final_lc.get("consolidated_fields", final_lc)
+    if not isinstance(fields, dict):
+        return None
+
+    txt_parts = []
+    for tag in ('46A', 'F46A', '46B', 'F46B', '47A', 'F47A', '47B', 'F47B'):
+        v = fields.get(tag, '')
+        if isinstance(v, dict):
+            v = v.get('value') or v.get('text') or ''
+        if isinstance(v, list):
+            v = ' '.join(
+                (x.get('text', x.get('value', str(x))) if isinstance(x, dict) else str(x))
+                for x in v
+            )
+        if v:
+            txt_parts.append(str(v))
+    full_upper = '\n'.join(txt_parts).upper()
+    if not full_upper:
+        return None
+
+    # ── Advance percentage ──
+    advance_pct = None
+    less_m = _LESS_ADV_PCT_RE.search(full_upper)
+    if less_m:
+        advance_pct = int(less_m.group(1))
+    if advance_pct is None:
+        for am in _ADVANCE_PCT_RE.finditer(full_upper):
+            cand = int(am.group(1))
+            # Skip nonsense matches (e.g. "100 PERCENT L/C VALUE")
+            if 1 <= cand <= 99:
+                advance_pct = cand
+                break
+    if advance_pct is None or not (1 <= advance_pct <= 99):
+        return None
+
+    # ── Net (remaining) percentage ──
+    net_pct = None
+    rm = _REMAINING_PCT_RE.search(full_upper)
+    if rm:
+        net_pct = int(rm.group(1))
+    if net_pct is None:
+        nc = _NET_CLAIMING_PCT_RE.search(full_upper)
+        if nc:
+            net_pct = int(nc.group(1))
+    if net_pct is None:
+        net_pct = 100 - advance_pct
+    if not (1 <= net_pct <= 99):
+        return None
+    if (advance_pct + net_pct) != 100:
+        # Don't trust mismatched numbers — fall back to (100-advance)
+        net_pct = 100 - advance_pct
+
+    # ── LC amount + currency from F32B ──
+    lc_amount_raw = fields.get('32B', fields.get('F32B', ''))
+    if isinstance(lc_amount_raw, dict):
+        lc_amount_raw = lc_amount_raw.get('value', '')
+    if isinstance(lc_amount_raw, list):
+        lc_amount_raw = ' '.join(str(x) for x in lc_amount_raw)
+    lc_amount_str = str(lc_amount_raw).upper()
+    ccy_m = re.search(r'\b(USD|EUR|GBP|JPY|CNY|PKR|AED|SAR|INR|BDT|LKR)\b',
+                      lc_amount_str)
+    currency = ccy_m.group(1) if ccy_m else ''
+    cleaned = re.sub(r'[A-Z]{2,}\s*', '', lc_amount_str).strip()
+    nm = re.search(r'[\d,]+(?:\.\d{1,2})?', cleaned)
+    if not nm:
+        return None
+    try:
+        lc_amount = float(nm.group(0).replace(',', ''))
+    except ValueError:
+        return None
+    if lc_amount <= 0:
+        return None
+
+    expected_advance = round(lc_amount * advance_pct / 100.0, 2)
+    expected_net     = round(lc_amount * net_pct     / 100.0, 2)
+
+    return {
+        'is_advance_split': True,
+        'advance_pct':      advance_pct,
+        'net_pct':          net_pct,
+        'lc_amount':        lc_amount,
+        'expected_advance': expected_advance,
+        'expected_net':     expected_net,
+        'currency':         currency,
+    }
+
+
+def _format_advance_payment_block(info: dict) -> str:
+    """Render the advance-payment context into a banner that gets
+    PREPENDED to f47a_context so the verification LLM sees it before
+    any per-field rule (rule 7a in CORE_VERIFICATION_PROMPT relies on
+    these exact numbers)."""
+    if not info or not info.get('is_advance_split'):
+        return ''
+    ccy = info.get('currency') or ''
+    lc  = info['lc_amount']
+    apc = info['advance_pct']
+    npc = info['net_pct']
+    eadv = info['expected_advance']
+    enet = info['expected_net']
+    return (
+        "\n"
+        "============================================================\n"
+        "ADVANCE-PAYMENT / SPLIT-PAYMENT LC (auto-detected from F46A/F47A)\n"
+        "============================================================\n"
+        f"  • LC total value (F32B)           : {ccy} {lc:,.2f}\n"
+        f"  • Advance (paid via SWIFT)        : {apc}%  =  {ccy} {eadv:,.2f}\n"
+        f"  • Net (claimed against documents) : {npc}%  =  {ccy} {enet:,.2f}\n"
+        "\n"
+        "INTERPRETATION RULES (apply to all amount-related verifications):\n"
+        f"  1. Commercial Invoice should show the FULL LC value\n"
+        f"     ({ccy} {lc:,.2f}) as its INVOICE TOTAL, then a\n"
+        f"     deduction line such as 'LESS: {apc}% ADVANCE PAYMENT\n"
+        f"     RECEIVED AS PER CLAUSE 46+A' = {ccy} {eadv:,.2f}, and a\n"
+        f"     'NET AMOUNT' / 'NET PAYABLE' = {ccy} {enet:,.2f}.\n"
+        f"     ALL THREE present + arithmetically consistent           -> PASS.\n"
+        f"  2. Draft / Bill of Exchange must be drawn for the NET\n"
+        f"     amount only ({ccy} {enet:,.2f}) — NOT the LC total.\n"
+        f"     A draft for {ccy} {enet:,.2f} (or +/- tolerance) is the\n"
+        f"     CORRECT figure, not a discrepancy.\n"
+        f"  3. Negotiating Bank Covering Schedule (Documentary\n"
+        f"     Remittance) must clearly show the {apc}% / {npc}% / 100%\n"
+        f"     breakdown.  Missing any of the three                    -> FAIL.\n"
+        f"  4. Do NOT raise an 'invoice exceeds LC amount' or 'draft\n"
+        f"     amount differs from LC amount' discrepancy when the\n"
+        f"     numbers above are correctly reflected.\n"
+        "============================================================\n"
+    )
+
+
 def _build_f47a_context(step06_result: dict) -> str:
     """
     Read ALL F47A Additional Conditions from the Final LC and build a
@@ -653,6 +830,11 @@ def _build_f47a_context(step06_result: dict) -> str:
     ANY condition, because F47A may override or modify main-field conditions.
     """
     parts = []
+
+    # P198et — prepend split-payment banner when applicable
+    _split_info = _detect_advance_payment_terms(step06_result)
+    if _split_info:
+        parts.append(_format_advance_payment_block(_split_info))
 
     # Try consolidated_fields first
     final_lc = step06_result.get("final_lc", step06_result)
@@ -2827,6 +3009,32 @@ CRITICAL RULES (follow strictly):
      Do NOT treat this garbled text as the invoice amount — find the
      actual numeric total in the invoice table (usually the last number
      before the words-in-words line).
+7a. ADVANCE-PAYMENT / SPLIT-PAYMENT LC (P198et — read carefully):
+    Some LCs split the payment so an advance (e.g. 80%) is paid OUT-OF-LC
+    via authenticated SWIFT and the remainder (e.g. 20%) is claimed against
+    documents. F46A/F47A defines this with phrases such as:
+      • "X PERCENT ADVANCE PAYMENT WILL BE MADE UPON RECEIPT OF AUTHENTICATED SWIFT"
+      • "REMAINING Y PERCENT PAYABLE TO THE BENEFICIARY AGAINST PRESENTATION ..."
+      • "100 PERCENT L/C VALUE CREDIT (MINUS X PCT ADVANCE PAYMENT)"
+      • "NET CLAIMING (Y PERCENT)"
+    When the F47A CONTEXT block above contains an "ADVANCE-PAYMENT / SPLIT-PAYMENT
+    LC" banner, the LC is split-payment. Apply these rules:
+      • Commercial Invoice may show: INVOICE TOTAL = LC amount, "LESS: X%
+        ADVANCE PAYMENT RECEIVED AS PER CLAUSE 46+A" = advance amount, and
+        "NET AMOUNT / NET PAYABLE" = net amount. All three printed and
+        arithmetically consistent → PASS. Do NOT call this an "invoice
+        amount mismatch" — the printed Total IS the LC amount and the net
+        payable line is what the bank will claim.
+      • Draft / Bill of Exchange must be drawn for the NET amount (Y%),
+        NOT the LC total. A draft showing the net figure (e.g. USD 2,184
+        when LC is USD 10,919 and net is 20%) is CORRECT → PASS. Do NOT
+        flag it as "draft amount differs from LC amount".
+      • Negotiating Bank Covering Schedule / Documentary Remittance must
+        clearly show 100% LC value, X% advance, Y% net claiming. Missing
+        any of the three figures → FAIL.
+      • Use the EXACT numbers in the ADVANCE-PAYMENT block (advance and
+        net) when verifying — do not recompute them yourself; the system
+        already calculated them from F32B × the parsed percentages.
 8. THIRD PARTY: If F47A says "THIRD PARTY DOCUMENTS ACCEPTABLE", third party documents = PASS.
 
 8a. BENEFICIARY-ISSUED DOCUMENTS: When the condition asks for a document

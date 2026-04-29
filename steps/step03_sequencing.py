@@ -3530,6 +3530,24 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         'draught survey report', 'loading report', 'discharge report',
     }
 
+    # P198ep — VLM phrases that identify a page as a Bill of Lading
+    # cargo-specification rider (the "*** AS PER ATTACHED SPECIFICATION
+    # ***" sheet that lists pallets / weights / proforma references).
+    # These pages must NEVER inherit the doc_type of the immediately
+    # preceding page when that page is a Commercial Invoice, Covering
+    # Letter, Shipping Company Certificate, or anything other than a
+    # Bill of Lading — otherwise scattered cargo-spec sheets get
+    # absorbed into the wrong document and Rule 1b loses the chance
+    # to merge them into the nearest BL packet.
+    _BL_SPEC_PHRASES = (
+        'specification of cargo', 'cargo specification',
+        'attached specification', 'specification sheet',
+        'cargo specification sheet',
+    )
+    def _is_bl_spec_phrase(dt: str) -> bool:
+        dtl = (dt or '').lower().strip()
+        return any(p in dtl for p in _BL_SPEC_PHRASES)
+
     _prev_type = None
     for cls in classifications:
         pg_num = cls.get('page_number', 0)
@@ -3544,6 +3562,21 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         # Skip SWIFT pre-classified pages — those are already correct
         if pg_num in _swift_preclassified:
             _prev_type = doc_type
+            continue
+
+        # P198ep — BL cargo-specification rider guard. If the VLM
+        # identified this page as a "Specification of Cargo" (or
+        # equivalent BL-attachment phrase), keep that label verbatim
+        # and DO NOT apply the inherit-from-previous-page rule. The
+        # smart-merge phase (Rule 1b) will route the page to the
+        # nearest Bill of Lading packet — but only if it is still
+        # labelled as a BL-attach type when grouping runs.
+        if _is_bl_spec_phrase(doc_type):
+            _progress(f"  Page {pg_num}: BL cargo-specification rider — keeping VLM type '{doc_type}' (will route to nearest BL via smart-merge)")
+            # Do NOT update _prev_type — the rider page must not
+            # become the inheritance source for the page after it
+            # (otherwise the *next* unrelated page would inherit
+            # "specification of cargo" and break its own classification).
             continue
 
         # Track the previous page number for multi-page-marker inheritance
@@ -3656,7 +3689,17 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                     'terms and conditions of bill of lading'}
     _bl_attach_types = {'attach list', 'attached sheet', 'attached list',
                         'rider', 'bl attached sheet', 'bl rider',
-                        'attached schedule', 'attached list ym express'}
+                        'attached schedule', 'attached list ym express',
+                        # P198ep — "Specification of Cargo" pages with
+                        # "PAGE: 2 OF 2" markings are the cargo description
+                        # rider physically attached to a Bill of Lading
+                        # (the BL itself shows "*** AS PER ATTACHED
+                        # SPECIFICATION ***" in the cargo description box).
+                        # Treat them as BL attach pages so Rule 1b merges
+                        # them into the nearest BL by page distance.
+                        'specification of cargo', 'cargo specification',
+                        'attached specification', 'specification sheet',
+                        'cargo specification sheet'}
     _boe_types = {'draft bill of exchange', 'bill of exchange', 'draft',
                   'sight draft', 'usance draft', 'boe'}
     _boe_back_types = {'endorsement page'}
@@ -3856,16 +3899,21 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             _consumed.add(i)
             _progress(f"  Merged {pkt.packet_id} (Attach List pg {pkt.page_numbers}) into {_bl_pkt.packet_id} (BL pg {_bl_pkt.page_numbers[:3]})")
 
-    # Rule 1 already skipped consumed packets (via `if i in _consumed: continue`
-    # at the top of the loop) so they were never appended to merged_packets.
-    # The previous `merged_packets = [p for i, p in enumerate(merged_packets) if i not in _consumed]`
-    # was BUGGED: _consumed holds indices into the original `packets` list but
-    # the filter used them as indices into `merged_packets` (which has fewer
-    # entries and different positions). That silently dropped an unrelated
-    # packet (e.g. Document Remittance page 8 on job c4384df6) because its
-    # position in merged_packets happened to collide with a _consumed index.
-    # Just reset _consumed for Rule 3; merged_packets already excludes
-    # Rule 1 victims.
+    # P198eu — Rule 1b absorbs Attach-List packets into the nearest BL
+    # by EXTENDING the BL packet's page list AND adding the absorbed
+    # packet's index to `_consumed`. Unlike Rule 1 (BL T&C) — whose
+    # victims are skipped at the top of the FIRST loop and therefore
+    # never appended to `merged_packets` in the first place — Rule 1b
+    # runs as a SECOND pass over the already-built `merged_packets`,
+    # so its victims are still in the list. Filter them out HERE,
+    # before the reset, otherwise the same Attach Rider page lands in
+    # both the BL packet AND its own duplicate "ATTACHED RIDER" packet
+    # (observed on job 2d98b74c: page 22 appears in pkt_14 BL+Attached
+    # AND in pkt_15 ATTACHED RIDER simultaneously).
+    if _consumed:
+        merged_packets = [p for i, p in enumerate(merged_packets)
+                          if i not in _consumed]
+
     _consumed = set()  # Reset for Rule 3
 
     # Build page_text_map for Rule 3 (needed for "Page X of Y" detection)

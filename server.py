@@ -373,6 +373,24 @@ def get_extracted_text(job_id: str):
             if _pn is not None:
                 _s8_page_types[_pn] = _s8_dt
 
+    # P198er — Build a per-page lookup directly from step03's
+    # `classifications` array. The step03 inheritance pass mutates
+    # individual classification entries; the step03 PACKET
+    # `document_type` reflects the dominant type of the GROUP and may
+    # be coarser than the page-level truth (e.g. a SPEC OF CARGO rider
+    # page absorbed into a Commercial Invoice packet). When the page
+    # itself was correctly labelled by the VLM (or by a downstream
+    # surgical fixup), prefer the per-page label over the packet
+    # label so the extracted-text view shows the right thing.
+    _s3_page_types = {}
+    for _cls in s3.get('classifications', []) or []:
+        if not isinstance(_cls, dict):
+            continue
+        _pn = _cls.get('page_number')
+        _dt = (_cls.get('document_type') or '').strip()
+        if _pn is not None and _dt:
+            _s3_page_types[_pn] = _dt
+
     for pkt in s3.get('packets', []):
         if isinstance(pkt, dict):
             _bl_st = pkt.get('bl_subtype')
@@ -380,14 +398,12 @@ def get_extracted_text(job_id: str):
             _pkt_page_list = sorted(pkt.get('page_numbers', []))
             _pkt_id = pkt.get('packet_id', '')
             for pn in pkt.get('page_numbers', []):
-                _s3_dt = pkt.get('document_type', 'unknown')
-                # Prefer step08's classification when it differs —
-                # step08 has the post-VLM, post-guard label
-                # (P198dp / P198dx) which is more authoritative
-                # than step03's pre-canonicalization. Keep step03's
-                # value as the "original_type" for the audit chain.
-                _page_types[pn] = _s8_page_types.get(pn, _s3_dt)
-                _page_original_type[pn] = _s3_dt
+                _s3_pkt_dt = pkt.get('document_type', 'unknown')
+                _s3_pg_dt  = _s3_page_types.get(pn, '')
+                # Priority: step08 (post-guard) > step03 per-page > step03 packet
+                _page_types[pn] = (_s8_page_types.get(pn) or _s3_pg_dt
+                                   or _s3_pkt_dt)
+                _page_original_type[pn] = _s3_pg_dt or _s3_pkt_dt
                 _page_copy[pn] = pkt.get('copy_status', '')
                 _page_copy_label[pn] = pkt.get('copy_label', '')
                 _page_packet_pages[pn] = _pkt_page_list
@@ -3814,6 +3830,14 @@ async def override_classification(job_id: str, request: Request):
         if notes:
             pkt['notes'] = notes
 
+    # P198eq — also mutate the in-memory step_results so a subsequent
+    # GET /api/extracted-text/ (or any other view that reads in-memory
+    # cache before falling back to disk) sees the updated values.
+    # Without this, refreshing the extracted-text page after an edit
+    # showed stale data because the GET endpoint preferred the cached
+    # _jobs[job_id]['step_results']['step03'] dict over disk.
+    _mem_sr = _jobs.get(job_id, {}).get('step_results', {}) if job_id in _jobs else None
+
     # Update step03 (page classification)
     step03_path = os.path.join(results_dir, 'step03', 'step03_result.json')
     if os.path.exists(step03_path):
@@ -3832,6 +3856,9 @@ async def override_classification(job_id: str, request: Request):
                 _update_packet(pkt)
         with open(step03_path, 'w', encoding='utf-8') as f:
             json.dump(s3, f, indent=2, ensure_ascii=False)
+        # Mirror to in-memory cache
+        if _mem_sr is not None:
+            _mem_sr['step03'] = s3
 
     # Update step08 (shipping classification)
     step08_path = os.path.join(results_dir, 'step08', 'step08_result.json')
@@ -3843,6 +3870,9 @@ async def override_classification(job_id: str, request: Request):
                 _update_packet(pkt)
         with open(step08_path, 'w', encoding='utf-8') as f:
             json.dump(s8, f, indent=2, ensure_ascii=False)
+        # Mirror to in-memory cache
+        if _mem_sr is not None:
+            _mem_sr['step08'] = s8
 
     # Update step09 (reconciled packets — this is what verification reads)
     step09_path = os.path.join(results_dir, 'step09', 'step09_result.json')
@@ -3854,8 +3884,11 @@ async def override_classification(job_id: str, request: Request):
                 _update_packet(pkt)
         with open(step09_path, 'w', encoding='utf-8') as f:
             json.dump(s9, f, indent=2, ensure_ascii=False)
+        # Mirror to in-memory cache
+        if _mem_sr is not None:
+            _mem_sr['step09'] = s9
 
-    # Store in memory too
+    # Store the override audit trail in memory too
     if job_id in _jobs:
         if 'overrides' not in _jobs[job_id]:
             _jobs[job_id]['overrides'] = {}
