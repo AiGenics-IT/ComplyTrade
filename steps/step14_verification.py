@@ -86,8 +86,16 @@ DOC_TYPE_ALIASES = {
         "commercial invoice", "invoice", "tax invoice", "signed invoice",
     ],
     "insurance": [
-        "insurance policy", "insurance certificate", "insurance",
-        "insurance cover",
+        # P198dv — removed the bare "insurance" alias. Substring
+        # match against "insurance" caused any packet with the word
+        # "insurance" in its label (e.g. "Insurance Request",
+        # "Insurance Pre-Advise Notice") to spuriously match an
+        # "Insurance Policy" clause. The longer aliases below
+        # remain — they only match real insurance instruments.
+        "insurance policy", "insurance certificate",
+        "insurance cover", "marine insurance policy",
+        "marine insurance certificate",
+        "cargo insurance certificate",
     ],
     "packing list": [
         "packing list", "packing note", "packing specification",
@@ -127,6 +135,28 @@ DOC_TYPE_ALIASES = {
         "shipment advice", "shipment advise", "shipping advice",
         "shipping advise", "beneficiary shipment advice",
         "declaration of shipment", "notice of shipment",
+        # P198dv — Beneficiary's email TO insurance company + applicant
+        # (asking insurance to cover the shipment) is functionally the
+        # SHIPMENT ADVICE the LC's F46A clause demands. The VLM /
+        # step03 / step08 sometimes label these emails by their
+        # subject line ("Insurance Cover Request", "Insurance Pre-
+        # Advise Notice", "Insurance Request", etc.) instead of by
+        # their LC role. Without these aliases, F46A-4-style clauses
+        # ("...MUST BE ADVISED BY THE BENEFICIARY ... DIRECT TO
+        # <INSURER> ... COPIES OF SUCH SHIPMENT ADVICES MUST
+        # ACCOMPANY THE ORIGINAL DOCUMENTS") FAIL with "Shipment
+        # Advice missing" even when the email is physically present
+        # in the bundle.
+        "insurance request", "insurance cover request",
+        "insurance cover note request",
+        "request for insurance cover",
+        "insurance pre-advice", "insurance pre-advise",
+        "insurance pre-advice notice", "insurance pre-advise notice",
+        "insurance notification", "insurance advice",
+        "insurance advice notification",
+        "shipment notification", "shipment notification to insurance",
+        "advice of shipment to insurance",
+        "advice of shipment to insurer",
     ],
     "fax confirmation": [
         "fax confirmation", "fax report", "fax transmission",
