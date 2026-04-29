@@ -228,6 +228,23 @@ DECISIVE RULES (apply in order):
    - "DEBIT NOTE" / "CREDIT NOTE" → those exact types.
    - Page 2+ of an invoice with additional line items / totals / bank details and
      no new title → "Commercial Invoice" with is_continuation=true.
+   - DO NOT classify as Commercial Invoice when the page HEADER /
+     TITLE is "DETAILED MESSAGE" / "DETAIL MESSAGE" / "SHIPMENT
+     INFORMATION" / "BENEFICIARY'S ADVICE" / "ADVICE OF SHIPMENT"
+     even if the body contains "Invoice No." / "Invoice Value".
+     Such a page is a beneficiary's fax/email about a shipment
+     that quotes the invoice's number/value as part of the
+     shipment description — classify by the HEADER:
+       - Header "DETAILED MESSAGE" + "WE CERTIFY" / "WE ARE PLEASED
+         TO INFORM YOU OF OUR SHIPMENT" + B/L / vessel / ETA →
+         "Detailed Message" (or "Shipment Advice" if the LC's
+         required-documents list does not include "Detailed Message"
+         specifically; downstream aliases route either to F46A
+         beneficiary-certificate / shipment-advice clauses)
+       - Header "SHIPMENT ADVICE" / "ADVICE OF SHIPMENT" →
+         "Shipment Advice"
+       - Header "BENEFICIARY'S CERTIFICATE" / "WE HEREBY CERTIFY" as
+         the first line → "Beneficiary Certificate"
 
 6. Packing List: "PACKING LIST" / "PACKING SLIP" → "Packing List".
 
