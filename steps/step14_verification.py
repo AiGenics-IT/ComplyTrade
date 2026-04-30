@@ -9099,16 +9099,33 @@ def run(
                     _set(row, 'compliance', 'REVIEW')
                     _missing = []
                     if not _dr_date:
-                        _missing.append('DR receiving_date')
+                        _missing.append('Documentary Remittance receiving date')
                     if not _bl_date:
-                        _missing.append('BL onboard_date')
-                    _set(row, 'findings',
-                         f"Cannot determine staleness deterministically: {', '.join(_missing)} "
-                         f"not available on document. Stale check requires "
-                         f"DR receiving_date and BL on-board date. Manual check required. "
-                         f"Form type / blank back / house / claused signals are "
-                         f"irrelevant for staleness.")
-                    _set(row, 'result', _get(row, 'findings', ''))
+                        _missing.append('Bill of Lading on-board date')
+                    # P198fl — User-friendly REVIEW message. The previous
+                    # text leaked internal terminology (DR receiving_date,
+                    # bl_onboard_date, "Form type / blank back / house /
+                    # claused signals are irrelevant") into the report,
+                    # confusing bank checkers. Keep it short and actionable.
+                    if len(_missing) == 2:
+                        _msg = (
+                            "Cannot determine staleness automatically — "
+                            "neither the BL on-board date nor the "
+                            "Documentary Remittance receiving date is "
+                            "extractable from the documents. Manual review "
+                            "required."
+                        )
+                    elif _missing:
+                        _msg = (
+                            f"Cannot determine staleness automatically — "
+                            f"{_missing[0]} is not extractable. Manual "
+                            f"review required."
+                        )
+                    else:
+                        _msg = ("Cannot determine staleness automatically — "
+                                "manual review required.")
+                    _set(row, 'findings', _msg)
+                    _set(row, 'result',  _msg)
         except Exception as _e:
             try:
                 print(f"[P160 stale-BL] exception on row {row.get('row_id','?')}: {_e}")
@@ -9502,6 +9519,229 @@ def run(
             except Exception as _e:
                 try:
                     print(f"[P172 HS] exception on row {row.get('row_id','?')}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # ── P198fm — Deterministic NTN-number rescue ──────────────────────
+    #
+    # When the LC condition says "BL/Invoice must show NTN <num>" and
+    # the LLM FAILs because it didn't pick the NTN out of the OCR
+    # noise, but the unified_summary.references_found already carries
+    # the NTN under role=ntn_number / ntn / national_tax_number, the
+    # FAIL is a false positive. Override to PASS.
+    #
+    # Examples this rescues:
+    #   BL pkt with references_found=[{role: 'ntn_number', value: '0710106-6'}]
+    #   Invoice doc text containing "NTN: 0710106-6" but the LLM missed it
+    try:
+        def _norm_ntn(s):
+            return re.sub(r'[^0-9A-Z]', '', str(s or '').upper())
+        for row in rows:
+            try:
+                _cond_u = (_get(row, 'condition_text', '') or _get(row, 'condition', '')).upper()
+                if not re.search(r'\bNTN\b', _cond_u):
+                    continue
+                # Pull the required NTN from the condition (e.g. "0710106-6" or "2232692-8")
+                _ntn_m = re.search(r'NTN\s*(?:NO\.?|NUMBER)?\s*[:.]?\s*([0-9][0-9A-Z\-]{4,15})',
+                                   _cond_u)
+                if not _ntn_m:
+                    # Fall back: any 7-9 digit hyphenated id in condition
+                    _ntn_m = re.search(r'\b(\d{6,8}-?\d?)\b', _cond_u)
+                if not _ntn_m:
+                    continue
+                _req_ntn = _norm_ntn(_ntn_m.group(1))
+                if not _req_ntn or len(_req_ntn) < 6:
+                    continue
+                _comp = _get(row, 'compliance', '').upper()
+                if _comp not in ('FAIL', 'NOT COMPLIED', 'NON_COMPLIANT'):
+                    continue
+                _doc_t = (_get(row, 'document_checked', '') or '').lower()
+                # Search every packet of the matching doc-type for the NTN
+                _found_in = None
+                for _pkt in packets:
+                    if not isinstance(_pkt, dict):
+                        continue
+                    _pdt = (_pkt.get('document_type') or '').lower()
+                    if _doc_t and _doc_t not in _pdt and _pdt not in _doc_t:
+                        continue
+                    # 1. Check unified_summary.references_found
+                    _us = _pkt.get('unified_summary') or {}
+                    for _item in (_us.get('references_found') or []):
+                        if not isinstance(_item, dict):
+                            continue
+                        _r = str(_item.get('role', '') or '').lower()
+                        if any(k in _r for k in ('ntn', 'national_tax')):
+                            _v = _norm_ntn(_item.get('value') or _item.get('raw'))
+                            if _v and _req_ntn in _v:
+                                _found_in = 'references_found'
+                                break
+                    if _found_in:
+                        break
+                    # 2. Check raw document text (also check compact form to
+                    #    survive OCR-glued strings like "NTN0710106-6")
+                    _txt = _pkt_text(_pkt) or ''
+                    _txt_norm = _norm_ntn(_txt)
+                    if _req_ntn in _txt_norm:
+                        _found_in = 'document_text'
+                        break
+                    # 3. Hyphen / non-hyphen variant — match either way
+                    _req_no_dash = _req_ntn.replace('-', '')
+                    if _req_no_dash and _req_no_dash in _txt_norm:
+                        _found_in = 'document_text'
+                        break
+                if _found_in:
+                    _set(row, 'compliance', 'PASS')
+                    _msg = (f"NTN {_ntn_m.group(1)} found in document "
+                            f"({_found_in}). LLM verdict overridden by "
+                            f"deterministic rescue.")
+                    _set(row, 'findings', _msg)
+                    _set(row, 'result',  _msg)
+                    _set(row, 'verification_notes',
+                         f"P198fm NTN deterministic rescue: required={_req_ntn} "
+                         f"found in {_found_in}")
+                    _progress(
+                        f"  [P198fm NTN] {row.get('row_id','?')} doc={_doc_t}: "
+                        f"FAIL->PASS (NTN {_req_ntn} found in {_found_in})"
+                    )
+            except Exception as _e:
+                try:
+                    print(f"[P198fm NTN] exception on row {row.get('row_id','?')}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # ── P198fn — Deterministic English-language rescue ────────────────
+    #
+    # The LC clause "All documents must be in English" is rule-driven —
+    # the LLM often false-FAILs on documents that are clearly English
+    # because it looks for an explicit "MADE OUT IN ENGLISH" phrase
+    # rather than recognising English text. Demote FAIL->PASS when the
+    # document text scores high on English-content heuristics:
+    #   - >= 70% ASCII letter coverage (filters non-Latin scripts)
+    #   - >= 5 of the 30 most common English stop-words present
+    #
+    # Two row shapes to handle:
+    #   1. Per-doc child row — document_checked = a specific doc name,
+    #      compliance = FAIL → look up that packet, run heuristic
+    #   2. Aggregated "All Documents" parent row — document_checked =
+    #      "All Documents", compliance = FAIL, findings has
+    #      "Required value missing on: <DocType>". Parse the failing
+    #      doc names out of findings, look up each packet, run
+    #      heuristic; if ALL named docs pass, demote the parent to PASS.
+    try:
+        _STOPWORDS = {
+            'the', 'and', 'of', 'to', 'in', 'for', 'is', 'on', 'by', 'with',
+            'this', 'that', 'as', 'from', 'be', 'are', 'at', 'we', 'or', 'an',
+            'will', 'all', 'have', 'has', 'no', 'not', 'a', 'shall', 'any', 'date',
+        }
+
+        def _is_english_text(txt):
+            if not txt or len(txt) < 50:
+                return False, 0.0, 0
+            letters = sum(1 for c in txt if c.isalpha() and ord(c) < 128)
+            nonspace = sum(1 for c in txt if not c.isspace())
+            if nonspace == 0:
+                return False, 0.0, 0
+            ratio = letters / nonspace
+            words = re.findall(r'\b[a-zA-Z]{2,}\b', txt.lower())
+            stops = sum(1 for w in words if w in _STOPWORDS)
+            return (ratio >= 0.70 and stops >= 5), ratio, stops
+
+        def _find_packet_by_name(name):
+            n = (name or '').lower().strip()
+            if not n:
+                return None
+            for _pkt in packets:
+                if not isinstance(_pkt, dict):
+                    continue
+                _pdt = (_pkt.get('document_type') or '').lower().strip()
+                if n == _pdt or n in _pdt or _pdt in n:
+                    return _pkt
+            return None
+
+        for row in rows:
+            try:
+                _cond_u = (_get(row, 'condition_text', '') or _get(row, 'condition', '')).upper()
+                if 'ENGLISH' not in _cond_u or ('MADE OUT' not in _cond_u and 'LANGUAGE' not in _cond_u):
+                    continue
+                _comp = _get(row, 'compliance', '').upper()
+                if _comp not in ('FAIL', 'NOT COMPLIED', 'NON_COMPLIANT'):
+                    continue
+                _doc_t = (_get(row, 'document_checked', '') or '').lower().strip()
+
+                # ── Path 1: per-doc child row ────────────────────────
+                if _doc_t and _doc_t not in ('all documents', 'all docs', ''):
+                    _pkt = _find_packet_by_name(_doc_t)
+                    _matched_text = _pkt_text(_pkt) if _pkt else ''
+                    _ok, _ratio, _stops = _is_english_text(_matched_text)
+                    if _ok:
+                        _set(row, 'compliance', 'PASS')
+                        _msg = (f"Document text is clearly English "
+                                f"(ASCII letter ratio {_ratio*100:.0f}%, "
+                                f"{_stops} common English stop-words found). "
+                                f"LLM false-FAIL overridden by deterministic rescue.")
+                        _set(row, 'findings', _msg)
+                        _set(row, 'result',  _msg)
+                        _set(row, 'verification_notes',
+                             f"P198fn English deterministic rescue: ratio={_ratio:.2f} "
+                             f"stop_hits={_stops}")
+                        _progress(
+                            f"  [P198fn English] {row.get('row_id','?')} "
+                            f"doc={_doc_t}: FAIL->PASS (ratio {_ratio:.2f}, "
+                            f"stop_hits {_stops})"
+                        )
+                    continue
+
+                # ── Path 2: aggregated "All Documents" row ───────────
+                # Findings format: "Required value missing on: <DocA>, <DocB>. Present on: ..."
+                _findings_full = _get(row, 'findings', '') or _get(row, 'found_text', '')
+                _missing_m = re.search(
+                    r'(?:Required value missing on|missing on)\s*:\s*(.+?)\s*\.\s*'
+                    r'(?:Present on|Per-doc)',
+                    _findings_full, re.IGNORECASE,
+                )
+                if not _missing_m:
+                    continue
+                _missing_block = _missing_m.group(1)
+                # Split on commas; trim
+                _missing_docs = [s.strip() for s in re.split(r',\s*', _missing_block) if s.strip()]
+                if not _missing_docs:
+                    continue
+                # For each missing doc, run the heuristic. ALL must pass.
+                _all_english = True
+                _details = []
+                for _md in _missing_docs:
+                    _pkt = _find_packet_by_name(_md)
+                    _txt = _pkt_text(_pkt) if _pkt else ''
+                    _ok, _ratio, _stops = _is_english_text(_txt)
+                    _details.append(f"{_md}: ratio={_ratio:.2f}, stops={_stops}, "
+                                    f"english={_ok}")
+                    if not _ok:
+                        _all_english = False
+                        break
+                if _all_english:
+                    _set(row, 'compliance', 'PASS')
+                    _docs_str = ', '.join(_missing_docs)
+                    _msg = (f"All flagged documents are clearly English text "
+                            f"per deterministic heuristic ({_docs_str}). "
+                            f"LLM false-FAIL overridden by P198fn rescue — "
+                            f"the LLM looked for the literal phrase 'made out "
+                            f"in English' rather than recognising English text.")
+                    _set(row, 'findings', _msg)
+                    _set(row, 'result',  _msg)
+                    _set(row, 'verification_notes',
+                         f"P198fn English (aggregate) rescue: {' | '.join(_details)}")
+                    _progress(
+                        f"  [P198fn English] {row.get('row_id','?')} "
+                        f"All Documents: FAIL->PASS ({len(_missing_docs)} doc(s) "
+                        f"all English)"
+                    )
+            except Exception as _e:
+                try:
+                    print(f"[P198fn English] exception on row {row.get('row_id','?')}: {_e}")
                 except Exception:
                     pass
     except Exception:

@@ -1495,7 +1495,29 @@ RULES:
 2. If LC says usance terms (e.g., "90 Days after Bill of Lading Date") → the Draft must state the same tenor
 3. The tenor wording on the Draft must be IDENTICAL to the LC requirement
 4. If usance, check that the maturity date calculation is correct based on the trigger event
-5. Extract: the exact tenor/payment terms stated on the Draft""",
+5. Extract: the exact tenor/payment terms stated on the Draft
+
+CRITICAL — PRE-PRINTED PLACEHOLDERS (P198fk):
+Many printed Draft / Bill-of-Exchange forms carry a generic template
+phrase like "At Sight / XXX days of this First of Exchange" or
+"At Sight / ___ days after sight". The "XXX" / "___" / "..." /
+blank-line tokens in such phrases are NOT actual day counts — they are
+empty placeholder slots that the beneficiary leaves uncompleted when
+the LC is sight-payable. Treat these as a SIGHT draft:
+
+  - "AT SIGHT / XXX DAYS"     → SIGHT (XXX is a placeholder)
+  - "AT SIGHT / ___ DAYS"     → SIGHT (underscores = empty slot)
+  - "AT SIGHT / ... DAYS"     → SIGHT (ellipsis = empty slot)
+  - "At Sight"                → SIGHT
+  - "AT 60 DAYS SIGHT"        → 60-DAY USANCE  (a real number)
+  - "AT 90 DAYS BL DATE"      → 90-DAY USANCE  (a real number)
+
+A draft is a USANCE draft ONLY when a specific number of days (e.g.
+30 / 60 / 90 / 120 / 180 / 270 / 360) is printed in place of the
+placeholder. If the slot is XXX / blank / dashes, the draft is sight.
+
+So a draft saying "At Sight / XXX days of this First of Exchange"
+matches an LC that says "AT SIGHT" → PASS, NOT FAIL.""",
                 "doc_text": _get_doc_text(draft),
                 "image_path": (draft.get('page_image_paths', [None]) or [None])[0],
                 "clause_ref": "F42C", "condition": f"Draft tenor must match LC: {tenor}",
@@ -2523,6 +2545,13 @@ def run(
             severity=task.get('severity', 'hard'),
         )
 
+    # P198fk — task->source-doc lookup so the draft_tenor post-check
+    # can re-read the actual draft text without re-routing through the
+    # task list.
+    _task_doctext_by_id: Dict[int, str] = {}
+    for _t in all_tasks:
+        if _t.get('check_id') == 'draft_tenor':
+            _task_doctext_by_id[id(_t)] = _t.get('doc_text', '') or ''
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_VLM) as executor:
         futures = {executor.submit(_execute_task, t): t for t in all_tasks}
         for future in as_completed(futures):
@@ -2538,6 +2567,70 @@ def run(
                     findings=f"Error: {str(e)[:100]}", result="Check failed",
                     compliance="REVIEW",
                 ))
+
+    # ── P198fk — Draft tenor placeholder rescue ──
+    # When the LC tenor (F42C) is "AT SIGHT" and the draft text shows
+    # "AT SIGHT / XXX DAYS" / "AT SIGHT / ___ DAYS" / similar template
+    # phrases with a non-numeric placeholder where the day count would
+    # go, the LLM frequently FAILs the row reading "XXX DAYS" as a
+    # conflicting tenor. The placeholders are NOT real day counts —
+    # they're the printed empty slot the beneficiary leaves blank for
+    # sight drafts. Override the FAIL to PASS in that case.
+    try:
+        _f42c_text = (lc_fields.get('42C', lc_fields.get('F42C', '')) or '').upper()
+        _is_sight_lc = bool(re.search(r'\bAT\s*SIGHT\b', _f42c_text))
+        if _is_sight_lc:
+            # Match the draft tasks that ran by looking up our cached doc-text
+            for _t in all_tasks:
+                if _t.get('check_id') != 'draft_tenor':
+                    continue
+                _draft_text = (_t.get('doc_text') or '').upper()
+                # Has explicit "AT SIGHT" wording on the draft
+                _has_sight = bool(re.search(r'\bAT\s+SIGHT\b', _draft_text))
+                if not _has_sight:
+                    continue
+                # Pattern: "AT SIGHT / <placeholder> DAYS" — placeholder is
+                # XXX / X+ / ___ / dashes / dots — NOT a real number.
+                # Real usance: "AT 60 DAYS SIGHT", "AT 90 DAYS BL DATE".
+                _has_placeholder = bool(re.search(
+                    r'AT\s+SIGHT\s*[/\\\-]?\s*'
+                    r'(?:X{2,}|_{2,}|-{2,}|\.{2,3}|\s*___+\s*|BLANK)\s*DAYS?',
+                    _draft_text,
+                ))
+                # Real-number usance — explicitly a number of days
+                _has_real_days = bool(re.search(
+                    r'AT\s+(\d{1,3})\s*DAYS?\s*(?:AFTER\s*)?(?:SIGHT|B/L|BL|'
+                    r'BILL\s+OF\s+LADING|SHIPMENT)',
+                    _draft_text,
+                ))
+                if _has_placeholder and not _has_real_days:
+                    # Find the matching FAIL row in all_results and override
+                    for r in all_results:
+                        if (r.check_id == 'draft_tenor'
+                                and r.document_checked == _t.get('doc_type')
+                                and (r.compliance or '').upper() == 'FAIL'):
+                            r.compliance = 'PASS'
+                            r.result = (
+                                "Draft tenor matches LC: AT SIGHT "
+                                "(placeholder 'XXX days' / '___ days' on the "
+                                "form is an empty slot, NOT a real day count)"
+                            )
+                            r.findings = (
+                                f"Draft shows 'AT SIGHT' with template "
+                                f"placeholder for usance days — sight payment."
+                            )
+                            r.confidence = 1.0
+                            progress_fn(
+                                f"  [draft_tenor] [{r.document_checked}]: "
+                                f"FAIL->PASS (P198fk placeholder rescue — "
+                                f"'XXX days' template, not a real tenor)"
+                            )
+                            break
+    except Exception as _e_fk:
+        try:
+            print(f"[P198fk draft-tenor-rescue] {_e_fk}")
+        except Exception:
+            pass
 
     # P198dd — Removed cross-link "Late Presentation → LC Expired".
     # Late presentation (>21 days from shipment) is a Art

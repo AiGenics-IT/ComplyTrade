@@ -2731,8 +2731,11 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                     continue
 
         # Pattern B: "REFER CLAUSE NO.X OF FIELD YY" / "PLS REFER CLAUSE NO.X OF FIELD YY"
+        # P198fr — make 'NO.' optional so 'REFER CLAUSE 10 OF FIELD 47A'
+        # (no 'NO.') also resolves correctly. Same regex handles
+        # "CLAUSE NO. 10", "CLAUSE NO.10", "CLAUSE 10".
         _clause_ref_m = re.search(
-            r'(?:PLS\s+)?REFER\s+(?:TO\s+)?CLAUSE\s+NO\.?\s*(\d+)\s+OF\s+FIELD\s+(\d{2}[A-Z]?)',
+            r'(?:PLS\s+)?REFER\s+(?:TO\s+)?CLAUSE\s+(?:NO\.?\s*)?(\d+)\s+OF\s+FIELD\s+(\d{2}[A-Z]?)',
             _val, re.IGNORECASE)
         if _clause_ref_m:
             _clause_num = int(_clause_ref_m.group(1))
@@ -2769,6 +2772,46 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                     # e.g., clause 10 might be labelled differently
                     _progress(f"  F{_tag}: clause ({_clause_num}) not found in F{_ref_tag} ({len(_ref_clauses)} clauses)")
             continue
+
+        # P198fr — "REFER FIELD YY CLAUSE N" / "REFER FIELD YY CLAUSE NO. N"
+        # MUST be tried BEFORE the bare "REFER FIELD YY" pattern below,
+        # otherwise C2's whole-field-replacement fires first and wipes
+        # out F48's content (replacing it with the entire F47A body
+        # instead of only clause N). Real example: F48 contains
+        # "Narrative: /REFER FIELD 47A CLAUSE 10" — this used to
+        # collapse F48 to all of F47A. Now it correctly extracts
+        # clause 10 only.
+        _rev_clause_m = re.search(
+            r'REFER\s+FIELD\s+(\d{2}[A-Z]?)\s+CLAUSE\s+(?:NO\.?\s*)?(\d+)',
+            _val, re.IGNORECASE)
+        if _rev_clause_m:
+            _ref_tag = _rev_clause_m.group(1)
+            _clause_num = int(_rev_clause_m.group(2))
+            _ref_val = _cf.get(_ref_tag, '')
+            if _ref_val:
+                _ref_clauses = _split_into_clauses(_ref_tag, _ref_val)
+                _resolved_clause = None
+                for _rc in _ref_clauses:
+                    if _rc.clause_number == _clause_num:
+                        _resolved_clause = _rc.text.strip()
+                        break
+                if _resolved_clause:
+                    # Replace the reference marker with the resolved
+                    # clause text — keep the surrounding F48 wording
+                    # ("Period for Presentation ...", "Days: 21",
+                    # "Narrative: ") intact.
+                    _new_val = (
+                        _val[:_rev_clause_m.start()]
+                        + _resolved_clause
+                        + _val[_rev_clause_m.end():]
+                    )
+                    _cf[_tag] = re.sub(r'\n{3,}', '\n\n', _new_val).strip()
+                    _progress(
+                        f"  F{_tag}: P198fr resolved CLAUSE {_clause_num} from "
+                        f"F{_ref_tag} (substring replace, kept F{_tag} "
+                        f"surrounding text)"
+                    )
+                    continue
 
         # Pattern C2: "SEE FIELD YY" / "AS PER FIELD YY" / "REFER TO FIELD YY"
         # (no clause number)
@@ -2815,7 +2858,14 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 re.search(r'(?m)^\s*\d+\s*[\)\.]\s', _val)
                 or len(_val) > 200
             )
-            if (not _is_multi_clause) and len(_val_residual) <= 30:
+            # P198fr — Additional guard: if the value mentions
+            # "CLAUSE <num>" anywhere, the reference is to a SPECIFIC
+            # clause within FYY, not the whole field. Don't replace
+            # the entire current field with all of FYY's content.
+            _has_clause_ref = bool(re.search(
+                r'CLAUSE\s+(?:NO\.?\s*)?\d+', _val, re.IGNORECASE))
+            if (not _is_multi_clause) and len(_val_residual) <= 30 \
+                    and not _has_clause_ref:
                 _ref_tag = _simple_ref_m.group(1)
                 _ref_val = _cf.get(_ref_tag, '')
                 if _ref_val:

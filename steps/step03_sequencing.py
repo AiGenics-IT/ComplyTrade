@@ -3185,57 +3185,75 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         # Not in a Fusion group — use direct SWIFT pattern detection
         st = _page_swift_type.get(pg_num, '')
 
+        # P198fo — Track previous-page SWIFT type to detect consecutive
+        # same-type pages and force is_continuation=True. Without this,
+        # an MT700 LC that spans 4 pages but has its "Message Details"
+        # header only on page 1 (BAHL group covers only page 1) ends
+        # up as 4 separate packets — pages 2/3/4 each get 'LC' with
+        # is_continuation=False from the direct SWIFT pattern detector,
+        # so step03's _group_into_packets creates a fresh packet for
+        # each. The fix: when the previous page was the SAME swift type,
+        # mark this page as a continuation.
+        def _is_swift_continuation(swift_type):
+            """True iff prev_swift_type equals the current swift_type."""
+            return bool(prev_swift_type) and prev_swift_type == swift_type
+
         if st == 'Amendment':
+            _is_cont = _is_swift_continuation('Amendment')
             _swift_preclassified[pg_num] = {
                 'page_number': pg_num, 'document_type': 'Amendment',
-                'is_continuation': False, 'confidence': 0.99,
+                'is_continuation': _is_cont, 'confidence': 0.99,
                 'stamps': [], 'signatures': [], 'seals': [], 'logos': [],
                 'copy_status': 'original', 'copy_label': '', 'marking_status': 'unsigned',
                 'doc_hint': 'SWIFT MT707 Amendment detected from text patterns',
             }
             prev_swift_type = 'Amendment'
-            _progress(f"  Page {pg_num}: PRE-CLASSIFIED as Amendment (SWIFT pattern)")
+            _progress(f"  Page {pg_num}: PRE-CLASSIFIED as Amendment{' (cont)' if _is_cont else ''} (SWIFT pattern)")
         elif st == 'LC':
+            _is_cont = _is_swift_continuation('LC')
             _swift_preclassified[pg_num] = {
                 'page_number': pg_num, 'document_type': 'LC',
-                'is_continuation': False, 'confidence': 0.99,
+                'is_continuation': _is_cont, 'confidence': 0.99,
                 'stamps': [], 'signatures': [], 'seals': [], 'logos': [],
                 'copy_status': 'original', 'copy_label': '', 'marking_status': 'unsigned',
                 'doc_hint': 'SWIFT MT700 LC detected from text patterns',
             }
             prev_swift_type = 'LC'
-            _progress(f"  Page {pg_num}: PRE-CLASSIFIED as LC (SWIFT pattern)")
+            _progress(f"  Page {pg_num}: PRE-CLASSIFIED as LC{' (cont)' if _is_cont else ''} (SWIFT pattern)")
         elif st == 'MT799':
+            _is_cont = _is_swift_continuation('MT799')
             _swift_preclassified[pg_num] = {
                 'page_number': pg_num, 'document_type': 'MT799',
-                'is_continuation': False, 'confidence': 0.99,
+                'is_continuation': _is_cont, 'confidence': 0.99,
                 'stamps': [], 'signatures': [], 'seals': [], 'logos': [],
                 'copy_status': 'original', 'copy_label': '', 'marking_status': 'unsigned',
                 'doc_hint': 'SWIFT MT799 Free Format Message',
             }
             prev_swift_type = 'MT799'
-            _progress(f"  Page {pg_num}: PRE-CLASSIFIED as MT799")
+            _progress(f"  Page {pg_num}: PRE-CLASSIFIED as MT799{' (cont)' if _is_cont else ''}")
         elif st == 'MT999':
+            _is_cont = _is_swift_continuation('MT999')
             _swift_preclassified[pg_num] = {
                 'page_number': pg_num, 'document_type': 'MT999',
-                'is_continuation': False, 'confidence': 0.99,
+                'is_continuation': _is_cont, 'confidence': 0.99,
                 'stamps': [], 'signatures': [], 'seals': [], 'logos': [],
                 'copy_status': 'original', 'copy_label': '', 'marking_status': 'unsigned',
                 'doc_hint': 'SWIFT MT999 Free Format Message',
             }
             prev_swift_type = 'MT999'
-            _progress(f"  Page {pg_num}: PRE-CLASSIFIED as MT999")
+            _progress(f"  Page {pg_num}: PRE-CLASSIFIED as MT999{' (cont)' if _is_cont else ''}")
         elif st.startswith('MT') and st not in ('MT799', 'MT999'):
             # BAHL informational MT types: MT730, MT754, MT940, MT740, MT747, etc.
+            _is_cont = _is_swift_continuation(st)
             _swift_preclassified[pg_num] = {
                 'page_number': pg_num, 'document_type': st,
-                'is_continuation': False, 'confidence': 0.99,
+                'is_continuation': _is_cont, 'confidence': 0.99,
                 'stamps': [], 'signatures': [], 'seals': [], 'logos': [],
                 'copy_status': 'original', 'copy_label': '', 'marking_status': 'unsigned',
                 'doc_hint': f'SWIFT {st} (BAHL multi-message)',
             }
             prev_swift_type = st
-            _progress(f"  Page {pg_num}: PRE-CLASSIFIED as {st}")
+            _progress(f"  Page {pg_num}: PRE-CLASSIFIED as {st}{' (cont)' if _is_cont else ''}")
         elif st == '_swift_continuation' and prev_swift_type:
             _swift_preclassified[pg_num] = {
                 'page_number': pg_num, 'document_type': prev_swift_type,
@@ -3872,6 +3890,19 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
 
         merged_packets.append(pkt)
 
+    # P198fq — Reset _consumed before Rule 1b. The Rule 1 (BL T&C) loop
+    # populated _consumed with indices into the ORIGINAL `packets` list
+    # — those victims were already filtered (skipped at the top of the
+    # Rule 1 loop, never appended to merged_packets). Re-using that
+    # _consumed for the Rule 1b loop is a CATEGORY ERROR: the SAME
+    # numeric index addresses TWO different list positions in `packets`
+    # vs `merged_packets`. Reusing it caused legitimate Rule 1b
+    # candidates to be skipped at the top of the loop, AND caused the
+    # P198eu post-filter to remove WRONG packets from `merged_packets`
+    # (e.g. on job f2e3d79c, BL T&C pages 20-25 vanished entirely
+    # because Rule 1's _consumed indices collided with merged_packets
+    # positions of unrelated packets).
+    _consumed = set()
     # Rule 1b: Attach List → merge into nearest BL (before OR after).
     # "Attach List" / "Attached Sheet" / "Attached List YM Express" is
     # a rider page of a Bill of Lading containing cargo details that

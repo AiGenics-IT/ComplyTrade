@@ -309,6 +309,76 @@ def _reconcile_single_packet(packet: dict, expected_docs: List[dict], packet_ind
                     reclass_conf = float(vlm_data.get('reclassify_confidence', 0.0))
                     reclass_reason = vlm_data.get('reclassify_reason', '')
 
+                    # ── P198fp — Reclassification veto for specific
+                    # commodity / cert names that the VLM tends to
+                    # over-collapse into generic buckets.
+                    #
+                    # Example: a packet originally classified as
+                    #   "COAL SPECIFICATIONS AT THE LOADING PORT"
+                    # is a SPECIFIC named report — coal-trade convention
+                    # for the load-port quality / sampling cert. Step 9
+                    # was reclassifying it to the generic "Inspection
+                    # Certificate" bucket because the LC's expected-doc
+                    # list happens to contain that name. That collapse
+                    # loses the trade-specific context and breaks the
+                    # coal-quality verifier (P198fb) which keys off the
+                    # specific name.
+                    #
+                    # Veto rule: when the ORIGINAL doc_type contains a
+                    # commodity / cert-family marker (COAL, IRON ORE,
+                    # PETROLEUM, SUGAR, GRAIN, FERTILIZER, DRAFT SURVEY,
+                    # SAMPLING, ANALYSIS, WEIGHT, QUALITY) AND the
+                    # proposed new_type is a generic family bucket
+                    # (Inspection Certificate, Quality Certificate,
+                    # Survey Report, Test Certificate, Quantity
+                    # Certificate, Generic Certificate), reject the
+                    # reclassification. The original specific name is
+                    # the trade-finance truth.
+                    _orig_u = (doc_type or '').upper()
+                    _new_u  = (new_type or '').upper()
+                    _SPECIFIC_MARKERS = (
+                        'COAL', 'IRON ORE', 'PETROLEUM', 'CRUDE',
+                        'SUGAR', 'WHEAT', 'BARLEY', 'CORN', 'RICE',
+                        'GRAIN', 'OILSEED', 'PALM', 'FERTILIZER',
+                        'UREA', 'CEMENT', 'CLINKER', 'STEEL',
+                        'PETCOKE', 'LIGNITE', 'BITUMINOUS',
+                        'DRAFT SURVEY', 'SAMPLING', 'ANALYSIS',
+                        'WEIGHT', 'CALORIFIC', 'PROXIMATE',
+                        'ULTIMATE', 'SPECIFICATION',
+                    )
+                    _GENERIC_BUCKETS = (
+                        'INSPECTION CERTIFICATE',
+                        'QUALITY CERTIFICATE',
+                        'TEST CERTIFICATE',
+                        'GENERIC CERTIFICATE',
+                        'CERTIFICATE',  # very generic — only triggers if BOTH conditions met
+                        'SURVEY REPORT',
+                        'INSPECTION REPORT',
+                        'QUANTITY CERTIFICATE',
+                    )
+                    _is_specific_orig = any(m in _orig_u for m in _SPECIFIC_MARKERS)
+                    _is_generic_new  = any(g == _new_u or _new_u.endswith(' ' + g)
+                                           or _new_u.startswith(g + ' ') or _new_u == g
+                                           for g in _GENERIC_BUCKETS)
+                    # Only veto when the NEW type is PURELY generic — if
+                    # the new type itself carries a commodity / cert
+                    # marker (e.g. "Coal Quality Certificate"), trust
+                    # it; the reclass is preserving specificity.
+                    _new_also_specific = any(m in _new_u for m in _SPECIFIC_MARKERS)
+                    if _is_specific_orig and _is_generic_new and not _new_also_specific:
+                        change_log.append(asdict(ChangeLogEntry(
+                            field="document_type_reclassify_vetoed",
+                            old_value=doc_type,
+                            new_value=new_type,
+                            reason=("P198fp veto: original name carries a "
+                                    "specific commodity/cert marker; refusing "
+                                    "to collapse to generic bucket '%s'. "
+                                    "Reason given: %s" % (new_type, reclass_reason)),
+                            timestamp=time.time(),
+                        )))
+                        # Skip the reclass — keep the original doc_type.
+                        new_type = ''   # disable the apply block below
+
                     if new_type and reclass_conf > 0.7 and new_type != doc_type:
                         previous_type = doc_type
                         doc_type = new_type
