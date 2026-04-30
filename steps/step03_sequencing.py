@@ -3645,6 +3645,40 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             # Check if this page has its own "Page X of Y" marker
             _has_page_xy = pg_num in _page_of_total
 
+            # P198fs — Distinct-doc-family hint patterns (defined once
+            # here so BOTH branches below — multi-page-XY and no-XY —
+            # can apply the same hint-veto logic.)
+            _DISTINCT_DOC_HINT_PATTERNS = (
+                'advice of shipment', 'shipment advice', 'shipping advice',
+                # P198gc — Shipment Advice phrasings the VLM often
+                # produces in doc_hints when classifying advice docs:
+                'advised to applicant', 'advised to the applicant',
+                'advice to applicant', 'notification to applicant',
+                'shipment under credit', 'details of shipment',
+                'shipment notification', 'shipment information',
+                'after shipment', 'shipment details under credit',
+                'sampling and analysis', 'certificate of analysis',
+                'cert of analysis', 'analysis certificate',
+                'sampling', 'analysis results',
+                'certificate of weight', 'cert of weight', 'weight certificate',
+                'confirming weight', 'independent surveyor',
+                'certificate of origin', 'cert of origin',
+                'phytosanitary', 'fumigation', 'health certificate',
+                'sanitary certificate',
+                'inspection certificate', 'pre-shipment inspection',
+                'insurance certificate', 'insurance policy', 'cover note',
+                'beneficiary certificate', 'beneficiary cert',
+                'shipping company certificate',
+                'draft survey', 'load port survey', 'discharge port survey',
+                'commercial invoice', 'proforma invoice', 'tax invoice',
+                'packing list', 'weight list', 'cargo manifest',
+                'bill of exchange', 'draft bill of exchange',
+                'freight invoice',
+                'documentary remittance', 'covering schedule',
+                'schedule of documents',
+                'forwarding letter', 'covering letter', 'cover letter',
+            )
+
             if _has_page_xy:
                 _x, _y = _page_of_total[pg_num]
                 # Multi-page signal is authoritative for continuation decisions.
@@ -3655,8 +3689,48 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                 _prev_xy = _page_of_total.get(_prev_pg_num)
                 if _x > 1 and _prev_xy and _prev_xy[1] == _y and _prev_xy[0] == _x - 1:
                     if doc_type_lower != _prev_type.lower():
-                        _progress(f"  Page {pg_num}: MULTI-PAGE CONTINUATION (Page {_x} of {_y}): '{doc_type}' → '{_prev_type}' (inherits from Page {_x-1} of {_y})")
-                        cls['document_type'] = _prev_type
+                        # P198fs (multi-page-XY variant) — same hint-veto
+                        # we apply to the no-Page-X-of-Y branch. When the
+                        # VLM hint clearly describes a different doc
+                        # family (Cert of Weight, Shipment Advice, etc.)
+                        # AND prev/curr are different families, the
+                        # spurious "Page X of Y" pagination (often from
+                        # an Alliance archive footer, not the document's
+                        # own page count) should NOT be allowed to
+                        # override the VLM's distinct classification.
+                        _doc_hint_lower_xy = (cls.get('doc_hint') or '').lower()
+                        _hint_distinct_xy = any(p in _doc_hint_lower_xy
+                            for p in _DISTINCT_DOC_HINT_PATTERNS)
+                        if not _hint_distinct_xy:
+                            # Fuzzy fallback (mirrors no-XY branch)
+                            if (re.search(r'\bsampling\s*,?\s*and\s*\banalysis\b', _doc_hint_lower_xy)
+                                or re.search(r'\binspection\s*,?\s*sampling\b', _doc_hint_lower_xy)
+                                or re.search(r'\bweight\s*,?\s*and\s*\bquality\b', _doc_hint_lower_xy)):
+                                _hint_distinct_xy = True
+                        def _doc_family_xy(text):
+                            if not text: return ''
+                            t = text.lower()
+                            for p in _DISTINCT_DOC_HINT_PATTERNS:
+                                if p in t:
+                                    return p
+                            return ''
+                        _prev_family_xy = _doc_family_xy(_prev_type)
+                        _curr_family_xy = _doc_family_xy(doc_type)
+                        _same_family_xy = (bool(_prev_family_xy) and
+                                            _prev_family_xy == _curr_family_xy)
+                        if _hint_distinct_xy and not _same_family_xy:
+                            _progress(
+                                f"  Page {pg_num}: P198fs hint-veto (Page "
+                                f"{_x} of {_y}) — VLM hint indicates "
+                                f"distinct family; keeping VLM type "
+                                f"'{doc_type}' instead of inheriting "
+                                f"'{_prev_type}'"
+                            )
+                            cls['is_continuation'] = False
+                            _prev_type = doc_type
+                        else:
+                            _progress(f"  Page {pg_num}: MULTI-PAGE CONTINUATION (Page {_x} of {_y}): '{doc_type}' → '{_prev_type}' (inherits from Page {_x-1} of {_y})")
+                            cls['document_type'] = _prev_type
                     # Keep _prev_type unchanged so subsequent pages of the
                     # same multi-page doc also inherit correctly.
                 else:
@@ -3678,10 +3752,82 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                              'back page', 'reverse page')
                 _prev_is_usable = _prev_type and _prev_type.lower().strip() not in _BAD_PREV
                 _this_is_unknown = doc_type_lower in ('unknown', 'continuation', 'continuation sheet', '')
+
+                # P198fs — Hint-based inheritance veto. When the VLM
+                # gave this page a CONCRETE doc_type that differs from
+                # the previous page's type AND the doc_hint clearly
+                # describes a different document family (Shipment
+                # Advice / Cert of Analysis / Cert of Weight / etc.),
+                # the cont=True flag is spurious — the VLM's
+                # classification supersedes the inheritance. Without
+                # this veto, pages 23/24/25 of a real coal-LC bundle
+                # got wrongly relabelled as "BL Conditions of Carriage"
+                # because pages 18-22 (real T&C) immediately preceded
+                # them — losing the Shipment Advice / Sampling /
+                # Weight certs that came after.
+                # P198fs — _DISTINCT_DOC_HINT_PATTERNS is now defined
+                # ONCE above so both branches share it.
+                # Substring-OR-regex matcher — also catch "sampling, and
+                # analysis" (with comma) and similar variants the VLM
+                # uses when it pluralises / commaifies the noun phrase.
+                _doc_hint_lower = (cls.get('doc_hint') or '').lower()
+                _hint_indicates_distinct = any(
+                    p in _doc_hint_lower for p in _DISTINCT_DOC_HINT_PATTERNS
+                )
+                if not _hint_indicates_distinct:
+                    # Fuzzy fallback: "<param>,? and <param>" patterns
+                    if re.search(r'\bsampling\s*,?\s*and\s*\banalysis\b',
+                                 _doc_hint_lower):
+                        _hint_indicates_distinct = True
+                    elif re.search(r'\binspection\s*,?\s*sampling\b',
+                                   _doc_hint_lower):
+                        _hint_indicates_distinct = True
+                    elif re.search(r'\bweight\s*,?\s*and\s*\bquality\b',
+                                   _doc_hint_lower):
+                        _hint_indicates_distinct = True
+                # P198fs — Determine whether prev_type and current
+                # doc_type are in the SAME distinct family. If yes,
+                # don't veto (consecutive Cert of Origin pages keep
+                # inheriting). If they're in DIFFERENT distinct
+                # families (e.g. CI -> Insurance Cert), veto so the
+                # new family starts a new packet.
+                def _doc_family(text):
+                    """Return the highest-priority pattern that matches the
+                    text, or '' if none — used to compare same-vs-different
+                    family between prev_type and doc_type."""
+                    if not text:
+                        return ''
+                    t = text.lower()
+                    for p in _DISTINCT_DOC_HINT_PATTERNS:
+                        if p in t:
+                            return p
+                    return ''
+                _prev_family = _doc_family(_prev_type)
+                _curr_family = _doc_family(doc_type)
+                _prev_is_distinct_family = bool(_prev_family) and _prev_family == _curr_family
+
                 if _prev_is_usable and _this_is_unknown:
                     # VLM produced unknown on a continuation — inherit.
                     _progress(f"  Page {pg_num}: CONTINUATION type fix: '{doc_type}' → '{_prev_type}' (inherits from previous page)")
                     cls['document_type'] = _prev_type
+                elif (_prev_is_usable and doc_type_lower != _prev_type.lower()
+                      and _hint_indicates_distinct
+                      and not _prev_is_distinct_family):
+                    # P198fs — VLM hint clearly says a different doc
+                    # family. Trust the VLM's classification, drop the
+                    # cont=True inheritance.
+                    _progress(
+                        f"  Page {pg_num}: P198fs hint-veto — VLM hint "
+                        f"'{_doc_hint_lower[:60]}' indicates distinct "
+                        f"doc family; keeping VLM type '{doc_type}' "
+                        f"instead of inheriting '{_prev_type}'"
+                    )
+                    # Cancel the cont flag so the packet grouper starts a
+                    # new packet for this page.
+                    cls['is_continuation'] = False
+                    # Update _prev_type forward so subsequent pages
+                    # of this new doc-class continue correctly.
+                    _prev_type = doc_type
                 elif _prev_is_usable and doc_type_lower != _prev_type.lower():
                     # VLM gave it a different concrete type — still
                     # inherit because is_continuation=True means the

@@ -606,6 +606,32 @@ def _find_matching_docs(doc_to_check: str, packets: list) -> list:
     # If the target IS a transmission doc, skip the exclusion — we
     # actually want to find the covering letter in that case.
     _target_is_transmission = any(tok in target for tok in _TRANSMISSION_DOC_TOKENS)
+    # P198fy — Ambiguous-target guard. Some target words are too short or
+    # conflict with everyday language used on other docs:
+    #   • 'draft'   → also appears in 'draft survey' on Weight Certificates
+    #                  (cargo measurement method) and 'draft of vessel'
+    #                  on shipping reports
+    #   • 'bill'    → appears in 'bill of lading'
+    #   • 'note'    → appears in many docs as a general English word
+    # For such targets, Tier 4 must require a MULTI-WORD alias (e.g.
+    # 'bill of exchange') rather than the bare word, otherwise the
+    # weight cert / BL / etc. is wrongly matched as a Draft / Note.
+    _AMBIGUOUS_BARE_TARGETS = {
+        'draft': ('bill of exchange', 'draft bill', 'sight draft',
+                  'usance draft', 'time draft', 'tenor draft',
+                  'first of exchange', 'second of exchange',
+                  'drawn on', 'drawn at', 'pay against this'),
+        'bill': ('bill of exchange', 'bill of lading',),
+        'note': ('debit note', 'credit note', 'cover note',
+                 'promissory note',),
+        'letter': ('forwarding letter', 'cover letter', 'covering letter',
+                   'letter of indemnity', 'letter of guarantee',),
+    }
+    _ambig_phrases = None
+    for _bare in _AMBIGUOUS_BARE_TARGETS:
+        if target == _bare or target.startswith(_bare + ' '):
+            _ambig_phrases = _AMBIGUOUS_BARE_TARGETS[_bare]
+            break
     for pkt in packets:
         if not pkt:
             continue
@@ -620,6 +646,12 @@ def _find_matching_docs(doc_to_check: str, packets: list) -> list:
             continue
         # Search the first 2000 chars (header area) for the target name
         header = pkt_text[:2000]
+        # P198fy — for ambiguous targets, require the multi-word
+        # disambiguating phrase. The bare word alone is not enough.
+        if _ambig_phrases is not None:
+            if any(_p in header for _p in _ambig_phrases):
+                matches.append(pkt if isinstance(pkt, dict) else asdict(pkt))
+            continue
         for term in _text_search_terms:
             if len(term) >= 4 and term in header:
                 matches.append(pkt if isinstance(pkt, dict) else asdict(pkt))
@@ -9593,9 +9625,8 @@ def run(
                         break
                 if _found_in:
                     _set(row, 'compliance', 'PASS')
-                    _msg = (f"NTN {_ntn_m.group(1)} found in document "
-                            f"({_found_in}). LLM verdict overridden by "
-                            f"deterministic rescue.")
+                    _msg = (f"NTN {_ntn_m.group(1)} is present in the "
+                            f"document.")
                     _set(row, 'findings', _msg)
                     _set(row, 'result',  _msg)
                     _set(row, 'verification_notes',
@@ -9679,10 +9710,9 @@ def run(
                     _ok, _ratio, _stops = _is_english_text(_matched_text)
                     if _ok:
                         _set(row, 'compliance', 'PASS')
-                        _msg = (f"Document text is clearly English "
+                        _msg = (f"Document is in English "
                                 f"(ASCII letter ratio {_ratio*100:.0f}%, "
-                                f"{_stops} common English stop-words found). "
-                                f"LLM false-FAIL overridden by deterministic rescue.")
+                                f"{_stops} common English stop-words found).")
                         _set(row, 'findings', _msg)
                         _set(row, 'result',  _msg)
                         _set(row, 'verification_notes',
@@ -9725,11 +9755,8 @@ def run(
                 if _all_english:
                     _set(row, 'compliance', 'PASS')
                     _docs_str = ', '.join(_missing_docs)
-                    _msg = (f"All flagged documents are clearly English text "
-                            f"per deterministic heuristic ({_docs_str}). "
-                            f"LLM false-FAIL overridden by P198fn rescue — "
-                            f"the LLM looked for the literal phrase 'made out "
-                            f"in English' rather than recognising English text.")
+                    _msg = (f"All flagged documents are in English "
+                            f"({_docs_str}).")
                     _set(row, 'findings', _msg)
                     _set(row, 'result',  _msg)
                     _set(row, 'verification_notes',
@@ -10999,8 +11026,23 @@ def run(
                     # "AS AGENTS" appears on BL but without a
                     # qualifying "MASTER" / "CARRIER" / "OWNER"
                     # / "SHIPPING LINE" within ~120 chars AFTER
-                    # the "AS AGENT" phrase. Check every occurrence —
-                    # if any "AS AGENT" is unqualified, flag as house.
+                    # the "AS AGENT" phrase.
+                    #
+                    # P198fx — Tightened to avoid false-house-BL flags.
+                    # The previous logic flagged the BL as house if ANY
+                    # "AS AGENT" anywhere in the doc was unqualified —
+                    # but stray "AS AGENT" in legal boilerplate (T&C
+                    # clauses) on the back of the BL would trip the
+                    # flag even on a properly-signed BL. Two fixes:
+                    #   1. Restrict the scan to the LAST 40% of the
+                    #      document (signature block region) OR within
+                    #      ±300 chars of a signature marker — same
+                    #      proximity guard as _CAPACITY_AFFIRMS.
+                    #   2. If at least one PROPERLY-QUALIFIED
+                    #      "AS AGENT FOR THE MASTER/CARRIER/OWNER" is
+                    #      found near the signature block, do NOT flag
+                    #      bare_agent — boilerplate hits in T&C are
+                    #      irrelevant once the signing block is proven.
                     _bare_agent = False
                     _QUALIFIERS = (
                         'MASTER', 'CARRIER', 'OWNER', 'OWNERS',
@@ -11012,16 +11054,41 @@ def run(
                         r'\bAS\s+AGENTS?\b',
                         flags=re.IGNORECASE,
                     )
+                    _bare_unqualified_in_sig_zone = False
+                    _qualified_in_sig_zone = False
+                    _doc_len_for_zone = len(_doc_text_up)
                     for _m in _agent_re.finditer(_doc_text_up):
+                        _start = _m.start()
                         _end = _m.end()
+                        # Only consider matches in the signing zone
+                        _in_last = (_start >= int(_doc_len_for_zone * 0.60))
+                        _near_sig_marker = False
+                        for _sm in ('[SIGNATURE]', 'SIGNATURE:',
+                                    'SIGNED BY', 'AUTHORIZED SIGNATORY',
+                                    'AUTHORISED SIGNATORY',
+                                    'FOR AND ON BEHALF OF', 'STAMP:'):
+                            _sm_pos = _doc_text_up.find(_sm,
+                                                        max(0, _start - 300),
+                                                        _end + 300)
+                            if _sm_pos >= 0:
+                                _near_sig_marker = True
+                                break
+                        if not (_in_last or _near_sig_marker):
+                            continue   # Skip boilerplate occurrences
                         _window = _doc_text_up[_end:_end + 120]
-                        # Also look ~40 chars before — some BLs
-                        # write "FOR THE MASTER AS AGENT".
-                        _pre = _doc_text_up[max(0, _m.start() - 40): _m.start()]
-                        if not any(q in _window for q in _QUALIFIERS) and \
-                           not any(q in _pre for q in _QUALIFIERS):
-                            _bare_agent = True
-                            break
+                        _pre = _doc_text_up[max(0, _start - 40): _start]
+                        if any(q in _window for q in _QUALIFIERS) or \
+                           any(q in _pre for q in _QUALIFIERS):
+                            _qualified_in_sig_zone = True
+                        else:
+                            _bare_unqualified_in_sig_zone = True
+                    # Bare-agent only if ALL signing-zone "AS AGENT"
+                    # occurrences are unqualified. If even one is
+                    # properly qualified, the BL has a valid carrier-
+                    # agent signing.
+                    if _bare_unqualified_in_sig_zone and \
+                       not _qualified_in_sig_zone:
+                        _bare_agent = True
 
                     # P198ck — NO signing-capacity proof at all → treat
                     # as house BL. A legitimate master / carrier / owner
@@ -11115,6 +11182,16 @@ def run(
                         if _cap_proof_hit:
                             break
                     _no_capacity_proof = _cap_proof_hit is None
+
+                    # P198fx — Once a multi-word capacity affirmation
+                    # like "FOR AND ON BEHALF OF THE MASTER" or
+                    # "AS AGENTS FOR AND ON BEHALF OF THE CARRIER"
+                    # has been confirmed near the signature block,
+                    # any stray bare "AS AGENT" elsewhere in the doc
+                    # is irrelevant — it's boilerplate. The BL has a
+                    # valid carrier/master signing.
+                    if _cap_proof_hit is not None:
+                        _bare_agent = False
 
                     # P198cr — Forwarder-name block. If the BL's
                     # issuer / letterhead / signature area contains a

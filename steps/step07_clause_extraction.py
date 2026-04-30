@@ -569,9 +569,56 @@ def run(step6_result: dict, output_dir: str = None, progress_callback=None) -> d
             _rd.get('copies_count', 0), _rd.get('signature_required', False)))
 
     # ── Check F47A for additional document requirements ──
+    # P198fw — Deterministic filter for F47A clauses. Most F47A
+    # clauses are RULES (third-party rules, fee rules, presentation
+    # rules, price-adjustment formulas) — NOT document requirements.
+    # Pre-filter clauses that look like rules so the VLM doesn't
+    # hallucinate phantom documents (e.g. extracting "Draft Bill of
+    # Exchange" from "THIRD PARTY DOCUMENTS ARE ACCEPTABLE EXCEPT
+    # INVOICE AND DRAFT", or "Quality Certificate" from a price-
+    # adjustment formula). Only F47A clauses that explicitly REQUIRE
+    # a new document (e.g. "BENEFICIARY MUST PROVIDE...", "CERTIFICATE
+    # FROM XYZ MUST BE INCLUDED") should produce required_documents.
+    _F47A_RULE_PATTERNS = (
+        # Acceptability / permissibility rules — not doc requirements
+        r'\bARE\s+ACCEPTABLE\b',
+        r'\bIS\s+ACCEPTABLE\b',
+        r'\bACCEPTABLE\.\s*$',
+        r'\bNOT\s+ACCEPTABLE\b',
+        r'\bDATED\s+PRIOR\s+TO\b',
+        # Third-party rule
+        r'\bTHIRD\s+PARTY\s+DOCUMENTS\b',
+        # Fee / charge rules
+        r'\bDISCREPANC(?:Y|IES)\s+(?:CHARGES|FEE|FEES)\b',
+        r'\bCHARGES\s+WILL\s+BE\s+DEDUCTED\b',
+        r'\bFEE\s+(?:OF|WILL|MUST|SHALL)\b',
+        # Price-adjustment / formula clauses
+        r'\bPRICE\s+ADJUSTMENT\b',
+        r'\bGROSS\s+CALORIFIC\s+VALUE\b',
+        r'\bIF\s+THE\s+ACTUAL\b',
+        # Presentation period / sending instructions
+        r'\bWITHIN\s+\d+\s+DAYS\s+OF\s+SHIPMENT\b',
+        r'\bDOCUMENTS\s+MUST\s+BE\s+SENT\s+TO\b',
+        # Drawing / negotiation rules
+        r'\bENDORSED\s+ON\s+THE\s+REVERSE\b',
+        r'\bDRAWN\s+AND\s+NEGOTIATED\b',
+        # Forwarder / carrier prohibitions (rules, not doc requirements)
+        r'\bFREIGHT\s+FORWARDER\b.*\b(?:NOT\s+ACCEPT|ACCEPTABLE)',
+        r'\bCHARTER\s+PARTY\s+(?:BILL|DATE)\b',
+        # Overwriting / alteration rules
+        r'\bOVERWRITING\b',
+        r'\bALTERATION\b',
+        # Quantity-difference rules
+        r'\bQUANTITY\s+DIFFERENT\s+FROM\b',
+        r'\bSHOWING\s+QUANTITY\s+DIFFERENT\b',
+    )
     f47a_clauses = [c for c in all_clauses if c.get('field_tag') in ('F47A', 'F47B', '47A', '47B')]
     for clause in f47a_clauses:
         clause_text = clause.get('clause_text', '')
+        # P198fw — Skip F47A clauses that match rule patterns
+        _ct_up = (clause_text or '').upper()
+        if any(re.search(_p, _ct_up) for _p in _F47A_RULE_PATTERNS):
+            continue
         doc_name = _identify_document_from_clause(clause_text)
         if doc_name:
             originals, copies = _extract_copy_counts(clause_text)

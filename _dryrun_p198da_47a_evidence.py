@@ -228,8 +228,20 @@ PKTS_NO_SWIFT_HAS_DR = [
 ]
 PKTS_HAS_MT799 = [
     dict(document_type='MT799',
-         document_text='MT799 Free Format Message\nAmount of negotiation USD 100,000\n'
-                       'BL No: 12345\nVessel: KOTA NEKAD\nVoyage: 0204S\n...'),
+         document_text=('MT799 Free Format Message\n'
+                        'Amount of negotiation: USD 100,000\n'
+                        'BL Number: ONEYMNLG09338700\n'
+                        'Name of Carrier: OCEAN NETWORK EXPRESS PTE LTD\n'
+                        'Courier Company: DHL Express\n'
+                        'Courier Receipt No: 9876543210\n'
+                        'Vessel: KOTA NEKAD\n'
+                        'Voyage Number: 0204S\n'
+                        'Port of Shipment: MANILA, PHILIPPINES\n'
+                        'Port of Loading: MANILA NORTH PORT\n'
+                        'Port of Discharge: KARACHI, PAKISTAN\n'
+                        'Container Number: TCLU7972168\n'
+                        'Seal Number: PHA G38317\n'
+                        'Date of Despatch of Documents: 25 MAR 2026\n')),
     dict(document_type='Commercial Invoice', document_text='INV...'),
 ]
 

@@ -140,11 +140,23 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
                     return await call_next(request)
             except Exception:
                 pass
-        # Return 401 with WWW-Authenticate header (browser shows login popup)
+        # P198fv — Suppress browser auth-prompt for AJAX/JSON requests so
+        # background polling (e.g. /api/status/{id}) doesn't pop the
+        # sign-in dialog mid-session. Browser still gets 401 and the
+        # JS handles it; only top-level page navigations trigger the
+        # interactive sign-in flow.
+        accept = request.headers.get('Accept', '')
+        xrw = request.headers.get('X-Requested-With', '')
+        is_ajax = (
+            'application/json' in accept.lower()
+            or xrw.lower() == 'xmlhttprequest'
+            or path.startswith('/api/')
+        )
+        headers = {} if is_ajax else {'WWW-Authenticate': 'Basic realm="ComplyTrade"'}
         return StarletteResponse(
             content='Unauthorized',
             status_code=401,
-            headers={'WWW-Authenticate': 'Basic realm="ComplyTrade"'},
+            headers=headers,
         )
 
 app.add_middleware(BasicAuthMiddleware)
@@ -994,6 +1006,114 @@ def clear_verification(job_id: str):
         "removed_stages": removed,
         "kept_stages": ["step01", "step02", "step03", "step06", "step07", "step08", "step09"],
     }
+
+
+@app.post("/api/jobs/{job_id}/rerun-classification")
+def rerun_classification(job_id: str):
+    """
+    P198ft — Re-run classification (step03+) for an existing job WITHOUT
+    re-running OCR (step01) or cleaning (step02).
+
+    Use case: a classification fix has shipped (e.g. P198fs hint-veto)
+    and the user wants to apply it to an already-uploaded job. Re-running
+    OCR is expensive (minutes per page) and the OCR text doesn't change
+    when classification logic changes — so we skip step01/02 and re-run
+    step03 (sequencing/classification) onwards.
+
+    Removes the saved step03/step06/step07/step08/step09 results, then
+    fires the pipeline starting from step03 using the cached step02
+    output. Step01 / step02 outputs stay on disk and are reused.
+
+    Returns immediately with the new job state — the rerun runs
+    asynchronously in a background thread.
+    """
+    import shutil
+    job_dir = os.path.join(RESULTS_DIR, job_id)
+    if not os.path.isdir(job_dir):
+        raise HTTPException(404, f"Job results directory not found: {job_id}")
+
+    # Verify cached step01 + step02 exist (we need them to start from step03)
+    s2_path = os.path.join(job_dir, 'step02', 'step02_result.json')
+    if not os.path.isfile(s2_path):
+        raise HTTPException(
+            400,
+            "step02_result.json missing — cannot rerun from step 3. "
+            "Re-upload the PDF instead so step01/02 OCR can run.",
+        )
+
+    # Remove all stages from step03 onwards
+    _stages = ['step03', 'step06', 'step07', 'step08', 'step09',
+               'step12', 'step13', 'step14', 'step14b',
+               'step15', 'step16', 'step17', 'step18', 'step19', 'step20']
+    removed = []
+    for stage in _stages:
+        sp = os.path.join(job_dir, stage)
+        if os.path.isdir(sp):
+            shutil.rmtree(sp, ignore_errors=True)
+            removed.append(stage)
+
+    # Clear the matching in-memory results so the next read reloads from disk
+    if job_id in _jobs:
+        sr = _jobs[job_id].get('step_results', {})
+        for stage in _stages:
+            sr.pop(stage, None)
+        _jobs[job_id]['status'] = 'queued'
+        _jobs[job_id]['current_step'] = 3
+        _jobs[job_id]['progress'] = ['Re-running classification from step 3 (OCR cached)']
+
+    # Kick off the background rerun
+    import threading
+    def _bg():
+        try:
+            _rerun_classification_pipeline(job_id)
+        except Exception as e:
+            try:
+                _jobs.setdefault(job_id, {})['status'] = 'error'
+                _jobs[job_id]['error'] = str(e)
+                print(f"[rerun-classification {job_id}] {e}")
+            except Exception:
+                pass
+    threading.Thread(target=_bg, daemon=True).start()
+
+    return {
+        "status": "rerun_started",
+        "job_id": job_id,
+        "removed_stages": removed,
+        "skipped_stages": ["step01", "step02"],  # OCR is cached
+        "message": "Classification re-run started. Poll /api/status/{job_id} to follow progress.",
+    }
+
+
+def _rerun_classification_pipeline(job_id: str):
+    """Run step03 onwards using the cached step02 output. Mirrors the
+    structure of the main upload pipeline but skips step01/02."""
+    import json as _json
+    job = _jobs.setdefault(job_id, {})
+    job['status'] = 'processing'
+    results_dir = os.path.join(RESULTS_DIR, job_id)
+
+    def _p(msg):
+        msgs = job.setdefault('progress', [])
+        msgs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+        print(f"[rerun-classification {job_id}] {msg}")
+
+    # Load step02 result from disk
+    s2_path = os.path.join(results_dir, 'step02', 'step02_result.json')
+    if not os.path.isfile(s2_path):
+        raise FileNotFoundError("step02_result.json not found — cannot rerun")
+    with open(s2_path, 'r', encoding='utf-8') as f:
+        s2 = _json.load(f)
+
+    # Step 3: Page Sequencing & Classification
+    job['current_step'] = 3
+    _p("Step 3: Re-running page sequencing & classification...")
+    s3 = _to_dict(step03_sequencing.run(s2, os.path.join(results_dir, 'step03'), _p))
+    job.setdefault('step_results', {})['step03'] = s3
+
+    _p("Classification re-run complete. To run verification, click "
+       "'Run Verification' on the checklist page.")
+    job['status'] = 'completed'
+    job['current_step'] = 'classification_done'
 
 
 @app.get("/checks")

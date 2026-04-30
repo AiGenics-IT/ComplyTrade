@@ -128,6 +128,39 @@
     .toast.success{background:#166534;color:#fff}
     .toast.error{background:#b91c1c;color:#fff}
     .toast-icon{font-size:1.1em}
+
+    /* P198fu — Live log viewer panel (floating, minimizable) */
+    .log-panel{position:fixed;right:24px;bottom:24px;width:560px;max-width:calc(100vw - 48px);background:#0f172a;color:#e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.45);z-index:250;font-family:'JetBrains Mono','Fira Code','Consolas',monospace;font-size:.78em;display:none;border:1px solid #334155;overflow:hidden}
+    .log-panel.active{display:flex;flex-direction:column}
+    .log-panel.minimized{height:auto}
+    .log-panel.minimized .log-body, .log-panel.minimized .log-status{display:none}
+    .log-panel-header{background:linear-gradient(135deg,#1e293b,#334155);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #334155;cursor:default;user-select:none}
+    .log-panel-title{display:flex;align-items:center;gap:8px;font-size:.92em;font-weight:600;color:#fff}
+    .log-panel-title .dot{width:8px;height:8px;border-radius:50%;background:#fbbf24;animation:logPulse 1.5s ease-in-out infinite}
+    .log-panel-title.idle .dot{background:#64748b;animation:none}
+    .log-panel-title.done .dot{background:#22c55e;animation:none}
+    .log-panel-title.error .dot{background:#ef4444;animation:none}
+    @keyframes logPulse{0%,100%{opacity:1}50%{opacity:.4}}
+    .log-panel-job{font-family:'JetBrains Mono',monospace;font-size:.78em;color:#94a3b8;margin-left:6px}
+    .log-panel-controls{display:flex;gap:6px}
+    .log-ctrl-btn{background:transparent;border:none;color:#cbd5e1;width:24px;height:24px;border-radius:4px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:1.05em;line-height:1}
+    .log-ctrl-btn:hover{background:rgba(255,255,255,.1);color:#fff}
+    .log-body{flex:1;max-height:340px;min-height:160px;overflow-y:auto;padding:10px 14px;background:#0f172a;font-size:.84em;line-height:1.45;white-space:pre-wrap;word-break:break-word}
+    .log-body::-webkit-scrollbar{width:8px;height:8px}
+    .log-body::-webkit-scrollbar-thumb{background:#475569;border-radius:4px}
+    .log-line{padding:1px 0;color:#cbd5e1}
+    .log-line.step{color:#7dd3fc}
+    .log-line.merge{color:#a5f3fc}
+    .log-line.warn{color:#fcd34d}
+    .log-line.error{color:#fca5a5}
+    .log-line.success{color:#86efac}
+    .log-status{padding:6px 14px;border-top:1px solid #334155;background:#1e293b;font-size:.78em;color:#94a3b8;display:flex;justify-content:space-between;align-items:center}
+    .log-status .step-pill{padding:2px 8px;border-radius:8px;background:#334155;color:#e2e8f0;font-weight:600}
+    /* Reopen pill — shows when panel is closed but a job is still running */
+    .log-reopen{position:fixed;right:24px;bottom:24px;background:#1554ca;color:#fff;padding:10px 16px;border-radius:24px;font-size:.85em;font-weight:600;cursor:pointer;display:none;z-index:240;box-shadow:0 4px 14px rgba(21,84,202,.4);align-items:center;gap:8px;border:none;font-family:inherit}
+    .log-reopen.active{display:inline-flex}
+    .log-reopen:hover{background:#0d3b8a}
+    .log-reopen .dot{width:8px;height:8px;border-radius:50%;background:#fbbf24;animation:logPulse 1.5s ease-in-out infinite}
 </style>
 </head>
 <body>
@@ -298,7 +331,47 @@
     </div>
 </div>
 
+<!-- P198ft — Re-run Classification Confirmation Modal -->
+<div class="modal-overlay" id="rcls-modal" onclick="if(event.target===this)closeRerunClassificationModal()">
+    <div class="modal-box">
+        <h3><span class="warn-icon" style="color:#9333ea">&#8634;</span> <span style="color:#7e22ce">Re-run Classification</span></h3>
+        <p>Job ID: <b id="rcls-job-id" style="color:var(--text);font-family:monospace"></b></p>
+        <p>This re-runs <b>document classification</b> from Step 3 onwards using the updated logic.<br><br>
+           <span style="color:#16a34a"><b>Kept (cached):</b></span> Step 01 (OCR), Step 02 (Cleaning) &mdash; the OCR text doesn&rsquo;t change when classification logic changes, so re-running OCR isn&rsquo;t needed.<br><br>
+           <span style="color:#b91c1c"><b>Removed:</b></span> Step 03 (Sequencing &amp; classification), Step 06 (Final LC), Step 07 (Clauses), Step 08 (Doc classification), Step 09 (Reconciliation), and all verification stages 12&ndash;20.<br><br>
+           After this completes you&rsquo;ll need to click <b>Run Verification</b> on the checklist page to re-verify with the updated classification.</p>
+        <div class="modal-actions">
+            <button class="mbtn mbtn-cancel" onclick="closeRerunClassificationModal()">Cancel</button>
+            <button class="mbtn" id="rcls-confirm-btn" style="background:#9333ea;color:#fff" onclick="confirmRerunClassification()">Re-run Classification</button>
+        </div>
+    </div>
+</div>
+
 <div class="toast" id="toast"></div>
+
+<!-- P198fu — Live log viewer panel -->
+<div class="log-panel" id="log-panel">
+    <div class="log-panel-header">
+        <div class="log-panel-title" id="log-title">
+            <span class="dot"></span>
+            <span id="log-title-text">Re-running classification...</span>
+            <span class="log-panel-job" id="log-panel-job"></span>
+        </div>
+        <div class="log-panel-controls">
+            <button class="log-ctrl-btn" id="log-min-btn" title="Minimize / Restore" onclick="toggleLogPanel()">&minus;</button>
+            <button class="log-ctrl-btn" title="Hide (keeps polling — click pill to reopen)" onclick="hideLogPanelKeepPolling()">&times;</button>
+        </div>
+    </div>
+    <div class="log-body" id="log-body"></div>
+    <div class="log-status">
+        <span id="log-status-text">Starting...</span>
+        <span class="step-pill" id="log-status-step">Step 3</span>
+    </div>
+</div>
+<button class="log-reopen" id="log-reopen" onclick="reopenLogPanel()">
+    <span class="dot"></span>
+    <span id="log-reopen-text">Re-running... click to view log</span>
+</button>
 
 <script>
 const API = window.location.origin;
@@ -399,6 +472,7 @@ function renderJobs(jobs) {
         actions += `<button class="abtn" style="background:#6d28d9" onclick="showDocs('${j.job_id}')">Docs</button>`;
         actions += `<button class="abtn" style="background:#f59e0b" onclick="openUploadModal('${j.job_id}')" title="Add amendments or presentation lots to this job. Pipeline will re-run with combined document set.">+ Upload</button>`;
         actions += `<button class="abtn" style="background:#0d9488" onclick="clearVerification('${j.job_id}')" title="Delete only verification stage results (step12-step20). Pre-verification stages stay so re-running is fast.">Clear Verif</button>`;
+        actions += `<button class="abtn" style="background:#9333ea" onclick="rerunClassification('${j.job_id}')" title="Re-run classification from step 3 onwards. Skips step01/step02 OCR (cached). Use after a classification fix has shipped.">Re-run Class</button>`;
         actions += `<button class="abtn pdf" onclick="deleteJob('${j.job_id}')">Delete</button>`;
 
         html += `<tr>
@@ -537,6 +611,168 @@ async function confirmClear() {
     } finally {
         btn.textContent = 'Clear Verification';
         btn.disabled = false;
+    }
+}
+
+// P198ft — Re-run classification from step 3 (skips OCR which is cached).
+// Use this after a classification fix has shipped to apply the new logic
+// to an already-uploaded job without paying the OCR cost again.
+let _rerunClassJobId = null;
+function rerunClassification(jobId) {
+    _rerunClassJobId = jobId;
+    document.getElementById('rcls-job-id').textContent = jobId;
+    document.getElementById('rcls-modal').classList.add('active');
+}
+function closeRerunClassificationModal() {
+    document.getElementById('rcls-modal').classList.remove('active');
+    _rerunClassJobId = null;
+}
+async function confirmRerunClassification() {
+    if (!_rerunClassJobId) return;
+    const btn = document.getElementById('rcls-confirm-btn');
+    btn.disabled = true;
+    btn.textContent = 'Re-running...';
+    const _jobId = _rerunClassJobId;
+    try {
+        const r = await fetch(`${API}/api/jobs/${_jobId}/rerun-classification`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+        });
+        if (!r.ok) {
+            const e = await r.json().catch(() => ({}));
+            showToast('Re-run failed: ' + (e.detail || e.error || r.statusText), true);
+            return;
+        }
+        const data = await r.json();
+        showToast(`Re-run started. ${data.removed_stages.length} stage(s) cleared, OCR cached.`, true);
+        closeRerunClassificationModal();
+        // P198fu — Open the live log panel for this job and start streaming
+        openLogPanel(_jobId, 'Re-running classification');
+        loadJobs();
+    } catch (e) {
+        showToast('Re-run failed: ' + e.message, true);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Re-run Classification';
+    }
+}
+
+// ─── P198fu Live log viewer ─────────────────────────────────────────
+// Polls /api/status/{job_id} once per second and streams the
+// `progress` array into a terminal-style panel. Survives minimize /
+// reopen via a small floating reopen pill. Stops auto-polling when
+// the job's status moves to "completed" / "error".
+let _logPollTimer = null;
+let _logJobId = null;
+let _logSeenLines = 0;
+let _logTitle = '';
+
+function openLogPanel(jobId, title){
+    _logJobId = jobId;
+    _logTitle = title || 'Job progress';
+    _logSeenLines = 0;
+    document.getElementById('log-body').innerHTML = '';
+    document.getElementById('log-status-text').textContent = 'Connecting...';
+    document.getElementById('log-status-step').textContent = '—';
+    document.getElementById('log-title-text').textContent = _logTitle + '...';
+    document.getElementById('log-panel-job').textContent =
+        '(' + (jobId || '').substring(0,8) + '...)';
+    const t = document.getElementById('log-title');
+    t.classList.remove('idle','done','error');
+    document.getElementById('log-panel').classList.add('active');
+    document.getElementById('log-panel').classList.remove('minimized');
+    document.getElementById('log-reopen').classList.remove('active');
+    if (_logPollTimer) clearInterval(_logPollTimer);
+    _pollLogOnce();
+    _logPollTimer = setInterval(_pollLogOnce, 1500);
+}
+
+function closeLogPanel(){
+    document.getElementById('log-panel').classList.remove('active');
+    document.getElementById('log-reopen').classList.remove('active');
+    if (_logPollTimer) clearInterval(_logPollTimer);
+    _logPollTimer = null;
+}
+
+function toggleLogPanel(){
+    const p = document.getElementById('log-panel');
+    if (p.classList.contains('minimized')){
+        p.classList.remove('minimized');
+        document.getElementById('log-min-btn').textContent = '−';
+    } else {
+        p.classList.add('minimized');
+        document.getElementById('log-min-btn').textContent = '+';
+    }
+}
+
+// Hide the panel but keep polling — show a small reopen pill so the
+// user can bring it back up.
+function hideLogPanelKeepPolling(){
+    document.getElementById('log-panel').classList.remove('active');
+    document.getElementById('log-reopen').classList.add('active');
+}
+function reopenLogPanel(){
+    document.getElementById('log-panel').classList.add('active');
+    document.getElementById('log-panel').classList.remove('minimized');
+    document.getElementById('log-min-btn').textContent = '−';
+    document.getElementById('log-reopen').classList.remove('active');
+}
+
+function _logClassify(line){
+    const l = (line || '').toLowerCase();
+    if (l.includes('error') || l.includes('exception') || l.includes('failed')) return 'error';
+    if (l.includes('warn')) return 'warn';
+    if (l.includes('merged ') || l.includes('absorbed') || l.includes('+ attached') || l.includes('+ conditions')) return 'merge';
+    if (l.includes('[step ') || l.includes('step 3') || l.includes('step 6') || l.includes('step 8') || l.includes('step 9')) return 'step';
+    if (l.includes('complete') || l.includes('done') || l.includes('-> pass')) return 'success';
+    return '';
+}
+
+function _appendLogLine(text){
+    const body = document.getElementById('log-body');
+    const div = document.createElement('div');
+    div.className = 'log-line ' + _logClassify(text);
+    div.textContent = text;
+    body.appendChild(div);
+    body.scrollTop = body.scrollHeight;
+}
+
+async function _pollLogOnce(){
+    if (!_logJobId) return;
+    try {
+        const r = await fetch(`${API}/api/status/${_logJobId}?_=${Date.now()}`,
+            {cache:'no-store', headers:{'Cache-Control':'no-cache'}});
+        if (!r.ok) return;
+        const d = await r.json();
+        const prog = Array.isArray(d.progress) ? d.progress : [];
+        // Append only new lines
+        for (let i = _logSeenLines; i < prog.length; i++){
+            _appendLogLine(String(prog[i]));
+        }
+        _logSeenLines = prog.length;
+        // Status footer
+        const status = (d.status || 'unknown').toLowerCase();
+        const step = d.current_step != null ? d.current_step : '—';
+        document.getElementById('log-status-text').textContent = `Status: ${status}`;
+        document.getElementById('log-status-step').textContent = `Step ${step}`;
+        const t = document.getElementById('log-title');
+        const tx = document.getElementById('log-title-text');
+        if (status === 'completed' || status === 'classification_done' || status === 'done'){
+            t.classList.remove('idle','error');
+            t.classList.add('done');
+            tx.textContent = _logTitle + ' — done';
+            if (_logPollTimer) { clearInterval(_logPollTimer); _logPollTimer = null; }
+            document.getElementById('log-reopen').classList.remove('active');
+        } else if (status === 'error' || status === 'failed'){
+            t.classList.remove('idle','done');
+            t.classList.add('error');
+            tx.textContent = _logTitle + ' — error';
+            if (_logPollTimer) { clearInterval(_logPollTimer); _logPollTimer = null; }
+        } else {
+            t.classList.remove('done','error','idle');
+        }
+    } catch(_e){
+        // Network blip — keep polling silently
     }
 }
 
