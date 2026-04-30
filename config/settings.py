@@ -26,17 +26,17 @@ if _env_path.exists():
 
 # ── Model Endpoints (all from .env or environment variables) ──
 
-# Step 1: GLM-OCR — now at 72.255.9.104:8001
-GLM_OCR_URL = _os.environ.get("GLM_OCR_URL", "http://72.255.9.104:8001/api/ocr")
+# Step 1: GLM-OCR — remote at 34.171.200.116
+GLM_OCR_URL = _os.environ.get("GLM_OCR_URL", "http://34.171.200.116/api/ocr")
 GLM_OCR_MODEL = _os.environ.get("GLM_OCR_MODEL", "glm-ocr")
 
-# Steps 2-9: Qwen VLM (vision) — AWQ 4-bit 72B at 72.255.9.104:8085
-QWEN_VLM_URL = _os.environ.get("QWEN_VLM_URL", "http://72.255.9.104:8085/v1/chat/completions")
-QWEN_VLM_MODEL = _os.environ.get("QWEN_VLM_MODEL", "/home/aigenics/AI_MODELS/Qwen2.5-VL-72B-Instruct-AWQ")
+# Steps 2-9: Qwen VLM (vision) — AWQ 4-bit 72B at 35.192.15.206
+QWEN_VLM_URL = _os.environ.get("QWEN_VLM_URL", "http://35.192.15.206/vllm/v1/chat/completions")
+QWEN_VLM_MODEL = _os.environ.get("QWEN_VLM_MODEL", "Qwen2.5-VL-72B-Instruct-AWQ")
 
 # Steps 6, 12, 14: Qwen Text LLM (text-only, no vision)
-QWEN_TEXT_LLM_URL = _os.environ.get("QWEN_TEXT_LLM_URL", "http://34.61.17.191/vllm/v1/chat/completions")
-QWEN_TEXT_LLM_MODEL = _os.environ.get("QWEN_TEXT_LLM_MODEL", "Qwen2.5-72B-Instruct")
+QWEN_TEXT_LLM_URL = _os.environ.get("QWEN_TEXT_LLM_URL", "http://136.112.48.34/v1/chat/completions")
+QWEN_TEXT_LLM_MODEL = _os.environ.get("QWEN_TEXT_LLM_MODEL", "Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8")
 
 # VLM model size toggle (legacy — kept for backward compat)
 VLM_MODEL_SIZE = _os.environ.get("VLM_MODEL_SIZE", "72B").upper()

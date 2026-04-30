@@ -192,6 +192,100 @@ def _sort_clause_ref(ref: str) -> tuple:
 
 # ── Consolidation Logic ─────────────────────────────────────────────────────
 
+def _expand_all_documents_row(row: Dict) -> List[Dict]:
+    """P198fc — Expand a single 'All Documents' aggregation row into one
+    row per document type.
+
+    Step 14 fans out a universal-quantifier clause ("L/C number must
+    appear on all documents") to every doc-class in the submission and
+    aggregates the per-doc results into ONE row whose findings carry a
+    pipe-separated 'Per-doc: <DocType>: PASS — ... | <DocType>: FAIL — ...'
+    block. The combined row was hard to read in the report — the user
+    wants one row per document so each doc's PASS/FAIL/REVIEW is
+    visible at a glance.
+
+    Returns:
+      [row]              if the row is not a Per-doc aggregation
+      [row1, row2, ...]  one row per doc-class otherwise (the original
+                          row is replaced; aggregation summary becomes
+                          a synthetic "All Documents" header row at the
+                          top of the group so the overall verdict still
+                          shows in the report)
+
+    Each child row inherits the parent's clause_ref, condition, and
+    other fields. The findings / result / compliance / document_checked
+    are taken from the per-doc segment.
+    """
+    if not isinstance(row, dict):
+        return [row]
+    doc_field = str(row.get('document_checked', '') or '').lower().strip()
+    findings  = str(row.get('findings', '') or row.get('found_text', '') or '')
+    if 'all documents' not in doc_field and 'all docs' not in doc_field:
+        return [row]
+    if 'per-doc:' not in findings.lower():
+        return [row]
+
+    # Locate the Per-doc block — keep everything BEFORE it as the
+    # parent's summary findings; everything AFTER is the per-doc list.
+    idx = findings.lower().find('per-doc:')
+    summary_prefix = findings[:idx].rstrip(' .').strip()
+    pd_block = findings[idx + len('per-doc:'):].strip()
+
+    # Each segment is "<DocType>: <PASS/FAIL/REVIEW> — <text>"
+    # separated by " | ". The text itself may contain "—" / "|" though,
+    # so split conservatively on " | " and parse each segment.
+    segments = [s.strip() for s in pd_block.split(' | ') if s.strip()]
+    if not segments:
+        return [row]
+
+    _verdict_re = re.compile(
+        r'^(?P<doc>[^:]+):\s*(?P<verdict>PASS|FAIL|REVIEW|N/?A|INFORMATIONAL)\b'
+        r'(?:\s*[—\-:]\s*(?P<text>.*))?$',
+        re.IGNORECASE,
+    )
+
+    children = []
+    parent_keys_to_copy = (
+        'clause_ref', 'clause_text', 'original_clause_text',
+        'condition', 'condition_text', 'rule_id', 'lc_field',
+        'severity', 'reconciled', 'dependency_notes',
+        'verification_notes',
+    )
+    for seg in segments:
+        m = _verdict_re.match(seg)
+        if not m:
+            # Couldn't parse this segment — skip rather than mangle
+            continue
+        doc_type = m.group('doc').strip()
+        verdict  = (m.group('verdict') or '').upper()
+        text     = (m.group('text') or '').strip()
+        # Normalise N/A
+        if verdict in ('N/A', 'NA'):
+            verdict = 'N/A'
+        child = {k: row.get(k) for k in parent_keys_to_copy if k in row}
+        child['document_checked'] = doc_type
+        child['compliance']       = verdict
+        child['findings']         = text or seg
+        child['found_text']       = text or seg
+        child['result']           = text or seg
+        child['_split_from_all_documents'] = True
+        children.append(child)
+
+    if not children:
+        return [row]
+
+    # Always keep the parent summary row at the top so the overall
+    # verdict (which may be different from the individual children
+    # when the universal quantifier weights them differently) stays
+    # visible. Trim the parent's findings to only the summary prefix
+    # (everything before "Per-doc:") so it doesn't duplicate.
+    parent_summary = dict(row)
+    parent_summary['findings']   = summary_prefix or row.get('result', '')
+    parent_summary['found_text'] = parent_summary['findings']
+    parent_summary['_all_documents_summary'] = True
+    return [parent_summary] + children
+
+
 def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
     """
     Merge flat verification rows into consolidated clause-grouped structure.
@@ -205,6 +299,20 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
     """
     if progress_fn is None:
         def progress_fn(msg): pass
+
+    # P198fc — Expand "All Documents" aggregation rows into one row
+    # per document. The fan-out happens BEFORE clause grouping so
+    # each child row gets counted properly in pass/fail/review tallies.
+    _expanded_rows: List[Dict] = []
+    _expansion_count = 0
+    for _row in rows:
+        _children = _expand_all_documents_row(_row)
+        if len(_children) > 1:
+            _expansion_count += len(_children) - 1
+        _expanded_rows.extend(_children)
+    if _expansion_count:
+        progress_fn(f"P198fc: expanded {_expansion_count} per-doc child rows from 'All Documents' aggregations")
+    rows = _expanded_rows
 
     # Step 1: Group rows by clause_ref
     clause_map: Dict[str, List[Dict]] = {}

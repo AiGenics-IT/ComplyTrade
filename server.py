@@ -1826,7 +1826,11 @@ def get_result(job_id: str):
 
 @app.get("/api/report/{job_id}")
 def get_report(job_id: str):
-    """Download the PDF compliance report for a completed job."""
+    """Download the PDF compliance report for a completed job.
+
+    P198fi — anti-cache headers; see /api/report/{job_id}/{lc_number}
+    for the full rationale.
+    """
     if job_id not in _jobs:
         raise HTTPException(404, "Job not found")
     results_dir = os.path.join(RESULTS_DIR, job_id)
@@ -1836,7 +1840,15 @@ def get_report(job_id: str):
         all_reports.extend(Path(results_dir).rglob(pattern))
     if all_reports:
         newest = max(all_reports, key=lambda f: f.stat().st_mtime)
-        return FileResponse(str(newest), media_type="application/pdf", filename=newest.name)
+        return FileResponse(
+            str(newest), media_type="application/pdf", filename=newest.name,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "ETag": f'"{int(newest.stat().st_mtime)}-{newest.stat().st_size}"',
+            },
+        )
     raise HTTPException(404, "Report not generated yet")
 
 
@@ -2821,7 +2833,16 @@ async def verify_update(verification_id: str, request: Request):
 
 @app.get("/api/report/{job_id}/{lc_number:path}")
 def get_report_by_lc(job_id: str, lc_number: str):
-    """Get compliance report for a specific LC number. Returns the most recent report."""
+    """Get compliance report for a specific LC number. Returns the most recent report.
+
+    P198fi — anti-cache headers: when the user clears verification and
+    re-runs, the OLD PDF is deleted by clear_verification() and a NEW
+    PDF is written by step 20. But the browser was caching the previous
+    PDF response and re-serving it on the next download click — so the
+    user kept seeing the old generated-timestamp. Force no-cache /
+    no-store on every download so the browser ALWAYS fetches the
+    current file from disk.
+    """
     results_dir = os.path.join(RESULTS_DIR, job_id)
     all_reports = []
     for pattern in ("*compliance_report*.pdf", "ComplyTrade_Report*.pdf"):
@@ -2829,7 +2850,17 @@ def get_report_by_lc(job_id: str, lc_number: str):
     if all_reports:
         # Return the newest file
         newest = max(all_reports, key=lambda f: f.stat().st_mtime)
-        return FileResponse(str(newest), media_type="application/pdf", filename=newest.name)
+        return FileResponse(
+            str(newest), media_type="application/pdf", filename=newest.name,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                # ETag based on mtime so if the same file is requested again it
+                # registers as "new content"
+                "ETag": f'"{int(newest.stat().st_mtime)}-{newest.stat().st_size}"',
+            },
+        )
     raise HTTPException(404, "Report not generated yet")
 
 

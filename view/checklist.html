@@ -2115,10 +2115,13 @@ function showDiscrepancySummary(){
 }
 
 // ─── Download Report ───
+// P198fi — Cache-bust the URL with a timestamp + send no-store fetch
+// options so even an aggressive HTTP cache fetches the freshest PDF.
 async function downloadReport(){
     try{
-        const url=`${API}/api/report/${D.jid}/${D.lc}`;
-        const r=await fetch(url);
+        const url=`${API}/api/report/${D.jid}/${D.lc}?_=${Date.now()}`;
+        const r=await fetch(url, {cache:'no-store',
+            headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}});
         if(!r.ok){const e=await r.json().catch(()=>({}));alert(e.error||'Failed to generate report');return}
         const blob=await r.blob();
         const a=document.createElement('a');

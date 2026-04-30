@@ -675,7 +675,7 @@ IMPORTANT:
             return json.loads(jm.group(0))
         return {"result": "REVIEW", "findings": text[:200], "confidence": 0.5}
     except Exception as e:
-        return {"result": "REVIEW", "findings": f"VLM error: {str(e)[:100]}", "confidence": 0.0}
+        return {"result": "REVIEW", "findings": f"LLM error: {str(e)[:100]}", "confidence": 0.0}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1984,6 +1984,15 @@ def run(
                         'terms and conditions', 'terms overleaf',
                         'conditions of carriage',
                         'unknown', 'unidentified',
+                        # P198fj — Stamp / Seal-only pages have no
+                        # printed text of their own (just rubber stamps
+                        # / seals on paper). F31C date checks against
+                        # them always REVIEW with "No date found"
+                        # because there IS no document date — they're
+                        # visual evidence pages, not standalone docs.
+                        'stamp or seal', 'stamps and seals page',
+                        'stamp page', 'seal page', 'stamp/seal',
+                        'seals page', 'stamp document', 'seal document',
                     )
                     for pkt in _deduplicate_documents(packets):
                         dt = pkt.get('document_type', 'Unknown')
@@ -2454,7 +2463,7 @@ def run(
             continue
         tasks = _build_check_tasks(check_id, lc_fields, packets)
         all_tasks.extend(tasks)
-        progress_fn(f"  [{check_id}] {len(tasks)} VLM tasks queued")
+        progress_fn(f"  [{check_id}] {len(tasks)} LLM tasks queued")
 
     progress_fn(f"  Total: {len(all_tasks)} VLM tasks to execute")
 

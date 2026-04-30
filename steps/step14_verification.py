@@ -37,8 +37,11 @@ import sys as _sys
 if hasattr(_sys.stdout, "reconfigure"):
     _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 import base64
+import hashlib
 import os
 import re
+import socket
+import threading
 import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -49,6 +52,150 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import QWEN_TEXT_LLM_URL, QWEN_TEXT_LLM_MODEL, MAX_CONCURRENT_VLM, VLM_TIMEOUT
+
+
+# ── P198fd — Tuned HTTP session for the LLM/VLM endpoints ───────────
+#
+# A plain `requests.post(..., timeout=None)` creates a fresh TCP
+# connection per call and lets enterprise-firewall TCP-idle-timeouts
+# close the socket after ~21 seconds — the consistent "VLM timeout"
+# REVIEW rows we saw earlier all hit that exact 21s wall.
+#
+# The session below:
+#   1. Reuses TCP connections across calls (HTTPAdapter pool)
+#   2. Enables OS-level TCP_KEEPALIVE so the kernel sends probe packets
+#      every 10s — keeps the firewall from marking the connection idle
+#   3. Sizes the pool to absorb our parallel-verification fan-out
+#      (MAX_CONCURRENT_VLM = ~15) without allocating new sockets per
+#      worker
+#   4. Includes urllib3 retry on transient 502/503/504/connect errors
+#      as a second-layer safety net beneath the application-level
+#      P198fa retry loop
+#
+# Usage: replace `requests.post(URL, json=...)` with
+#        `_LLM_SESSION.post(URL, json=...)`
+def _build_keepalive_session() -> requests.Session:
+    sess = requests.Session()
+    try:
+        from urllib3.util.retry import Retry
+        from requests.adapters import HTTPAdapter
+        # Underlying adapter — pool sized so each verification thread
+        # has its own warm connection in the pool.
+        _pool_size = max(int(MAX_CONCURRENT_VLM or 8) * 2, 16)
+        retry = Retry(
+            total=2,
+            connect=2,
+            read=0,                 # we have an outer retry loop in _call_vlm
+            backoff_factor=0.5,
+            status_forcelist=(502, 503, 504),
+            allowed_methods=frozenset(['POST', 'GET']),
+            raise_on_status=False,
+        )
+
+        class _KeepAliveAdapter(HTTPAdapter):
+            """HTTPAdapter that turns SO_KEEPALIVE on at the socket level
+            and sets short keepalive intervals so the kernel sends probe
+            packets during long LLM responses — prevents firewall TCP-
+            idle-timeout from closing the connection mid-response."""
+            def init_poolmanager(self, *a, **kw):
+                kw['socket_options'] = (
+                    list(kw.get('socket_options', [])) + [
+                        (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+                    ]
+                )
+                # Linux-only TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT;
+                # macOS uses TCP_KEEPALIVE; Windows ignores both but
+                # honours SO_KEEPALIVE via the registry default of 2h.
+                # Best-effort — if a constant doesn't exist we skip it.
+                for cname, cval in (
+                    ('TCP_KEEPIDLE', 10),    # send first probe after 10s idle
+                    ('TCP_KEEPINTVL', 10),   # then every 10s
+                    ('TCP_KEEPCNT', 6),      # give up after 6 missed probes
+                ):
+                    try:
+                        c = getattr(socket, cname)
+                        kw['socket_options'].append(
+                            (socket.IPPROTO_TCP, c, cval))
+                    except (AttributeError, OSError):
+                        pass
+                return super().init_poolmanager(*a, **kw)
+
+        adapter = _KeepAliveAdapter(
+            pool_connections=_pool_size,
+            pool_maxsize=_pool_size,
+            max_retries=retry,
+        )
+        sess.mount('http://',  adapter)
+        sess.mount('https://', adapter)
+    except Exception:
+        # If anything in the keepalive setup fails, fall back to the
+        # default session — never block verification on this.
+        pass
+    return sess
+
+_LLM_SESSION = _build_keepalive_session()
+
+
+# ── P198fe — Result cache for identical (condition, doc) pairs ──────
+#
+# The verifier often re-checks the same condition against multiple
+# packets of the same document type (e.g. 8 copies of an invoice). With
+# packet de-duplication upstream this is mostly avoided, but cache hits
+# still happen during P198fa retries and on dry-run replays. Each hit
+# saves a 5-50 second LLM round-trip.
+#
+# Key:    SHA1(model + prompt_text)         — exact-prompt hit
+# Value:  parsed result dict                — full LLM response payload
+# Bound:  64 entries (LRU) per process      — small enough to hold in
+#                                             memory, large enough to
+#                                             cover one verification run
+class _LLMResultCache:
+    def __init__(self, max_entries: int = 64):
+        self.max = max_entries
+        self.hits = 0
+        self.misses = 0
+        self._d: Dict[str, Dict] = {}
+        self._order: List[str] = []
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def make_key(model: str, prompt_text: str) -> str:
+        h = hashlib.sha1()
+        h.update((model or '').encode('utf-8', errors='ignore'))
+        h.update(b'\x00')
+        h.update((prompt_text or '').encode('utf-8', errors='ignore'))
+        return h.hexdigest()
+
+    def get(self, key: str):
+        with self._lock:
+            v = self._d.get(key)
+            if v is not None:
+                self.hits += 1
+                # LRU touch
+                try:
+                    self._order.remove(key); self._order.append(key)
+                except ValueError:
+                    pass
+                return dict(v)  # return a copy so callers can mutate
+            self.misses += 1
+            return None
+
+    def put(self, key: str, value: Dict):
+        with self._lock:
+            if key in self._d:
+                self._d[key] = dict(value)
+                try:
+                    self._order.remove(key); self._order.append(key)
+                except ValueError:
+                    pass
+                return
+            self._d[key] = dict(value)
+            self._order.append(key)
+            while len(self._order) > self.max:
+                old = self._order.pop(0)
+                self._d.pop(old, None)
+
+_LLM_CACHE = _LLMResultCache(max_entries=128)
 
 
 # ---------------------------------------------------------------------------
@@ -823,6 +970,739 @@ def _format_advance_payment_block(info: dict) -> str:
     )
 
 
+# ── P198fb — Coal-LC quality detection ──────────────────────────────
+#
+# A subset of LCs (typically thermal coal, sometimes petcoke) carry a
+# F47A "PRICE ADJUSTMENTS CLAUSE" + a parameter table listing coal
+# quality specs (Total Moisture, Inherent Moisture, Ash, Sulphur,
+# Volatile Matter, Gross Calorific Value (ARB), Size, HGI). Each
+# parameter has either a contract spec, a rejection threshold, or
+# both. The Gross Calorific Value almost always carries a
+# proportional-pricing formula:
+#
+#   IF actual GCV (ARB) >= contract GCV (e.g. 5800 kcal/kg)
+#       → no premium / no adjustment, contract price stands
+#   IF actual GCV (ARB) <  contract GCV  AND >= reject_below
+#       → adjusted CFR = (FOB × actual GCV / contract GCV) + Freight
+#   IF actual GCV (ARB) <  reject_below
+#       → REJECT (hard fail)
+#
+# Without explicit detection, the verifier can:
+#   • Falsely FAIL a Commercial Invoice that came in below F32B
+#     because the COA showed a sub-spec GCV (the price was
+#     legitimately adjusted down, not over-claimed)
+#   • Miss hard rejection breaches on TM / Ash / Sulphur / GCV
+#   • Treat informational-only rows (Inherent Moisture / VM / HGI /
+#     Size) as failures when they only require reporting
+#
+# The detector below pulls every parameter row from F47A's coal
+# clause and exposes it as a structured dict that downstream rules
+# (and the LLM via the CORE prompt rule 7b) consume.
+_COAL_TRIGGER_RE = re.compile(
+    r'(?:GROSS\s+CALORIFIC\s+VALUE|CALORIFIC\s+VALUE\s+\(\s*ARB\s*\)|'
+    r'\bGCV\b|\bGAR\b|\bNAR\b|\bADB\b|'
+    r'PRICE\s+ADJUSTMENTS?\s+CLAUSE|HARDGROVE)',
+    re.IGNORECASE,
+)
+_COAL_PARAM_RES = {
+    # name -> (regex, basis_default)
+    'total_moisture':   (re.compile(r'\bTOTAL\s+MOISTURE\b',     re.IGNORECASE), 'ARB'),
+    'inherent_moisture':(re.compile(r'\bINHERENT\s+MOISTURE\b',   re.IGNORECASE), 'ADB'),
+    'ash':              (re.compile(r'\bASH\b',                   re.IGNORECASE), 'ARB'),
+    'sulphur':          (re.compile(r'\b(?:SULPHUR|SULFUR|TOTAL\s+SULPHUR)\b', re.IGNORECASE), 'ARB'),
+    'volatile_matter':  (re.compile(r'\bVOLATILE\s+MATTER\b',     re.IGNORECASE), 'ARB'),
+    'gcv':              (re.compile(r'\b(?:GROSS\s+CALORIFIC\s+VALUE|NET\s+CALORIFIC\s+VALUE|CALORIFIC\s+VALUE|GCV|GAR|NAR|NCV)\b', re.IGNORECASE), 'ARB'),
+    'size':             (re.compile(r'\bSIZE\b',                  re.IGNORECASE), '-'),
+    'hgi':              (re.compile(r'\bHGI\b',                   re.IGNORECASE), '-'),
+}
+_PCT_RE          = re.compile(r'(\d+(?:\.\d+)?)\s*(?:PCT|PERCENT|%)', re.IGNORECASE)
+# P198fb — accept comma-separated thousands ("5,800") AND bare digits
+# ("5650") AND optional spaces inside KCAL/KG ("KCAL /KG").
+_KCAL_RE         = re.compile(r'(\d{1,2},\d{3}|\d{3,5})(?:\.\d+)?\s*KCAL\s*/?\s*KG', re.IGNORECASE)
+_MM_RE           = re.compile(r'(\d+\s*-\s*\d+)\s*MM', re.IGNORECASE)
+_NUM_RANGE_RE    = re.compile(r'(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)')
+
+
+def _parse_coal_param_row(row_text: str, kind: str) -> dict:
+    """Extract spec + rejection-threshold from one parameter line.
+    The tables are written informally — common shapes:
+      "TOTAL MOISTURE (ARB) : 11 PCT ABOVE 13 PCT"
+      "ASH (ARB) : 15 PCT ABOVE 17 PCT"
+      "SULPHUR (ARB) : 0.8 PCT ABOVE 1 PCT"
+      "GROSS CALORIFIC VALUE (ARB) : 5,800 KCAL/KG BELOW 5650 KCAL/KG"
+      "INHERENT MOISTURE (ADB) : 3-5 PCT NO REJECTION"
+      "VOLATILE MATTER (ARB) : 36-40 PCT NO REJECTION"
+      "SIZE 0-50MM NO REJECTION"
+      "HGI 40-50MM NO REJECTION"
+    Returns a dict with whatever values were extractable; missing
+    values are simply absent.
+    """
+    out = {'raw': row_text.strip()}
+    txt = row_text.upper()
+    # Basis: ARB / ADB / DB / DAF if explicitly written
+    bm = re.search(r'\((\s*ARB|ADB|DB|DAF\s*)\)', txt)
+    if bm:
+        out['basis'] = bm.group(1).strip()
+    # No-rejection marker
+    if re.search(r'\bNO\s+REJECTION\b', txt):
+        out['reject'] = None
+    if kind == 'gcv':
+        # Spec value (kcal/kg) — first kcal number
+        kvs = _KCAL_RE.findall(txt)
+        if kvs:
+            try:
+                out['spec'] = float(kvs[0].replace(',', ''))
+            except ValueError:
+                pass
+            # P198fb — Sentence-form clauses can carry MULTIPLE "BELOW
+            # <kcal>" clauses on the same line, e.g.
+            #   "IF GCV BELOW 5800, ADJUST. IF GCV BELOW 5500, REJECT"
+            # The TRUE rejection threshold is the one paired with the
+            # word REJECT/REJECTION nearby. If no REJECT-paired match,
+            # the smallest BELOW value (which is below the spec) is the
+            # rejection threshold; the larger BELOW value is just the
+            # adjustment trigger (= spec).
+            below_re = re.compile(
+                r'BELOW\s+(\d{1,2},\d{3}|\d{3,5})(?:\.\d+)?\s*KCAL',
+                re.IGNORECASE,
+            )
+            below_matches = [
+                (m, float(m.group(1).replace(',', '')))
+                for m in below_re.finditer(txt)
+            ]
+            reject_val = None
+            spec_val = out.get('spec')
+            if below_matches:
+                # First, try REJECT-paired
+                for m, v in below_matches:
+                    s, e = max(0, m.start() - 40), min(len(txt), m.end() + 40)
+                    window = txt[s:e]
+                    if re.search(r'\bREJEC(?:T|TION)\b', window, re.IGNORECASE):
+                        reject_val = v
+                        break
+                # Fallback: the smallest BELOW < spec is the rejection floor
+                if reject_val is None:
+                    candidates = [v for _, v in below_matches
+                                  if spec_val is None or v < spec_val]
+                    if candidates:
+                        reject_val = min(candidates)
+                    else:
+                        # All BELOW values >= spec — only one BELOW, treat
+                        # as a spec restatement (don't set reject_below)
+                        reject_val = None
+            if reject_val is not None:
+                out['reject_below'] = reject_val
+        return out
+    if kind in ('size', 'hgi'):
+        # Range like "40-50" / "0-50MM"
+        rm = _NUM_RANGE_RE.search(txt)
+        if rm:
+            out['range'] = (float(rm.group(1)), float(rm.group(2)))
+        return out
+    # Percent-based parameters (TM/IM/Ash/S/VM)
+    pcts = _PCT_RE.findall(txt)
+    if pcts:
+        try:
+            out['spec'] = float(pcts[0])
+        except ValueError:
+            pass
+    # Range-style spec like "3-5 PCT" → spec_range
+    rngm = _NUM_RANGE_RE.search(txt)
+    if rngm:
+        try:
+            out['spec_range'] = (float(rngm.group(1)), float(rngm.group(2)))
+        except ValueError:
+            pass
+    # Rejection: "ABOVE <num> PCT"
+    am = re.search(r'ABOVE\s+(\d+(?:\.\d+)?)\s*(?:PCT|PERCENT|%)', txt)
+    if am:
+        try:
+            out['reject_above'] = float(am.group(1))
+        except ValueError:
+            pass
+    # Rejection: "BELOW <num> PCT"  (rare for percent params but handle it)
+    bbm = re.search(r'BELOW\s+(\d+(?:\.\d+)?)\s*(?:PCT|PERCENT|%)', txt)
+    if bbm:
+        try:
+            out['reject_below'] = float(bbm.group(1))
+        except ValueError:
+            pass
+    return out
+
+
+def _detect_coal_quality_terms(step06_result: dict):
+    """
+    Parse F47A / F45A for a coal-quality price-adjustment clause.
+    Returns a structured dict of parameters / rejection thresholds /
+    pricing formula, OR None when this is not a coal LC.
+
+    Containment: returns None unless F47A literally mentions GCV /
+    Calorific Value / GAR / NAR / Hardgrove or a "PRICE ADJUSTMENTS
+    CLAUSE" — guarantees zero false positives on standard LCs.
+    """
+    if not step06_result or not isinstance(step06_result, dict):
+        return None
+    final_lc = step06_result.get("final_lc", step06_result)
+    if not isinstance(final_lc, dict):
+        return None
+    fields = final_lc.get("consolidated_fields", final_lc)
+    if not isinstance(fields, dict):
+        return None
+
+    # Pull F47A / F47B and F45A (some LCs put the spec table in F45A)
+    txt_parts = []
+    for tag in ('47A', 'F47A', '47B', 'F47B', '45A', 'F45A', '45B', 'F45B'):
+        v = fields.get(tag, '')
+        if isinstance(v, dict):
+            v = v.get('value') or v.get('text') or ''
+        if isinstance(v, list):
+            v = ' '.join(
+                (x.get('text', x.get('value', str(x))) if isinstance(x, dict) else str(x))
+                for x in v
+            )
+        if v:
+            txt_parts.append(str(v))
+    full = '\n'.join(txt_parts)
+    if not full:
+        return None
+    # Trigger gate — require at least one coal-specific marker
+    if not _COAL_TRIGGER_RE.search(full):
+        return None
+
+    # Walk line-by-line and match each parameter regex against the line.
+    # P198fb — Quality of match matters more than first-match-wins.
+    # The F47A clause body often carries SENTENCE-form references like
+    # "IS SHOWING BELOW 5,800 KCAL/KG" alongside the formal TABLE-FORMAT
+    # row "GROSS CALORIFIC VALUE (ARB) : 5,800 KCAL/KG BELOW 5650 KCAL/KG".
+    # The table row has the correct rejection threshold; the sentence
+    # has the contract spec but no real rejection limit.
+    #
+    # Score each match so a formal table row beats any sentence match:
+    #   +10  table-format prefix "<NAME> (<BASIS>) :"
+    #   +5   ABOVE / BELOW threshold present
+    #   +3   "NO REJECTION" marker present
+    #   +1   spec value present
+    # Last-write-wins among rows of the SAME score, so the table row
+    # (which appears after the formula explanation) takes precedence.
+    def _score_row(parsed, line_text):
+        s = 0
+        if re.search(r'\(\s*(?:ARB|ADB|DB|DAF)\s*\)\s*:', line_text, re.IGNORECASE):
+            s += 10
+        if 'reject_above' in parsed or 'reject_below' in parsed:
+            s += 5
+        if 'reject' in parsed and parsed.get('reject') is None:
+            s += 3
+        if 'spec' in parsed or 'spec_range' in parsed or 'range' in parsed:
+            s += 1
+        return s
+
+    parameters = {}        # pname -> parsed dict
+    parameter_scores = {}  # pname -> int (best score so far)
+    for line in full.splitlines():
+        line_strip = line.strip()
+        if not line_strip:
+            continue
+        # P198fb — Sentence-form clauses can carry MULTIPLE parameters
+        # on a single line ("...GCV ARB IS 5800 KCAL/KG. TOTAL MOISTURE
+        # NOT MORE THAN 12 PCT...."). Don't `break` after the first
+        # parameter match — keep checking the line against every
+        # parameter regex so we don't lose later parameters.
+        for pname, (rx, basis_default) in _COAL_PARAM_RES.items():
+            if not rx.search(line_strip):
+                continue
+            parsed = _parse_coal_param_row(line_strip, pname)
+            if 'basis' not in parsed and basis_default != '-':
+                parsed['basis'] = basis_default
+            score = _score_row(parsed, line_strip)
+            prev_score = parameter_scores.get(pname, -1)
+            if score >= prev_score:
+                parameters[pname] = parsed
+                parameter_scores[pname] = score
+
+    # Without GCV info this is unlikely a coal LC — bail out so we don't
+    # mis-fire on borderline phrasing
+    if 'gcv' not in parameters or not parameters['gcv'].get('spec'):
+        return None
+
+    # Detect price-adjustment formula type
+    full_upper = full.upper()
+    has_formula = bool(
+        re.search(
+            r'ADJUSTED\s+(?:CFR|FOB|PRICE).{0,80}'
+            r'(?:ACTUAL\s+)?GCV',
+            full_upper, re.DOTALL,
+        )
+        or re.search(r'GCV\s*\(?\s*ARB\s*\)?\s*DIVIDED\s+BY', full_upper)
+    )
+    formula_type = 'gcv_prorated' if has_formula else None
+
+    # LC currency + amount (for sanity)
+    lc_amount_str = str(fields.get('32B', fields.get('F32B', ''))).upper()
+    ccy_m = re.search(r'\b(USD|EUR|GBP|JPY|CNY|PKR|AED|SAR|INR|BDT|LKR)\b',
+                      lc_amount_str)
+    currency = ccy_m.group(1) if ccy_m else ''
+    cleaned = re.sub(r'[A-Z]{2,}\s*', '', lc_amount_str).strip()
+    nm = re.search(r'[\d,]+(?:\.\d{1,2})?', cleaned)
+    lc_amount = 0.0
+    if nm:
+        try:
+            lc_amount = float(nm.group(0).replace(',', ''))
+        except ValueError:
+            pass
+
+    return {
+        'is_coal_lc':          True,
+        'parameters':          parameters,
+        'gcv_spec_kcal':       parameters['gcv'].get('spec'),
+        'gcv_reject_below':    parameters['gcv'].get('reject_below'),
+        'has_price_adjustment': bool(formula_type),
+        'formula_type':        formula_type,
+        'lc_amount':           lc_amount,
+        'currency':             currency,
+    }
+
+
+def _format_coal_quality_block(info: dict) -> str:
+    """Render the coal quality + price-adjustment context as a banner
+    that gets PREPENDED to f47a_context (after the advance-payment
+    banner if both apply). CORE prompt rule 7b uses these values."""
+    if not info or not info.get('is_coal_lc'):
+        return ''
+    params = info.get('parameters') or {}
+    ccy = info.get('currency') or ''
+    lc  = info.get('lc_amount') or 0.0
+    gspec = info.get('gcv_spec_kcal')
+    grej  = info.get('gcv_reject_below')
+    has_formula = info.get('has_price_adjustment')
+
+    def _fmt_pct_row(label, key):
+        p = params.get(key) or {}
+        bits = []
+        if p.get('spec') is not None:
+            bits.append(f"spec {p['spec']}%")
+        elif p.get('spec_range'):
+            r0, r1 = p['spec_range']
+            bits.append(f"spec {r0}-{r1}%")
+        if p.get('reject_above') is not None:
+            bits.append(f"REJECT if > {p['reject_above']}%")
+        elif p.get('reject') is None and 'reject' in p:
+            bits.append("no rejection")
+        return f"  - {label:30s}: {' | '.join(bits) if bits else '(not parsed)'}"
+
+    rows = []
+    rows.append(_fmt_pct_row("Total Moisture (ARB)",        'total_moisture'))
+    rows.append(_fmt_pct_row("Inherent Moisture (ADB)",     'inherent_moisture'))
+    rows.append(_fmt_pct_row("Ash (ARB)",                   'ash'))
+    rows.append(_fmt_pct_row("Sulphur (ARB)",               'sulphur'))
+    rows.append(_fmt_pct_row("Volatile Matter (ARB)",       'volatile_matter'))
+    gcv_bits = []
+    if gspec:    gcv_bits.append(f"spec {gspec:.0f} kcal/kg")
+    if grej:     gcv_bits.append(f"REJECT if < {grej:.0f} kcal/kg")
+    rows.append(f"  - {'Gross Calorific Value (ARB)':30s}: " +
+                (' | '.join(gcv_bits) if gcv_bits else '(not parsed)'))
+    sz = params.get('size') or {}
+    if sz.get('range'):
+        rows.append(f"  - {'Size':30s}: {sz['range'][0]:.0f}-{sz['range'][1]:.0f}mm | no rejection")
+    hgi = params.get('hgi') or {}
+    if hgi.get('range'):
+        rows.append(f"  - {'HGI':30s}: {hgi['range'][0]:.0f}-{hgi['range'][1]:.0f} | no rejection")
+
+    formula_lines = []
+    if has_formula and gspec:
+        formula_lines.append(
+            f"\nPRICING FORMULA (F47A — Price Adjustments Clause):\n"
+            f"  - IF actual GCV (ARB) >= {gspec:.0f} kcal/kg  ->  full contract price (no premium)\n"
+            f"  - IF actual GCV (ARB) <  {gspec:.0f} kcal/kg  ->  Adjusted CFR = (FOB x actualGCV / {gspec:.0f}) + Freight\n"
+        )
+        if grej:
+            formula_lines.append(
+                f"  - IF actual GCV (ARB) <  {grej:.0f} kcal/kg  ->  REJECT (hard fail)\n"
+            )
+
+    return (
+        "\n"
+        "============================================================\n"
+        "COAL-LC QUALITY SPECIFICATIONS (auto-detected from F47A)\n"
+        "============================================================\n"
+        f"  LC value (F32B)               : {ccy} {lc:,.2f}\n"
+        + "\n".join(rows)
+        + "\n"
+        + "".join(formula_lines)
+        + "\n"
+        "INTERPRETATION RULES (apply to all coal-quality verifications):\n"
+        "  1. Read the Certificate of Sampling and Analysis (load port).\n"
+        "  2. For each parameter, FAIL if the actual reported value\n"
+        "     EXCEEDS the rejection threshold (TM/Ash/Sulphur 'above',\n"
+        "     GCV 'below'). Parameters tagged 'no rejection' never fail.\n"
+        "  3. Commercial Invoice may legitimately come in BELOW F32B\n"
+        "     when the COA shows GCV < contract spec — verify the price\n"
+        "     was adjusted by the proportional formula above.\n"
+        "  4. Quantity differences between certificates and BL/Invoice\n"
+        "     are typically allowed by F47A (clause 12 in many coal LCs)\n"
+        "     - do NOT fail on quantity mismatches if such a clause\n"
+        "     exists in the F47A text.\n"
+        "============================================================\n"
+    )
+
+
+# ── P198ff — Discrepancy-whitelist clause detector ──────────────────
+#
+# Many Pakistani / GCC LCs include a clause along the lines of:
+#   "ALL DISCREPANCIES ARE ACCEPTABLE EXCEPT FOR DESCRIPTION OF GOODS,
+#    QUANTITY, QUALITY, LATEST DATE OF SHIPMENT, PORT OF LOADING AND
+#    PORT OF DISCHARGE AND ORIGIN OF GOODS."
+#
+# This is a HARD acceptance rule — only the listed categories can fail
+# the LC; everything else (typos, addressee variations, minor format
+# issues, etc.) MUST be accepted. Without explicit handling, the LLM
+# verifies each rule independently and false-FAILs on minor issues
+# that the bank would have accepted.
+#
+# Detector returns:
+#   None — when no whitelist clause is present (existing flow unchanged)
+#   dict {hard_fail_categories, raw_clause} — when present
+#
+# Hard-fail categories are the canonical English nouns extracted from
+# the EXCEPT clause — used by a downstream post-check to demote LLM
+# FAIL rows to PASS unless the row's subject falls into one of these
+# categories.
+_DISCREPANCY_WHITELIST_RES = [
+    re.compile(
+        r'(?:ALL\s+|ANY\s+)?DISCREPAN(?:CIES|CY)\s+(?:ARE\s+|IS\s+)?'
+        r'(?:ACCEPTABLE|ACCEPTED|WAIVED)\s+'
+        r'EXCEPT(?:\s+FOR)?\s+(.{8,400}?)(?:\.|$)',
+        re.IGNORECASE | re.DOTALL,
+    ),
+]
+# Canonical category buckets — when the LLM's failed-row condition_text
+# contains one of these tokens, the FAIL is HARD and must NOT be
+# whitelisted. The list is a superset; each LC's actual hard-fail set
+# is the SUBSET that appears in its EXCEPT clause.
+_HARD_CATEGORY_TOKENS = {
+    'goods_description': (
+        'description of goods', 'goods description', 'description of merchandise',
+        'merchandise description', 'description of cargo',
+    ),
+    'quantity': ('quantity', 'qty', 'weight', 'volume',),
+    'quality': ('quality', 'grade', 'specification',),
+    'shipment_date': (
+        'latest date of shipment', 'latest shipment date', 'shipment date',
+        'date of shipment', 'shipping date',
+    ),
+    'expiry_date': (
+        'lc expiry', 'expiry date', 'date of expiry', 'date and place of expiry',
+    ),
+    'port_of_loading': (
+        'port of loading', 'loading port', 'port of departure',
+    ),
+    'port_of_discharge': (
+        'port of discharge', 'discharge port', 'port of destination',
+        'destination port',
+    ),
+    'origin': ('origin', 'country of origin', 'origin of goods',),
+    'amount': (
+        'amount', 'amount exceeding', 'overdrawn', 'lc amount',
+        'credit amount', 'invoice exceeds', 'value', 'invoice value',
+    ),
+    'lc_number': ('lc number', 'l/c number', 'documentary credit number',),
+    'beneficiary': ('beneficiary',),
+    'applicant': ('applicant',),
+    'consignee': ('consignee',),
+}
+
+
+def _detect_discrepancy_whitelist(step06_result: dict):
+    """
+    Parse F47A for an "ALL DISCREPANCIES ACCEPTABLE EXCEPT X, Y, Z"
+    clause. Returns {hard_fail_categories: set, raw_clause: str} or None.
+
+    Each token in the EXCEPT list maps to a canonical category bucket
+    (goods_description / quantity / shipment_date / port_of_loading /
+    port_of_discharge / origin / etc.). The downstream post-check
+    demotes any LLM FAIL whose row condition does NOT mention any of
+    these category tokens.
+    """
+    if not step06_result or not isinstance(step06_result, dict):
+        return None
+    final_lc = step06_result.get('final_lc', step06_result)
+    if not isinstance(final_lc, dict):
+        return None
+    fields = final_lc.get('consolidated_fields', final_lc)
+    if not isinstance(fields, dict):
+        return None
+    txt_parts = []
+    for tag in ('47A', 'F47A', '47B', 'F47B'):
+        v = fields.get(tag, '')
+        if isinstance(v, dict):
+            v = v.get('value') or v.get('text') or ''
+        if isinstance(v, list):
+            v = ' '.join(
+                (x.get('text', x.get('value', str(x))) if isinstance(x, dict) else str(x))
+                for x in v
+            )
+        if v:
+            txt_parts.append(str(v))
+    full = '\n'.join(txt_parts)
+    if not full:
+        return None
+    matched = None
+    for rx in _DISCREPANCY_WHITELIST_RES:
+        m = rx.search(full)
+        if m:
+            matched = m
+            break
+    if not matched:
+        return None
+    except_block = matched.group(1).strip().lower()
+    # Identify which categories appear in the EXCEPT block
+    hard_categories = set()
+    for cat, tokens in _HARD_CATEGORY_TOKENS.items():
+        for t in tokens:
+            if t in except_block:
+                hard_categories.add(cat)
+                break
+    if not hard_categories:
+        return None
+    return {
+        'hard_fail_categories': hard_categories,
+        'raw_clause': matched.group(0).strip(),
+        'except_block': matched.group(1).strip(),
+    }
+
+
+def _format_discrepancy_whitelist_block(info: dict) -> str:
+    """Render the discrepancy-whitelist context as a banner that gets
+    PREPENDED to f47a_context. Lists the EXACT hard-fail categories so
+    the LLM knows everything else is auto-acceptable."""
+    if not info or not info.get('hard_fail_categories'):
+        return ''
+    cats = sorted(info['hard_fail_categories'])
+    pretty = {
+        'goods_description': 'Description of Goods',
+        'quantity': 'Quantity',
+        'quality': 'Quality',
+        'shipment_date': 'Latest Date of Shipment',
+        'expiry_date': 'LC Expiry Date',
+        'port_of_loading': 'Port of Loading',
+        'port_of_discharge': 'Port of Discharge',
+        'origin': 'Origin of Goods',
+        'amount': 'Amount Exceeding LC',
+        'lc_number': 'LC Number',
+        'beneficiary': 'Beneficiary',
+        'applicant': 'Applicant',
+        'consignee': 'Consignee',
+    }
+    cats_pretty = ', '.join(pretty.get(c, c) for c in cats)
+    return (
+        "\n"
+        "============================================================\n"
+        "DISCREPANCY WHITELIST (auto-detected from F47A)\n"
+        "============================================================\n"
+        "  This LC contains an 'ALL DISCREPANCIES ACCEPTABLE EXCEPT'\n"
+        "  clause. Only the categories below are HARD-FAIL grounds:\n"
+        f"      {cats_pretty}\n"
+        "\n"
+        "  EVERY OTHER potential discrepancy (typos, minor format\n"
+        "  variations, missing optional details, OCR-glued text,\n"
+        "  formatting issues, etc.) MUST be treated as PASS — the\n"
+        "  bank has explicitly waived these.\n"
+        "============================================================\n"
+    )
+
+
+# ── P198fg — Late-shipment-with-penalty clause detector ─────────────
+#
+# Some LCs explicitly accept late shipment if the beneficiary pays a
+# penalty: "LATE SHIPMENT ALLOWED PROVIDED USD X PER DAY DEDUCTED" or
+# "LATE SHIPMENT ACCEPTABLE WITH USD X PENALTY". Without explicit
+# handling, the latest-shipment-date check fails outright.
+#
+# Detector returns:
+#   None — when no penalty clause is present
+#   dict {penalty_amount, currency, per_day, raw_clause} — when present
+_LATE_SHIPMENT_PENALTY_RES = [
+    re.compile(
+        r'LATE\s+SHIPMENT\s+(?:IS\s+)?(?:ALLOWED|ACCEPTABLE|PERMITTED)\s+'
+        r'(?:PROVIDED|WITH|SUBJECT\s+TO)\s+(.{4,200}?)(?:\.|$)',
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r'(?:DELAY|LATE)\s+(?:IN\s+)?SHIPMENT\s+(?:IS\s+)?(?:ACCEPTED|ACCEPTABLE)\s+'
+        r'(?:WITH|PROVIDED)\s+(.{4,200}?)(?:\.|$)',
+        re.IGNORECASE | re.DOTALL,
+    ),
+]
+
+
+def _detect_late_shipment_penalty(step06_result: dict):
+    if not step06_result or not isinstance(step06_result, dict):
+        return None
+    final_lc = step06_result.get('final_lc', step06_result)
+    if not isinstance(final_lc, dict):
+        return None
+    fields = final_lc.get('consolidated_fields', final_lc)
+    if not isinstance(fields, dict):
+        return None
+    txt_parts = []
+    for tag in ('47A', 'F47A', '47B', 'F47B'):
+        v = fields.get(tag, '')
+        if isinstance(v, dict):
+            v = v.get('value') or v.get('text') or ''
+        if isinstance(v, list):
+            v = ' '.join(
+                (x.get('text', x.get('value', str(x))) if isinstance(x, dict) else str(x))
+                for x in v
+            )
+        if v:
+            txt_parts.append(str(v))
+    full = '\n'.join(txt_parts)
+    if not full:
+        return None
+    m = None
+    for rx in _LATE_SHIPMENT_PENALTY_RES:
+        m = rx.search(full)
+        if m:
+            break
+    if not m:
+        return None
+    body = m.group(1)
+    # Pull out the penalty amount + currency if present
+    am = re.search(
+        r'(USD|EUR|GBP|JPY|CNY|PKR|AED|SAR|INR|BDT|LKR)\s*'
+        r'([\d,]+(?:\.\d{1,2})?)',
+        body, re.IGNORECASE,
+    )
+    penalty_currency = am.group(1).upper() if am else ''
+    penalty_amount = float(am.group(2).replace(',', '')) if am else 0.0
+    per_day = bool(re.search(r'\bper\s+day|/day|each\s+day', body, re.IGNORECASE))
+    return {
+        'has_late_penalty':  True,
+        'penalty_amount':    penalty_amount,
+        'penalty_currency':  penalty_currency,
+        'per_day':           per_day,
+        'raw_clause':        m.group(0).strip(),
+    }
+
+
+def _format_late_shipment_penalty_block(info: dict) -> str:
+    if not info or not info.get('has_late_penalty'):
+        return ''
+    pa = info.get('penalty_amount') or 0.0
+    pc = info.get('penalty_currency') or ''
+    per_day = info.get('per_day')
+    if pa > 0 and pc:
+        money = f"{pc} {pa:,.2f}{' per day' if per_day else ''}"
+    else:
+        money = "(amount unspecified — read clause)"
+    return (
+        "\n"
+        "============================================================\n"
+        "LATE-SHIPMENT-WITH-PENALTY CLAUSE (auto-detected from F47A)\n"
+        "============================================================\n"
+        f"  Penalty:  {money}\n"
+        "\n"
+        "  This LC EXPLICITLY accepts late shipment subject to the\n"
+        "  penalty above. For ANY late-shipment row:\n"
+        "    - Verdict should be REVIEW (not FAIL) — the bank deducts\n"
+        "      the penalty and accepts the documents.\n"
+        "    - The findings should mention the deducted penalty amount.\n"
+        "============================================================\n"
+    )
+
+
+# ── P198fh — Independent-surveyor naming detector ───────────────────
+#
+# Coal / grain / oilseed / petroleum LCs commonly require certificates
+# (sampling/analysis, weight, draft survey) issued by SPECIFIC
+# independent surveyors: SGS, Cotecna, ITS (Intertek), Bureau Veritas,
+# Alfred H Knight, Saybolt, Inspectorate, Geo-Chem.
+#
+# Detector returns:
+#   None — when no surveyor naming exists
+#   dict {required_surveyors: set, raw_clauses: list} — when present
+_KNOWN_SURVEYORS = {
+    'sgs':              ('sgs', 'SGS'),
+    'cotecna':          ('cotecna',),
+    'intertek':         ('intertek', 'ITS'),
+    'bureau_veritas':   ('bureau veritas', 'BV ', 'bv,', 'bureauveritas'),
+    'alfred_knight':    ('alfred h knight', 'alfred h. knight', 'a h knight', 'a.h.knight'),
+    'saybolt':          ('saybolt',),
+    'inspectorate':     ('inspectorate',),
+    'geo_chem':         ('geo-chem', 'geochem'),
+    'control_union':    ('control union',),
+}
+
+
+def _detect_required_surveyors(step06_result: dict):
+    if not step06_result or not isinstance(step06_result, dict):
+        return None
+    final_lc = step06_result.get('final_lc', step06_result)
+    if not isinstance(final_lc, dict):
+        return None
+    fields = final_lc.get('consolidated_fields', final_lc)
+    if not isinstance(fields, dict):
+        return None
+    # Surveyor names typically appear in F46A (required docs) AND/OR F47A
+    txt_parts = []
+    for tag in ('46A', 'F46A', '46B', 'F46B', '47A', 'F47A', '47B', 'F47B'):
+        v = fields.get(tag, '')
+        if isinstance(v, dict):
+            v = v.get('value') or v.get('text') or ''
+        if isinstance(v, list):
+            v = ' '.join(
+                (x.get('text', x.get('value', str(x))) if isinstance(x, dict) else str(x))
+                for x in v
+            )
+        if v:
+            txt_parts.append(str(v))
+    full = '\n'.join(txt_parts).lower()
+    if not full:
+        return None
+    found = set()
+    for canonical, tokens in _KNOWN_SURVEYORS.items():
+        for t in tokens:
+            if t.lower() in full:
+                found.add(canonical)
+                break
+    if not found:
+        return None
+    return {
+        'required_surveyors': found,
+    }
+
+
+def _format_surveyor_block(info: dict) -> str:
+    if not info or not info.get('required_surveyors'):
+        return ''
+    pretty = {
+        'sgs':            'SGS',
+        'cotecna':        'Cotecna',
+        'intertek':       'Intertek (ITS)',
+        'bureau_veritas': 'Bureau Veritas',
+        'alfred_knight':  'Alfred H. Knight',
+        'saybolt':        'Saybolt',
+        'inspectorate':   'Inspectorate',
+        'geo_chem':       'Geo-Chem',
+        'control_union':  'Control Union',
+    }
+    names = ', '.join(pretty.get(c, c) for c in sorted(info['required_surveyors']))
+    return (
+        "\n"
+        "============================================================\n"
+        "REQUIRED INDEPENDENT SURVEYOR(S) (auto-detected)\n"
+        "============================================================\n"
+        f"  Named in LC: {names}\n"
+        "\n"
+        "  Certificates of Sampling/Analysis, Weight, Draft Survey\n"
+        "  must be issued / signed by ONE OF the surveyors above.\n"
+        "  - If certificate names a different surveyor (and the LC\n"
+        "    does not say 'or any independent surveyor'): FAIL.\n"
+        "  - If the certificate names ANY of the surveyors above: PASS.\n"
+        "  - If the certificate doesn't name an issuer at all: REVIEW.\n"
+        "============================================================\n"
+    )
+
+
 def _build_f47a_context(step06_result: dict) -> str:
     """
     Read ALL F47A Additional Conditions from the Final LC and build a
@@ -835,6 +1715,26 @@ def _build_f47a_context(step06_result: dict) -> str:
     _split_info = _detect_advance_payment_terms(step06_result)
     if _split_info:
         parts.append(_format_advance_payment_block(_split_info))
+
+    # P198fb — prepend coal-quality banner when applicable
+    _coal_info = _detect_coal_quality_terms(step06_result)
+    if _coal_info:
+        parts.append(_format_coal_quality_block(_coal_info))
+
+    # P198ff — prepend discrepancy-whitelist banner when applicable
+    _wl_info = _detect_discrepancy_whitelist(step06_result)
+    if _wl_info:
+        parts.append(_format_discrepancy_whitelist_block(_wl_info))
+
+    # P198fg — prepend late-shipment-with-penalty banner when applicable
+    _late_info = _detect_late_shipment_penalty(step06_result)
+    if _late_info:
+        parts.append(_format_late_shipment_penalty_block(_late_info))
+
+    # P198fh — prepend required-surveyor banner when applicable
+    _surv_info = _detect_required_surveyors(step06_result)
+    if _surv_info:
+        parts.append(_format_surveyor_block(_surv_info))
 
     # Try consolidated_fields first
     final_lc = step06_result.get("final_lc", step06_result)
@@ -3035,6 +3935,34 @@ CRITICAL RULES (follow strictly):
       • Use the EXACT numbers in the ADVANCE-PAYMENT block (advance and
         net) when verifying — do not recompute them yourself; the system
         already calculated them from F32B × the parsed percentages.
+7b. COAL-LC QUALITY VERIFICATION (P198fb — read carefully):
+    Coal LCs (typically thermal coal, HS code 2701.xx) carry a F47A
+    "PRICE ADJUSTMENTS CLAUSE" listing parameter specs (Total Moisture,
+    Ash, Sulphur, Volatile Matter, Gross Calorific Value (ARB)) with
+    rejection thresholds and a GCV-prorated pricing formula. When the
+    F47A CONTEXT block above contains a "COAL-LC QUALITY SPECIFICATIONS"
+    banner, this is a coal LC. Apply these rules:
+      - Certificate of Sampling and Analysis (load port) FAILS if any
+        actual value EXCEEDS its rejection threshold:
+        - TM (ARB) above the listed limit (typically 13%)
+        - Ash (ARB) above the listed limit (typically 17%)
+        - Sulphur (ARB) above the listed limit (typically 1%)
+        - GCV (ARB) BELOW the rejection floor (typically 5,650 kcal/kg)
+        Parameters tagged 'no rejection' (Inherent Moisture, Volatile
+        Matter, Size, HGI) NEVER fail — they are informational.
+      - Commercial Invoice may LEGITIMATELY be priced BELOW F32B when
+        the COA shows GCV < contract spec. The expected unit price is:
+            adjusted = (FOB x actualGCV / contractGCV) + Freight
+        If the invoice unit price equals this adjusted figure within
+        rounding tolerance, that is PASS - NOT a discrepancy. Do NOT
+        flag "invoice less than LC amount" as a fail in this case.
+      - F47A clauses in coal LCs frequently include "Certificates may
+        show quantity different from BL and Invoice are acceptable" -
+        a quantity mismatch between Certificate of Weight / Cert of
+        Analysis / Draft Survey and the BL/Invoice is PASS, not FAIL.
+      - The F45A reference "AS PER PROFORMA INVOICE" in coal LCs means
+        the spec table is dual-located: in F47A and in the proforma -
+        prefer the F47A numbers as authoritative for verification.
 8. THIRD PARTY: If F47A says "THIRD PARTY DOCUMENTS ACCEPTABLE", third party documents = PASS.
 
 8a. BENEFICIARY-ISSUED DOCUMENTS: When the condition asks for a document
@@ -4293,8 +5221,54 @@ def _call_vlm(
         "temperature": 0.1,
     }
 
+    # P198fe — Result cache. If we've already verified this exact
+    # (model, prompt) pair this run, reuse the parsed verdict and skip
+    # the LLM round-trip entirely. Cache hits are a clean win on
+    # P198fa retries and on identical-content packet duplicates.
+    _cache_key = _LLMResultCache.make_key(QWEN_TEXT_LLM_MODEL, prompt_text)
+    _cached = _LLM_CACHE.get(_cache_key)
+    if _cached is not None:
+        _cached['row_id'] = row_id
+        _cached['elapsed'] = 0.0
+        _cached['_cached'] = True
+        return _cached
+
     try:
-        resp = requests.post(QWEN_TEXT_LLM_URL, json=payload, timeout=None)
+        # P198fa — Transient LLM failure retry. The verification endpoint
+        # occasionally returns ConnectionError / Timeout / 502/503/504 when
+        # the LLM is under load or a network blip drops a connection.
+        # Without retry, any transient failure pollutes the final report
+        # with "LLM timeout" / "HTTPConnectionPool" REVIEW rows that should
+        # have been a real PASS / FAIL once the upstream came back. Retry
+        # up to 3 times with short backoff (1s, 3s) before letting the
+        # outer except clause produce the REVIEW.
+        # P198fd — Use the keepalive session (TCP_KEEPALIVE + connection
+        # pooling) so long-running LLM calls don't trip enterprise
+        # firewall TCP-idle-timeouts at 21s.
+        resp = None
+        _last_exc = None
+        for _attempt in range(3):
+            try:
+                resp = _LLM_SESSION.post(QWEN_TEXT_LLM_URL, json=payload,
+                                         timeout=None)
+                # Retry on gateway / overload responses too
+                if resp.status_code in (502, 503, 504) and _attempt < 2:
+                    _last_exc = Exception(f"upstream {resp.status_code}")
+                    time.sleep(1 if _attempt == 0 else 3)
+                    continue
+                break
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout,
+                    requests.exceptions.ChunkedEncodingError) as _e:
+                _last_exc = _e
+                if _attempt < 2:
+                    time.sleep(1 if _attempt == 0 else 3)
+                    continue
+                # Final attempt failed — propagate to outer handler
+                raise
+        if resp is None:
+            raise (_last_exc if _last_exc else Exception("no response"))
+
         elapsed = time.time() - start
 
         if resp.status_code != 200:
@@ -4333,10 +5307,10 @@ def _call_vlm(
             return {
                 "row_id": row_id,
                 "findings": "Nil",
-                "result": f"VLM error HTTP {resp.status_code}: {err_body}" if err_body else f"VLM error HTTP {resp.status_code}",
+                "result": f"LLM error HTTP {resp.status_code}: {err_body}" if err_body else f"LLM error HTTP {resp.status_code}",
                 "compliance": "review",
                 "confidence": 0.0,
-                "reasoning": f"VLM returned HTTP {resp.status_code}: {err_body}" if err_body else f"VLM returned HTTP {resp.status_code}",
+                "reasoning": f"LLM returned HTTP {resp.status_code}: {err_body}" if err_body else f"LLM returned HTTP {resp.status_code}",
                 "elapsed": elapsed,
             }
 
@@ -4412,15 +5386,15 @@ def _call_vlm(
                                  else (_m_quote.group(1).replace('\n', ' ')[:250] if _m_quote else raw_content[:250])),
                     "quote": _m_quote.group(1) if _m_quote else "",
                     "confidence": float(_m_conf.group(1)) if _m_conf else 0.7,
-                    "reasoning": "Recovered from truncated VLM JSON via regex fallback.",
+                    "reasoning": "Recovered from truncated LLM JSON via regex fallback.",
                 }
         if not parsed:
             parsed = {
                 "findings": raw_content[:300],
-                "result": "VLM response not JSON",
+                "result": "LLM response not JSON",
                 "compliance": "review",
                 "confidence": 0.3,
-                "reasoning": "Could not parse VLM output as JSON",
+                "reasoning": "Could not parse LLM output as JSON",
             }
 
         # ── Normalize CORE-prompt response schema to legacy schema ──
@@ -5037,36 +6011,65 @@ def _call_vlm(
         except Exception:
             pass
 
+        # P198fe — Cache only successful PASS/FAIL/REVIEW with a
+        # confidence — don't cache infrastructure failures.
+        try:
+            _comp = str(parsed.get('compliance', '')).upper()
+            if _comp in ('PASS', 'FAIL', 'REVIEW'):
+                _LLM_CACHE.put(_cache_key, parsed)
+        except Exception:
+            pass
+
         return parsed
 
     except requests.exceptions.Timeout:
+        # P198fb — Step 14 uses the Qwen TEXT LLM (not the VLM) for
+        # condition verification. Report-visible strings now say "LLM"
+        # so the user-facing label matches what's actually being called.
         return {
             "row_id": row_id,
             "findings": "Nil",
-            "result": "VLM timeout",
+            "result": "LLM timeout",
             "compliance": "review",
             "confidence": 0.0,
-            "reasoning": f"VLM call timed out after {VLM_TIMEOUT}s",
+            "reasoning": f"LLM call timed out after {VLM_TIMEOUT}s",
             "elapsed": time.time() - start,
         }
     except json.JSONDecodeError:
         return {
             "row_id": row_id,
             "findings": "Nil",
-            "result": "VLM JSON parse error",
+            "result": "LLM JSON parse error",
             "compliance": "review",
             "confidence": 0.0,
-            "reasoning": "VLM response was not valid JSON",
+            "reasoning": "LLM response was not valid JSON",
             "elapsed": time.time() - start,
         }
     except Exception as exc:
+        # P198fa — log full traceback so the REVIEW row's "Error:"
+        # message can be diagnosed from server_log without re-running.
+        try:
+            import traceback as _tb
+            _tb_str = _tb.format_exc()
+            print(f"[step14 verify-error row={row_id}] {_tb_str}")
+        except Exception:
+            pass
+        # P198fa — Connection / network failures show a friendlier
+        # message than the raw HTTPConnectionPool / read-timeout text.
+        _exc_s = str(exc)
+        _is_net = any(k in _exc_s for k in (
+            'HTTPConnectionPool', 'Connection refused', 'Read timed out',
+            'Max retries exceeded', 'Failed to establish', 'NewConnectionError',
+        ))
+        _user_msg = ('LLM service temporarily unavailable — re-run verification'
+                     if _is_net else f"Error: {_exc_s[:80]}")
         return {
             "row_id": row_id,
             "findings": "Nil",
-            "result": f"Error: {str(exc)[:50]}",
+            "result": _user_msg,
             "compliance": "review",
             "confidence": 0.0,
-            "reasoning": str(exc)[:200],
+            "reasoning": _exc_s[:300],
             "elapsed": time.time() - start,
         }
 
@@ -5641,6 +6644,16 @@ def _build_tasks(
             'attached list', 'attached schedule', 'attached manifest',
             'cargo manifest page', 'pallet manifest', 'packing insert',
             'container list', 'container manifest', 'stuffing list',
+            # P198fj — Stamp / Seal-only pages are visual evidence
+            # pages (rubber-stamped paper, often the back of a BL or
+            # a stand-alone seal page) that don't carry their OWN
+            # printed content — they're not standalone documents
+            # under UCP 600. Fan-outs against them produce false
+            # FAIL/REVIEW rows on LC-number, date, English-language,
+            # HS code, etc. checks because there's no text to match.
+            'stamp or seal', 'stamps and seals page',
+            'stamp page', 'seal page', 'stamp/seal',
+            'seals page', 'stamp document', 'seal document',
         )
 
         def _is_excluded_from_alldoc_fanout(pt: str, pkt=None) -> bool:
