@@ -2432,7 +2432,75 @@ def _group_into_packets(classifications: List[dict]) -> List[DocumentPacket]:
                          (_copy_status == current_packet.copy_status or
                           _copy_status in ('unknown', '') or
                           current_packet.copy_status in ('unknown', '')))
-        if is_cont and current_packet and _type_matches and _copy_matches:
+        # P198gk — Force-merge consecutive SWIFT pages of the same type
+        # even when VLM said cont=False. SWIFT messages (MT700 LC, MT707
+        # Amendment, MT799, MT999, MT730, etc.) typically span multiple
+        # pages but only the first carries the "{1:F01..." header. The
+        # VLM often marks each page as cont=False because each page
+        # looks like its own SWIFT message, splitting one logical
+        # message into N packets. Real-data anchor: job 1f0fc892 had
+        # MT700 LC across pages 1-4 split into 2 packets (pkt_1=[1],
+        # pkt_2=[2,3,4]) because pages 1+2 both reported cont=False.
+        # P198gk — SWIFT message types that may span multiple pages.
+        # When two consecutive pages share the same canonical SWIFT
+        # type, merge them into one logical packet regardless of what
+        # the VLM's per-page cont verdict says.
+        #
+        # IMPORTANT — MT701 is the official "continuation" message for
+        # MT700 when LC content exceeds the SWIFT size limit (~10000
+        # chars). MT700 + MT701 + MT701 + ... are all parts of the
+        # same LC and must merge. Same logic for MT708 (cont of MT707
+        # amendment), MT711 (cont of MT710 advice), MT721 (cont of
+        # MT720 transfer).
+        _SWIFT_TYPES_FOR_MERGE = {
+            # Documentary Credit issuance + continuations
+            'lc', 'mt700', 'mt701',
+            'documentary credit', 'letter of credit',
+            # Amendment + continuation
+            'amendment', 'mt707', 'mt708',
+            # Free format messages
+            'mt799', 'mt999',
+            # Advice of third bank's DC + continuation
+            'mt710', 'mt711',
+            # Transfer + continuation
+            'mt720', 'mt721',
+            # Acknowledgement / Pre-advice
+            'mt705', 'mt730',
+            # Reimbursement family
+            'mt740', 'mt742', 'mt747',
+            # Refusal / Discrepancy
+            'mt734', 'mt744', 'mt732',
+            # Payment / Acceptance / Negotiation advices
+            'mt754', 'mt756',
+            # Cash management / statements
+            'mt910', 'mt940', 'mt942',
+            # Demand guarantees (occasionally bundled)
+            'mt760', 'mt767', 'mt768', 'mt769',
+        }
+        _both_swift = (
+            current_packet
+            and _curr_lower in _SWIFT_TYPES_FOR_MERGE
+            and _pkt_lower in _SWIFT_TYPES_FOR_MERGE
+            and _type_matches
+        )
+        # Hint-confirmed continuation: hint mentions "continuation" /
+        # "cont. of" / "page X of Y" — strong signal even if VLM said
+        # cont=False.
+        _hint_says_cont = False
+        _hint = (cls.get('doc_hint') or '').lower()
+        if any(k in _hint for k in (
+            'continuation page', 'continuation of', 'cont. of',
+            'cont of', 'continued from', 'page x of', 'continuation of an',
+            'continuation of a letter of credit', 'continuation page of an lc',
+            'continuation of lc', 'continuation page of lc',
+        )):
+            _hint_says_cont = True
+
+        _force_merge_swift = _both_swift and (is_cont or _hint_says_cont
+                                                or _type_matches)
+
+        if (is_cont and current_packet and _type_matches and _copy_matches) \
+                or _force_merge_swift:
             # Same type + same copy status — merge into current packet
             current_packet.page_numbers.append(pg_num)
             current_packet.pages.append(cls)
@@ -3657,6 +3725,15 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                 'shipment under credit', 'details of shipment',
                 'shipment notification', 'shipment information',
                 'after shipment', 'shipment details under credit',
+                # Additional phrasings found across the corpus
+                # (covers ≥90% of real Shipment Advice doc_hints):
+                'shipping notification', 'notification of shipment',
+                'shipment declaration', 'shipment details notification',
+                'cargo shipment information', 'shipping information',
+                'fax transmission advising', 'logistics manager',
+                'logistics executive',
+                'lc reference', 'l/c reference', 'documentary credit',
+                'requesting insurance', 'insurance coverage',
                 'sampling and analysis', 'certificate of analysis',
                 'cert of analysis', 'analysis certificate',
                 'sampling', 'analysis results',

@@ -548,7 +548,22 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
     # "01.2025" that start a line after a colon ("DATED:\n07-01-2025").
     # A clause number is followed by text content, not by more digits.
     # Use a negative lookahead (?!\d) to exclude digit-after-delimiter.
-    numbered = re.split(r'\n\s*(\d{1,2})\s*[-.)]\s*(?!\d)', '\n' + _normalized)
+    #
+    # P198gf — Also reject street-address patterns like "36-B," / "10-A,"
+    # / "5C," where the number-dash-letter is part of a building/block
+    # address, not a clause marker. Real F46A clauses on real LCs don't
+    # use the form "<num>-<single-letter>," for clause numbering. Two
+    # guards added:
+    #   • Drop "-" from the marker chars on the SPLIT regex (clause
+    #     numbers in LCs use "1.", "1)", or "1." — never "1-"). The
+    #     dash-bullet splitter at the bottom of this function still
+    #     handles "- foo / + foo / * foo" lists.
+    #   • Cap clause-number magnitude at ≤ 25 (LCs almost never have
+    #     more than 20 items in a single F-tag list).
+    # Numbers 1-25 only (LCs almost never have 26+ clauses in one tag).
+    # Order matters: 2-digit forms FIRST so "26" is rejected (only "2" matches
+    # the 1-digit alt and then "6" fails the [.)] requirement).
+    numbered = re.split(r'\n\s*(2[0-5]|1\d|[1-9])\s*[.)]\s*(?!\d)', '\n' + _normalized)
     if len(numbered) >= 3:
         for i in range(1, len(numbered) - 1, 2):
             clause_text = numbered[i + 1].strip()

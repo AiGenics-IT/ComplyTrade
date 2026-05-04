@@ -888,7 +888,7 @@ async function _fetchAndApplyResult(id){
     amtdatecomp=vd.amount_date_compliance||null;
     crossDocConsistency=vd.cross_document_consistency||null;
     installmentCompliance=vd.installment_compliance||null;
-    mapV();injectVesselChecks();autoPopulateVessel();renderAll();
+    mapV();injectVesselChecks();injectPartialShipmentChecks();autoPopulateVessel();renderAll();
     console.log('[loadV] Loaded verification:',vres.length,'results, summary:',vsum);
 }
 
@@ -931,6 +931,54 @@ function mapV(){
         }else{unmatched++}
     });
     console.log(`[mapV] ${matched} matched, ${unmatched} unmatched out of ${vres.length} results`);
+}
+
+// P198gd — Inject synthetic D.pts entries for partial-shipment
+// per-invoice document completeness clauses returned by step19.
+// These come back from /api/verify/result with clause_ref like
+// "Presentation-S26030280" (or the legacy "PartialShipment-S..."
+// prefix on data saved before the rename) and won't match any LC
+// SWIFT field in D.pts, so without this injection the rows are
+// invisible even though the verification did flag the missing docs.
+function injectPartialShipmentChecks(){
+    if(!Array.isArray(D.pts))return;
+    // Remove any previously injected partial-shipment checks
+    D.pts=D.pts.filter(p=>!p.isPartialShipmentCheck);
+    if(!Array.isArray(vres)||vres.length===0)return;
+    const psItems=vres.filter(v=>{
+        const cr=(v.clause_ref||'');
+        return cr.startsWith('Presentation-')||cr.startsWith('PartialShipment-');
+    });
+    if(psItems.length===0)return;
+    psItems.forEach((vr,ci)=>{
+        const cr=(vr.clause_ref||'');
+        const inv=cr.replace(/^Presentation-/,'').replace(/^PartialShipment-/,'')||'(unknown invoice)';
+        const st=vr.status==='compliant'||vr.status==='pass'?'compliant'
+                 :vr.status==='non_compliant'||vr.status==='fail'?'non_compliant'
+                 :'review_required';
+        D.pts.push({
+            id:D.pts.length+1,
+            sf:'DOCSCHECK',
+            sfr:`Docs Check ${inv}`,
+            cn:inv,
+            text:`Documents Check — Invoice ${inv} — ${vr.summary||''}`,
+            amended:false,
+            aby:[],
+            src:'Documents Check',
+            checked:st==='compliant',
+            isPartialShipmentCheck:true,
+            partialShipmentInvoice:inv,
+            v:{
+                status:st,
+                summary:vr.summary||'',
+                requirement:vr.requirement||`Documents Check — Invoice ${inv}`,
+                clauseNumber:inv,
+                checks:vr.checks||[],
+                rule_checks:vr.checks||[],
+                matched_documents:[]
+            }
+        });
+    });
 }
 
 function injectVesselChecks(){
@@ -1603,7 +1651,7 @@ async function poll(id,el){
                 _stopVTimer();const _cb=document.getElementById('cbtn');if(_cb)_cb.style.display='none';
                 el.innerHTML+=`<div style="color:var(--success);font-weight:700">✓ ✓ Verification complete! Fetching results...</div>`;el.scrollTop=el.scrollHeight;
                 const rr=await fetch(`${API}/api/verify/result/${id}`);
-                if(rr.ok){const vd=await rr.json();vres=vd.results||[];vsum=_normalizeVSum(vd);vElapsed=vd.elapsed_seconds||a;mt700comp=vd.mt700_compliance||null;urr725comp=vd.urr725_compliance||null;isbp821comp=vd.isbp821_compliance||null;isp98comp=vd.isp98_compliance||null;fecomp=vd.fe_manual_compliance||null;vesselcomp=vd.vessel_compliance||null;amtdatecomp=vd.amount_date_compliance||null;crossDocConsistency=vd.cross_document_consistency||null;installmentCompliance=vd.installment_compliance||null;mapV();injectVesselChecks();autoPopulateVessel();renderAll()}
+                if(rr.ok){const vd=await rr.json();vres=vd.results||[];vsum=_normalizeVSum(vd);vElapsed=vd.elapsed_seconds||a;mt700comp=vd.mt700_compliance||null;urr725comp=vd.urr725_compliance||null;isbp821comp=vd.isbp821_compliance||null;isp98comp=vd.isp98_compliance||null;fecomp=vd.fe_manual_compliance||null;vesselcomp=vd.vessel_compliance||null;amtdatecomp=vd.amount_date_compliance||null;crossDocConsistency=vd.cross_document_consistency||null;installmentCompliance=vd.installment_compliance||null;mapV();injectVesselChecks();injectPartialShipmentChecks();autoPopulateVessel();renderAll()}
                 setTimeout(()=>document.getElementById('ptl').classList.remove('active'),3000);return;
             }
             if(d.status==='failed'){

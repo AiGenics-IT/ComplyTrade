@@ -635,6 +635,26 @@ def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tupl
         return -1, ""
     dt_upper = doc_type.upper().strip()
 
+    # P198gj — Reject "instructions / guidelines / explanatory notes"
+    # documents from matching their PARENT doc type. A page titled
+    # "CERTIFICATE OF ORIGIN INSTRUCTIONS" is NOT a Certificate of
+    # Origin — it's a meta-document explaining how to fill out one.
+    # Without this guard, the substring matcher binds it to whichever
+    # parent doc the LC required, then verification routes condition
+    # rows to the meta-page (false PASS/FAIL).
+    _META_TOKENS = (
+        'INSTRUCTIONS', 'INSTRUCTION SHEET',
+        'GUIDANCE', 'GUIDELINES', 'GUIDE',
+        'EXPLANATORY NOTES', 'EXPLANATORY NOTE',
+        'HOW TO FILL', 'HOW TO COMPLETE',
+        'USER GUIDE', "USER'S GUIDE",
+        'COMPLETION INSTRUCTIONS',
+        'NOTES FOR COMPLETION',
+    )
+    if any(tok in dt_upper for tok in _META_TOKENS):
+        # Treat as alien — meta-doc, not a real shipping doc.
+        return -1, ""
+
     # AWB / Courier Receipt are the same family — match either label to
     # whichever the LC required.
     if _is_courier_or_awb_label(dt_upper):
@@ -672,20 +692,110 @@ def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tupl
         if dt_norm in ed_norm or ed_norm in dt_norm:
             return i, ed.get('document_name', '')
 
-    # ── Pharma regulatory form alias matching ──
-    # Pakistani LCs reference "Form 7" or "Batch Certificate" interchangeably.
-    # Similarly "Form 3" = "Form of Undertaking". Match either name to the
-    # LC's required document regardless of which label was used.
+    # ── Pharma regulatory form alias matching (P198gh — comprehensive) ──
+    # Pakistani LCs reference forms by EITHER the form number ("Form 7")
+    # OR the descriptive title ("Batch Certificate"). Any doc whose
+    # title or text contains one form-annotation should match an LC
+    # requirement that uses the OTHER. Bidirectional, comprehensive
+    # across DRAP / Pakistani regulatory forms.
     _PHARMA_ALIASES = {
-        'FORM 7': {'BATCH CERTIFICATE', 'BATCH CERTIFICATION', 'FORM 7 (BATCH CERTIFICATE)'},
-        'BATCH CERTIFICATE': {'FORM 7', 'FORM 7 (BATCH CERTIFICATE)', 'BATCH CERTIFICATION'},
-        'FORM 3': {'FORM OF UNDERTAKING', 'DRUG REGISTRATION CERTIFICATE', 'IMPORT CERTIFICATE',
-                   'FORM 3 (FORM OF UNDERTAKING)'},
+        # Form 7 ↔ Batch Certificate
+        'FORM 7': {'BATCH CERTIFICATE', 'BATCH CERTIFICATION',
+                   'FORM 7 (BATCH CERTIFICATE)', 'BATCH CERTIFICATE FORM 7',
+                   'MANUFACTURER BATCH CERTIFICATE',
+                   'MANUFACTURERS BATCH CERTIFICATE',
+                   "MANUFACTURER'S BATCH CERTIFICATE"},
+        'BATCH CERTIFICATE': {'FORM 7', 'FORM 7 (BATCH CERTIFICATE)',
+                              'BATCH CERTIFICATION'},
+        'BATCH CERTIFICATION': {'FORM 7', 'BATCH CERTIFICATE',
+                                'FORM 7 (BATCH CERTIFICATE)'},
+        # Form 3 ↔ Form of Undertaking
+        'FORM 3': {'FORM OF UNDERTAKING', 'DRUG REGISTRATION CERTIFICATE',
+                   'IMPORT CERTIFICATE', 'FORM 3 (FORM OF UNDERTAKING)',
+                   'UNDERTAKING FOR DRUG IMPORT', 'UNDERTAKING TO ACCOMPANY',
+                   'DRUG IMPORT LICENSE UNDERTAKING',
+                   'UNDERTAKING FOR DRUG IMPORT LICENSE',
+                   'APPLICATION TO IMPORT DRUGS',
+                   'FORM OF UNDERTAKING TO ACCOMPANY ON APPLICATION TO IMPORT DRUGS'},
         'FORM OF UNDERTAKING': {'FORM 3', 'FORM 3 (FORM OF UNDERTAKING)',
-                                'DRUG REGISTRATION CERTIFICATE'},
+                                'DRUG REGISTRATION CERTIFICATE',
+                                'UNDERTAKING FOR DRUG IMPORT',
+                                'UNDERTAKING FOR DRUG IMPORT LICENSE'},
+        'UNDERTAKING FOR DRUG IMPORT LICENSE': {
+            'FORM 3', 'FORM OF UNDERTAKING',
+            'FORM 3 (FORM OF UNDERTAKING)'},
+        # Form 5 / 5A — Drug Manufacturing License
+        'FORM 5': {'DRUG MANUFACTURING LICENSE', 'MANUFACTURING LICENCE',
+                   'FORM 5 (MANUFACTURING LICENSE)',
+                   'DRUG MANUFACTURING LICENCE'},
+        'FORM 5A': {'MANUFACTURING LICENSE ADDENDUM',
+                    'MANUFACTURING LICENCE ADDENDUM'},
+        'DRUG MANUFACTURING LICENSE': {'FORM 5', 'FORM 5 (MANUFACTURING LICENSE)',
+                                       'MANUFACTURING LICENCE'},
+        # Form 6 — Drug Registration
+        'FORM 6': {'DRUG REGISTRATION', 'DRUG REGISTRATION APPLICATION',
+                   'FORM 6 (DRUG REGISTRATION)'},
+        # Form 11 — Free Sale / GMP / CPP
+        'FORM 11': {'CERTIFICATE OF FREE SALE', 'FREE SALE CERTIFICATE',
+                    'CERTIFICATE OF PHARMACEUTICAL PRODUCT', 'CPP',
+                    'PHARMACEUTICAL PRODUCT CERTIFICATE',
+                    'WHO-GMP CERTIFICATE', 'WHO GMP CERTIFICATE',
+                    'GMP CERTIFICATE'},
+        'CERTIFICATE OF FREE SALE': {'FORM 11', 'FREE SALE CERTIFICATE',
+                                     'CERTIFICATE OF PHARMACEUTICAL PRODUCT',
+                                     'CPP'},
+        'GMP CERTIFICATE': {'FORM 11', 'WHO-GMP CERTIFICATE',
+                            'WHO GMP CERTIFICATE'},
+        # Form 12 — Drug Inspection
+        'FORM 12': {'DRUG INSPECTION CERTIFICATE',
+                    'FORM 12 (DRUG INSPECTION)'},
+        # Other regulatory / customs forms
+        'FORM-E': {'FORM E', 'FOREIGN EXCHANGE E-FORM', 'FE FORM',
+                   'EXPORT FORM E'},
+        'FORM-I': {'FORM I', 'IMPORT DECLARATION FORM',
+                   'IMPORT DECLARATION'},
+        'FORM A': {'CUSTOMS DECLARATION FORM',
+                   'CUSTOMS DECLARATION FORM A'},
+        # Test/Analysis aliases
         'CERTIFICATE OF ANALYSIS': {'ANALYSIS CERTIFICATE', 'ANALYTICAL CERTIFICATE',
-                                    'TEST REPORT', 'TEST CERTIFICATE'},
+                                    'TEST REPORT', 'TEST CERTIFICATE',
+                                    'COA', 'C.O.A'},
     }
+
+    # P198gh — Generic form-number resolver. Detects "Form N" / "F N"
+    # patterns anywhere in the doc_type text (not just at the start) so
+    # docs like "FORM OF UNDERTAKING TO ACCOMPANY ON APPLICATION TO
+    # IMPORT DRUGS" or "BATCH CERTIFICATE — FORM 7 — MANUFACTURER" get
+    # correctly identified as their underlying form number.
+    def _extract_form_no(text):
+        if not text:
+            return None
+        t = text.upper()
+        m = re.search(r'\bFORM\s+(?:NO\.?\s*)?[-]?\s*(\d{1,3}[A-Z]?)\b', t)
+        if m:
+            return f'FORM {m.group(1)}'
+        m = re.search(r'\bFORM[-\s]+([A-EI])\b', t)   # FORM-E / FORM-I / FORM A
+        if m:
+            return f'FORM-{m.group(1)}'
+        return None
+    # Try to find a form number in the doc_type string itself
+    _dt_form_no = _extract_form_no(dt_upper)
+    if _dt_form_no:
+        # Doc has explicit form-N annotation — match against any LC
+        # required doc that ALSO has the same form number OR the
+        # alias-mapped descriptive title for that form.
+        for i, ed in enumerate(expected_docs):
+            ed_upper = ed.get('document_name', '').upper()
+            if _dt_form_no in ed_upper:
+                return i, ed.get('document_name', '')
+            # Check if LC's expected doc maps to the same form via aliases
+            if _dt_form_no in _PHARMA_ALIASES:
+                for av in _PHARMA_ALIASES[_dt_form_no]:
+                    if av in ed_upper or ed_upper in av:
+                        return i, ed.get('document_name', '')
+            ed_form_no = _extract_form_no(ed_upper)
+            if ed_form_no and ed_form_no == _dt_form_no:
+                return i, ed.get('document_name', '')
     # Check both directions: doc_type → expected and expected → doc_type
     for _alias_key, _alias_set in _PHARMA_ALIASES.items():
         if _alias_key in dt_upper or dt_upper in _alias_key:
@@ -1120,6 +1230,71 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
                 document_type = _prior_dt_for_match
                 reasoning = f"Step 3 prior classification (preferred): {_prior_dt_for_match}"
                 match_confidence = max(match_confidence, 0.90)
+
+        # ── P198gl — REGULATORY FORM PRESERVATION ──
+        # When step 3's prior classification clearly identifies a
+        # Pakistani DRAP / regulatory form (Form 3 / 5 / 5A / 6 / 7 /
+        # 11 / 12 — by either explicit form-no or strong descriptive
+        # title), KEEP step 3's classification. Step 8's VLM is asked
+        # to match against the LC's required-doc list, and if the LC
+        # didn't enumerate Form 3 / Form 7 explicitly (they're often
+        # mentioned inside other clauses), VLM force-fits the form
+        # doc into the closest unrelated entry — e.g. "Form of
+        # Undertaking" → "Beneficiary Certificate" or → "Commercial
+        # Invoice" — completely wrong.
+        _FORM_PRESERVE_PATTERNS = (
+            r'\bFORM\s+(?:NO\.?\s*)?[-]?\s*\d{1,3}[A-Z]?\b',
+            r'\bFORM\s+OF\s+UNDERTAKING\b',
+            r'\bUNDERTAKING\s+TO\s+ACCOMPANY\b',
+            r'\bUNDERTAKING\s+FOR\s+DRUG\s+IMPORT\b',
+            r'\bAPPLICATION\s+TO\s+IMPORT\s+DRUGS\b',
+            r'\bBATCH\s+CERTIFICATE\b',
+            r'\bBATCH\s+CERTIFICATION\b',
+            r'\bMANUFACTURER\S?\s*BATCH\s+CERTIFICATE\b',
+            r'\bDRUG\s+MANUFACTURING\s+LICEN[CS]E\b',
+            r'\bDRUG\s+REGISTRATION\s+APPLICATION\b',
+            r'\bCERTIFICATE\s+OF\s+FREE\s+SALE\b',
+            r'\bFREE\s+SALE\s+CERTIFICATE\b',
+            r'\bCERTIFICATE\s+OF\s+PHARMACEUTICAL\s+PRODUCT\b',
+            r'\bWHO[-\s]?GMP\s+CERTIFICATE\b',
+            r'\bDRUG\s+INSPECTION\s+CERTIFICATE\b',
+        )
+        _prior_up = (_prior_dt_for_match or '').upper()
+        # Mapping prior-doc-type pattern → canonical Form-N identifier
+        _FORM_CANONICAL = {
+            'FORM 3': 'Form 3 (Form of Undertaking)',
+            'FORM OF UNDERTAKING': 'Form 3 (Form of Undertaking)',
+            'UNDERTAKING TO ACCOMPANY': 'Form 3 (Form of Undertaking)',
+            'UNDERTAKING FOR DRUG IMPORT': 'Form 3 (Form of Undertaking)',
+            'APPLICATION TO IMPORT DRUGS': 'Form 3 (Form of Undertaking)',
+            'FORM 5': 'Form 5 (Drug Manufacturing License)',
+            'DRUG MANUFACTURING LICEN': 'Form 5 (Drug Manufacturing License)',
+            'FORM 5A': 'Form 5A (Manufacturing License Addendum)',
+            'FORM 6': 'Form 6 (Drug Registration)',
+            'DRUG REGISTRATION APPLICATION': 'Form 6 (Drug Registration)',
+            'FORM 7': 'Form 7 (Batch Certificate)',
+            'BATCH CERTIFICATE': 'Form 7 (Batch Certificate)',
+            'BATCH CERTIFICATION': 'Form 7 (Batch Certificate)',
+            'FORM 11': 'Form 11 (Certificate of Free Sale)',
+            'CERTIFICATE OF FREE SALE': 'Form 11 (Certificate of Free Sale)',
+            'FREE SALE CERTIFICATE': 'Form 11 (Certificate of Free Sale)',
+            'CERTIFICATE OF PHARMACEUTICAL PRODUCT': 'Form 11 (Certificate of Free Sale)',
+            'WHO-GMP CERTIFICATE': 'Form 11 (Certificate of Free Sale)',
+            'WHO GMP CERTIFICATE': 'Form 11 (Certificate of Free Sale)',
+            'FORM 12': 'Form 12 (Drug Inspection)',
+            'DRUG INSPECTION CERTIFICATE': 'Form 12 (Drug Inspection)',
+        }
+        _is_form_doc = any(re.search(p, _prior_up) for p in _FORM_PRESERVE_PATTERNS)
+        if _is_form_doc:
+            # Preserve as the canonical "Form N (descriptive title)"
+            for key, canonical in _FORM_CANONICAL.items():
+                if key in _prior_up:
+                    document_type = canonical
+                    reasoning = (f"P198gl regulatory-form preservation: "
+                                 f"step 3 identified this as '{_prior_dt_for_match}', "
+                                 f"normalised to canonical {canonical}.")
+                    match_confidence = max(match_confidence, 0.95)
+                    break
 
         # ── P198cx — Block "Shipping Company Certificate" force-fit ──
         # An LC's "Shipping Company Certificate" requirement is a

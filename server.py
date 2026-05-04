@@ -1052,14 +1052,37 @@ def rerun_classification(job_id: str):
             shutil.rmtree(sp, ignore_errors=True)
             removed.append(stage)
 
-    # Clear the matching in-memory results so the next read reloads from disk
-    if job_id in _jobs:
-        sr = _jobs[job_id].get('step_results', {})
-        for stage in _stages:
-            sr.pop(stage, None)
-        _jobs[job_id]['status'] = 'queued'
-        _jobs[job_id]['current_step'] = 3
-        _jobs[job_id]['progress'] = ['Re-running classification from step 3 (OCR cached)']
+    # P198gm — Initialize the in-memory job state UNCONDITIONALLY so
+    # the live log polling (/api/status/{job_id}) returns valid JSON
+    # right away. Previously this block only ran if the job was
+    # already in memory; after a server restart, _jobs is empty for
+    # the job_id and this endpoint left it that way — so the log
+    # panel got 500 errors from /api/status (missing 'total_steps')
+    # and stayed stuck on "Connecting...".
+    if job_id not in _jobs:
+        _jobs[job_id] = {
+            'status': 'queued',
+            'filename': '',
+            'pdf_path': '',
+            'progress': [],
+            'current_step': 3,
+            'total_steps': 20,
+            'result': None,
+            'created_at': datetime.now().isoformat(),
+            'step_results': {},
+        }
+    # Clear stale step results so disk reloads will fire
+    sr = _jobs[job_id].setdefault('step_results', {})
+    for stage in _stages:
+        sr.pop(stage, None)
+    _jobs[job_id]['status'] = 'queued'
+    _jobs[job_id]['current_step'] = 3
+    _jobs[job_id]['total_steps'] = _jobs[job_id].get('total_steps', 20)
+    _jobs[job_id]['filename'] = _jobs[job_id].get('filename', '')
+    _jobs[job_id]['progress'] = [
+        f'[{datetime.now().strftime("%H:%M:%S")}] '
+        f'Re-running classification from step 3 (OCR cached)'
+    ]
 
     # Kick off the background rerun
     import threading
@@ -1109,6 +1132,126 @@ def _rerun_classification_pipeline(job_id: str):
     _p("Step 3: Re-running page sequencing & classification...")
     s3 = _to_dict(step03_sequencing.run(s2, os.path.join(results_dir, 'step03'), _p))
     job.setdefault('step_results', {})['step03'] = s3
+
+    # P198gn — Continue through Steps 6-9 (Final LC + Shipping
+    # Classification chain) so the dashboard / extracted-text /
+    # checklist views reflect the new classification immediately.
+    # Mirrors the contract used by the main upload pipeline (around
+    # server.py:3453+) — page_texts dict for step06, enriched
+    # shipping_packets for step08, and s7+s8 for step09.
+    try:
+        # Annotate each step3 packet with mt_type — Step 6 reads
+        # this field to categorize MT700 / MT707 / MT799 / shipping.
+        # In the upload pipeline this happens at Step 4; we inline it
+        # here for the re-run.
+        _LC_TYPES = {'lc', 'mt700', 'amendment', 'mt707'}
+        _FF_TYPES = {'mt799', 'mt999'}
+        _BAHL_INFO_TYPES = {'mt754', 'mt940', 'mt730', 'mt740',
+                            'mt742', 'mt734', 'mt750', 'mt752', 'mt747'}
+        _annotated_pkts = []
+        for _pkt in s3.get('packets', []):
+            if not isinstance(_pkt, dict):
+                continue
+            _dt = (_pkt.get('document_type', '') or '').lower()
+            _pkt_copy = dict(_pkt)
+            if _dt in _LC_TYPES:
+                _pkt_copy['mt_type'] = 'MT707' if 'amend' in _dt else 'MT700'
+            elif _dt in _FF_TYPES:
+                _pkt_copy['mt_type'] = 'MT799'
+                _pkt_copy['source_mt'] = 'MT799'
+            elif _dt in _BAHL_INFO_TYPES:
+                _pkt_copy['mt_type'] = _dt.upper()
+            else:
+                _pkt_copy['mt_type'] = 'shipping'
+            _annotated_pkts.append(_pkt_copy)
+
+        # Build _s6_input: dict with annotated packets + page_texts
+        _s6_input = dict(s3)
+        _s6_input['packets'] = _annotated_pkts
+        _s6_input['page_texts'] = {}
+        for _pg in s2.get('pages', []):
+            if isinstance(_pg, dict):
+                _pgn = _pg.get('page_number', 0)
+                _txt = _pg.get('cleaned_text', _pg.get('raw_text', ''))
+                if _pgn and _txt:
+                    _s6_input['page_texts'][_pgn] = _txt
+
+        # Count MT/shipping for the log
+        _mt_count = sum(1 for p in _annotated_pkts
+                        if p.get('mt_type') in ('MT700', 'MT707',
+                                                  'MT799', 'MT999'))
+        _ship_count = sum(1 for p in _annotated_pkts
+                          if p.get('mt_type') == 'shipping')
+        _p(f"  Annotated {len(_annotated_pkts)} packets: "
+           f"{_mt_count} MT/LC, {_ship_count} shipping")
+
+        job['current_step'] = 6
+        _p("Step 6: Final LC Consolidation...")
+        s6 = _to_dict(step06_final_lc.run(
+            _s6_input, os.path.join(results_dir, 'step06'), _p))
+        job['step_results']['step06'] = s6
+
+        job['current_step'] = 7
+        _p("Step 7: Final LC Clause & Requirement Extraction...")
+        s7 = _to_dict(step07_clause_extraction.run(
+            s6, os.path.join(results_dir, 'step07'), _p))
+        job['step_results']['step07'] = s7
+
+        # Build _s6_with_shipping for step08 — enrich each non-LC
+        # packet with image paths + concatenated text.
+        _img_dir = os.path.join(results_dir, 'step01', 'images')
+        _SKIP_TYPES = {
+            'lc', 'mt700', 'mt701', 'amendment', 'mt707', 'mt708',
+            'mt799', 'mt999', 'mt730', 'mt754', 'mt940', 'mt740',
+            'mt747', 'mt734', 'blank page', 'blank_page',
+            'endorsement page', 'header page',
+        }
+        _shipping_from_s3 = []
+        for _spkt in s3.get('packets', []):
+            if not isinstance(_spkt, dict):
+                continue
+            _dt = (_spkt.get('document_type', '') or '').lower()
+            if _dt in _SKIP_TYPES:
+                continue
+            _spkt_copy = dict(_spkt)
+            _pg_nums = _spkt_copy.get('page_numbers', []) or []
+            _img_paths = []
+            for _pn in _pg_nums:
+                _ip = os.path.join(_img_dir, f"page_{_pn:03d}.png")
+                if os.path.exists(_ip):
+                    _img_paths.append(_ip)
+            _spkt_copy['page_image_paths'] = _img_paths
+            _texts = []
+            for _pn in _pg_nums:
+                _t = _s6_input['page_texts'].get(_pn, '')
+                if _t:
+                    _texts.append(_t)
+            _joined = '\n'.join(_texts)
+            _spkt_copy['text'] = _joined
+            _spkt_copy['cleaned_text'] = _joined
+            _spkt_copy['raw_text'] = _joined
+            _shipping_from_s3.append(_spkt_copy)
+        _s6_with_shipping = dict(s6)
+        _s6_with_shipping['shipping_packets'] = _shipping_from_s3
+
+        job['current_step'] = 8
+        _p("Step 8: Shipping Document Classification...")
+        s8 = _to_dict(step08_shipping_classification.run(
+            _s6_with_shipping, s7,
+            os.path.join(results_dir, 'step08'), _p))
+        job['step_results']['step08'] = s8
+
+        job['current_step'] = 9
+        _p("Step 9: Shipping OCR Reconciliation...")
+        s9 = _to_dict(step09_shipping_reconciliation.run(
+            s8, s7, os.path.join(results_dir, 'step09'), _p))
+        job['step_results']['step09'] = s9
+    except Exception as _e:
+        import traceback
+        _p(f"Steps 6-9 failed: {_e}")
+        _p(f"  traceback: {traceback.format_exc()[:500]}")
+        # Step 3 succeeded — leave it on disk; the user can still
+        # click Re-run Class again or trigger verification.
 
     _p("Classification re-run complete. To run verification, click "
        "'Run Verification' on the checklist page.")

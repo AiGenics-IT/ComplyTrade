@@ -524,12 +524,144 @@ def _find_matching_docs(doc_to_check: str, packets: list) -> list:
         raw = re.sub(r'(original|copy|duplicate|triplicate|quadruplicate)$', '', raw).strip()
         return raw
 
+    # P198gj — Reject meta-documents (instructions / guidelines /
+    # explanatory notes) from matching any LC-required doc. A page
+    # titled "Certificate of Origin Instructions" is NOT a Cert of
+    # Origin — it explains how to fill out one. Without this guard,
+    # the substring matcher binds it to the parent doc type and
+    # verification routes condition rows to the meta-page.
+    _META_TOKENS_LC = (
+        'instructions', 'instruction sheet',
+        'guidance', 'guidelines',
+        'explanatory notes', 'explanatory note',
+        'how to fill', 'how to complete',
+        "user guide", "user's guide",
+        'completion instructions',
+        'notes for completion',
+    )
+    def _is_meta_doc(pkt_type_lo):
+        return any(tok in pkt_type_lo for tok in _META_TOKENS_LC)
+
+    # P198gh — Bidirectional form-number resolution. Many regulatory
+    # docs are referenced by EITHER form number ("Form 7") OR title
+    # ("Batch Certificate"). Build a form-no → aliases map so the
+    # matcher routes packets correctly regardless of which side uses
+    # which name.
+    _PHARMA_FORM_ALIASES = {
+        'form 3': ('form 3', 'form3', 'form no 3', 'form no. 3',
+                   'form of undertaking', 'form 3 (form of undertaking)',
+                   'undertaking for drug import', 'undertaking to accompany',
+                   'drug import license undertaking',
+                   'undertaking for drug import license',
+                   'form of undertaking to accompany on application to import drugs',
+                   'application to import drugs', 'drug registration certificate',
+                   'import certificate'),
+        'form 5': ('form 5', 'form5', 'form no 5',
+                   'drug manufacturing license', 'manufacturing licence'),
+        'form 5a': ('form 5a', 'form5a', 'manufacturing license addendum'),
+        'form 6': ('form 6', 'form6', 'form no 6',
+                   'drug registration', 'drug registration application'),
+        'form 7': ('form 7', 'form7', 'form no 7', 'form no. 7',
+                   'batch certificate', 'batch certification',
+                   'form 7 (batch certificate)',
+                   'manufacturer batch certificate',
+                   "manufacturer's batch certificate"),
+        'form 11': ('form 11', 'form11', 'form no 11',
+                    'certificate of free sale', 'free sale certificate',
+                    'certificate of pharmaceutical product', 'cpp',
+                    'pharmaceutical product certificate',
+                    'who-gmp certificate', 'who gmp certificate',
+                    'gmp certificate'),
+        'form 12': ('form 12', 'form12', 'form no 12',
+                    'drug inspection certificate'),
+    }
+    def _extract_form_no(text):
+        if not text:
+            return None
+        m = re.search(r'\bform\s+(?:no\.?\s*)?[-]?\s*(\d{1,3}[a-z]?)\b',
+                      text.lower())
+        if m:
+            return f'form {m.group(1)}'
+        return None
+    # Compute target's canonical form-no (if target mentions a form)
+    _target_form_no = _extract_form_no(target)
+    # If target text matches any pharma alias, resolve to its form-no
+    if _target_form_no is None:
+        for _form_no, _aliases in _PHARMA_FORM_ALIASES.items():
+            if any(a in target for a in _aliases):
+                _target_form_no = _form_no
+                break
+    # If we identified a form-no, expand target_aliases with all
+    # pharma aliases for that form so packets carrying ANY of them
+    # (e.g. "FORM OF UNDERTAKING TO ACCOMPANY..." or "BATCH
+    # CERTIFICATION") match the LC's "Form 3" / "Form 7" requirement.
+    if _target_form_no and _target_form_no in _PHARMA_FORM_ALIASES:
+        target_aliases = list(set(target_aliases)
+                              | set(_PHARMA_FORM_ALIASES[_target_form_no]))
+
+    # P198gh — STRICT form-evidence guard. When the LC asks for "Form
+    # N", only accept packets whose DOC TEXT actually carries the
+    # "Form N" annotation (or a high-specificity descriptive title
+    # like "Batch Certification" / "Form of Undertaking"). This
+    # prevents weak-alias false positives where a generic doc gets
+    # auto-tagged as Form N without any evidence.
+    _STRONG_FORM_LABELS = {
+        'form 3': ('form 3', 'form3', 'form of undertaking',
+                   'undertaking to accompany', 'undertaking for drug import',
+                   'application to import drugs'),
+        'form 5': ('form 5', 'form5', 'drug manufacturing license',
+                   'drug manufacturing licence'),
+        'form 5a': ('form 5a', 'form5a'),
+        'form 6': ('form 6', 'form6', 'drug registration application'),
+        'form 7': ('form 7', 'form7', 'batch certificate',
+                   'batch certification', 'manufacturer batch certificate'),
+        'form 11': ('form 11', 'form11', 'certificate of free sale',
+                    'free sale certificate',
+                    'certificate of pharmaceutical product',
+                    'who-gmp certificate', 'who gmp certificate'),
+        'form 12': ('form 12', 'form12', 'drug inspection certificate'),
+    }
+    def _packet_has_form_evidence(pkt, form_no):
+        """Verify the packet itself shows the form-N annotation
+        (in its document_type, doc_hint, or first-page text)."""
+        if form_no not in _STRONG_FORM_LABELS:
+            return True   # not a regulatory-form target → no extra check
+        labels = _STRONG_FORM_LABELS[form_no]
+        # Document type
+        dtype_lo = _get_pkt_type(pkt).lower()
+        if any(lab in dtype_lo for lab in labels):
+            return True
+        # First-page hints (step03 doc_hint per page)
+        if isinstance(pkt, dict):
+            for op in pkt.get('original_pages', []) or []:
+                if isinstance(op, dict):
+                    hint = (op.get('doc_hint') or '').lower()
+                    if any(lab in hint for lab in labels):
+                        return True
+        # Packet body text — first 4000 chars (form annotation is
+        # almost always at the top of the page)
+        body = (_pkt_text(pkt) or '').lower()[:4000]
+        if any(lab in body for lab in labels):
+            return True
+        return False
+
     # Tier 1+2: Alias + substring match
     for pkt in packets:
         if not pkt:
             continue
         pkt_type = _get_pkt_type(pkt)
         if not pkt_type:
+            continue
+        # P198gj — meta-docs (Instructions / Guidelines / Explanatory
+        # Notes) are not the doc itself; never match them to LC reqs.
+        if _is_meta_doc(pkt_type):
+            continue
+        # P198gh — STRICT form-evidence guard. If LC target is a
+        # regulatory Form N, the packet must carry visible evidence
+        # of that form (form-no annotation OR strong specific title).
+        # Pure descriptive-alias matches without evidence are
+        # rejected.
+        if _target_form_no and not _packet_has_form_evidence(pkt, _target_form_no):
             continue
         for alias in target_aliases:
             if alias in pkt_type or pkt_type in alias:
@@ -4448,6 +4580,44 @@ CRITICAL RULES (follow strictly):
     wording. The trailing place is not part of the Incoterm. If
     you can identify the Incoterm code on both sides and they
     match, the row is PASS — period.
+
+    20b. INCOTERMS VERSION COMPLIANCE (P198go — STRICT):
+
+    SEPARATE from the code-comparison rule above, YOU MUST enforce
+    version compliance whenever the LC explicitly states a year
+    version of Incoterms (e.g. "CPT KARACHI AIRPORT (INCOTERMS :
+    2020)" / "FOB SHANGHAI (Incoterms 2010)").
+
+    Rule:
+       • If the LC states "Incoterms YYYY", the document MUST also
+         state the SAME "Incoterms YYYY" version. The version is
+         REQUIRED on the document — not optional.
+       • If the document is silent on version → FAIL with
+         "Missing Incoterms version: LC requires Incoterms YYYY
+         but the document does not state any version".
+       • If the document shows a DIFFERENT version (e.g. LC says
+         2020, doc says 2010) → FAIL with "Wrong Incoterms version:
+         LC requires 2020 but document shows 2010".
+       • If the LC does NOT specify a year (e.g. LC just says "FOB
+         SHANGHAI"), no version check applies — the version is
+         optional per ISBP 821 A24.
+
+    Worked examples:
+       LC: "CPT KARACHI AIRPORT (Incoterms 2020)"
+       Invoice: "CPT KARACHI AIRPORT"     → FAIL (version missing)
+
+       LC: "CPT KARACHI AIRPORT (Incoterms 2020)"
+       Invoice: "CPT KARACHI (Incoterms 2020)"  → PASS
+
+       LC: "CPT KARACHI AIRPORT (Incoterms 2020)"
+       Invoice: "CPT KARACHI (Incoterms 2010)"  → FAIL (wrong version)
+
+       LC: "FOB ANY CHINA SEAPORT" (no version)
+       Invoice: "FOB SHANGHAI"            → PASS (no version requirement)
+
+    Note: The deterministic post-check P198go enforces this rule
+    even if you miss it — but you should still apply it directly so
+    the audit trail is correct.
 21. QUANTITY MATCHING: LC may say "QTY 736" and invoice may show individual line items that SUM to 736. Check the SYSTEM PRE-CALCULATED SUMMARY at the top of the document text — it shows per-product totals. Use these totals instead of counting line items yourself.
 Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 981E" = "LN981E". Ignore spaces in product codes when matching.
 21z. PROFORMA INVOICE REFERENCE — NUMBER AND DATE MUST BOTH MATCH:
@@ -13171,6 +13341,133 @@ def run(
             except Exception as _e:
                 try:
                     print(f"[P198cd] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198go — Strict Incoterms version compliance.
+    #
+    # Rule: when the LC explicitly states a year version of Incoterms
+    # (e.g. "CPT KARACHI AIRPORT (INCOTERMS : 2020)"), the document
+    # MUST also state the same version. This is stricter than ISBP
+    # 821 A24 (which makes version annotation optional) but matches
+    # bank compliance policy that every Incoterm citation must be
+    # version-traceable.
+    #
+    # Behaviour:
+    #   • If LC condition has "Incoterms YYYY" → require document
+    #     text to contain the same "Incoterms YYYY".
+    #   • If document is silent on version → override LLM PASS to FAIL
+    #     ("version not stated").
+    #   • If document shows a DIFFERENT version → FAIL ("wrong
+    #     version: LC says 2020, doc says 2010").
+    #   • If LC didn't specify any version → no override (existing
+    #     LLM verdict stands).
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        _INCOTERMS_VERSION_RE = re.compile(
+            r'\bINCOTERMS?\s*:?\s*(\d{4})\b', re.IGNORECASE)
+        _INCOTERM_CODE_RE = re.compile(
+            r'\b(EXW|FCA|FAS|FOB|CFR|CNF|C\&F|CIF|CIP|CPT|'
+            r'DAP|DPU|DDP|DAT|DAF|DDU|DES|DEQ)\b', re.IGNORECASE)
+        for row in rows:
+            try:
+                _row_id = _get(row, 'row_id', '?')
+                _cond = (_get(row, 'condition_text', '')
+                         or _get(row, 'condition', '')) or ''
+                _orig_clause = _get(row, 'original_clause_text', '') or ''
+                _lc_field_val = _get(row, 'lc_field_value', '') or ''
+                # Combine all LC-side text we have for this row
+                _lc_text = ' '.join([_cond, _orig_clause, _lc_field_val])
+                _lc_text_up = _lc_text.upper()
+                # Does the LC specify a version year?
+                _lc_ver_m = _INCOTERMS_VERSION_RE.search(_lc_text_up)
+                if not _lc_ver_m:
+                    continue
+                _lc_version = _lc_ver_m.group(1)
+                # Does this row mention an Incoterm code at all?
+                if not _INCOTERM_CODE_RE.search(_lc_text_up):
+                    continue
+                # Get the document(s) checked for this row
+                _doc_text = (_get(row, 'document_text', '')
+                             or _get(row, 'doc_text', '')
+                             or _get(row, 'found_text', '')) or ''
+                # Also check the matched packet's text (richer)
+                _doc_name = _get(row, 'document_checked', '')
+                if _doc_name and packets:
+                    for _pkt in packets:
+                        if not isinstance(_pkt, dict):
+                            continue
+                        _pkt_dt = (_pkt.get('document_type', '') or '').lower()
+                        if _doc_name.lower() in _pkt_dt or _pkt_dt in _doc_name.lower():
+                            _doc_text += '\n' + (_pkt_text(_pkt) or '')
+                            break
+                _doc_text_up = _doc_text.upper()
+                _doc_ver_m = _INCOTERMS_VERSION_RE.search(_doc_text_up)
+                _current = str(_get(row, 'compliance', '')).upper()
+                if not _doc_ver_m:
+                    # Document is silent on version. If condition is
+                    # currently PASS / N/A, override to FAIL — LC
+                    # explicitly required the version.
+                    if _current in ('PASS', 'COMPLIED', 'N/A', 'INFORMATIONAL'):
+                        _msg = (
+                            f"LC requires 'Incoterms {_lc_version}' but the "
+                            f"document does not state any Incoterms version. "
+                            f"Per LC's explicit version annotation, the "
+                            f"document must include the version (e.g. "
+                            f"'Incoterms {_lc_version}'). P198go strict "
+                            f"version-compliance check."
+                        )
+                        _set(row, 'compliance', 'FAIL')
+                        _set(row, 'result', _msg)
+                        _set(row, 'findings', _msg)
+                        _set(row, 'verification_notes',
+                             f"P198go: LC version={_lc_version}, "
+                             f"doc version=missing")
+                        try:
+                            _progress(
+                                f"  [P198go incoterm version] {_row_id}: "
+                                f"PASS->FAIL (LC says Incoterms "
+                                f"{_lc_version}, doc silent on version)"
+                            )
+                        except Exception:
+                            pass
+                else:
+                    _doc_version = _doc_ver_m.group(1)
+                    if _doc_version != _lc_version:
+                        # Wrong version → always FAIL
+                        _msg = (
+                            f"LC requires 'Incoterms {_lc_version}' but the "
+                            f"document shows 'Incoterms {_doc_version}'. "
+                            f"Wrong Incoterms version. P198go strict "
+                            f"version-compliance check."
+                        )
+                        _set(row, 'compliance', 'FAIL')
+                        _set(row, 'result', _msg)
+                        _set(row, 'findings', _msg)
+                        _set(row, 'verification_notes',
+                             f"P198go: LC version={_lc_version}, "
+                             f"doc version={_doc_version} — mismatch")
+                        try:
+                            _progress(
+                                f"  [P198go incoterm version] {_row_id}: "
+                                f"->FAIL (LC says {_lc_version}, doc "
+                                f"says {_doc_version})"
+                            )
+                        except Exception:
+                            pass
+                    elif _current in ('FAIL', 'NOT COMPLIED', 'REVIEW'):
+                        # Versions match and code presumably matched the
+                        # LLM; if LLM had FAILed for some other version-
+                        # related reason, leave it alone — only
+                        # auto-rescue when the failure was clearly about
+                        # the missing/wrong version.
+                        pass
+            except Exception as _e:
+                try:
+                    print(f"[P198go] exception on row {row.get('row_id','?')}: {_e}")
                 except Exception:
                     pass
     except Exception:

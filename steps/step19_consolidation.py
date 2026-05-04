@@ -583,6 +583,692 @@ def _consolidate(rows: List[Dict], progress_fn=None) -> ConsolidatedOutput:
 
 # ── Runner ───────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────
+# P198gd / P198ge — Partial-shipment per-invoice document completeness.
+#
+# When the LC has F43P=ALLOWED and the bundle contains MULTIPLE
+# invoices each representing a separate partial shipment, every
+# invoice must be accompanied by its OWN full set of LC-required
+# per-invoice documents.
+#
+# P198ge replaces the original P198gd hardcoded approach with a
+# production-grade implementation that:
+#   1. Extracts each Commercial Invoice's number using a multi-tier
+#      strategy: step03 instrument_references first, then label-based
+#      regex ("Invoice No." / "Inv No." / "Invoice Number"), then
+#      free-form pattern matching across many real-world formats
+#      (Sxxxxxxxxx, MPL/013/INDO/2026, NSAM-2603-B12, INV00190678,
+#      etc.). This avoids hardcoding to a single bank's invoice
+#      style.
+#   2. Reads the LC's actual F46A required-doc list from
+#      step07 structured_lc.required_documents and intersects it
+#      with a "per-invoice" whitelist — so an LC that requires
+#      Cert of Origin + Inspection Cert + Weight Cert (typical for
+#      coal) checks each invoice for THOSE docs, while an LC that
+#      requires Beneficiary Cert + AWB checks each invoice for those.
+#      Filters out F47A rule-style hallucinated entries (using the
+#      same patterns as P198fw's step07 filter) and LC-level docs
+#      that are not per-invoice (Document Remittance / Charges Cert
+#      / Translation Cert / etc.).
+#   3. Adds an F43P guard: only fires the doc-completeness section
+#      when F43P=ALLOWED. When F43P=NOT ALLOWED but the bundle has
+#      ≥2 distinct invoices, that itself is a discrepancy and the
+#      section reports "Multiple invoices presented but partial
+#      shipments NOT ALLOWED per LC F43P".
+#   4. Maps unmatched transport docs (BL/AWB without an invoice
+#      ref in their text) to invoices via instrument_references
+#      grouping — same physical BL number = same invoice — then
+#      page-proximity heuristic for the orphan groups.
+# ─────────────────────────────────────────────────────────────────────
+import re as _re_p198gd
+
+# Free-form invoice-number patterns. We try these in order until one
+# matches. The patterns intentionally allow a wide variety of formats.
+_P198GE_INVOICE_PATTERNS = [
+    # Compound prefix with letters/digits/slashes/dashes:
+    # MPL/013/INDO/2026, NSAM-2603-B12, MCI-786/S-13198,
+    # APPK24022BIL-1, MC/0006/25, RE/017/2025, CI-321/2025
+    _re_p198gd.compile(
+        r'\b[A-Z]{2,6}[\-/_]?(?:\d{1,5}[\-/_])+(?:[A-Z]{1,6}[\-/_]?)?\d{1,6}'
+        r'(?:[\-/_][A-Z]?\d{1,6})?\b'
+    ),
+    # Letter-prefix simple: S26030280, INV00190678, SC553851
+    _re_p198gd.compile(r'\b[A-Z]{1,4}\d{6,12}\b'),
+    # Numeric-with-slash: 03324/03/2026, 02630/02/2026
+    _re_p198gd.compile(r'\b\d{4,6}/\d{2}/\d{4}\b'),
+]
+
+# Canonical → aliases. Used to:
+#   (a) normalise step09 packet document_types to a canonical form
+#   (b) match LC F46A required_document.document_name to the same
+#       canonical form so we know what the LC asked for.
+_P198GE_DOC_CANONICAL = (
+    ('Commercial Invoice',
+     ('commercial invoice', 'invoice')),
+    ('Packing List',
+     ('packing list', 'weight list', 'weight & packing list', 'cargo manifest')),
+    ('Bill of Lading',
+     ('bill of lading', 'bills of lading', 'b/l', 'bl',
+      'ocean bill of lading', 'ocean bills of lading',
+      'marine bill of lading', 'marine bills of lading')),
+    ('Airway Bill',
+     ('airway bill', 'air waybill', 'awb', 'air waybill')),
+    ('Shipment Advice',
+     ('shipment advice', 'advice of shipment', 'shipping advice')),
+    ('Beneficiary Certificate',
+     ("beneficiary certificate", "beneficiary cert",
+      "beneficiary's declaration", "beneficiary declaration",
+      "beneficiary's certificate")),
+    ('Certificate of Origin',
+     ('certificate of origin', 'cert of origin', 'origin certificate')),
+    ('Inspection Certificate',
+     ('inspection certificate', 'pre-shipment inspection',
+      'sampling and analysis', 'certificate of analysis',
+      'cert of analysis', 'analysis certificate', 'sampling certificate',
+      'quality certificate')),
+    ('Weight Certificate',
+     ('weight certificate', 'cert of weight', 'certificate of weight',
+      'quantity certificate')),
+    # Order matters: 'Health Certificate' MUST be checked before
+    # 'Phytosanitary Certificate' because the alias 'sanitary
+    # certificate' is a substring of 'phytosanitary certificate' —
+    # matching the wrong canonical otherwise.
+    ('Health Certificate',
+     ('health certificate', 'health cert',
+      'sanitary certificate', 'sanitary cert',
+      'halal certificate', 'halal cert',
+      'kosher certificate', 'kosher cert')),
+    ('Phytosanitary Certificate',
+     ('phytosanitary certificate', 'phyto certificate',
+      'phyto cert', 'phytosanitary')),
+    ('Fumigation Certificate',
+     ('fumigation certificate', 'fumigation cert', 'fumigation')),
+    ('Insurance Certificate',
+     ('insurance certificate', 'insurance policy', 'cover note')),
+    ('Shipping Company Certificate',
+     ('shipping company certificate', "shipping company's certificate",
+      'carrier certificate', "carrier's certificate")),
+)
+
+# Per-invoice whitelist: documents that are typically PRESENTED ONCE
+# PER INVOICE under partial shipments. LC-level documents (presented
+# once for the whole presentation, not per invoice) are excluded:
+#   • Document Remittance / Covering Schedule   (1 cover per bundle)
+#   • Draft Bill of Exchange                    (varies — often 1 per
+#                                                bundle, depends on LC)
+#   • Charges Certificate / Discrepancy Notice  (1 statement)
+#   • Translation Certificate / Language Cert   (1 global statement)
+#   • Sanctions Compliance Certificate          (1 global statement)
+#   • Confirmation Advice / Document Arrival    (1 LC-level)
+_P198GE_PER_INVOICE_CANONICALS = frozenset({
+    'Commercial Invoice',
+    'Packing List',
+    'Bill of Lading',
+    'Airway Bill',
+    'Shipment Advice',
+    'Beneficiary Certificate',
+    'Certificate of Origin',
+    'Inspection Certificate',
+    'Weight Certificate',
+    'Phytosanitary Certificate',
+    'Fumigation Certificate',
+    'Health Certificate',
+    'Insurance Certificate',
+    'Shipping Company Certificate',
+})
+
+# F47A "rule-style" patterns reused from step07 (P198fw). When an LC's
+# required_documents entry was extracted from an F47A clause matching
+# any of these patterns, it is a phantom (e.g. "Draft Bill of Exchange"
+# from "THIRD PARTY DOCUMENTS ARE ACCEPTABLE EXCEPT INVOICE AND DRAFT")
+# and must NOT be added to the per-invoice required set.
+_P198GE_F47A_RULE_PATTERNS = (
+    r'\bARE\s+ACCEPTABLE\b', r'\bIS\s+ACCEPTABLE\b',
+    r'\bACCEPTABLE\.\s*$', r'\bNOT\s+ACCEPTABLE\b',
+    r'\bDATED\s+PRIOR\s+TO\b',
+    r'\bTHIRD\s+PARTY\s+DOCUMENTS\b',
+    r'\bDISCREPANC(?:Y|IES)\s+(?:CHARGES|FEE|FEES)\b',
+    r'\bCHARGES\s+WILL\s+BE\s+DEDUCTED\b',
+    r'\bFEE\s+(?:OF|WILL|MUST|SHALL)\b',
+    r'\bPRICE\s+ADJUSTMENT\b',
+    r'\bGROSS\s+CALORIFIC\s+VALUE\b',
+    r'\bIF\s+THE\s+ACTUAL\b',
+    r'\bWITHIN\s+\d+\s+DAYS\s+OF\s+SHIPMENT\b',
+    r'\bDOCUMENTS\s+MUST\s+BE\s+SENT\s+TO\b',
+    r'\bENDORSED\s+ON\s+THE\s+REVERSE\b',
+    r'\bDRAWN\s+AND\s+NEGOTIATED\b',
+    r'\bOVERWRITING\b', r'\bALTERATION\b',
+    r'\bQUANTITY\s+DIFFERENT\s+FROM\b',
+    r'\bSHOWING\s+QUANTITY\s+DIFFERENT\b',
+)
+
+
+def _p198ge_normalize_invoice(inv):
+    """Clean an extracted invoice number of OCR-introduced noise.
+
+    Real-data anchors:
+      • 'PI2504022DATEDAPR' (53e62015) → 'PI2504022'   (OCR merged the
+        " DATED APR..." annotation with the invoice number)
+      • 'XPK-TR26030303' (11ec29b8)    → 'XPK-TR260303' (OCR injected
+        an extra digit in one packet's reading of the same number)
+    """
+    if not inv:
+        return inv
+    s = str(inv).strip(' :.,-')
+    # Strip " DATED ..." / "  DATED..." suffix that OCR may have
+    # collapsed into the invoice token (with or without surrounding
+    # whitespace).
+    s = _re_p198gd.sub(r'\s+DATED?\s.*$', '', s, flags=_re_p198gd.IGNORECASE)
+    s = _re_p198gd.sub(r'(?i)DATED?[A-Z0-9_/\-\.]*$', '', s)
+    # Strip trailing 3-letter month abbreviations + trailing digits
+    # (e.g. "...APR2026", "...JAN26", " APR 2026").
+    s = _re_p198gd.sub(
+        r'(?i)\s*(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s*\d{0,4}\s*$',
+        '', s)
+    return s.strip(' :.,-') or inv
+
+
+def _p198ge_dedup_near_duplicates(invoices, packet_counts):
+    """Collapse near-duplicate invoice numbers caused by OCR noise.
+
+    `invoices` is a list of distinct invoice strings. `packet_counts`
+    is a dict invoice -> count of packets carrying it. We use the
+    counts to pick a canonical representative when collapsing.
+
+    Rule (conservative, single-pattern):
+      • If invoice A is a strict prefix of B AND B's extra suffix
+        looks like a date (digits / month abbrevs) OR is just 1
+        character of OCR noise, merge B into A (the shorter, common
+        form). We deliberately do NOT do general fuzzy merging
+        because real invoice numbers in multi-shipment LCs often
+        differ by only one or two characters (e.g. S26030326 vs
+        S26030328) and merging them silently would HIDE missing-doc
+        discrepancies.
+    """
+    invoices = sorted(invoices)
+    merged = {inv: inv for inv in invoices}   # original → canonical
+    for i, a in enumerate(invoices):
+        for b in invoices[i + 1:]:
+            if merged[a] == merged[b]:
+                continue
+            ca, cb = merged[a], merged[b]
+            if ca == cb:
+                continue
+            # Strict-prefix pattern, both directions
+            for short, long_ in ((ca, cb), (cb, ca)):
+                if long_.startswith(short) and len(long_) - len(short) <= 8:
+                    tail = long_[len(short):]
+                    # Accept tail forms commonly attached by OCR or
+                    # bank-internal annotations:
+                    #   • digits only (date-like)
+                    #   • month-name abbrev with optional digits
+                    #   • single delimiter + 1-2 chars (e.g. '-X', '-A1')
+                    #   • bare 1-char OCR noise
+                    if (_re_p198gd.fullmatch(r'[\-/_]?\d+', tail)
+                        or _re_p198gd.fullmatch(r'[\-/_]?(?i:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d*', tail)
+                        or _re_p198gd.fullmatch(r'[\-/_][A-Z]\d{0,2}', tail)
+                        or len(tail) <= 1):
+                        # Merge long_ into short
+                        if long_ == ca:
+                            merged[a] = short
+                        else:
+                            merged[b] = short
+                        break
+    # Resolve transitive merges
+    out_canon = {}
+    for inv, c in merged.items():
+        seen = set()
+        while c != merged.get(c, c) and c not in seen:
+            seen.add(c)
+            c = merged.get(c, c)
+        out_canon[inv] = c
+    return out_canon
+
+
+def _p198ge_canonicalize_doc(name):
+    """Map a free-form document name to a canonical type. Returns None
+    if no canonical match is found.
+
+    Uses WORD-BOUNDARY matching to avoid spurious sub-string matches
+    (the original 'in' check matched 'sanitary certificate' inside
+    'phytosanitary certificate' and bound the wrong canonical).
+    Tries both directions so short inputs like 'AWB' still match.
+    """
+    if not name:
+        return None
+    name_lo = str(name).lower().strip()
+    if not name_lo:
+        return None
+    for canon, aliases in _P198GE_DOC_CANONICAL:
+        for a in aliases:
+            # Exact match
+            if a == name_lo:
+                return canon
+            # Alias appears as a whole word in the input (most cases)
+            if _re_p198gd.search(rf'\b{_re_p198gd.escape(a)}\b', name_lo):
+                return canon
+            # Input is a whole word inside the alias (short forms like
+            # 'AWB' against alias 'awb', or 'B/L' against 'b/l').
+            if _re_p198gd.search(rf'\b{_re_p198gd.escape(name_lo)}\b', a):
+                return canon
+    return None
+
+
+def _p198ge_extract_invoice_number(pkt):
+    """
+    Extract this packet's invoice number using a tiered strategy:
+
+      1. step03 instrument_references on any of its pages (the VLM's
+         visual extraction — most reliable).
+      2. Label-based regex over the packet text: "INVOICE NO." /
+         "INV NO." / "INVOICE NUMBER" / "REF NO." / "REFERENCE NO.".
+      3. Free-form pattern match over the first 2500 chars of text.
+
+    Returns the FIRST invoice ref found, or None.
+    """
+    # 1. instrument_references (most reliable)
+    for op in pkt.get('original_pages', []) or []:
+        if isinstance(op, dict):
+            for r in (op.get('instrument_references') or []):
+                if r and len(str(r)) >= 3:
+                    return str(r).strip()
+
+    txt = (pkt.get('refined_text') or pkt.get('cleaned_text')
+           or pkt.get('text') or pkt.get('raw_text') or '')
+    if not txt:
+        return None
+    head = txt[:3000]
+
+    # 2. Label-based regex
+    label_patterns = (
+        r'INVOICE\s*(?:NO\.?|NUMBER|#)\s*[:\-]?\s*([A-Z0-9][A-Z0-9_/\-\.]{2,30})',
+        r'INV(?:\.|OICE)?\s*(?:NO\.?|NUMBER|#)\s*[:\-]?\s*([A-Z0-9][A-Z0-9_/\-\.]{2,30})',
+        r'COMM[A-Z]*\s+INVOICE\s+NO\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9_/\-\.]{2,30})',
+        r'(?:REFERENCE|REF)\s*(?:NO\.?|NUMBER|#)\s*[:\-]?\s*([A-Z0-9][A-Z0-9_/\-\.]{2,30})',
+    )
+    for pat in label_patterns:
+        m = _re_p198gd.search(pat, head, _re_p198gd.IGNORECASE)
+        if m:
+            cand = m.group(1).strip(' :.,-')
+            # Reject obviously bad captures (too short / all digits in
+            # a section that's clearly not an invoice no — e.g. dates)
+            if 3 <= len(cand) <= 40 and not _re_p198gd.match(r'^\d{1,2}$', cand):
+                return cand
+
+    # 3. Free-form pattern match (first match wins)
+    for rx in _P198GE_INVOICE_PATTERNS:
+        m = rx.search(head)
+        if m:
+            return m.group(0)
+    return None
+
+
+def _p198ge_required_per_invoice_set(structured_lc):
+    """
+    Build the set of canonical doc-types required PER PARTIAL SHIPMENT
+    by THIS LC, derived from F46A required_documents.
+
+    Filters:
+      • Drops F47A "rule-style" entries (P198fw logic).
+      • Drops LC-level docs not in _P198GE_PER_INVOICE_CANONICALS
+        (Doc Remittance, Draft BoE, Charges Cert, etc.).
+      • Canonicalises and deduplicates.
+      • For BL/AWB, returns a single composite "Transport Document
+        (Bill of Lading / Airway Bill)" if BOTH are required (multi-
+        modal LCs); otherwise returns the specific transport doc.
+    """
+    required = []
+    seen = set()
+    bl_required = False
+    awb_required = False
+    for rd in (structured_lc.get('required_documents') or []):
+        name = rd.get('document_name', '')
+        if not name or name == 'None':
+            continue
+        # F47A rule filter
+        src = (rd.get('source_clause_text', '') or '').upper()
+        clause_ref = (rd.get('clause_reference', '') or '').upper()
+        if 'F47A' in clause_ref or '47A' in clause_ref:
+            if any(_re_p198gd.search(p, src) for p in _P198GE_F47A_RULE_PATTERNS):
+                continue
+        canon = _p198ge_canonicalize_doc(name)
+        if not canon:
+            continue
+        if canon not in _P198GE_PER_INVOICE_CANONICALS:
+            continue
+        if canon == 'Bill of Lading':
+            bl_required = True
+            continue
+        if canon == 'Airway Bill':
+            awb_required = True
+            continue
+        if canon not in seen:
+            seen.add(canon)
+            required.append(canon)
+    # Combine BL/AWB into a single "Transport Document" requirement.
+    if bl_required and awb_required:
+        required.append('Transport Document (Bill of Lading / Airway Bill)')
+    elif bl_required:
+        required.append('Bill of Lading')
+    elif awb_required:
+        required.append('Airway Bill')
+    return required
+
+
+_P198GE_TRANSPORT_ALIASES = (
+    'bill of lading', 'airway bill', 'air waybill', 'awb',
+    'b/l', 'bl', 'ocean bill of lading',
+)
+
+def _p198gd_pkt_text(p):
+    return (p.get('refined_text') or p.get('cleaned_text')
+            or p.get('text') or p.get('raw_text') or '')
+
+
+def _p198gd_partial_shipment_check(job_dir):
+    """Return a SectionGroup-style dict to insert at the top of the
+    report when partial-shipment per-invoice doc checks find any
+    missing documents.
+
+    Returns None if:
+      - step09 / step07 / step06 are unreadable
+      - fewer than 2 distinct invoice numbers are detected on CIs
+      - F43P=NOT ALLOWED with single invoice (nothing to check)
+      - LC F46A required docs cannot be parsed
+      - no required documents are missing for any invoice (all clean)
+    """
+    try:
+        job_root = Path(job_dir).parent
+        s9_path = job_root / 'step09' / 'step09_result.json'
+        s7_path = job_root / 'step07' / 'step07_result.json'
+        s6_path = job_root / 'step06' / 'step06_result.json'
+        if not (s9_path.exists() and s7_path.exists()):
+            return None
+        with open(s9_path, 'r', encoding='utf-8') as fh:
+            d9 = json.load(fh)
+        with open(s7_path, 'r', encoding='utf-8') as fh:
+            d7 = json.load(fh)
+        packets = d9.get('reconciled_packets') or []
+        structured_lc = d7.get('structured_lc') or {}
+        if not packets or not structured_lc:
+            return None
+        # F43P value (allows / not allowed)
+        f43p = ''
+        if s6_path.exists():
+            try:
+                with open(s6_path, 'r', encoding='utf-8') as fh:
+                    d6 = json.load(fh)
+                cf = d6.get('consolidated_fields', {}) or {}
+                f43p = (cf.get('43P', '') or cf.get('F43P', '') or '').upper()
+            except Exception:
+                f43p = ''
+    except Exception:
+        return None
+
+    # Step 1 — extract each Commercial Invoice's invoice number.
+    ci_invoice = {}     # packet_id -> invoice_no (normalized)
+    ci_packets = []
+    for pkt in packets:
+        if not isinstance(pkt, dict):
+            continue
+        dt_lo = (pkt.get('document_type', '') or '').lower()
+        if 'invoice' in dt_lo and 'proforma' not in dt_lo and 'tax' not in dt_lo:
+            ci_packets.append(pkt)
+    for pkt in ci_packets:
+        inv_raw = _p198ge_extract_invoice_number(pkt)
+        if inv_raw:
+            inv = _p198ge_normalize_invoice(inv_raw)
+            if inv:
+                ci_invoice[pkt.get('packet_id', '?')] = inv
+
+    # Collapse near-duplicate invoice numbers caused by OCR noise
+    # ("PI2504022DATEDAPR" → "PI2504022", "XPK-TR26030303" merged
+    # into "XPK-TR260303"). Use packet counts to pick the canonical.
+    raw_distinct = sorted({v for v in ci_invoice.values() if v})
+    packet_counts = {}
+    for v in ci_invoice.values():
+        packet_counts[v] = packet_counts.get(v, 0) + 1
+    canon_map = _p198ge_dedup_near_duplicates(raw_distinct, packet_counts)
+    # Apply canonical mapping
+    ci_invoice = {pid: canon_map.get(v, v) for pid, v in ci_invoice.items()}
+    distinct_invoices = sorted({v for v in ci_invoice.values() if v})
+
+    # Need ≥2 distinct invoice numbers to fire. Single-invoice bundles
+    # (even with multiple invoice copies/originals) are not partial-
+    # shipment scenarios.
+    if len(distinct_invoices) < 2:
+        return None
+
+    # F43P guard. If F43P explicitly says NOT ALLOWED but we see
+    # multiple invoices, that's itself a discrepancy — flag it
+    # specially. Otherwise (ALLOWED / blank / PERMITTED), fall through
+    # to the normal per-invoice doc check.
+    f43p_not_allowed = ('NOT ALLOWED' in f43p
+                        or 'NOT PERMITTED' in f43p
+                        or 'PROHIBITED' in f43p)
+
+    # Step 2 — group all packets by invoice. For each non-CI packet,
+    # find which invoice number(s) appear in its text or instrument
+    # references. Multi-invoice references mean the doc applies to
+    # all those invoices (e.g. a Bill of Exchange covering multiple
+    # tranches).
+    inv_map = {inv: {} for inv in distinct_invoices}
+    unmatched_packets = []
+    for pkt in packets:
+        if not isinstance(pkt, dict):
+            continue
+        pid = pkt.get('packet_id', '?')
+        dt = pkt.get('document_type', '') or ''
+        # CIs go to their own invoice only
+        if pid in ci_invoice:
+            inv_map.setdefault(ci_invoice[pid], {}).setdefault(dt, []).append(pid)
+            continue
+        # Search packet text + instrument_references for each known invoice
+        txt = _p198gd_pkt_text(pkt)
+        head = txt[:8000].upper()
+        inst_refs_here = set()
+        for op in pkt.get('original_pages', []) or []:
+            if isinstance(op, dict):
+                for r in (op.get('instrument_references') or []):
+                    if r:
+                        inst_refs_here.add(str(r).upper())
+        matched = []
+        for inv in distinct_invoices:
+            inv_u = inv.upper()
+            if inv_u in head or inv_u in inst_refs_here:
+                matched.append(inv)
+        if matched:
+            for inv in matched:
+                inv_map.setdefault(inv, {}).setdefault(dt, []).append(pid)
+        else:
+            unmatched_packets.append(pkt)
+
+    # Step 3 — assign unmatched transport docs (BL/AWB) to invoices
+    # via instrument-reference grouping (same BL number = same
+    # physical doc) + page-proximity heuristic.
+    transport_unmatched = [
+        p for p in unmatched_packets
+        if any(k in (p.get('document_type', '') or '').lower()
+               for k in _P198GE_TRANSPORT_ALIASES)
+    ]
+    if transport_unmatched:
+        # Build invoice -> set of pages it touches (from CI packets)
+        inv_pages = {}
+        for inv, doc_map in inv_map.items():
+            for dt, pids in doc_map.items():
+                for pkt in packets:
+                    if pkt.get('packet_id') in pids:
+                        for op in pkt.get('original_pages', []) or []:
+                            if isinstance(op, dict) and op.get('page_number'):
+                                inv_pages.setdefault(inv, set()).add(op['page_number'])
+        # Group transport packets by BL/AWB number
+        groups = {}
+        no_num_groups = []
+        for pkt in transport_unmatched:
+            refs = []
+            for op in pkt.get('original_pages', []) or []:
+                if isinstance(op, dict):
+                    refs.extend(op.get('instrument_references') or [])
+            refs = [r for r in refs if r and len(str(r)) >= 4]
+            if refs:
+                groups.setdefault(refs[0], []).append(pkt)
+            else:
+                no_num_groups.append([pkt])
+        used_invs = set()
+        for grp_key, grp_pkts in (list(groups.items())
+                                   + [(None, l) for l in no_num_groups]):
+            grp_pages = []
+            for pkt in grp_pkts:
+                for op in pkt.get('original_pages', []) or []:
+                    if isinstance(op, dict) and op.get('page_number'):
+                        grp_pages.append(op['page_number'])
+            if not grp_pages or not inv_pages:
+                continue
+            grp_center = min(grp_pages)
+            best_inv, best_dist = None, 10**9
+            for inv, pgs in inv_pages.items():
+                if inv in used_invs:
+                    continue
+                d = min(abs(p - grp_center) for p in pgs)
+                if d < best_dist:
+                    best_dist, best_inv = d, inv
+            if best_inv is not None:
+                for pkt in grp_pkts:
+                    inv_map.setdefault(best_inv, {}).setdefault(
+                        pkt.get('document_type', '') or '?', []).append(
+                        pkt.get('packet_id', '?'))
+                used_invs.add(best_inv)
+
+    # Step 4 — read the LC's actual per-invoice required-doc list
+    # from F46A. If the LC requires nothing per-invoice (rare),
+    # nothing to check.
+    required_per_invoice = _p198ge_required_per_invoice_set(structured_lc)
+    if not required_per_invoice:
+        return None
+
+    # Step 5 — for each invoice, check coverage against the required
+    # list.
+    def _packet_matches_req(pkt_doc_type, req_canonical):
+        """Return True if a packet whose document_type is pkt_doc_type
+        satisfies a 'req_canonical' requirement."""
+        canon = _p198ge_canonicalize_doc(pkt_doc_type)
+        if not canon:
+            return False
+        if req_canonical == 'Transport Document (Bill of Lading / Airway Bill)':
+            return canon in ('Bill of Lading', 'Airway Bill')
+        return canon == req_canonical
+
+    sec_clauses = []
+    n_pass = 0
+    n_fail = 0
+    for inv in distinct_invoices:
+        present = inv_map.get(inv, {})
+        rows = []
+        missing_names = []
+        for req_name in required_per_invoice:
+            has = False
+            present_pkts = []
+            for dt, pkt_ids in present.items():
+                if _packet_matches_req(dt, req_name):
+                    has = True
+                    present_pkts.extend(pkt_ids)
+            if has:
+                n_pass += 1
+                rows.append({
+                    'row_id': f'PS-{inv}-{req_name[:25].replace(" ","_")}',
+                    'clause_ref': f'Presentation-{inv}',
+                    'field_tag': 'F43P',
+                    'condition': f'{req_name} required for invoice {inv}',
+                    'condition_text': f'{req_name} required for invoice {inv}',
+                    'document_checked': req_name,
+                    'compliance': 'PASS',
+                    'result': (f"PRESENT for invoice {inv}: "
+                               f"{', '.join(present_pkts)}"),
+                    'findings': (f"PRESENT for invoice {inv}: "
+                                 f"{', '.join(present_pkts)}"),
+                })
+            else:
+                n_fail += 1
+                missing_names.append(req_name)
+                rows.append({
+                    'row_id': f'PS-{inv}-MISSING-{req_name[:25].replace(" ","_")}',
+                    'clause_ref': f'Presentation-{inv}',
+                    'field_tag': 'F43P',
+                    'condition': f'{req_name} required for invoice {inv}',
+                    'condition_text': f'{req_name} required for invoice {inv}',
+                    'document_checked': req_name,
+                    'compliance': 'FAIL',
+                    'result': (f"MISSING — {req_name} not presented for "
+                               f"invoice {inv}."),
+                    'findings': (f"MISSING — {req_name} not presented for "
+                                 f"invoice {inv}."),
+                })
+        sec_clauses.append({
+            'clause_ref': f'Presentation-{inv}',
+            'clause_text': f'Document set for partial-shipment invoice {inv}',
+            'overall_result': 'NOT COMPLIED' if missing_names else 'COMPLIED',
+            'pass_count': len(rows) - len(missing_names),
+            'fail_count': len(missing_names),
+            'review_count': 0,
+            'rows': rows,
+        })
+
+    # F43P=NOT ALLOWED with multiple invoices is itself a discrepancy.
+    # Add a top row flagging that, regardless of whether all docs are
+    # present per invoice.
+    if f43p_not_allowed:
+        n_fail += 1
+        sec_clauses.insert(0, {
+            'clause_ref': 'Presentation-F43P-VIOLATION',
+            'clause_text': 'Partial shipments — F43P guard',
+            'overall_result': 'NOT COMPLIED',
+            'pass_count': 0,
+            'fail_count': 1,
+            'review_count': 0,
+            'rows': [{
+                'row_id': 'PS-F43P-VIOLATION',
+                'clause_ref': 'Presentation-F43P-VIOLATION',
+                'field_tag': 'F43P',
+                'condition': 'Multiple invoices presented but F43P forbids partial shipments',
+                'condition_text': 'Multiple invoices presented but F43P forbids partial shipments',
+                'document_checked': 'All Documents',
+                'compliance': 'FAIL',
+                'result': (f"DISCREPANCY — LC F43P = '{f43p}' (partial "
+                           f"shipments NOT ALLOWED) but the bundle "
+                           f"contains {len(distinct_invoices)} distinct "
+                           f"invoices: {', '.join(distinct_invoices)}."),
+                'findings': (f"DISCREPANCY — LC F43P = '{f43p}' (partial "
+                             f"shipments NOT ALLOWED) but the bundle "
+                             f"contains {len(distinct_invoices)} distinct "
+                             f"invoices: {', '.join(distinct_invoices)}."),
+            }],
+        })
+
+    # If everything is clean (every invoice fully covered, F43P fine),
+    # don't bother adding a section to the report.
+    if n_fail == 0:
+        return None
+
+    title = 'Partial Shipment — Per-Invoice Document Completeness'
+    description = (
+        f'LC F43P={f43p or "(blank)"}. Bundle contains '
+        f'{len(distinct_invoices)} distinct invoices: '
+        f'{", ".join(distinct_invoices)}. Each invoice must carry '
+        f'its own LC-required per-invoice docs '
+        f'({", ".join(required_per_invoice)}). '
+        f'1 transport doc ↔ 1 invoice (strict 1:1).'
+    )
+    return {
+        'section_name': title,
+        'section_title': title,
+        'section_description': description,
+        'total_pass': n_pass,
+        'total_fail': n_fail,
+        'total_review': 0,
+        'clauses': sec_clauses,
+    }
+
+
 def run(
     reconciled_rows: List[Dict],
     output_dir: str,
@@ -613,18 +1299,64 @@ def run(
 
     consolidated = _consolidate(reconciled_rows, progress_fn)
 
+    sections_out = [asdict(s) for s in consolidated.sections]
+
+    # P198gd — Inject partial-shipment per-invoice doc completeness
+    # section at the top of the report when applicable. Only fires
+    # for multi-invoice bundles with F43P=ALLOWED.
+    overall_pass = consolidated.total_pass
+    overall_fail = consolidated.total_fail
+    overall_decision = consolidated.overall_decision
+    critical_findings_out = list(consolidated.critical_findings)
+    try:
+        ps_section = _p198gd_partial_shipment_check(output_dir)
+        if ps_section is not None:
+            sections_out.insert(0, ps_section)
+            overall_pass += ps_section['total_pass']
+            overall_fail += ps_section['total_fail']
+            if ps_section['total_fail'] > 0:
+                overall_decision = 'DISCREPANT'
+            # Append the missing-doc FAILs to critical_findings so they
+            # surface in the executive-summary "Critical Findings"
+            # table at the top of the PDF report — not just buried in
+            # the per-invoice clause tables further down.
+            ps_critical = []
+            for cl in ps_section.get('clauses', []):
+                for r in cl.get('rows', []):
+                    if str(r.get('compliance', '')).upper() in ('FAIL', 'NOT COMPLIED'):
+                        ps_critical.append({
+                            'clause_ref': r.get('clause_ref') or cl.get('clause_ref'),
+                            'clause_text': cl.get('clause_text', ''),
+                            'condition': r.get('condition_text') or r.get('condition', ''),
+                            'findings': r.get('findings', ''),
+                            'result': r.get('result', ''),
+                            'document_checked': r.get('document_checked', ''),
+                        })
+            # Put partial-shipment FAILs at the TOP of the critical
+            # findings list so missing-doc discrepancies are seen
+            # before less-critical row-level FAILs.
+            critical_findings_out = ps_critical + critical_findings_out
+            progress_fn(
+                f"  [P198gd] Partial-shipment check: "
+                f"{ps_section['total_pass']} present, "
+                f"{ps_section['total_fail']} missing across "
+                f"{len(ps_section['clauses'])} invoice(s)"
+            )
+    except Exception as _e:
+        progress_fn(f"  [P198gd] Partial-shipment check failed: {_e}")
+
     result = {
         'step': 19,
         'step_name': 'Consolidated Clause Verification Output',
-        'overall_decision': consolidated.overall_decision,
+        'overall_decision': overall_decision,
         'total_clauses': consolidated.total_clauses,
         'total_rows': consolidated.total_rows,
-        'total_pass': consolidated.total_pass,
-        'total_fail': consolidated.total_fail,
+        'total_pass': overall_pass,
+        'total_fail': overall_fail,
         'total_review': consolidated.total_review,
-        'critical_findings': consolidated.critical_findings,
+        'critical_findings': critical_findings_out,
         'review_items': consolidated.review_items,
-        'sections': [asdict(s) for s in consolidated.sections],
+        'sections': sections_out,
         'elapsed_seconds': round(time.time() - t0, 2),
     }
 
