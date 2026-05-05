@@ -7078,6 +7078,20 @@ def _build_tasks(
             'bl conditions of carriage', 'conditions of carriage',
             'cover page', 'title page',
             'unknown', 'unidentified', 'supporting document',
+            # P198gz29 — LC tail pages and "Other" catch-all classifications.
+            # These are LC content pages (or fragments) — they ARE the LC,
+            # not shipping documents under . Fan-outs of "all documents
+            # must show LC number / be dated / in English" produce false
+            # FAILs because the LC obviously doesn't quote ITS OWN number
+            # in a different font, and Pakistani-style LC tails carry
+            # transmission metadata not document content.
+            'other', 'misc', 'miscellaneous',
+            'lc', 'l/c', 'letter of credit', 'documentary credit',
+            'mt700', 'mt701', 'mt707', 'mt708', 'mt799', 'mt999',
+            'amendment', 'lc amendment', 'credit amendment',
+            'lc tail', 'lc continuation', 'documentary credit tail',
+            'mt730', 'mt710', 'mt711', 'mt720', 'mt721',
+            'swift message', 'swift mt', 'mt message',
             # P198bs — Attached List / Attached Schedule is an ancillary
             # page that lists the pallets / containers / cargo breakdown
             # of the MAIN Bill of Lading. It is not an independently
@@ -13985,6 +13999,163 @@ def run(
                             f"{_get(row, 'row_id', '?')}: FAIL→PASS "
                             f"(bundle has {len(_ci_origins)} origins: "
                             f"{', '.join(sorted(_ci_origins))})"
+                        )
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz30 — Multi-item LC partial-presentation rescue.
+    #
+    # When F45A enumerates multiple distinct items via numbered
+    # sub-clauses (e.g., 1) NOVACRON OLIVE 1000 KGS @ 28.57,
+    # 2) NOVACRON BROWN 500 KGS @ 24.74, 3) NOVACRON GOLDEN YELLOW
+    # 500 KGS @ 28.10) AND the bundle splits items across multiple
+    # CIs/PLs (one packet per item or per pair), individual per-CI/PL
+    # rows that FAIL because the examined doc carries a DIFFERENT item
+    # are spurious. Rescue when the row's required item IS covered
+    # SOMEWHERE in the bundle.
+    #
+    # Anchor job: 9a8bcd79 (NOVACRON 3-item textile LC, 3 CIs split
+    # OLIVE+GOLDEN / OLIVE+GOLDEN / BROWN). Goods desc, quantity, and
+    # unit price rows all flagged per-CI mismatches that are valid
+    # at the presentation-set level.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        _final_lc_z30 = step06_result.get('consolidated_fields') or \
+                        step06_result.get('final_lc', {}).get(
+                            'consolidated_fields', {}) or {}
+        _f45a_full = str(_final_lc_z30.get('45A') or
+                         _final_lc_z30.get('F45A') or '')
+        _f43p_z30 = str(_final_lc_z30.get('43P') or
+                        _final_lc_z30.get('F43P') or '').upper()
+        # Split F45A into numbered sub-items "1)" / "1." style
+        _subitems = {}
+        for _m in re.finditer(
+            r'(?:^|\n)\s*(\d{1,2})[\)\.]\s+'
+            r'([^\n]+(?:\n(?!\s*\d{1,2}[\)\.]).+)*)',
+            _f45a_full,
+        ):
+            try:
+                _subitems[int(_m.group(1))] = _m.group(2).strip()
+            except Exception:
+                pass
+        # Need genuine multi-item LC (>=2 distinct sub-items)
+        _multi_item_lc = len(_subitems) >= 2
+        # Count CI / PL packets
+        _ci_pl_packets = []
+        for _pkt in (packets or []):
+            if not isinstance(_pkt, dict):
+                continue
+            _t = (_pkt.get('document_type') or '').lower()
+            if (('invoice' in _t and 'proforma' not in _t)
+                    or 'packing' in _t):
+                _ci_pl_packets.append(_pkt)
+        _multi_doc_bundle = len(_ci_pl_packets) >= 2
+        if _multi_item_lc and _multi_doc_bundle:
+            # Concatenated upper-cased text across all CI/PL packets
+            _all_blobs = []
+            for _pkt in _ci_pl_packets:
+                _txt = (_pkt.get('document_text')
+                        or _pkt.get('cleaned_text') or '')
+                _us = _pkt.get('unified_summary') or {}
+                try:
+                    _us_dump = json.dumps(_us, ensure_ascii=False)
+                except Exception:
+                    _us_dump = ''
+                _all_blobs.append(_txt + ' ' + _us_dump)
+            _all_text_up = ' '.join(_all_blobs).upper()
+
+            _STOP = {
+                'THE','AND','FOR','PER','BOX','KGS','KG','PCS','PC',
+                'UNIT','UNITS','NET','GROSS','WEIGHT','QTY','QUANTITY',
+                'PRICE','TOTAL','USD','EUR','GBP','MUST','BE','ON','OF',
+                'AT','THE','MIN','MAX','PCT','MTS','MT','EACH','BAG',
+                'BAGS','BALES','BALE','CARTON','CARTONS','PACKAGE',
+                'PACKAGES','PALLETS','ITEM','ITEMS','PIECE','PIECES',
+            }
+
+            def _key_tokens(s):
+                toks = re.findall(r'[A-Z][A-Z0-9\-]{2,}', (s or '').upper())
+                return [t for t in toks if t not in _STOP]
+
+            def _quoted_item(cond):
+                m = re.search(
+                    r"'([^']{4,120})'|\"([^\"]{4,120})\"",
+                    cond or '',
+                )
+                if not m:
+                    return None
+                return (m.group(1) or m.group(2) or '').strip()
+
+            for row in rows:
+                try:
+                    _comp_now = str(_get(row, 'compliance', '')).upper()
+                    if _comp_now not in ('FAIL', 'NOT COMPLIED', 'REVIEW'):
+                        continue
+                    _cref = (_get(row, 'clause_ref', '') or '').upper()
+                    _m_idx = re.match(r'45A-(\d{1,2})\b', _cref)
+                    if not _m_idx:
+                        continue
+                    _idx = int(_m_idx.group(1))
+                    _doc_t = (_get(row, 'document_checked', '') or '').lower()
+                    if ('invoice' not in _doc_t
+                            and 'packing' not in _doc_t):
+                        continue
+                    if 'proforma' in _doc_t:
+                        continue
+                    _cond = (_get(row, 'condition_text', '') or '')
+                    # Determine the item identifier:
+                    # 1) quoted text in condition (best for goods-desc rows)
+                    # 2) F45A sub-clause text indexed by clause-ref number
+                    _quoted = _quoted_item(_cond)
+                    _ref_text = _quoted or _subitems.get(_idx) or ''
+                    _toks = _key_tokens(_ref_text)
+                    if not _toks:
+                        continue
+                    # Most distinguishing token = longest unique token
+                    _toks_sorted = sorted(
+                        set(_toks), key=lambda x: -len(x),
+                    )
+                    _top = _toks_sorted[0]
+                    if len(_top) < 4:
+                        continue
+                    if _top not in _all_text_up:
+                        continue
+                    _msg = (
+                        f"Multi-item LC with partial presentation: F45A "
+                        f"lists {len(_subitems)} distinct items. The "
+                        f"bundle contains {len(_ci_pl_packets)} "
+                        f"Commercial Invoice/Packing List packets "
+                        f"each covering different items. Clause "
+                        f"{_cref} corresponds to "
+                        f"'{(_ref_text or '')[:80]}', which IS present "
+                        f"in the bundle. Per per-presentation "
+                        f"compliance, individual per-doc rows that "
+                        f"examine a different item are OK when the "
+                        f"bundle as a whole covers each F45A item."
+                    )
+                    _set(row, 'compliance', 'PASS')
+                    _set(row, 'result', _msg)
+                    _set(row, 'findings', _msg)
+                    _notes = _get(row, 'verification_notes', '') or ''
+                    if 'P198gz30' not in _notes:
+                        _set(
+                            row,
+                            'verification_notes',
+                            (_notes + ' | ' if _notes else '')
+                            + 'P198gz30 multi-item partial-presentation '
+                              'rescue',
+                        )
+                    try:
+                        _progress(
+                            f"  [P198gz30 multi-item partial] "
+                            f"{_get(row, 'row_id', '?')}: "
+                            f"{_comp_now}->PASS "
+                            f"(bundle covers '{_top}' for clause {_cref})"
                         )
                     except Exception:
                         pass
