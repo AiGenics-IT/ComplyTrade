@@ -2617,6 +2617,168 @@ def run(step3_result: dict, step7_result: dict, output_dir: str = None, progress
             # later by the cross-clause audit when that LC clause exists.)
             cp['bl_short_form_status'] = 'short_form'
 
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz37 — Header-less continuation / orphan-rider post-fix.
+    #
+    # Two recurring misclassifications:
+    #
+    # 1. Header-less PL CONTINUATION pages classified as Commercial
+    #    Invoice. The continuation page only carries the item-table
+    #    header columns ("Marks and number of PKGS / Description of
+    #    Goods / Quantity / Net-weight / Gross-weight / Measurement")
+    #    with NO "COMMERCIAL INVOICE" or "PACKING LIST" title. The
+    #    presence of Net-weight + Gross-weight + Measurement is
+    #    diagnostic of a Packing List; a real CI continuation would
+    #    instead carry "Unit Price / Total Amount / Sub-total / USD
+    #    <amount>". When step3/VLM picked Commercial Invoice but the
+    #    columns are PL columns and CI columns are absent, override
+    #    to Packing List.
+    #
+    # 2. BL ATTACHED RIDER orphan packets. step03 correctly flags
+    #    "ATTACHED RIDER" but step08 then routes these to Packing
+    #    List (or another doc-type) when they should belong to the
+    #    parent Bill of Lading. When the packet's text starts with
+    #    "- ATTACHED RIDER -" or "ATTACHED RIDER" or has "B/L No.:"
+    #    near the top with no own document title, force-classify as
+    #    "Bill of Lading" so downstream BL fan-outs aggregate the
+    #    rider correctly with the parent BL packets.
+    #
+    # Anchor: f53a9416 (LS Electric LC). pkt_6/8/10/12/14/16/18/20/22
+    # were PL continuations marked CI; pkt_40-45/47 were BL attached
+    # riders marked PL.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        _PL_COL_MARKERS = (
+            'NET-WEIGHT', 'NET WEIGHT', 'GROSS-WEIGHT', 'GROSS WEIGHT',
+            'MEASUREMENT',
+        )
+        # Tight Commercial-Invoice column markers — strict price/amount
+        # signals only. "SUB TOTAL" / "TOTAL" alone are NOT diagnostic
+        # because PLs also carry a quantity/weight subtotal line. We
+        # require an explicit currency column header or a per-line
+        # price column.
+        _CI_COL_MARKERS = (
+            'UNIT PRICE', 'TOTAL AMOUNT', 'AMOUNT IN USD',
+            'AMOUNT IN EUR', 'AMOUNT (USD)', 'AMOUNT (EUR)',
+            'AMOUNT/USD', 'TOTAL/USD', 'INVOICE VALUE',
+            'INVOICE TOTAL', 'TOTAL VALUE',
+            'TOTAL CFR', 'TOTAL FOB', 'TOTAL CIF',
+            'PRICE PER UNIT',
+        )
+        # Tight rider detector: text must START with the literal
+        # "ATTACHED RIDER" / "ATTACH RIDER" header (with optional
+        # leading dashes/hyphens). Do NOT trigger on docs that merely
+        # reference a B/L number — Shipment Advice, Insurance Policy,
+        # SCC, etc. all cite the BL number but are not riders.
+        _RIDER_HEAD_RE = re.compile(
+            r'^\s*[-–—]*\s*ATTACH(?:ED)?\s+RIDER\b',
+            flags=re.IGNORECASE,
+        )
+        # Disqualifying titles — if the packet has its own document
+        # title near the top, it is NOT a BL rider.
+        _OWN_TITLE_RE = re.compile(
+            r"\b(?:SHIPMENT\s+ADVICE|VESSEL\s+ADVICE|"
+            r"BENEFICIARY['’]?S?\s+CERTIFICATE|CERTIFICATE\s+OF\s+ORIGIN|"
+            r"INSURANCE\s+(?:POLICY|CERTIFICATE)|"
+            r"SHIPPING\s+COMPANY|FREIGHT\s+ADVICE|"
+            r"PACKING\s+LIST|COMMERCIAL\s+INVOICE|"
+            r"AIRWAY\s+BILL|AIR\s+WAY\s*BILL|AWB|"
+            r"DOCUMENTARY\s+REMITTANCE|REMITTANCE\s+LETTER|"
+            r"DRAFT|BILL\s+OF\s+EXCHANGE)\b",
+            flags=re.IGNORECASE,
+        )
+        for cp in classified_packets:
+            try:
+                if not isinstance(cp, dict):
+                    continue
+                _txt = (cp.get('cleaned_text')
+                        or cp.get('raw_text') or '')
+                if not _txt:
+                    continue
+                _txt_up = _txt.upper()
+                _dt = (cp.get('document_type') or '')
+                _dt_up = _dt.upper()
+
+                # Fix 1: header-less PL continuation marked as CI.
+                # Trigger: doc_type == Commercial Invoice; PL column
+                # markers present (>=2); CI column markers absent;
+                # no "COMMERCIAL INVOICE" title in the first 250
+                # characters.
+                if 'COMMERCIAL INVOICE' in _dt_up:
+                    _has_pl_cols = sum(
+                        1 for m in _PL_COL_MARKERS if m in _txt_up
+                    ) >= 2
+                    _has_ci_cols = any(
+                        m in _txt_up for m in _CI_COL_MARKERS
+                    )
+                    _has_ci_title = (
+                        'COMMERCIAL INVOICE' in _txt_up[:250]
+                    )
+                    if (_has_pl_cols and not _has_ci_cols
+                            and not _has_ci_title):
+                        cp['document_type'] = 'Packing List'
+                        cp['vlm_reasoning'] = (
+                            (cp.get('vlm_reasoning') or '')
+                            + ' [P198gz37 override: header-less '
+                            'continuation page has Packing List '
+                            'columns (Net-weight / Gross-weight / '
+                            'Measurement) and no Commercial Invoice '
+                            'title or price/total columns -- '
+                            'reclassified Commercial Invoice -> '
+                            'Packing List.]'
+                        )
+                        cp['classification_status'] = 'matched_document'
+                        cp['confidence'] = max(
+                            float(cp.get('confidence') or 0.0), 0.92,
+                        )
+                        try:
+                            _progress(
+                                f"  [P198gz37] {cp.get('packet_id','?')}: "
+                                f"Commercial Invoice -> Packing List "
+                                f"(header-less PL continuation)"
+                            )
+                        except Exception:
+                            pass
+                        continue
+
+                # Fix 2: orphan BL attached-rider misrouted to PL/etc.
+                # Trigger: text BEGINS with "ATTACHED RIDER" / dashed
+                # variant AND has no other doc title near the top
+                # (Shipment Advice / Insurance / etc. that merely
+                # cite a BL number must not be flipped to BL).
+                if 'BILL OF LADING' not in _dt_up:
+                    _head = _txt[:400]
+                    _is_rider = (
+                        bool(_RIDER_HEAD_RE.search(_head))
+                        and not _OWN_TITLE_RE.search(_head)
+                    )
+                    if _is_rider:
+                        cp['document_type'] = 'Bill of Lading'
+                        cp['vlm_reasoning'] = (
+                            (cp.get('vlm_reasoning') or '')
+                            + ' [P198gz37 override: text begins with '
+                            '"- ATTACHED RIDER -" / carries a B/L No. '
+                            'reference and is therefore an attached '
+                            'rider for the parent Bill of Lading -- '
+                            'reclassified to Bill of Lading.]'
+                        )
+                        cp['classification_status'] = 'matched_document'
+                        cp['confidence'] = max(
+                            float(cp.get('confidence') or 0.0), 0.92,
+                        )
+                        try:
+                            _progress(
+                                f"  [P198gz37] {cp.get('packet_id','?')}: "
+                                f"{_dt} -> Bill of Lading "
+                                f"(BL attached rider)"
+                            )
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # Summary
     summary = {
         'total': len(classified_packets),

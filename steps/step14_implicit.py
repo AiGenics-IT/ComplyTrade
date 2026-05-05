@@ -945,13 +945,20 @@ def _hybrid_date_check(check_id: str, clause_ref: str, lc_date_str: str,
 
 def _hybrid_amount_check(lc_amount: float, lc_currency: str, tol_plus: float, tol_minus: float,
                           pkt: Dict, check_id: str, check_type: str, inv_amounts_str: str,
-                          advance_info: Dict = None) -> CheckResult:
+                          advance_info: Dict = None, tranche_info: Dict = None) -> CheckResult:
     """VLM extracts amount, Python compares.
 
     advance_info — when provided, signals that the LC has a split-payment
     structure (e.g. 80% advance + 20% on documents). The cover_vs_invoice
     and draft_vs_invoice checks then compare against the NET amount (the
     portion claimed against documents), not the full invoice total.
+
+    tranche_info — when provided (P198gz26), signals that the LC has a
+    2-tranche release structure (e.g. F46A "A) FOR RELEASE OF 90 PERCENT" +
+    "B) FOR RELEASE OF 10 PERCENT") common in coal / bulk-cargo LCs. The
+    cover_vs_invoice check then accepts a cover schedule whose amount
+    equals tranche-A or tranche-B fraction of the invoice total, since
+    each tranche covers a different portion of the same invoice.
     """
     doc_type = pkt.get('document_type', 'Unknown')
     doc_text = _get_doc_text(pkt)
@@ -1288,6 +1295,34 @@ def _hybrid_amount_check(lc_amount: float, lc_currency: str, tol_plus: float, to
                             f"expected NET {_npc}% of LC = {_ccy} {_exp_net:,.2f} "
                             f"under the F46A advance-payment terms."),
                     compliance="FAIL", severity="soft")
+
+        # P198gz32 — 2-tranche LC cover-amount guard. When the LC F46A
+        # splits release into A) NN% / B) MM% (common in coal/bulk LCs),
+        # the Documentary Remittance for tranche A covers NN% of the
+        # invoice total, and tranche B covers the remaining MM%. A cover
+        # whose amount equals either fraction (within tolerance) is
+        # CORRECT for that tranche presentation, not a discrepancy.
+        if (tranche_info and tranche_info.get('is_two_tranche')
+                and inv_total and doc_amount):
+            _pct_a = tranche_info.get('tranche_a_pct') or 0
+            _pct_b = tranche_info.get('tranche_b_pct') or 0
+            for _label, _pct in (('A', _pct_a), ('B', _pct_b)):
+                if not (1 <= _pct <= 99):
+                    continue
+                _exp = inv_total * _pct / 100.0
+                _tol = max(0.50, _exp * 0.005)
+                if abs(doc_amount - _exp) <= _tol:
+                    return CheckResult(check_id=check_id, clause_ref="F32B",
+                        condition=(f"Cover schedule shows tranche-{_label} "
+                                   f"claim ({_pct}% of invoice total)"),
+                        document_checked=doc_type,
+                        findings=f"Cover: {lc_currency} {doc_amount:,.2f}",
+                        result=(f"Cover {lc_currency} {doc_amount:,.2f} = "
+                                f"{_pct}% of invoice total "
+                                f"{lc_currency} {inv_total:,.2f} -- "
+                                f"matches tranche-{_label} release under "
+                                f"the F46A 2-tranche payment structure."),
+                        compliance="PASS", severity="soft")
 
         if inv_total and abs(doc_amount - inv_total) <= 0.01:
             return CheckResult(check_id=check_id, clause_ref="F32B",
@@ -2349,6 +2384,24 @@ def run(
             except Exception:
                 _advance_info = None
 
+            # P198gz32 — Detect 2-tranche release LC (F46A A=NN% / B=MM%,
+            # common in coal/bulk-cargo). Threaded into cover_vs_invoice
+            # so per-tranche cover amounts are accepted as PASS instead
+            # of flagged as cover/invoice mismatch.
+            _tranche_info = None
+            try:
+                from steps.step14_verification import _detect_release_tranches
+                _tranche_info = _detect_release_tranches(
+                    {'consolidated_fields': lc_fields})
+                if _tranche_info and _tranche_info.get('is_two_tranche'):
+                    progress_fn(
+                        f"  [amount_currency] 2-tranche LC detected: "
+                        f"A={_tranche_info['tranche_a_pct']}% / "
+                        f"B={_tranche_info['tranche_b_pct']}% -- "
+                        f"cover schedules accepted at either fraction")
+            except Exception:
+                _tranche_info = None
+
             if lc_amount:
                 # P69: Helper — run the amount check across all matched
                 # packets of a given doc-class, but emit ONLY ONE row to
@@ -2373,6 +2426,7 @@ def run(
                             lc_amount, lc_currency, tol_plus, tol_minus, _p,
                             'amount_currency', check_type, _inv_amounts_str_local,
                             advance_info=_advance_info,
+                            tranche_info=_tranche_info,
                         )
                         _rk = _rank.get(str(_r.compliance).upper(), 3)
                         if _rk < _best_rank:

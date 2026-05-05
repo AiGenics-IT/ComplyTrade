@@ -8616,6 +8616,35 @@ def run(
     # first pinned the row to FAIL/PASS — a race. Now collect per-packet
     # presence across ALL tasks, then decide existentially: ANY packet
     # carrying the required email → PASS.
+    #
+    # P198gz33 — Bundle-level existential rescue. The clause "Beneficiary's
+    # Certificate must certify ... email at X@Y" decomposes into BOTH a
+    # Beneficiary Certificate row (which legitimately PASSes) AND a
+    # Documentary Remittance row (which legitimately FAILs because the
+    # email isn't on the DR). The Documentary Remittance row is
+    # SPURIOUS — the clause names a specific document, and the email
+    # presence has been verified on that document. We track presence
+    # across ALL tasks for the same email-set; if any packet anywhere
+    # in the bundle carries the required emails, every row requiring
+    # that exact email-set PASSes.
+    _email_present_globally: Dict[frozenset, bool] = {}
+    for task in vlm_tasks:
+        try:
+            cond_emails_t = _extract_emails((task.get("condition_text") or "").lower())
+            if not cond_emails_t:
+                continue
+            doc_text_t = (task.get("document_text") or "")
+            doc_emails_t = _extract_emails(doc_text_t)
+            doc_text_norm_t = _normalise_email_text(doc_text_t).lower()
+            key = frozenset(cond_emails_t)
+            if any((em in doc_text_norm_t or em in doc_emails_t)
+                   for em in cond_emails_t):
+                _email_present_globally[key] = True
+            else:
+                _email_present_globally.setdefault(key, False)
+        except Exception:
+            pass
+
     _email_per_row: Dict[str, Dict] = {}
     for task in vlm_tasks:
         try:
@@ -8673,6 +8702,15 @@ def run(
             row = entry["row"]
             compliance = _get(row, "compliance", "").upper()
             emails_joined = ', '.join(entry["cond_emails"])
+            # P198gz33 — promote per-row presence using bundle-level
+            # presence: if ANY packet anywhere in the bundle has the
+            # email, treat this row as having found it too.
+            _global_key = frozenset(entry["cond_emails"])
+            if (not entry["packets_with_email"]
+                    and _email_present_globally.get(_global_key)):
+                entry["packets_with_email"].append(
+                    "(present elsewhere in bundle)"
+                )
             if entry["packets_with_email"]:
                 # ANY packet carries the email → existential PASS.
                 # Only flip from FAIL / NOT COMPLIED; leave existing
@@ -10721,6 +10759,110 @@ def run(
     except Exception:
         pass
 
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz34 — Third-party-documents-acceptable rescue.
+    #
+    # When F47A explicitly says "THIRD PARTY DOCUMENTS ARE ACCEPTABLE
+    # [EXCEPT INVOICE AND DRAFT / BENEFICIARY-CERTIFICATE]", a Bill of
+    # Lading whose Shipper is NOT the LC Beneficiary is ACCEPTABLE — it
+    # is a permitted third-party BL. The F59-1 shipper-vs-beneficiary
+    # check then over-reports a "mismatch" that isn't a discrepancy.
+    #
+    # Rescue rule: if F47A contains a third-party-acceptance clause and
+    # the row's document is NOT in the exclusion set (typically Invoice
+    # / Draft / Bene Cert), promote the FAIL → PASS with explanation.
+    #
+    # Anchor: 9f3f3b29 (1001LC56456/2026, OLAM Global Agri LC). 47A-3 =
+    # "THIRD PARTY DOCUMENTS ARE ACCEPTABLE EXCEPT INVOICE AND DRAFT"
+    # → BL shipper "OLAM AGRI AMERICAS, INC" ≠ "OLAM GLOBAL AGRI PTE
+    # LTD" is permitted.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        _f47a_z34 = ' '.join(
+            str(_final_lc_fields.get(k, '') or '')
+            for k in ('47A', 'F47A', '47B', 'F47B')
+        ).upper()
+        _third_party_ok = bool(re.search(
+            r'\bTHIRD\s+PART(?:Y|IES)\s+DOCUMENTS?\s+'
+            r'(?:ARE\s+)?(?:ACCEPTABLE|ALLOWED|PERMITTED)',
+            _f47a_z34,
+        ))
+        # Capture exclusion list ("EXCEPT INVOICE AND DRAFT" etc.)
+        _excl_text = ''
+        if _third_party_ok:
+            _m_excl = re.search(
+                r'\bTHIRD\s+PART(?:Y|IES)\s+DOCUMENTS?\s+'
+                r'(?:ARE\s+)?(?:ACCEPTABLE|ALLOWED|PERMITTED)'
+                r'\s+(?:EXCEPT|EXCLUDING|OTHER\s+THAN|SAVE\s+FOR)\s+'
+                r'([A-Z ,/&\-]+?)(?:\.|\n|$)',
+                _f47a_z34,
+            )
+            if _m_excl:
+                _excl_text = _m_excl.group(1).strip()
+        # Build excluded-doc-type set
+        _excl_doc_keys = []
+        if 'INVOICE' in _excl_text:
+            _excl_doc_keys.extend(['invoice', 'commercial invoice'])
+        if 'DRAFT' in _excl_text or 'BILL OF EXCHANGE' in _excl_text:
+            _excl_doc_keys.extend(['draft', 'bill of exchange'])
+        if 'BENEFICIARY' in _excl_text and 'CERTIFICAT' in _excl_text:
+            _excl_doc_keys.append('beneficiary certificate')
+        if _third_party_ok:
+            for row in rows:
+                try:
+                    _comp_now = str(_get(row, 'compliance', '')).upper()
+                    if _comp_now not in ('FAIL', 'NOT COMPLIED'):
+                        continue
+                    _cref = (_get(row, 'clause_ref', '') or '').upper()
+                    _cond_u = (_get(row, 'condition_text', '') or '').upper()
+                    # Trigger: F59 / shipper-vs-beneficiary check on a
+                    # non-excluded document
+                    _is_shipper_vs_bene = (
+                        _cref.startswith('F59')
+                        or ('SHIPPER' in _cond_u
+                            and ('BENEFICIARY' in _cond_u
+                                 or 'F59' in _cond_u))
+                    )
+                    if not _is_shipper_vs_bene:
+                        continue
+                    _doc_t = (_get(row, 'document_checked', '') or '').lower()
+                    if any(k in _doc_t for k in _excl_doc_keys):
+                        # Excluded doc type (e.g. invoice / draft) MUST
+                        # still be issued by the beneficiary — don't
+                        # rescue.
+                        continue
+                    _msg = (
+                        f"F47A explicitly states third-party documents "
+                        f"are acceptable"
+                        + (f" (except {_excl_text.lower()})"
+                           if _excl_text else "")
+                        + f". The document checked ('{_doc_t}') is not "
+                        f"in the exclusion set, so a shipper differing "
+                        f"from the LC beneficiary is permitted under "
+                        f"the LC's third-party-documents clause and "
+                        f"is not a discrepancy."
+                    )
+                    _set(row, 'compliance', 'PASS')
+                    _set(row, 'result', _msg)
+                    _set(row, 'findings', _msg)
+                    _notes = _get(row, 'verification_notes', '') or ''
+                    if 'P198gz34' not in _notes:
+                        _set(row, 'verification_notes',
+                             (_notes + ' | ' if _notes else '') +
+                             'P198gz34 third-party-documents-acceptable rescue')
+                    try:
+                        _progress(
+                            f"  [P198gz34 third-party docs ok] "
+                            f"{_get(row, 'row_id', '?')}: FAIL->PASS "
+                            f"(F47A permits third-party {_doc_t})"
+                        )
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     # P198ak — Proforma ref+date citation integrity (deterministic).
     # LC F45A may require "SPECIFICATIONS AS PER BENEFICIARY'S
     # PROFORMA INVOICE REF.NO. <X> DATED <Y>" and the commercial
@@ -12267,6 +12409,262 @@ def run(
             except Exception as _e:
                 try:
                     print(f"[P198cs freight-strict apply] {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz35 — Freight-wording packet-list BACKSTOP.
+    #
+    # P198be / P198cs aggregate per-row across BL tasks in vlm_tasks.
+    # When a BL packet is dropped from vlm_tasks (e.g. classified into
+    # a different fan-out group, or skipped because of OCR-corrupt
+    # text), its freight wording is invisible to those checkers and
+    # the row can FAIL even though another BL in the bundle clearly
+    # carries the wording.
+    #
+    # This backstop scans the FULL packets list directly (independent
+    # of vlm_tasks). For any FAILed BL freight-wording row whose
+    # required key is FREIGHT PREPAID / COLLECT / FORWARD / PAYABLE,
+    # if ANY BL packet's document_text contains the required adjacent
+    # phrase, flip FAIL → PASS.
+    #
+    # Anchor: c171099a (LC 0329LC75704/2025). Bundle had 3 BL packets;
+    # vlm_tasks only included 2 of them. pkt_21 (page 18) literally
+    # carried "FREIGHT PREPAID" but was missed; row R0018 falsely
+    # FAILed.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        _BACKSTOP_FREIGHT_RE = {
+            'FREIGHT PREPAID': re.compile(
+                r'\b(?:FREIGHT|FRT\.?)\s+PREPAID\b'
+                r'|\bPREPAID\s+(?:FREIGHT|FRT\.?)\b'
+                r'|\b(?:FREIGHT|FRT\.?)\s+PAID\b'),
+            'FREIGHT COLLECT': re.compile(
+                r'\b(?:FREIGHT|FRT\.?)\s+COLLECT\b'
+                r'|\bCOLLECT\s+(?:FREIGHT|FRT\.?)\b'
+                r'|\b(?:FREIGHT|FRT\.?)\s+TO\s+COLLECT\b'),
+            'FREIGHT FORWARD': re.compile(
+                r'\b(?:FREIGHT|FRT\.?)\s+FORWARD\b(?!ER|ERS|ING|ED)'
+                r'|\b(?:FREIGHT|FRT\.?)\s+TO\s+BE\s+FORWARDED\b'),
+            'FREIGHT PAYABLE': re.compile(
+                r'\b(?:FREIGHT|FRT\.?)\s+PAYABLE\b'),
+        }
+        _bl_packet_texts = []
+        for _pkt in (packets or []):
+            if not isinstance(_pkt, dict):
+                continue
+            if 'bill of lading' not in (_pkt.get('document_type') or '').lower():
+                continue
+            _txt = (_pkt.get('document_text')
+                    or _pkt.get('cleaned_text') or '').upper()
+            if _txt:
+                _bl_packet_texts.append((_pkt.get('packet_id', '?'), _txt))
+        if _bl_packet_texts:
+            for row in rows:
+                try:
+                    _comp_now = str(_get(row, 'compliance', '')).upper()
+                    if _comp_now not in ('FAIL', 'NOT COMPLIED'):
+                        continue
+                    _doc_t = (_get(row, 'document_checked', '') or '').lower()
+                    if 'bill of lading' not in _doc_t:
+                        continue
+                    _cond_u = (_get(row, 'condition_text', '') or '').upper()
+                    if 'FREIGHT' not in _cond_u:
+                        continue
+                    # Skip prohibitive / forwarder-type conditions
+                    if re.search(
+                        r'\b(?:NOT\s+ACCEPT|MUST\s+NOT|SHALL\s+NOT|'
+                        r'NOT\s+PRESENTED|NOT\s+PERMITTED|NOT\s+ALLOWED|'
+                        r'FORBIDDEN|PROHIBIT|UNACCEPTABLE)\b',
+                        _cond_u,
+                    ):
+                        continue
+                    if re.search(
+                        r"\bFREIGHT\s+FORWARDER[S\'’]?\b|\bFIATA\b|"
+                        r"\bNVOCC\b|\bHOUSE\s+(?:B\s*/\s*L|BILL\s+OF\s+LADING)\b",
+                        _cond_u,
+                    ):
+                        continue
+                    # Pick the required phrase
+                    _req_key = None
+                    if _BACKSTOP_FREIGHT_RE['FREIGHT PREPAID'].search(_cond_u):
+                        _req_key = 'FREIGHT PREPAID'
+                    elif _BACKSTOP_FREIGHT_RE['FREIGHT COLLECT'].search(_cond_u):
+                        _req_key = 'FREIGHT COLLECT'
+                    elif _BACKSTOP_FREIGHT_RE['FREIGHT FORWARD'].search(_cond_u):
+                        _req_key = 'FREIGHT FORWARD'
+                    elif _BACKSTOP_FREIGHT_RE['FREIGHT PAYABLE'].search(_cond_u):
+                        _req_key = 'FREIGHT PAYABLE'
+                    if not _req_key:
+                        continue
+                    _adj_re = _BACKSTOP_FREIGHT_RE[_req_key]
+                    _hit_pkt = None
+                    for _pid, _txt in _bl_packet_texts:
+                        if _adj_re.search(_txt):
+                            _hit_pkt = _pid
+                            break
+                    if not _hit_pkt:
+                        continue
+                    _msg = (
+                        f"Required freight wording '{_req_key}' is "
+                        f"present on the Bill of Lading "
+                        f"(found on packet {_hit_pkt}). Per existential "
+                        f"multi-BL aggregation, ANY BL packet carrying "
+                        f"the wording satisfies the LC requirement."
+                    )
+                    _set(row, 'compliance', 'PASS')
+                    _set(row, 'result', _msg)
+                    _set(row, 'findings', _msg)
+                    _notes = _get(row, 'verification_notes', '') or ''
+                    if 'P198gz35' not in _notes:
+                        _set(row, 'verification_notes',
+                             (_notes + ' | ' if _notes else '') +
+                             f'P198gz35 freight-wording packet-backstop '
+                             f'({_req_key} on {_hit_pkt})')
+                    try:
+                        _progress(
+                            f"  [P198gz35 freight-backstop] "
+                            f"{_get(row, 'row_id', '?')}: FAIL->PASS "
+                            f"({_req_key} found on {_hit_pkt})"
+                        )
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz36 — Self-declared Freight Forwarder BL detector.
+    #
+    # When ANY Bill of Lading in the bundle EXPLICITLY identifies its
+    # issuer as an "INTERNATIONAL FREIGHT FORWARDER" / "FREIGHT
+    # FORWARDER" on the BL header (printed by the issuer themselves),
+    # the BL is a freight-forwarder's BL by self-declaration regardless
+    # of the signing wording. Under LC clauses like 47A "FREIGHT
+    # FORWARDER'S AND HOUSE B/L NOT ACCEPTABLE" / "Bills of Lading
+    # having any reference of issuer being a freight forwarder must
+    # not be presented", such a presentation is discrepant.
+    #
+    # Rule: scan all BL packets for the literal self-declaration. If
+    # found, force FAIL on any currently-PASS row whose condition
+    # forbids freight-forwarder / house BLs.
+    #
+    # Anchor: c171099a (LC 0329LC75704/2025). pkt_21 BL header
+    # printed by ATM GLOBAL LOGISTICS reads "INTERNATIONAL FREIGHT
+    # FORWARDER" — a self-declared forwarder's BL. R0058 / R0068 /
+    # R0070 (47A-3 / 47A-9) were PASSed but should FAIL because of
+    # this self-declaration.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        _FF_SELFDECL_RE = re.compile(
+            r'\b(?:INTERNATIONAL\s+)?FREIGHT\s+FORWARDER[S]?\b'
+            r'|\bFORWARDING\s+AGENT\s+(?:OF|FOR)\b'
+            r'|\bHOUSE\s+(?:B\s*/\s*L|BILL\s+OF\s+LADING)\b'
+            r'|\bHBL\b',
+        )
+        # The phrase "FORWARDING AGENT-REFERENCES" / "FORWARDING
+        # AGENT REFERENCE" / "FORWARDING AGENT NAME" is a generic
+        # FIATA BL form-field label (a section header for entering
+        # the shipper's forwarding agent details), NOT a self-
+        # declaration of the BL itself. Strip those before testing.
+        _FORM_LABEL_RE = re.compile(
+            r'\bFORWARDING\s+AGENT[\s\-]+REFERENC',
+            flags=re.IGNORECASE,
+        )
+        _ff_bl_packets = []
+        for _pkt in (packets or []):
+            if not isinstance(_pkt, dict):
+                continue
+            if 'bill of lading' not in (_pkt.get('document_type') or '').lower():
+                continue
+            _txt = (_pkt.get('document_text')
+                    or _pkt.get('cleaned_text') or '')
+            _txt_clean = _FORM_LABEL_RE.sub(' ', _txt)
+            if _FF_SELFDECL_RE.search(_txt_clean.upper()):
+                # Capture the matched phrase and its surrounding
+                # context (50 chars each side) for the explanation.
+                _m = _FF_SELFDECL_RE.search(_txt_clean.upper())
+                _start = max(0, _m.start() - 50)
+                _end = min(len(_txt_clean), _m.end() + 50)
+                _context = _txt_clean[_start:_end].replace('\n', ' ').strip()
+                # Render the location as a page reference rather than
+                # an internal packet id, so the report reads naturally
+                # ("on page 18") instead of leaking pipeline jargon.
+                _pages = (_pkt.get('pages')
+                          or _pkt.get('page_numbers') or [])
+                if isinstance(_pages, list) and _pages:
+                    _loc = ('page ' + str(_pages[0]) if len(_pages) == 1
+                            else 'pages ' + ', '.join(str(p) for p in _pages))
+                elif _pages:
+                    _loc = f'page {_pages}'
+                else:
+                    _loc = 'the Bill of Lading'
+                _ff_bl_packets.append((_loc, _context))
+        if _ff_bl_packets:
+            _PROHIB_RE = re.compile(
+                r'\bFREIGHT\s+FORWARDER[S\'’]?\b|\bFIATA\b|\bNVOCC\b'
+                r'|\bHOUSE\s+(?:B\s*/\s*L|BILL\s+OF\s+LADING)\b'
+                r'|\bNON[\s\-]VESSEL\s+OPERAT'
+                r'|\bISSUER\s+BEING\s+A\s+FREIGHT\s+FORWARDER\b',
+            )
+            for row in rows:
+                try:
+                    _comp_now = str(_get(row, 'compliance', '')).upper()
+                    if _comp_now == 'FAIL':
+                        continue  # already FAILed elsewhere — leave alone
+                    _doc_t = (_get(row, 'document_checked', '') or '').lower()
+                    if 'bill of lading' not in _doc_t:
+                        continue
+                    _cond_u = (_get(row, 'condition_text', '') or '').upper()
+                    _orig_u = (_get(row, 'original_clause_text', '') or '').upper()
+                    _full = _cond_u + ' ' + _orig_u
+                    # Trigger only on prohibitive forwarder/house BL
+                    # conditions (i.e., the LC says these BL types are
+                    # not acceptable).
+                    _is_prohib = bool(_PROHIB_RE.search(_full))
+                    if not _is_prohib:
+                        continue
+                    # Confirm prohibitive verb (must not be presented /
+                    # not acceptable / shall not / etc.)
+                    if not re.search(
+                        r'\bNOT\s+ACCEPTABLE\b|\bMUST\s+NOT\b|\bSHALL\s+NOT\b'
+                        r'|\bNOT\s+(?:BE\s+)?PRESENT(?:ED)?\b|\bUNACCEPTABLE\b'
+                        r'|\bPROHIBIT|\bNOT\s+PERMITTED\b|\bNOT\s+ALLOWED\b',
+                        _full,
+                    ):
+                        continue
+                    _loc, _ctx = _ff_bl_packets[0]
+                    _msg = (
+                        f"Bill of Lading on {_loc} explicitly "
+                        f"identifies its issuer as a freight forwarder "
+                        f"on the BL header itself "
+                        f"(literal text: '{_ctx[:140]}'). The LC "
+                        f"clause prohibits Freight Forwarder's / House "
+                        f"BL — a BL self-declaring its issuer as a "
+                        f"freight forwarder is therefore not acceptable, "
+                        f"regardless of the signing wording. "
+                        f"Discrepancy."
+                    )
+                    _set(row, 'compliance', 'FAIL')
+                    _set(row, 'result', _msg)
+                    _set(row, 'findings', _msg)
+                    _notes = _get(row, 'verification_notes', '') or ''
+                    if 'P198gz36' not in _notes:
+                        _set(row, 'verification_notes',
+                             (_notes + ' | ' if _notes else '') +
+                             f'P198gz36 freight-forwarder self-declared BL '
+                             f'on {_loc}')
+                    try:
+                        _progress(
+                            f"  [P198gz36 FF self-decl BL] "
+                            f"{_get(row, 'row_id', '?')}: PASS->FAIL "
+                            f"(BL on {_loc} self-declares as freight forwarder)"
+                        )
+                    except Exception:
+                        pass
                 except Exception:
                     pass
     except Exception:
