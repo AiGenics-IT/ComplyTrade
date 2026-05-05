@@ -1091,6 +1091,63 @@ def _detect_advance_payment_terms(step06_result: dict):
     }
 
 
+def _detect_release_tranches(step06_result: dict):
+    """
+    P198gz26 — Detect 2-tranche LC structure where F46A splits docs
+    into "A) FOR RELEASE OF X PERCENT" / "B) FOR RELEASE OF Y PERCENT"
+    sections — common in coal / bulk-cargo LCs where a load-port set
+    is paid first (90%) and a discharge-port set later (10%).
+
+    Returns:
+        {'is_two_tranche': True,
+         'tranche_a_pct': 90, 'tranche_b_pct': 10,
+         'tranche_a_text': '...', 'tranche_b_text': '...',
+         'tranche_a_keywords': set of doc-keyword tokens,
+         'tranche_b_keywords': set of doc-keyword tokens}
+        OR None when not a 2-tranche LC.
+    """
+    if not step06_result or not isinstance(step06_result, dict):
+        return None
+    fields = step06_result.get('consolidated_fields') or \
+             step06_result.get('final_lc', {}).get('consolidated_fields') or {}
+    f46a = ''
+    for tag in ('46A', 'F46A'):
+        v = fields.get(tag, '')
+        if isinstance(v, list):
+            v = '\n'.join(str(x) for x in v)
+        if v:
+            f46a = str(v)
+            break
+    if not f46a:
+        return None
+    up = f46a.upper()
+    # Pattern: "A) FOR RELEASE OF NN PERCENT" ... "B) FOR RELEASE OF MM PERCENT"
+    m_a = re.search(
+        r'\bA[\)\.]\s*FOR\s+RELEASE\s+OF\s+(\d{1,3})\s*(?:PERCENT|PCT|%)',
+        up)
+    m_b = re.search(
+        r'\bB[\)\.]\s*FOR\s+RELEASE\s+OF\s+(\d{1,3})\s*(?:PERCENT|PCT|%)',
+        up)
+    if not (m_a and m_b):
+        return None
+    pct_a = int(m_a.group(1))
+    pct_b = int(m_b.group(1))
+    if not (1 <= pct_a <= 99 and 1 <= pct_b <= 99):
+        return None
+    # Slice the F46A text by section
+    a_start = m_a.start()
+    b_start = m_b.start()
+    tranche_a_text = up[a_start:b_start]
+    tranche_b_text = up[b_start:]
+    return {
+        'is_two_tranche': True,
+        'tranche_a_pct': pct_a,
+        'tranche_b_pct': pct_b,
+        'tranche_a_text': tranche_a_text,
+        'tranche_b_text': tranche_b_text,
+    }
+
+
 def _format_advance_payment_block(info: dict) -> str:
     """Render the advance-payment context into a banner that gets
     PREPENDED to f47a_context so the verification LLM sees it before
@@ -2233,6 +2290,69 @@ ANTI-HALLUCINATION RULES (STRICT — READ CAREFULLY)
     (credit number, related party mention, subject line relevance)
     are NEVER sufficient evidence.
 
+1c-PAYEE-vs-DRAWEE — SPECIFIC TO BILL OF EXCHANGE / DRAFT:
+    On a draft drawn under an LC, three roles often appear and the
+    LLM commonly confuses them. Read carefully:
+      • DRAWER  = the party that issues the draft (the beneficiary /
+                  exporter, e.g. SHANDONG XINHUA PHARMACEUTICAL CO).
+      • DRAWEE  = the party on whom the draft is drawn (the LC
+                  ISSUING BANK, e.g. BANK AL HABIB LIMITED). This
+                  is identified by phrases like:
+                    "Drawn on <Bank>"
+                    "Drawn under L/C No. X — Issued by <Bank>"
+                    "Issuing Bank: <Bank>"
+                    a separate "DRAWEE: <Bank>" label
+      • PAYEE   = the party in whose order the draft is payable —
+                  identified ONLY by the line "Pay to the Order of
+                  <X>". This is the COLLECTING / NEGOTIATING bank,
+                  NOT the drawee.
+    DO NOT confuse "Pay to the Order of CHINA CONSTRUCTION BANK" with
+    the drawee. CCB is the PAYEE there. The drawee is whichever bank
+    appears under "Drawn under L/C ... Issued by <Bank>" — that bank
+    is the LC issuer and is the drawee for the draft.
+    When the LC condition says "draft must be drawn on Bank Al Habib"
+    and the draft text says "Drawn under L/C No. X — Issued by BANK
+    AL HABIB LIMITED" → drawee requirement IS satisfied → PASS.
+
+1c-ORIGINAL-COPY-DESIGNATION:
+    When the LC says "Original for Consignor" / "Original for
+    Shipper" / "Original for Carrier" / etc., this is a STRICT
+    text-match requirement. The AWB's copy designation MUST literally
+    match. ORIGINAL 1 (FOR SHIPPER) ≠ ORIGINAL FOR CONSIGNOR.
+    ORIGINAL 1 (FOR ISSUING CARRIER) ≠ ORIGINAL FOR CONSIGNOR. The
+    fact that all three originals are equally valid IATA copies does
+    NOT excuse the strict text mismatch under bank policy. If the
+    AWB shows ANY designation other than the LC-required "FOR
+    <PARTY>", the verdict is FAIL.
+
+1c-ACCOMPANY-CONSIGNMENT-RULE:
+    When an LC condition reads "AWB must evidence that a copy of
+    invoice and a copy of airway bill accompany the consignment"
+    (or similar — "must accompany", "must be accompanied by", "to
+    accompany"), the requirement is satisfied by the PRESENCE of
+    those documents in the bundle being presented — NOT by literal
+    text on the AWB. Bank checkers do NOT expect the AWB to print
+    the words "a copy of invoice accompanies the consignment". If
+    a Commercial Invoice and an Airway Bill exist in the
+    presentation set → PASS. Do NOT FAIL just because the AWB body
+    lacks an "accompany" sentence.
+
+1c-AWB-FLIGHT-IDENTIFICATION:
+    AWB documents identify the flight in MULTIPLE possible ways. ALL
+    of the following MUST count as flight number evidence:
+      • IATA flight code — 2-letter airline + digits, e.g.
+        "UL 0153", "EK 401", "QR 715", "CZ8212"
+      • Carrier reference — e.g. "SA250900311" (Sinotech Air),
+        "EK1234ABC" (Emirates ref-style)
+      • IATA AWB number — "NNN-NNNNNNNN" or "NNN NNNNNNNN" (e.g.
+        "603-74213252", "784 41181022"). The 3-digit prefix is the
+        airline code; the 8-digit suffix is the document number.
+      • "Requested Flight/Date" field showing a flight code + date
+      • Top-right top-of-document airline reference
+    DO NOT FAIL a row asking for "flight number" when ANY of the above
+    is present — even if the literal label "Flight Number:" is not
+    used. Bank checkers accept all these formats.
+
 1d. BUT DO NOT BE OVERLY STRICT EITHER (P180 balance):
     The rule above is about preventing HALLUCINATED PASSES, not
     creating rigid FAIL everywhere. The following ARE ACCEPTABLE
@@ -2950,6 +3070,21 @@ Amount:
 Risks / clauses:
 - Look for Institute Cargo Clauses (ICC A / B / C).
 - Institute Classification Clause (for vessel classification).
+  ★ SEMANTIC-EQUIVALENCE RULE (ISBP 821): if the LC asks for a
+    "vessel covered by Institute Classification Clause" / "operating
+    in accordance with Pakistani Maritime Rules and Port Regulations"
+    / similar attestation, accept ANY equivalent wording. The doc
+    text need NOT match word-for-word. Example equivalents:
+      • "Vessel is allowed to enter Pakistan ports" + "according
+        to maritime laws and port regulations" = SAME as "operating
+        in accordance with Pakistani Maritime Rules and Port
+        Regulations"
+      • "Shipment is effected by vessels covered by Institute
+        Classification Clause" = SAME as "vessel is covered under
+        Institute Classification Clause"
+    Per ISBP 821, banks examine documents for COMPLIANCE WITH THE
+    SUBSTANCE OF THE CREDIT — not literal text matching. Different
+    wording that conveys the same meaning is compliant.
 - War Risks, Strikes, SRCC (Strikes/Riots/Civil Commotion).
 - other_details_found[role=institute_classification_clause / icc_clause /
   war_risk_clause / etc.].
@@ -4615,9 +4750,116 @@ CRITICAL RULES (follow strictly):
        LC: "FOB ANY CHINA SEAPORT" (no version)
        Invoice: "FOB SHANGHAI"            → PASS (no version requirement)
 
-    Note: The deterministic post-check P198go enforces this rule
+    Note: The deterministic post-check enforces this rule
     even if you miss it — but you should still apply it directly so
     the audit trail is correct.
+
+    SCOPE — APPLIES ONLY TO INCOTERM-BEARING DOCUMENTS:
+    Incoterm version compliance is checked on documents that NORMALLY
+    carry the trade-term: Commercial Invoice (always), Bill of
+    Lading / Airway Bill / Sea Waybill (when goods description shows
+    the term), and Insurance docs that reference shipment terms.
+    DO NOT raise "missing Incoterm version" on documents that don't
+    normally carry the trade-term, even if the LC requires it on the
+    invoice. Specifically: Packing List, Weight List, Beneficiary
+    Certificate, Health/Phytosanitary/Fumigation/Halal Certificates,
+    Inspection Report, Survey Report, Analysis Certificate, Shelf
+    Life Certificate, Documentary Remittance / Covering Schedule,
+    Shipment Advice, Vessel Advice, Document Arrival Notice, Draft
+    / Bill of Exchange, Insurance Policy schedule pages, Certificate
+    of Origin — do NOT fail these rows for missing Incoterm version.
+    Only fail them if they DO state an Incoterm AND the version is
+    wrong / different from the LC.
+
+    20c. AIRWAY BILL — ORIGINAL COPY DESIGNATION (P198gt — STRICT):
+
+    When the LC explicitly states which "Original" copy of the AWB is
+    required (e.g. "ORIGINAL FOR CONSIGNOR" / "ORIGINAL FOR SHIPPER"
+    / "ORIGINAL FOR EXPORTER"), the AWB MUST carry the EXACT same
+    designation. Strict bank policy treats these as different even
+    though IATA convention uses them interchangeably:
+
+       LC: "Original for Consignor"
+       AWB: "Original 3 (For Shipper)"  → FAIL (Consignor ≠ Shipper)
+
+       LC: "Original for Shipper"
+       AWB: "Original 3 (For Shipper)"  → PASS
+
+       LC: "Original for Consignor"
+       AWB: "Original 3 (For Consignor)"  → PASS
+
+    Treat the LC's text as authoritative — the AWB must echo it.
+
+    20d. AIRWAY BILL — ISSUER / CARRIER VERIFICATION:
+
+    The AWB must be issued by the carrier or its authorized agent.
+    Verify:
+       • The carrier name (e.g. "SriLankan Airlines", "Emirates",
+         "Qatar Airways") appears clearly on the AWB header / logo
+         / signature block.
+       • If LC names a specific carrier, that carrier's name must be
+         on the AWB.
+       • Sales-rep stamps (e.g. "CAK CASH", "AGENT ABC") do NOT
+         determine the issuer — the airline carrier name on the AWB
+         body / logo is what matters.
+       • A House AWB (HAWB) issued by a freight forwarder rather
+         than a carrier is NOT acceptable when LC says "Freight
+         Forwarders' AWB / HAWB not acceptable" — but only flag
+         when there's NO recognised airline carrier on the doc.
+
+    20e. AIRWAY BILL — AWB / FLIGHT NUMBER FORMAT:
+
+    The IATA standard AWB number has the form NNN-NNNNNNNN where:
+       • First 3 digits = airline prefix (e.g. "603" = SriLankan
+         Airlines, "176" = Emirates, "157" = Qatar Airways, "020"
+         = Lufthansa, "001" = American Airlines, etc.)
+       • Hyphen
+       • 8 digits = serial number including check digit
+    Example: "603-74212946" / "603-74213252"
+
+    When LC requires the AWB to bear "FLIGHT NUMBER" or "AWB
+    NUMBER", BOTH of these formats satisfy the requirement:
+       (a) IATA flight pattern: 2-letter airline code + 1-4 digit
+           flight number (UL 0153, EK 401, QR 715, etc.) — usually
+           shown under "Requested Flight/Date" or "By First Carrier".
+       (b) IATA AWB number: NNN-NNNNNNNN (typically top + bottom
+           of doc).
+
+    DO NOT mark the row FAIL just because the doc uses "Requested
+    Flight" instead of "Flight Number" as the label — the value
+    UL 0153 IS the flight number, regardless of label wording.
+
+    If LC explicitly demands a separate flight code (e.g. "AWB
+    must show flight number such as UL nnn / EK nnn"), accept any
+    IATA flight pattern shown — the AWB-number alone does not
+    suffice.
+
+    20f. AIRWAY BILL — SIGNING CAPACITY STRICT (P198gw):
+
+    The AWB must be signed by the carrier or a named agent FOR or
+    ON BEHALF OF the carrier, AND the SIGNING CAPACITY must be
+    apparent on the document near the signature.
+
+    Acceptable capacity wording near the signature:
+       "AS CARRIER" / "AS THE CARRIER"
+       "AS ISSUING CARRIER"
+       "AS AGENT FOR THE CARRIER"
+       "AS AGENTS FOR THE CARRIER"
+       "FOR AND ON BEHALF OF THE CARRIER"
+       "AS CARRIER'S AGENT" / "AS AUTHORIZED AGENT"
+
+    If the AWB is signed but does NOT show any of these capacity
+    affirmations near the signature → FAIL with "AWB signature does
+    not state the signing capacity (as carrier / as agent for the
+    carrier). The capacity must be apparent on the document."
+
+    Note: a printed "Signature of Issuing Carrier or its Agent"
+    label on the form is NOT enough — that's a generic line, not a
+    capacity statement. The signing party's actual capacity must be
+    present near the signature.
+
+    DO NOT cite UCP / ISBP article numbers in your verdict text.
+    State the rule plainly without rule citations.
 21. QUANTITY MATCHING: LC may say "QTY 736" and invoice may show individual line items that SUM to 736. Check the SYSTEM PRE-CALCULATED SUMMARY at the top of the document text — it shows per-product totals. Use these totals instead of counting line items yourself.
 Also: product codes with/without spaces are the SAME: "LN 980E" = "LN980E", "LN 981E" = "LN981E". Ignore spaces in product codes when matching.
 21z. PROFORMA INVOICE REFERENCE — NUMBER AND DATE MUST BOTH MATCH:
@@ -7019,6 +7261,44 @@ def _build_tasks(
             matched_pkts = _find_matching_docs(doc_type_target, deduped_packets)
 
             if not matched_pkts:
+                # P198gr — Skip P198dc-fan-out rows when the target
+                # document is not present. The fan-out (clone of a
+                # F45A row from CI to PL) is opportunistic — when
+                # a Packing List doesn't exist, the bundle's missing
+                # PL is already reported once by the primary
+                # missing-doc check. Generating per-row "Packing
+                # List missing" FAILs on EVERY F45A row creates
+                # noise. Mark the cloned row as N/A so the report
+                # only flags the genuine missing-doc once.
+                _row_cond_id = (_get(row, 'condition_id', '') or '')
+                _is_dc_clone = (
+                    _row_cond_id.endswith('-PL')
+                    or _row_cond_id.endswith('-PL-OPT')
+                )
+                if _is_dc_clone:
+                    tasks.append({
+                        "row": row,
+                        "skip": True,
+                        "reason": "fan_out_target_absent",
+                        "doc_type_target": doc_type_target,
+                        "prefilled": {
+                            "compliance": "N/A",
+                            "result": (
+                                f"{doc_type_target} is not present in the "
+                                f"presentation; this is a goods-description "
+                                f"fan-out clone (the same condition is "
+                                f"verified on the Commercial Invoice). "
+                                f"Missing-doc status is reported separately."
+                            ),
+                            "findings": (
+                                f"Skipped — {doc_type_target} not in "
+                                f"presentation; primary check is on CI."
+                            ),
+                            "confidence": 1.0,
+                            "reasoning": "P198gr fan-out skip",
+                        },
+                    })
+                    continue
                 tasks.append({
                     "row": row,
                     "skip": True,
@@ -10891,6 +11171,8 @@ def run(
             'FOR THE MASTER AS AGENTS',
             'AGENT FOR MASTER',
             'AGENTS FOR MASTER',
+            'SIGNED FOR THE CARRIER',
+            'SIGNED FOR AND ON BEHALF OF THE CARRIER',
             'AS AGENT FOR THE CARRIER',
             'AS AGENTS FOR THE CARRIER',
             'FOR AND ON BEHALF OF THE CARRIER',
@@ -11304,6 +11586,8 @@ def run(
                         # Carrier-agent signings (but NOT bare "THE
                         # CARRIER" / "AS CARRIER" which occur in T&C).
                         'SIGNED BY THE CARRIER',
+                        'SIGNED FOR THE CARRIER',
+                        'SIGNED FOR AND ON BEHALF OF THE CARRIER',
                         'AS AGENT FOR THE CARRIER',
                         'AS AGENTS FOR THE CARRIER',
                         'AS AGENT FOR AND ON BEHALF OF THE CARRIER',
@@ -12003,9 +12287,20 @@ def run(
                     re.IGNORECASE,
                 ),
                 re.compile(
+                    # P198gz18 — Accept the Maersk-style equivalent
+                    # phrasing: "ALLOWED TO ENTER PAKISTAN PORTS
+                    # ACCORDING TO MARITIME LAWS AND PORT
+                    # REGULATIONS" satisfies the LC's "operating in
+                    # accordance with Pakistani Maritime Rules and
+                    # Port Regulations" requirement (substance over
+                    # literal text per ISBP 821).
                     r'\b(?:PAKISTAN(?:I)?\s+MARITIME\s+RULES?|'
                     r'OPERATING\s+IN\s+ACCORDANCE\s+WITH\s+PAKISTAN|'
-                    r'MARITIME\s+RULES?\s+AND\s+PORT\s+REGULATIONS?)\b',
+                    r'MARITIME\s+RULES?\s+AND\s+PORT\s+REGULATIONS?|'
+                    r'MARITIME\s+LAWS?\s+AND\s+PORT\s+REGULATIONS?|'
+                    r'ALLOWED\s+TO\s+ENTER\s+PAKISTAN\s+PORTS|'
+                    r'ACCORDING\s+TO\s+MARITIME\s+(?:LAWS?|RULES?)\s+'
+                    r'AND\s+PORT\s+REGULATIONS?)\b',
                     re.IGNORECASE,
                 ),
                 'Pakistani Maritime Rules / Port Regulations statement',
@@ -12195,7 +12490,8 @@ def run(
         _lc_suffix = _draft_ref_suffix(_lc_ref_full)
 
         _DRAFT_DRAWEE_COND_RE = re.compile(
-            r'\b(?:DRAWEE|ISSUING\s+BANK|L/?C\s+ISSUING\s+BANK)\b',
+            r'\b(?:DRAWEE|ISSUING\s+BANK|L/?C\s+ISSUING\s+BANK|'
+            r'DRAWN\s+ON|MUST\s+BE\s+DRAWN\s+ON|TO\s+BE\s+DRAWN\s+ON)\b',
             flags=re.IGNORECASE,
         )
         _LC_REF_COND_RE = re.compile(
@@ -12259,7 +12555,18 @@ def run(
                         continue
 
                 # Sub-fix 2 — Drawee = LC issuing bank equivalence.
-                if _DRAFT_DRAWEE_COND_RE.search(_cond) and _issuer_name:
+                # Fire when condition has explicit drawee/drawn-on
+                # keyword, OR when the issuing bank name itself
+                # appears in the condition (LLM may have emitted
+                # "must match BANK AL HABIB LIMITED" without using
+                # the literal word "drawee").
+                _issuer_in_cond = bool(
+                    _issuer_name
+                    and len(_issuer_name) >= 6
+                    and _issuer_name in _cond_u
+                )
+                if (_DRAFT_DRAWEE_COND_RE.search(_cond) or _issuer_in_cond) \
+                        and _issuer_name:
                     # Build candidate issuing-bank tokens: full
                     # normalized name, and the "short name" (first
                     # 2-3 distinguishing words).
@@ -13347,6 +13654,894 @@ def run(
         pass
 
     # ─────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────
+    # P198gv — AWB flight-number rescue.
+    #
+    # Real-data anchor (job 94edb6a7): AWB shows "Requested Flight/
+    # Date: UL 0153/04-Sep" + IATA AWB number "603-74213252", but
+    # the LLM said "flight number not explicitly stated" because
+    # the label says "Requested Flight" rather than "Flight Number".
+    # Both formats are universally accepted by banks as flight
+    # identification:
+    #   • IATA flight pattern: 2-letter airline code + 1-4 digits
+    #     (UL 0153, EK 401, QR 715, etc.)
+    #   • IATA AWB number: NNN-NNNNNNNN (603-74213252)
+    # ─────────────────────────────────────────────────────────────────
+    _IATA_FLIGHT_RE = re.compile(
+        r'\b([A-Z]{2}|[A-Z]\d|\d[A-Z])\s*[-]?\s*(\d{1,4}[A-Z]?)\b')
+    _IATA_AWB_RE = re.compile(r'\b\d{3}[-\s]?\d{8}\b')
+    # Carrier reference / waybill ref — 2-letter code + 9+ digits, e.g.
+    # "SA250900311" (Sinotech Air). Also commonly appears at the top-
+    # right of the AWB. Universally accepted as flight identification.
+    _CARRIER_REF_RE = re.compile(r'\b([A-Z]{2})(\d{8,12})\b')
+    try:
+        for row in rows:
+            try:
+                _doc_t = (_get(row, 'document_checked', '') or '').lower()
+                if 'airway' not in _doc_t and 'air waybill' not in _doc_t and 'awb' not in _doc_t:
+                    continue
+                _cond = (_get(row, 'condition_text', '')
+                         or _get(row, 'condition', '')) or ''
+                _cond_u = _cond.upper()
+                if not (
+                    'FLIGHT NUMBER' in _cond_u
+                    or 'FLIGHT NO' in _cond_u
+                    or 'FLT NO' in _cond_u
+                    or 'AWB NUMBER' in _cond_u
+                    or 'AIRWAY BILL NUMBER' in _cond_u
+                ):
+                    continue
+                _current = str(_get(row, 'compliance', '')).upper()
+                if _current not in ('FAIL', 'NOT COMPLIED'):
+                    continue
+                _awb_pkt = None
+                for _pkt in packets:
+                    if not isinstance(_pkt, dict):
+                        continue
+                    _ptype = (_pkt.get('document_type', '') or '').lower()
+                    if 'airway' in _ptype or 'air waybill' in _ptype or 'awb' in _ptype or 'air-way' in _ptype:
+                        _awb_pkt = _pkt
+                        break
+                if not _awb_pkt:
+                    continue
+                _awb_text = _pkt_text(_awb_pkt) or ''
+                _awb_text_up = _awb_text.upper()
+                _flight_hits = []
+                # 1. Real flight pattern (UL 0153 / EK 401)
+                # Accept any IATA pattern within a window of FLIGHT/FLT/
+                # ROUTING/CARRIER keywords — widened from 60 to 200 chars
+                # so labels like "Requested Flight/Date: UL 0153" qualify
+                # even when the literal "FLIGHT NUMBER" header isn't on
+                # the same line.
+                for _m in _IATA_FLIGHT_RE.finditer(_awb_text_up):
+                    _carrier = _m.group(1)
+                    _flnum = _m.group(2)
+                    _ctx_start = max(0, _m.start() - 200)
+                    _ctx_end = min(len(_awb_text_up), _m.end() + 60)
+                    _ctx = _awb_text_up[_ctx_start:_ctx_end]
+                    if any(kw in _ctx for kw in (
+                            'FLIGHT', 'FLT', 'BY FIRST CARRIER',
+                            'ROUTING', 'CARRIER', 'REQUESTED')):
+                        _flight_hits.append(f"{_carrier} {_flnum}")
+                # 2. IATA AWB number (NNN-NNNNNNNN)
+                _awb_no_m = _IATA_AWB_RE.search(_awb_text)
+                # 3. Carrier reference (e.g. SA250900311) — also count
+                # the AWB packet's document_number field (VLM often
+                # captures the carrier's top-right reference there).
+                _carrier_ref_hits = []
+                for _m in _CARRIER_REF_RE.finditer(_awb_text_up):
+                    _carrier_ref_hits.append(_m.group(0))
+                _doc_num = (_awb_pkt.get('document_number', '') or '').strip()
+                if (_doc_num and re.match(r'^[A-Z]{2}\d{8,12}$', _doc_num.upper())
+                        and _doc_num.upper() not in _carrier_ref_hits):
+                    _carrier_ref_hits.append(_doc_num.upper())
+                if _awb_no_m or _flight_hits or _carrier_ref_hits:
+                    _evidence = []
+                    if _flight_hits:
+                        _evidence.append(
+                            f"flight number(s): {', '.join(set(_flight_hits[:3]))}")
+                    if _awb_no_m:
+                        _evidence.append(
+                            f"IATA AWB number: {_awb_no_m.group(0).strip()}")
+                    if _carrier_ref_hits:
+                        _evidence.append(
+                            f"carrier reference: {', '.join(set(_carrier_ref_hits[:3]))}")
+                    _msg = (
+                        f"AWB shows {' and '.join(_evidence)}. The IATA "
+                        f"AWB number's airline-prefix and the flight "
+                        f"code are universally accepted as flight "
+                        f"identification — bank checkers do not require "
+                        f"a separate 'Flight Number:' label."
+                    )
+                    _set(row, 'compliance', 'PASS')
+                    _set(row, 'result', _msg)
+                    _set(row, 'findings', _msg)
+                    try:
+                        _progress(
+                            f"  [P198gv AWB flight no] "
+                            f"{_get(row, 'row_id', '?')}: FAIL→PASS "
+                            f"(found {' / '.join(_evidence)})"
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz26 — 2-tranche LC presentation handler.
+    # When F46A splits docs into "A) FOR RELEASE OF 90 PCT" (load-port
+    # docs) and "B) FOR RELEASE OF 10 PCT" (discharge-port docs), the
+    # initial presentation typically carries only the load-port set.
+    # Discharge-port docs are filed LATER when the vessel arrives.
+    # Without this guard, the verifier flags the absent discharge-port
+    # docs as missing-doc FAILs even though they're correctly deferred.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        _tranche_info = _detect_release_tranches(step06_result)
+        if _tranche_info:
+            _tr_a = _tranche_info['tranche_a_text']
+            _tr_b = _tranche_info['tranche_b_text']
+            # Detect tranche-B-specific phrases (discharge-port markers)
+            _DISCHARGE_MARKERS = (
+                'DISCHARGE PORT', 'DISCHARGE-PORT', 'AT DISCHARGE',
+                'PORT OF DISCHARGE',
+                'SAMPLING AND ANALYSIS',
+                'ACCEPTED BY APPLICANT REPRESENTATIVE',
+                'BALANCE PAYMENT', '10 PERCENT', '10 PCT',
+                'BALANCE OF',
+            )
+            # Build the set of phrases that uniquely appear in tranche B
+            _b_only_phrases = []
+            for ph in _DISCHARGE_MARKERS:
+                if ph in _tr_b and ph not in _tr_a:
+                    _b_only_phrases.append(ph)
+            # Determine which tranche this presentation covers by checking
+            # the document bundle for discharge-port markers.
+            _bundle_text = ''
+            for _pkt in packets:
+                if isinstance(_pkt, dict):
+                    _bundle_text += '\n' + (_pkt_text(_pkt) or '')[:5000]
+            _bundle_up = _bundle_text.upper()
+            _has_discharge_doc = any(
+                ph in _bundle_up
+                for ph in ('AT DISCHARGE PORT',
+                           'PORT OF DISCHARGE WEIGHT',
+                           'SAMPLING AND ANALYSIS',
+                           'DISCHARGE-PORT WEIGHT',
+                           'ACCEPTED BY APPLICANT REPRESENTATIVE',
+                           'WAH CANTT BRANCH')
+            )
+            _current_tranche = 'B' if _has_discharge_doc else 'A'
+            _deferred_pct = (_tranche_info['tranche_b_pct']
+                             if _current_tranche == 'A'
+                             else _tranche_info['tranche_a_pct'])
+            try:
+                _progress(
+                    f"  [P198gz26 tranche] LC has 2-tranche release "
+                    f"({_tranche_info['tranche_a_pct']}% A + "
+                    f"{_tranche_info['tranche_b_pct']}% B). This "
+                    f"presentation = tranche {_current_tranche}. "
+                    f"Tranche {('B' if _current_tranche=='A' else 'A')} "
+                    f"docs deferred to next presentation."
+                )
+            except Exception:
+                pass
+            for row in rows:
+                try:
+                    _orig = (_get(row, 'original_clause_text', '') or '').upper()
+                    _cond_u = (_get(row, 'condition_text', '') or '').upper()
+                    _full = _orig + ' ' + _cond_u
+                    # Does this row belong to the deferred tranche?
+                    _in_a_only = any(
+                        ph in _tr_a and ph not in _tr_b and ph in _full
+                        for ph in _DISCHARGE_MARKERS
+                    )
+                    _in_b_only = any(
+                        ph in _full
+                        for ph in _b_only_phrases
+                    )
+                    _row_tranche = None
+                    if _in_b_only and _current_tranche == 'A':
+                        _row_tranche = 'B'
+                    elif _in_a_only and _current_tranche == 'B':
+                        _row_tranche = 'A'
+                    if _row_tranche is None:
+                        continue
+                    _current = str(_get(row, 'compliance', '')).upper()
+                    if _current not in ('FAIL', 'NOT COMPLIED'):
+                        continue
+                    _msg = (
+                        f"Deferred to {_deferred_pct}% balance "
+                        f"presentation. This LC has a 2-tranche "
+                        f"release structure: A) {_tranche_info['tranche_a_pct']}% "
+                        f"on load-port docs + B) {_tranche_info['tranche_b_pct']}% "
+                        f"on discharge-port docs. The current "
+                        f"presentation covers tranche {_current_tranche} "
+                        f"(at-load-port docs). The discharge-port "
+                        f"docs (Weight Cert at discharge / Sampling-"
+                        f"Analysis Cert) are filed when the vessel "
+                        f"arrives — not in this initial presentation. "
+                        f"Documents not yet due for presentation are "
+                        f"not discrepant."
+                    )
+                    _set(row, 'compliance', 'N/A')
+                    _set(row, 'result', _msg)
+                    _set(row, 'findings', _msg)
+                    _set(row, 'verification_notes',
+                         (_get(row, 'verification_notes', '') or '') +
+                         f' | P198gz26 tranche-{_row_tranche} deferred')
+                    try:
+                        _progress(
+                            f"  [P198gz26 deferred] "
+                            f"{_get(row, 'row_id', '?')}: FAIL→N/A "
+                            f"(tranche-{_row_tranche} doc, deferred to "
+                            f"{_deferred_pct}% balance)"
+                        )
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz19 — Multi-invoice / multi-origin rescue under partial
+    # shipment. When F43P=ALLOWED and the LC clause says
+    # "invoices stating a single country of origin not acceptable" /
+    # "invoices must mention multiple countries of origin", the
+    # requirement is satisfied at the PRESENTATION SET level (per
+    # ISBP 821): if the bundle contains MULTIPLE invoices that
+    # collectively span ≥2 distinct countries, each individual
+    # invoice with a single origin is acceptable.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        _final_lc_z19 = step06_result.get('consolidated_fields') or \
+                        step06_result.get('final_lc', {}).get(
+                            'consolidated_fields', {}) or {}
+        _f43p = str(_final_lc_z19.get('43P') or
+                    _final_lc_z19.get('F43P') or '').upper()
+        _partial_allowed = bool(re.search(
+            r'\bALLOWED\b|\bPERMITTED\b', _f43p))
+        # Vehicle-only rule: this rescue is specifically for vehicle
+        # LCs (CKD components, multi-origin parts assembly). Other
+        # commodities don't have the same multi-origin presentation
+        # convention. Detect vehicles via F45A goods description.
+        _f45a = str(_final_lc_z19.get('45A') or
+                    _final_lc_z19.get('F45A') or '').upper()
+        _VEHICLE_RE = re.compile(
+            r'\b(?:VEHICLE|VEHICLES|CAR|CARS|TRUCK|TRUCKS|VAN|VANS|'
+            r'SUV|CUV|MPV|TOYOTA|HONDA|NISSAN|HYUNDAI|KIA|FORD|'
+            r'MERCEDES|BMW|MAZDA|MITSUBISHI|VOLKSWAGEN|VOLVO|'
+            r'CKD|SKD|FORTUNER|HILUX|LAND CRUISER|COROLLA|CAMRY|'
+            r'AUTOMOBILE|MOTOR\s+VEHICLE|SPARE\s+PART|AUTO\s+PART)\b',
+            re.IGNORECASE,
+        )
+        _is_vehicle_lc = bool(_VEHICLE_RE.search(_f45a))
+        # Collect origins across all CI packets
+        _ci_origins = set()
+        _ci_count = 0
+        _COUNTRY_RE = re.compile(
+            r'\b(USA|U\.S\.A|UNITED STATES|UK|UNITED KINGDOM|JAPAN|CHINA|'
+            r'INDONESIA|INDIA|MALAYSIA|PHILIPPINES|THAILAND|VIETNAM|'
+            r'SOUTH AFRICA|GERMANY|FRANCE|ITALY|SPAIN|MEXICO|CANADA|'
+            r'KOREA|TURKEY|BRAZIL|RUSSIA|EU|EUROPE)\b', re.IGNORECASE)
+        for _pkt in packets:
+            if not isinstance(_pkt, dict):
+                continue
+            if 'commercial invoice' not in (_pkt.get('document_type','') or '').lower():
+                continue
+            _ci_count += 1
+            _txt = (_pkt_text(_pkt) or '').upper()
+            for _m in _COUNTRY_RE.finditer(_txt):
+                # Normalize USA / U.S.A / UNITED STATES → USA
+                _c = _m.group(1).upper().replace('.', '').replace(' ', '')
+                if _c in ('US','USA','UNITEDSTATES'):
+                    _c = 'USA'
+                elif _c in ('UK','UNITEDKINGDOM'):
+                    _c = 'UK'
+                _ci_origins.add(_c)
+        _multi_origin_in_bundle = len(_ci_origins) >= 2
+        if _partial_allowed and _multi_origin_in_bundle and _is_vehicle_lc:
+            for row in rows:
+                try:
+                    _cond = (_get(row, 'condition_text', '') or '').upper()
+                    _orig_clause = (_get(row, 'original_clause_text', '') or '').upper()
+                    _full = _cond + ' ' + _orig_clause
+                    # Detect the relevant clause family
+                    _is_origin_rule = (
+                        ('SINGLE COUNTRY OF ORIGIN' in _full
+                         and ('NOT ACCEPT' in _full or 'NOT ACCEPTABLE' in _full))
+                        or ('ALTERNATE COUNTRIES OF ORIGIN' in _full
+                            and ('NOT ACCEPT' in _full or 'NOT ACCEPTABLE' in _full))
+                        or ('MULTIPLE COUNTRIES OF ORIGIN' in _full)
+                    )
+                    if not _is_origin_rule:
+                        continue
+                    _doc_t = (_get(row, 'document_checked', '') or '').lower()
+                    if 'invoice' not in _doc_t:
+                        continue
+                    _current = str(_get(row, 'compliance', '')).upper()
+                    if _current not in ('FAIL', 'NOT COMPLIED'):
+                        continue
+                    _msg = (
+                        f"Partial shipment is ALLOWED (F43P={_f43p[:30]}). "
+                        f"The presentation set contains {_ci_count} "
+                        f"Commercial Invoices spanning multiple origins: "
+                        f"{', '.join(sorted(_ci_origins))}. The LC's "
+                        f"'multiple countries of origin' requirement is "
+                        f"met at the PRESENTATION SET level — each "
+                        f"individual invoice with a single origin is "
+                        f"acceptable when the bundle as a whole spans "
+                        f"multiple origins."
+                    )
+                    _set(row, 'compliance', 'PASS')
+                    _set(row, 'result', _msg)
+                    _set(row, 'findings', _msg)
+                    try:
+                        _progress(
+                            f"  [P198gz19 multi-origin partial] "
+                            f"{_get(row, 'row_id', '?')}: FAIL→PASS "
+                            f"(bundle has {len(_ci_origins)} origins: "
+                            f"{', '.join(sorted(_ci_origins))})"
+                        )
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz7 — "Accompany the consignment" rescue.
+    #
+    # When the LC condition reads "AWB must evidence that a copy of
+    # invoice and a copy of airway bill accompany the consignment",
+    # the requirement is satisfied if both a Commercial Invoice and
+    # an AWB are PRESENT in the presentation set. The AWB itself
+    # does NOT need to literally say "accompanies". LLM commonly
+    # FAILs this because it expects a literal "accompany" text on
+    # the AWB.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        # Detect what document types are present
+        _present_types = set()
+        for _pkt in packets:
+            if not isinstance(_pkt, dict):
+                continue
+            _t = (_pkt.get('document_type', '') or '').lower()
+            _present_types.add(_t)
+        _has_ci = any('commercial invoice' in t or t == 'invoice'
+                      for t in _present_types)
+        _has_awb = any('airway' in t or 'air waybill' in t or 'awb' in t
+                       for t in _present_types)
+        for row in rows:
+            try:
+                _doc_t = (_get(row, 'document_checked', '') or '').lower()
+                if ('airway' not in _doc_t and 'air waybill' not in _doc_t
+                        and 'awb' not in _doc_t):
+                    continue
+                _cond = (_get(row, 'condition_text', '')
+                         or _get(row, 'condition', '')) or ''
+                _cond_u = _cond.upper()
+                # Detect accompany-style condition
+                if not re.search(
+                    r'\bACCOMPAN(?:Y|IED|YING)\b|\bMUST\s+ACCOMPANY\b',
+                    _cond_u
+                ):
+                    continue
+                _current = str(_get(row, 'compliance', '')).upper()
+                if _current not in ('FAIL', 'NOT COMPLIED'):
+                    continue
+                if _has_ci and _has_awb:
+                    _msg = (
+                        "Both a Commercial Invoice and an Airway Bill "
+                        "are present in the presentation set. The "
+                        "'must accompany the consignment' requirement "
+                        "is satisfied by the presence of these "
+                        "documents in the bundle — bank checkers do "
+                        "not expect the AWB to literally print an "
+                        "'accompany' sentence."
+                    )
+                    _set(row, 'compliance', 'PASS')
+                    _set(row, 'result', _msg)
+                    _set(row, 'findings', _msg)
+                    try:
+                        _progress(
+                            f"  [P198gz7 accompany] "
+                            f"{_get(row, 'row_id', '?')}: FAIL→PASS "
+                            f"(CI + AWB both present in bundle)"
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz5 — AWB notify-party strict check.
+    #
+    # Real-data anchor (job 94edb6a7): LC 46A-2 says "MARKED NOTIFY
+    # THE APPLICANT AND BANK AL HABIB LIMITED, PAKISTAN" but the AWB
+    # has NO Notify Party block at all (only Consignee = ALI
+    # ENTERPRISES). LLM hallucinated PASS saying "AWB shows notify
+    # Applicant and Bank Al Habib" — which is false.
+    #
+    # Rule: when the LC condition asks about notify party AND the
+    # AWB packet has no NOTIFY-PARTY block (or the parties named in
+    # the LC don't appear in any notify-party context), override
+    # PASS to FAIL. The LLM cannot fabricate a notify-party block
+    # that isn't on the doc.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        for row in rows:
+            try:
+                _doc_t = (_get(row, 'document_checked', '') or '').lower()
+                if ('airway' not in _doc_t and 'air waybill' not in _doc_t
+                        and 'awb' not in _doc_t):
+                    continue
+                _cond = (_get(row, 'condition_text', '')
+                         or _get(row, 'condition', '')) or ''
+                _cond_u = _cond.upper()
+                # Trigger only when condition asks about notify party
+                if not re.search(
+                    r'\b(?:MARKED\s+)?NOTIFY\s+(?:PARTY|THE|TO)?\b',
+                    _cond_u
+                ):
+                    continue
+                # Locate AWB packet
+                _awb_pkt = None
+                for _pkt in packets:
+                    if not isinstance(_pkt, dict):
+                        continue
+                    _ptype = (_pkt.get('document_type', '') or '').lower()
+                    if ('airway' in _ptype or 'air waybill' in _ptype
+                            or 'awb' in _ptype or 'air-way' in _ptype):
+                        _awb_pkt = _pkt
+                        break
+                if not _awb_pkt:
+                    continue
+                _awb_text_up = (_pkt_text(_awb_pkt) or '').upper()
+                # P198gz5b — The notify party can be expressed two ways:
+                #   1. A formal "Notify Party / Notify To / Notify
+                #      Address / Notify Name" field on the AWB form
+                #   2. Free-text within the AWB body: "Notify: <X>",
+                #      "Notify <X>", "Marked notify <X>" — written in
+                #      the description / handling info / OSI lines.
+                # Either form satisfies the LC condition. Only FAIL
+                # when NEITHER form contains the LC-required parties.
+                _has_notify_field = bool(re.search(
+                    r'\bNOTIFY\s+(?:PARTY|TO|ADDRESS|NAME)\b',
+                    _awb_text_up,
+                ))
+                _has_notify_anywhere = bool(re.search(
+                    r'\bNOTIF(?:Y|IED|YING|ICATION)\b', _awb_text_up,
+                ))
+                # Extract LC's required notify-party names from the
+                # condition text
+                # (regex_pattern, friendly_label)
+                _NOTIFY_PARTY_PATS = (
+                    (r'\bBANK\s+AL\s+HABIB\b', 'Bank Al Habib'),
+                    (r'\bAL\s+HABIB\b',        'Al Habib'),
+                    (r'\bHABIB\s+BANK\b',      'Habib Bank'),
+                    (r'\bSTANDARD\s+CHARTERED\b', 'Standard Chartered'),
+                    (r'\bUNITED\s+BANK\b',     'United Bank'),
+                    (r'\bMEEZAN\s+BANK\b',     'Meezan Bank'),
+                    (r'\bAPPLICANT\b',         'Applicant'),
+                )
+                _lc_notify_pats = [
+                    (p, lbl) for p, lbl in _NOTIFY_PARTY_PATS
+                    if re.search(p, _cond_u)
+                ]
+                # Dedupe overlapping aliases — when "Bank Al Habib"
+                # matches, drop the shorter "Al Habib" sibling so the
+                # report doesn't list redundant variants.
+                _seen_labels = []
+                _dedup = []
+                for _p, _l in _lc_notify_pats:
+                    _is_dup = False
+                    for _sl in _seen_labels:
+                        if _l in _sl or _sl in _l:
+                            _is_dup = True; break
+                    if not _is_dup:
+                        _seen_labels.append(_l); _dedup.append((_p, _l))
+                _lc_notify_pats = _dedup
+                if not _lc_notify_pats:
+                    continue
+                # P198gz5c — No proximity window. A party counts as
+                # notified when its name appears ANYWHERE on the AWB
+                # AND the AWB carries a NOTIFY keyword somewhere on
+                # the doc (formal field, body description, OSI/SCI
+                # line, anywhere). No adjacency check.
+                _missing = []
+                _missing_in_notify_ctx = []
+                for _pat, _label in _lc_notify_pats:
+                    if not re.search(_pat, _awb_text_up):
+                        _missing.append(_label)
+                        continue
+                    if not _has_notify_anywhere:
+                        _missing_in_notify_ctx.append(_label)
+                _current = str(_get(row, 'compliance', '')).upper()
+                # Decision:
+                #  - FAIL only when (a) the parties don't appear at
+                #    all on the AWB, or (b) they appear but never
+                #    within a NOTIFY context anywhere on the doc.
+                #  - If NO notify keyword on doc at all AND parties
+                #    not found → FAIL.
+                #  - If notify keyword present but the LC parties are
+                #    not within its context → FAIL.
+                #  - Otherwise (parties found in notify context, or
+                #    appear with any plausible NOTIFY mention) →
+                #    don't override; LLM verdict stands.
+                _should_fail = False
+                _msg = None
+                if _missing and not _has_notify_anywhere:
+                    _should_fail = True
+                    _msg = f"Notify party missing for {', '.join(_missing)}."
+                elif _missing_in_notify_ctx and not _missing:
+                    _should_fail = True
+                    _msg = (
+                        f"Notify party missing for "
+                        f"{', '.join(_missing_in_notify_ctx)}."
+                    )
+                elif _missing:
+                    _should_fail = True
+                    _msg = f"Notify party missing for {', '.join(_missing)}."
+                if _should_fail and _current in ('PASS', 'COMPLIED'):
+                    _set(row, 'compliance', 'FAIL')
+                    _set(row, 'result', _msg)
+                    _set(row, 'findings', _msg)
+                    try:
+                        _progress(
+                            f"  [P198gz5 AWB notify] "
+                            f"{_get(row, 'row_id', '?')}: PASS->FAIL "
+                            f"(missing={_missing}, "
+                            f"missing_in_notify_ctx={_missing_in_notify_ctx})"
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gw — AWB signing-capacity strict check.
+    #
+    # Per ISBP 821 H8 / UCP 600 Article 23: the AWB must be signed by
+    # the carrier or a named agent for or on behalf of the carrier,
+    # AND the signing capacity must be apparent from the document.
+    # If the signature line shows just a signature without explicit
+    # capacity ("AS CARRIER" / "AS AGENT FOR THE CARRIER" / "AS
+    # ISSUING CARRIER" / "ON BEHALF OF SRILANKAN AIRLINES" / etc.),
+    # that's a discrepancy under strict bank policy.
+    # ─────────────────────────────────────────────────────────────────
+    _AWB_CAPACITY_AFFIRMS = (
+        'AS CARRIER', 'AS THE CARRIER',
+        'AS ISSUING CARRIER', 'AS THE ISSUING CARRIER',
+        'AS AGENT FOR THE CARRIER',
+        'AS AGENT FOR THE ISSUING CARRIER',
+        'AS AGENTS FOR THE CARRIER',
+        'AS AGENT ON BEHALF OF THE CARRIER',
+        'AS AGENTS ON BEHALF OF THE CARRIER',
+        'FOR AND ON BEHALF OF THE CARRIER',
+        'FOR AND ON BEHALF OF THE ISSUING CARRIER',
+        'FOR THE CARRIER AS AGENT',
+        'FOR THE ISSUING CARRIER',
+        'AS CARRIER\'S AGENT',
+        'AS AUTHORISED AGENT',
+        'AS AUTHORIZED AGENT',
+    )
+    # Per ISBP 821 H8: signing capacity on the AWB is a UNIVERSAL
+    # requirement (UCP 600 art 23), not a per-clause one. Fire once per
+    # AWB packet on the first PASS row encountered, regardless of
+    # whether the LC clause text mentions "signed".
+    _gw_fired_for_pkt = set()
+    try:
+        for row in rows:
+            try:
+                _doc_t = (_get(row, 'document_checked', '') or '').lower()
+                if 'airway' not in _doc_t and 'air waybill' not in _doc_t and 'awb' not in _doc_t:
+                    continue
+                _awb_pkt = None
+                for _pkt in packets:
+                    if not isinstance(_pkt, dict):
+                        continue
+                    _ptype = (_pkt.get('document_type', '') or '').lower()
+                    if 'airway' in _ptype or 'air waybill' in _ptype or 'awb' in _ptype or 'air-way' in _ptype:
+                        _awb_pkt = _pkt
+                        break
+                if not _awb_pkt:
+                    continue
+                _pkt_id = id(_awb_pkt)
+                if _pkt_id in _gw_fired_for_pkt:
+                    continue
+                _awb_text_up = (_pkt_text(_awb_pkt) or '').upper()
+                _has_capacity = any(ph in _awb_text_up
+                                    for ph in _AWB_CAPACITY_AFFIRMS)
+                if not _has_capacity:
+                    _current = str(_get(row, 'compliance', '')).upper()
+                    if _current in ('PASS', 'COMPLIED'):
+                        _gw_fired_for_pkt.add(_pkt_id)
+                        _msg = (
+                            "AWB signature does not explicitly state the "
+                            "signing capacity. The AWB must indicate 'as "
+                            "carrier' / 'as agent for the carrier' / "
+                            "similar near the signature. Without an "
+                            "explicit capacity statement, the signature "
+                            "is ambiguous — strict bank policy treats "
+                            "this as a discrepancy."
+                        )
+                        _set(row, 'compliance', 'FAIL')
+                        _set(row, 'result', _msg)
+                        _set(row, 'findings', _msg)
+                        try:
+                            _progress(
+                                f"  [P198gw AWB signing capacity] "
+                                f"{_get(row, 'row_id', '?')}: PASS->FAIL "
+                                f"(no 'as carrier' / 'as agent' on AWB)"
+                            )
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gt — AWB ORIGINAL copy designation strict match.
+    #
+    # When LC says "Original for Consignor" or "Original for Shipper"
+    # explicitly, the document MUST carry the EXACT same designation
+    # — strict bank policy treats them as different even though IATA
+    # AWBs use them interchangeably. Real-data anchor (job 94edb6a7):
+    #   LC clause: "ORIGINAL FOR CONSIGNOR CLEAN AIRWAY BILL"
+    #   AWB shows: "ORIGINAL 3 - [FOR SHIPPER]"
+    # User-flagged: should be discrepancy because LC text says CONSIGNOR
+    # but AWB says SHIPPER.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        for row in rows:
+            try:
+                _doc_t = (_get(row, 'document_checked', '') or '').lower()
+                if 'airway' not in _doc_t and 'air waybill' not in _doc_t and 'awb' not in _doc_t:
+                    continue
+                _cond = (_get(row, 'condition_text', '')
+                         or _get(row, 'condition', '')) or ''
+                _orig_clause = _get(row, 'original_clause_text', '') or ''
+                _full = (_cond + ' ' + _orig_clause).upper()
+                # Detect LC's explicit ORIGINAL-FOR-X designation
+                _m_lc = re.search(
+                    r'\bORIGINAL\s+FOR\s+(CONSIGNOR|CONSIGNER|SHIPPER|EXPORTER|SUPPLIER)\b',
+                    _full)
+                if not _m_lc:
+                    continue
+                _lc_designee = _m_lc.group(1)
+                # P198gt2 — Gate. The condition_text often LEADS with
+                # the LC's "Original for Consignor Clean Airway Bill"
+                # heading-prefix even when the actual requirement is
+                # about freight / notify / consignee / flight / etc.
+                # Only fire P198gt when this row's REQUIREMENT is
+                # specifically about the ORIGINAL-COPY designation —
+                # not a sibling sub-condition that just inherited the
+                # heading-prefix from the parent clause.
+                _cond_u = _cond.upper()
+                _other_topics = (
+                    'FREIGHT PREPAID', 'FREIGHT COLLECT',
+                    'CONSIGNED TO', 'CONSIGNEE',
+                    'NOTIFY',
+                    'FLIGHT NUMBER', 'FLIGHT NO', 'FLT NO',
+                    'L/C NUMBER', 'LC NUMBER', 'CREDIT NUMBER',
+                    'ACCOMPANY', 'COPY OF INVOICE',
+                    'SIGNED BY', 'SIGNATURE', 'ISSUED BY',
+                    'DESPATCH', 'DISPATCH',
+                )
+                _is_about_original_designation = (
+                    re.search(
+                        r'(?:MUST|SHALL|SHOULD|TO)\s+BE\s+'
+                        r'(?:THE\s+)?ORIGINAL\s+(?:COPY\s+)?FOR\b',
+                        _cond_u
+                    )
+                    or re.search(
+                        r'MARKED\s+(?:AS\s+)?ORIGINAL\s+FOR\b',
+                        _cond_u
+                    )
+                    or re.search(
+                        r'BEAR(?:ING)?\s+(?:THE\s+)?ORIGINAL\s+'
+                        r'(?:COPY\s+)?FOR\b',
+                        _cond_u
+                    )
+                    or 'ORIGINAL-COPY DESIGNATION' in _cond_u
+                    or 'ORIGINAL COPY DESIGNATION' in _cond_u
+                )
+                # If the condition is clearly about a different topic
+                # AND not specifically about the original-copy label,
+                # skip — the LLM's verdict on freight/notify/etc.
+                # should stand.
+                if (any(t in _cond_u for t in _other_topics)
+                        and not _is_about_original_designation):
+                    continue
+                # Find the matching AWB packet's copy_label / text
+                _awb_pkt = None
+                for _pkt in packets:
+                    if not isinstance(_pkt, dict):
+                        continue
+                    _ptype = (_pkt.get('document_type', '') or '').lower()
+                    if 'airway' in _ptype or 'air waybill' in _ptype or 'awb' in _ptype or 'air-way' in _ptype:
+                        _awb_pkt = _pkt
+                        break
+                if not _awb_pkt:
+                    continue
+                _copy_lab = (_awb_pkt.get('copy_label', '') or '').upper()
+                _awb_text = (_pkt_text(_awb_pkt) or '').upper()
+                # Detect AWB's printed designation
+                _m_doc = re.search(
+                    r'\bORIGINAL[\s\d\-:.()\[\]]*(?:FOR\s+)?(CONSIGNOR|CONSIGNER|SHIPPER|EXPORTER|SUPPLIER)\b',
+                    _copy_lab + ' ' + _awb_text[:5000])
+                _doc_designee = _m_doc.group(1) if _m_doc else None
+                _current = str(_get(row, 'compliance', '')).upper()
+                if not _doc_designee:
+                    # AWB shows no designation — LC explicit, doc silent
+                    if _current in ('PASS', 'COMPLIED'):
+                        _msg = (
+                            f"LC requires 'Original for {_lc_designee.title()}' "
+                            f"but the Airway Bill does not state which "
+                            f"original copy designation it is. The AWB must "
+                            f"explicitly carry the 'For {_lc_designee.title()}' "
+                            f"label."
+                        )
+                        _set(row, 'compliance', 'FAIL')
+                        _set(row, 'result', _msg)
+                        _set(row, 'findings', _msg)
+                        try:
+                            _progress(
+                                f"  [P198gt AWB original] "
+                                f"{_get(row, 'row_id', '?')}: PASS->FAIL "
+                                f"(LC says 'For {_lc_designee}', AWB silent)"
+                            )
+                        except Exception:
+                            pass
+                elif _doc_designee != _lc_designee:
+                    # Strict mismatch: LC says X, AWB says Y
+                    if _current in ('PASS', 'COMPLIED'):
+                        _msg = (
+                            f"LC requires 'Original for {_lc_designee.title()}' "
+                            f"but the Airway Bill is marked 'Original for "
+                            f"{_doc_designee.title()}'. The original-copy "
+                            f"designation does not match — strict text match "
+                            f"required."
+                        )
+                        _set(row, 'compliance', 'FAIL')
+                        _set(row, 'result', _msg)
+                        _set(row, 'findings', _msg)
+                        try:
+                            _progress(
+                                f"  [P198gt AWB original] "
+                                f"{_get(row, 'row_id', '?')}: PASS->FAIL "
+                                f"(LC says '{_lc_designee}', "
+                                f"doc says '{_doc_designee}')"
+                            )
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gs — AWB freight-forwarder false-fail guard.
+    #
+    # When LC says "Freight forwarders and House Airway Bill not
+    # acceptable" the LLM sometimes flags a legitimate carrier-issued
+    # AWB as freight-forwarder because the AWB has a sales-rep
+    # stamp (e.g. "CAK CASH") or an agent identifier — not because
+    # it's actually a House AWB. Real-data anchor (job 94edb6a7):
+    #   AWB issued by SriLankan Airlines (real airline carrier)
+    #   Sales-officer stamp 'CAK CASH'
+    #   LLM flagged as freight-forwarder
+    #
+    # Rule: if the AWB body / step3 metadata identifies a real airline
+    # carrier (SriLankan / Emirates / Qatar / Thai / Etihad / etc.)
+    # AND the LC condition is the freight-forwarder/HAWB rejection,
+    # override LLM FAIL to PASS.
+    _REAL_AIRLINES = (
+        # Major full-service carriers seen on Pakistani-bound AWBs
+        'srilankan airlines', 'sri lankan airlines',
+        'emirates', 'emirates skycargo', 'emirates sky cargo',
+        'qatar airways', 'qatar airways cargo',
+        'etihad airways', 'etihad cargo',
+        'thai airways', 'thai cargo',
+        'singapore airlines', 'sia cargo',
+        'cathay pacific', 'cathay cargo',
+        'turkish airlines', 'turkish cargo',
+        'pia', 'pakistan international airlines',
+        'air china', 'china airlines', 'china southern',
+        'china eastern', 'air india', 'indigo',
+        'lufthansa', 'lufthansa cargo',
+        'british airways', 'air france', 'klm',
+        'asiana airlines', 'korean air',
+        'malaysia airlines', 'malindo air',
+        # Air-cargo specialist carriers (NOT freight forwarders)
+        'cargolux', 'fedex', 'ups airlines', 'dhl aviation',
+        'ana cargo', 'jal cargo',
+    )
+    try:
+        for row in rows:
+            try:
+                _doc_t = (_get(row, 'document_checked', '') or '').lower()
+                if 'airway' not in _doc_t and 'air waybill' not in _doc_t and 'awb' not in _doc_t:
+                    continue
+                _cond = (_get(row, 'condition_text', '')
+                         or _get(row, 'condition', '')) or ''
+                _cond_u = _cond.upper()
+                # Only fire on freight-forwarder/HAWB rejection rows
+                _is_ff_rule = (
+                    ('FREIGHT FORWARDER' in _cond_u
+                     or 'HAWB' in _cond_u
+                     or 'HOUSE AIRWAY' in _cond_u
+                     or 'HOUSE AWB' in _cond_u)
+                    and ('NOT ACCEPT' in _cond_u or 'PROHIBITED' in _cond_u
+                         or 'NOT ALLOWED' in _cond_u)
+                )
+                if not _is_ff_rule:
+                    continue
+                _current = str(_get(row, 'compliance', '')).upper()
+                if _current not in ('FAIL', 'NOT COMPLIED'):
+                    continue
+                # Find the matching AWB packet
+                _awb_pkt = None
+                for _pkt in packets:
+                    if not isinstance(_pkt, dict):
+                        continue
+                    _ptype = (_pkt.get('document_type', '') or '').lower()
+                    if 'airway' in _ptype or 'air waybill' in _ptype or 'awb' in _ptype or 'air-way' in _ptype:
+                        _awb_pkt = _pkt
+                        break
+                if not _awb_pkt:
+                    continue
+                _awb_text = (_pkt_text(_awb_pkt) or '').lower()[:6000]
+                _awb_logos = []
+                for _l in _awb_pkt.get('logos', []) or []:
+                    if isinstance(_l, dict):
+                        _awb_logos.append(
+                            (_l.get('company_name') or '').lower())
+                _awb_issued_by = (_awb_pkt.get('issued_by', '') or '').lower()
+                # Look for real airline carrier identification anywhere
+                _airline_hit = None
+                for _airline in _REAL_AIRLINES:
+                    if (_airline in _awb_text
+                            or _airline in _awb_issued_by
+                            or any(_airline in _lg for _lg in _awb_logos)):
+                        _airline_hit = _airline
+                        break
+                if _airline_hit:
+                    _msg = (
+                        f"AWB is issued by '{_airline_hit}' (a recognized "
+                        f"airline carrier), not a freight forwarder. "
+                        f"Sales-rep stamps / agent codes do not change the "
+                        f"carrier identity."
+                    )
+                    _set(row, 'compliance', 'PASS')
+                    _set(row, 'result', _msg)
+                    _set(row, 'findings', _msg)
+                    _set(row, 'verification_notes',
+                         f"P198gs AWB carrier-airline rescue: "
+                         f"matched '{_airline_hit}'")
+                    try:
+                        _progress(
+                            f"  [P198gs AWB carrier] "
+                            f"{_get(row, 'row_id', '?')}: FAIL→PASS "
+                            f"(AWB shows real airline '{_airline_hit}')"
+                        )
+                    except Exception:
+                        pass
+            except Exception as _e:
+                pass
+    except Exception:
+        pass
+
     # P198go — Strict Incoterms version compliance.
     #
     # Rule: when the LC explicitly states a year version of Incoterms
@@ -13368,10 +14563,103 @@ def run(
     # ─────────────────────────────────────────────────────────────────
     try:
         _INCOTERMS_VERSION_RE = re.compile(
-            r'\bINCOTERMS?\s*:?\s*(\d{4})\b', re.IGNORECASE)
+            r'\bINCOTERMS?\s*[:\-]?\s*(\d{4})\b', re.IGNORECASE)
         _INCOTERM_CODE_RE = re.compile(
             r'\b(EXW|FCA|FAS|FOB|CFR|CNF|C\&F|CIF|CIP|CPT|'
             r'DAP|DPU|DDP|DAT|DAF|DDU|DES|DEQ)\b', re.IGNORECASE)
+        # Capture trade-term + place: "FCA ANY AIRPORT IN CHINA" / "CPT KARACHI AIRPORT"
+        _INCOTERM_CLAUSE_RE = re.compile(
+            r'\b(EXW|FCA|FAS|FOB|CFR|CNF|C\&F|CIF|CIP|CPT|'
+            r'DAP|DPU|DDP|DAT|DAF|DDU|DES|DEQ)\s+'
+            r'([A-Z][A-Z0-9 ,/\-\(\)]{2,80}?)'
+            r'(?=\s*(?:\(\s*INCOTERMS?|\.|\,|;|$|\n|MUST|TO\s+BE|ON\s+(?:CI|COMMERCIAL)))',
+            re.IGNORECASE)
+
+        def _extract_lc_term(lc_up):
+            """Return (code, place_norm, version, is_generic, country) or None."""
+            mc = _INCOTERM_CLAUSE_RE.search(lc_up)
+            mv = _INCOTERMS_VERSION_RE.search(lc_up)
+            if not mc:
+                return None
+            code = mc.group(1).upper()
+            place_raw = mc.group(2).strip().upper()
+            place_norm = re.sub(r'\s+', ' ', place_raw)
+            ver = mv.group(1) if mv else None
+            # Detect "ANY <PORT-TYPE> IN <COUNTRY>"  or  "ANY <COUNTRY> <PORT>"
+            country = None
+            is_generic = False
+            mg = re.search(
+                r'\bANY\s+(?:\w+\s+)*?(?:AIR\s*PORT|AIRPORT|SEA\s*PORT|'
+                r'SEAPORT|PORT)\s+(?:IN\s+|OF\s+)?([A-Z][A-Z ]{2,40})',
+                place_norm)
+            if mg:
+                is_generic = True
+                country = mg.group(1).strip()
+            else:
+                mg2 = re.search(
+                    r'\bANY\s+([A-Z][A-Z ]{2,40}?)\s+(?:AIR\s*PORT|AIRPORT|'
+                    r'SEA\s*PORT|SEAPORT|PORT)\b',
+                    place_norm)
+                if mg2:
+                    is_generic = True
+                    country = mg2.group(1).strip()
+            return (code, place_norm, ver, is_generic, country)
+
+        # Country names — used to skip place-FAIL on country-only LCs
+        # like "CFR MALAYSIA" (no specific port to enforce).
+        _COUNTRY_NAMES = {
+            'CHINA','PAKISTAN','INDIA','MALAYSIA','SINGAPORE','THAILAND',
+            'INDONESIA','VIETNAM','JAPAN','KOREA','TURKEY','GERMANY',
+            'FRANCE','ITALY','SPAIN','UAE','EMIRATES','UK','USA','AMERICA',
+            'BANGLADESH','SRI LANKA','PHILIPPINES','EGYPT','SAUDI ARABIA',
+            'IRAN','IRAQ','RUSSIA','BRAZIL','AUSTRALIA','CANADA','MEXICO',
+            'NETHERLANDS','BELGIUM','POLAND','PORTUGAL','GREECE',
+            'PEOPLES REPUBLIC OF CHINA','REPUBLIC OF CHINA','HONG KONG',
+        }
+
+        def _check_doc_term(doc_up, lc_term):
+            """Return (ok, reason). Conservative — only fires on
+            unambiguous specific-city mismatch, never on generic ANY-
+            port LCs or country-only LCs (those need world knowledge
+            of city->country we don't have here)."""
+            code, lc_place, lc_ver, is_generic, country = lc_term
+            # Code must appear in doc
+            if not re.search(rf'\b{re.escape(code)}\b', doc_up):
+                return False, f"trade-term code {code} not on doc"
+            # Generic LC ("ANY AIRPORT IN CHINA") — don't enforce place.
+            # The LLM has world knowledge of city->country; trust its
+            # existing PASS verdict for the place dimension.
+            if not is_generic:
+                # Strip airport/port qualifiers and country names from
+                # the head tokens — only enforce on specific city names.
+                head_tokens = [
+                    t for t in re.split(r'[ ,/]+', lc_place)
+                    if t and t not in (
+                        'AIRPORT', 'AIR', 'PORT', 'SEAPORT', 'SEA',
+                        'CITY', 'OF', 'IN', 'AT', 'THE', 'NAMED',
+                        'PLACE', 'ANY', 'EVERY', 'A')
+                ]
+                # Drop country tokens
+                head_tokens = [
+                    t for t in head_tokens if t not in _COUNTRY_NAMES
+                ]
+                head_tokens = head_tokens[:3]
+                if head_tokens and not any(
+                    re.search(rf'\b{re.escape(t)}\b', doc_up)
+                    for t in head_tokens
+                ):
+                    return False, (f"LC place '{lc_place}' not found on "
+                                   f"doc (looked for {head_tokens})")
+            # Version check (only when LC explicitly states one)
+            if lc_ver:
+                mv = _INCOTERMS_VERSION_RE.search(doc_up)
+                if not mv:
+                    return False, f"doc silent on Incoterms version (LC={lc_ver})"
+                if mv.group(1) != lc_ver:
+                    return False, (f"version mismatch: LC={lc_ver}, "
+                                   f"doc={mv.group(1)}")
+            return True, "ok"
+
         for row in rows:
             try:
                 _row_id = _get(row, 'row_id', '?')
@@ -13390,6 +14678,32 @@ def run(
                 # Does this row mention an Incoterm code at all?
                 if not _INCOTERM_CODE_RE.search(_lc_text_up):
                     continue
+                # P198gz6 — Skip Incoterm version check on doc types
+                # where Incoterms are not commonly stated. Per ISBP
+                # 821 and bank practice, the Incoterm trade-term lives
+                # on the Commercial Invoice (and sometimes BL/AWB).
+                # Packing Lists, Weight Lists, Beneficiary Certs etc.
+                # do NOT need to repeat the Incoterm version. Only fire
+                # P198go on these docs if they ALREADY state an
+                # Incoterm version that's wrong.
+                _doc_name = _get(row, 'document_checked', '')
+                _doc_name_lower = (_doc_name or '').lower()
+                _NON_INCOTERM_DOCS = (
+                    'packing list', 'packing slip', 'packing note',
+                    'weight list', 'weight certificate',
+                    'beneficiary certificate', "beneficiary's certificate",
+                    'health certificate', 'phytosanitary certificate',
+                    'fumigation certificate', 'halal certificate',
+                    'inspection certificate', 'survey report',
+                    'analysis certificate', 'shelf life certificate',
+                    'documentary remittance', 'covering schedule',
+                    'shipment advice', 'vessel advice',
+                    'document arrival notice', 'draft', 'bill of exchange',
+                    'insurance', 'certificate of origin',
+                )
+                _is_non_incoterm_doc = any(
+                    nd in _doc_name_lower for nd in _NON_INCOTERM_DOCS
+                )
                 # Get the document(s) checked for this row
                 _doc_text = (_get(row, 'document_text', '')
                              or _get(row, 'doc_text', '')
@@ -13408,17 +14722,28 @@ def run(
                 _doc_ver_m = _INCOTERMS_VERSION_RE.search(_doc_text_up)
                 _current = str(_get(row, 'compliance', '')).upper()
                 if not _doc_ver_m:
-                    # Document is silent on version. If condition is
-                    # currently PASS / N/A, override to FAIL — LC
-                    # explicitly required the version.
-                    if _current in ('PASS', 'COMPLIED', 'N/A', 'INFORMATIONAL'):
+                    # P198gz6 — Skip "doc silent on version" override
+                    # when this row's document type doesn't normally
+                    # carry the Incoterm trade-term (Packing List,
+                    # Health Cert, Beneficiary Cert, etc.). On these
+                    # docs, missing Incoterm version is not a
+                    # discrepancy — only a wrong version would be.
+                    if _is_non_incoterm_doc:
+                        continue
+                    # Document is silent on version. If LLM said PASS,
+                    # override to FAIL — LC explicitly required the
+                    # version. NEVER touch N/A / INFORMATIONAL rows
+                    # (those mean the doc is genuinely not present
+                    # via P198gr fan-out skip or doc_not_found —
+                    # treating those as version-FAILs would double-
+                    # count the missing-doc discrepancy).
+                    if _current in ('PASS', 'COMPLIED'):
                         _msg = (
                             f"LC requires 'Incoterms {_lc_version}' but the "
                             f"document does not state any Incoterms version. "
-                            f"Per LC's explicit version annotation, the "
+                            f"Per the LC's explicit version annotation, the "
                             f"document must include the version (e.g. "
-                            f"'Incoterms {_lc_version}'). P198go strict "
-                            f"version-compliance check."
+                            f"'Incoterms {_lc_version}')."
                         )
                         _set(row, 'compliance', 'FAIL')
                         _set(row, 'result', _msg)
@@ -13436,13 +14761,16 @@ def run(
                             pass
                 else:
                     _doc_version = _doc_ver_m.group(1)
+                    # Skip mismatch override on N/A / INFORMATIONAL rows
+                    # — those mean the doc isn't actually present.
+                    if _current in ('N/A', 'INFORMATIONAL'):
+                        continue
                     if _doc_version != _lc_version:
                         # Wrong version → always FAIL
                         _msg = (
                             f"LC requires 'Incoterms {_lc_version}' but the "
                             f"document shows 'Incoterms {_doc_version}'. "
-                            f"Wrong Incoterms version. P198go strict "
-                            f"version-compliance check."
+                            f"Wrong Incoterms version."
                         )
                         _set(row, 'compliance', 'FAIL')
                         _set(row, 'result', _msg)
@@ -13465,6 +14793,38 @@ def run(
                         # auto-rescue when the failure was clearly about
                         # the missing/wrong version.
                         pass
+
+                # ── P198gy: full-clause place check ──
+                # Beyond version, the LC's place must also be consistent
+                # with the doc. "ANY <PORT> IN <COUNTRY>" is treated as
+                # generic — any specific port in that country qualifies.
+                if _current in ('PASS', 'COMPLIED'):
+                    _lc_term = _extract_lc_term(_lc_text_up)
+                    if _lc_term and _lc_term[1]:
+                        _ok, _reason = _check_doc_term(_doc_text_up, _lc_term)
+                        # Don't double-FAIL on issues we just handled
+                        # (silent / wrong version). Only fire on PLACE
+                        # mismatch.
+                        if (not _ok
+                            and 'version' not in _reason.lower()
+                            and 'silent' not in _reason.lower()
+                            and str(_get(row, 'compliance', '')).upper()
+                                in ('PASS', 'COMPLIED')):
+                            _msg = (
+                                f"LC trade-term '{_lc_term[0]} "
+                                f"{_lc_term[1]}' not fully reflected on "
+                                f"the document — {_reason}."
+                            )
+                            _set(row, 'compliance', 'FAIL')
+                            _set(row, 'result', _msg)
+                            _set(row, 'findings', _msg)
+                            try:
+                                _progress(
+                                    f"  [P198gy incoterm place] {_row_id}: "
+                                    f"PASS->FAIL ({_reason})"
+                                )
+                            except Exception:
+                                pass
             except Exception as _e:
                 try:
                     print(f"[P198go] exception on row {row.get('row_id','?')}: {_e}")
@@ -13896,6 +15256,48 @@ def run(
         + (f" / {pending_count} still pending" if pending_count else "")
         + f" in {elapsed:.1f}s"
     )
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz27 — Final UCP/ISBP citation scrub. Bank checkers don't
+    # want regulatory citations in the discrepancy report. Strip any
+    # remaining "UCP 600 Article XX" / "ISBP 821 X.YY" / "Per UCP" /
+    # "Per ISBP" mentions from the user-facing message fields.
+    # ─────────────────────────────────────────────────────────────────
+    # Order matters: parenthesized variants and lead-particle ("Per",
+    # "under", "pursuant to") first so they consume the surrounding
+    # context before bare-reference patterns get to it.
+    _UCP_PATTERNS = [
+        # 1. Parenthesized references — consume entire parenthetical
+        r'\(\s*(?:per|as\s+per|under|pursuant\s+to)\s+(?:UCP|ISBP)\s+\d{3}[^)]*\)\s*',
+        r'\(\s*(?:UCP|ISBP)\s+\d{3}[^)]*\)\s*',
+        # 2. Lead-particle + UCP/ISBP + optional Article/sub-id
+        r'(?:\bper|\bas\s+per|\bunder|\bpursuant\s+to|\bin\s+accordance\s+with)\s+'
+        r'(?:UCP|ISBP)\s+\d{3}'
+        r'(?:\s+(?:Article|Art\.?)\s*\d+[a-z]?|\s+[A-Z]?\d{1,3}[a-z]?)?\.?\s*[,;:—-]?\s*',
+        # 3. Bare UCP/ISBP + Article reference
+        r'\b(?:UCP|ISBP)\s+\d{3}\s+(?:Article|Art\.?)\s*\d+[a-z]?\.?\s*[,;:—-]?\s*',
+        # 4. Bare ISBP + sub-id (e.g. "ISBP 821 H8" / "ISBP 821 A24")
+        r'\bISBP\s+\d{3}\s+[A-Z]\d{1,3}[a-z]?\.?\s*[,;:—-]?\s*',
+    ]
+    _UCP_REs = [re.compile(p, re.IGNORECASE) for p in _UCP_PATTERNS]
+    def _scrub_ucp(text):
+        if not text or not isinstance(text, str):
+            return text
+        out = text
+        for r in _UCP_REs:
+            out = r.sub('', out)
+        # Tidy up double spaces / leftover punctuation
+        out = re.sub(r'\s{2,}', ' ', out)
+        out = re.sub(r'\s+([.,;:])', r'\1', out)
+        return out.strip()
+    for _r in rows:
+        for _f in ('result', 'findings', 'verification_notes'):
+            try:
+                _v = _get(_r, _f, '')
+                if _v:
+                    _set(_r, _f, _scrub_ucp(_v))
+            except Exception:
+                pass
 
     summary = {
         "total_rows": len(rows),

@@ -165,6 +165,54 @@ PERMISSIVE vs PROHIBITIVE CLAUSES:
     → This is permissive — it does NOT require anything. Return EMPTY ARRAY [].
     → ANY clause that says "[something] TO BE ACCEPTABLE" or "[something] ACCEPTABLE" at the end is permissive.
 
+PORT-OF-DISCHARGE / VESSEL-ROUTING CLAUSES (CRITICAL — DO NOT MIS-DECOMPOSE):
+  When the LC says the vessel must DISCHARGE / DELIVER / CALL AT a
+  specific port or terminal, the requirement is about the SHIPPING
+  ROUTE — NOT the consignee. Bank checkers verify this against the
+  Bill of Lading's "Port of Discharge" / "Place of Delivery" /
+  "Final Destination" / "Port of Call" fields.
+
+  Trigger phrases (vessel routing, NOT consignee):
+    • "CONSIGNMENT MUST BE SHIPPED ON VESSEL DISCHARGING CARGO AT X"
+    • "VESSEL MUST DISCHARGE AT X / VIA X / BY X"
+    • "GOODS / CARGO MUST BE DISCHARGED AT X"
+    • "DELIVERY MUST BE AT X" / "PLACE OF DELIVERY MUST BE X"
+    • "VESSEL CALLING AT X" / "VESSEL TO CALL AT X"
+    • "X PORT TERMINAL" / "VIA X CONTAINER TERMINAL"
+
+  CORRECT decomposition for these clauses:
+    document_to_check: "Bill of Lading"
+    condition_text:    "Bill of Lading must show Port of Discharge
+                        as <X> (or Place of Delivery as <Y>) per LC
+                        F47A routing requirement."
+    look_for_value:    "<X>" (the port / terminal name)
+
+  WRONG decomposition (DO NOT DO THIS):
+    document_to_check: "Bill of Lading"
+    condition_text:    "Consignee must be discharged at <X>..."   ← WRONG
+    look_for_value:    "<X>"
+    Reason: "discharged at" is a vessel-routing instruction, not a
+    consignee party name. The consignee comes from F50/F59 (e.g.,
+    "TO ORDER OF BANK AL HABIB"). Do NOT conflate the route with the
+    consignee — they are different fields on the BL.
+
+  Example — REAL clause (job 226faca7 / 1019LC55859):
+    LC F47A-9: "CONSIGNMENT MUST BE SHIPPED ON VESSEL DISCHARGING
+                 CARGO AT OLD SEAPORT KARACHI OR KARACHI NLCCT VIA
+                 PORT QASIM CONTAINER TERMINAL"
+    CORRECT decomposition:
+      [{"condition_text": "Bill of Lading must show Port of Discharge
+        as Port Qasim and Place of Delivery / Final Destination as
+        Old Seaport Karachi or Karachi NLCCT (National Logistic Cell
+        Container Terminal).",
+        "document_to_check": "Bill of Lading",
+        "look_for_value": "Port Qasim / Karachi NLCCT / Old Seaport"}]
+    WRONG decomposition (DO NOT EMIT):
+      [{"condition_text": "Consignee must be discharged at Old
+        Seaport Karachi or Karachi NLCCT (National Logistic Cell
+        Container Terminal) via Port Qasim Container Terminal.",
+        ...}]
+
 TOLERANCE CLAUSES:
   • "PLUS ZERO/MINUS TEN PERCENT TOLERANCE IN QUANTITY AND AMOUNT TO BE ACCEPTABLE"
     → This sets tolerance parameters (+0%/-10%) — it does NOT require checking on documents.
@@ -175,6 +223,24 @@ TOLERANCE CLAUSES:
 ═══════════════════════════════════════════════════════════════
 RETURN EMPTY ARRAY [] FOR THESE CLAUSE TYPES:
 ═══════════════════════════════════════════════════════════════
+  • Physical packing / container-stuffing instructions:
+    "INVOICE AND PACKING LIST TO BE ENCLOSED WITHIN ALL CONTAINERS"
+    "DOCUMENTS TO BE PLACED INSIDE EACH CONTAINER"
+    "COPY OF INVOICE TO ACCOMPANY THE GOODS INSIDE THE CONTAINER"
+    "PACKING LIST TO BE STUFFED IN EACH CONTAINER"
+    These are PHYSICAL PACKING / HANDLING INSTRUCTIONS to the
+    freight forwarder — they cannot be verified from the presented
+    documents themselves. The document text never says "I am
+    enclosed within a container" because that's a physical state of
+    the shipment, not a textual content. Bank checkers treat these
+    as non-documentary / informational. Return EMPTY ARRAY [].
+    The "must accompany the consignment / shipment" pattern follows
+    the same rule when it refers to physical accompaniment inside
+    containers (NOT to be confused with "AWB must evidence that a
+    copy of invoice and a copy of airway bill accompany the
+    consignment" — that one is satisfied by the docs being in the
+    presentation set, not by container-stuffing).
+
   • Bank-to-bank obligations: "ADVISING BANK MUST...", "NEGOTIATING
     BANK MUST ADVISE US VIA AUTHENTICATED SWIFT...", "NEGOTIATING
     BANK MUST SEND/ADVISE/TRANSMIT VIA SWIFT..." — these are
@@ -1754,6 +1820,180 @@ def run(structured_lc: dict, output_dir: str = None, progress_callback=None) -> 
             filtered = []
 
         dc.conditions = filtered
+
+    # ── P198gz11: Container-stuffing / physical-packing filter ──
+    # "Invoice / Packing List to be enclosed within all containers"
+    # is a physical packing instruction to the freight forwarder, not
+    # documentary content. Filter from verification — these can never
+    # be verified from the document text itself.
+    for dc in decomposed:
+        try:
+            _kept = []
+            for cond in dc.conditions:
+                ct_u = (cond.condition_text or '').upper()
+                _is_container_stuffing = bool(
+                    re.search(
+                        r'\b(?:ENCLOSED|STUFFED|PLACED|INSERTED|PACKED)\s+'
+                        r'(?:WITHIN|INSIDE|IN|INTO)\s+'
+                        r'(?:ALL|EACH|EVERY|THE)?\s*(?:THE\s+)?CONTAINER',
+                        ct_u
+                    )
+                    or re.search(
+                        r'\b(?:MUST\s+BE\s+|TO\s+BE\s+)?'
+                        r'ENCLOSED\s+(?:WITHIN|INSIDE|IN|INTO)\s+'
+                        r'(?:ALL|EACH|EVERY|THE)?\s*CONTAINER',
+                        ct_u
+                    )
+                    or re.search(
+                        r'\bACCOMPANY\s+THE\s+(?:GOODS|SHIPMENT|CARGO)\s+'
+                        r'(?:INSIDE|WITHIN|IN)\s+(?:THE\s+)?CONTAINER',
+                        ct_u
+                    )
+                )
+                if _is_container_stuffing:
+                    _progress(
+                        f"  [P198gz11 container-stuffing] "
+                        f"{dc.clause_ref}: FILTERED non-documentary "
+                        f"physical packing instruction: "
+                        f"{(cond.condition_text or '')[:80]}"
+                    )
+                    continue
+                _kept.append(cond)
+            dc.conditions = _kept
+        except Exception:
+            pass
+
+    # ── P198gz10: Discharge-port mis-decomposition guard ──
+    # Catch the LLM mistake where a "vessel must discharge at X" clause
+    # was decomposed as "consignee must be discharged at X". Detect:
+    #   - condition_text contains "consignee" + "discharg"
+    #   - OR condition_text starts with "consignee must be" and look_for
+    #     mentions a port/terminal/seaport/airport
+    # Rewrite to: "Bill of Lading must show Port of Discharge / Place
+    # of Delivery as <X>".
+    _PORT_TOKENS = (
+        'PORT', 'TERMINAL', 'SEAPORT', 'AIRPORT', 'NLCCT',
+        'CONTAINER TERMINAL', 'WHARF', 'BERTH', 'JETTY',
+    )
+    for dc in decomposed:
+        try:
+            for cond in dc.conditions:
+                ct = (cond.condition_text or '')
+                ct_u = ct.upper()
+                # Pattern: consignee + discharged/discharging
+                _is_misdecomp = bool(
+                    re.search(
+                        r'\bCONSIGNEE\s+(?:MUST\s+BE\s+|TO\s+BE\s+|MUST\s+)?'
+                        r'(?:DISCHARGED|DISCHARGING|DELIVERED|DELIVERING)',
+                        ct_u
+                    )
+                    or (
+                        ct_u.startswith('CONSIGNEE MUST BE')
+                        and any(t in ct_u for t in _PORT_TOKENS)
+                        and any(rt in ct_u for rt in (
+                            'DISCHARG', 'DELIVER', 'VIA ', 'AT ',
+                            'CALL AT', 'CALLING AT'))
+                    )
+                )
+                if not _is_misdecomp:
+                    continue
+                # Extract port/place names from look_for_value or
+                # the condition tail.
+                _port_text = (cond.look_for_value or '').strip()
+                if not _port_text:
+                    # Fall back to extracting after "discharged at"
+                    m = re.search(
+                        r'(?:DISCHARGED|DELIVERED)\s+(?:AT|TO|VIA)\s+'
+                        r'(.+?)(?:\.\s*$|\.$|$)',
+                        ct_u
+                    )
+                    if m:
+                        _port_text = m.group(1).strip()
+                # Rewrite the condition
+                cond.condition_text = (
+                    f"Bill of Lading must show Port of Discharge / "
+                    f"Place of Delivery as: {_port_text or 'the LC-specified location'}. "
+                    f"This is a vessel-routing requirement, not a "
+                    f"consignee requirement."
+                )
+                cond.document_to_check = 'Bill of Lading'
+                _progress(
+                    f"  [P198gz10 discharge-route] {dc.clause_ref}: "
+                    f"rewrote 'consignee must be discharged' → BL "
+                    f"port-of-discharge requirement"
+                )
+        except Exception:
+            pass
+
+    # ── P198gx: Deterministic AWB compound-clause splitter ──
+    # When the LLM returns a single mega-condition for an AWB clause that
+    # actually contains multiple distinct requirements (LC#, flight#,
+    # freight prepaid, notify, consigned to, accompany), split it so each
+    # requirement gets its own row and can pass/fail independently.
+    # Real-data anchor (job 94edb6a7), 46A-2:
+    #   "ORIGINAL FOR CONSIGNOR CLEAN AIRWAY BILL BEARING THIS L/C NUMBER
+    #    AND FLIGHT NUMBER EVIDENCING DESPATCH OF GOODS CONSIGNED TO BANK
+    #    AL HABIB ... SHOWING FREIGHT PREPAID MARKED NOTIFY THE APPLICANT
+    #    ... AIRWAY BILL MUST EVIDENCE THAT A COPY OF INVOICE AND A COPY
+    #    OF AIRWAY BILL ACCOMPANY THE CONSIGNMENT"
+    for dc in decomposed:
+        try:
+            if len(dc.conditions) != 1:
+                continue
+            up = dc.original_text.upper()
+            if not re.search(r'\b(?:AIR\s*WAY\s*BILL|AIRWAYBILL|AWB)\b', up):
+                continue
+            cond0 = dc.conditions[0]
+            doc0 = cond0.document_to_check or 'Air Waybill'
+            sub_specs = []
+            if re.search(r'\bL\s*/\s*C\s+NUMBER\b|\bLC\s+NUMBER\b|\bCREDIT\s+NUMBER\b', up):
+                sub_specs.append(('AWB must bear this L/C number',
+                                  'L/C number'))
+            if 'FLIGHT NUMBER' in up or 'FLIGHT NO' in up:
+                sub_specs.append(('AWB must bear the flight number',
+                                  'flight number'))
+            if 'FREIGHT PREPAID' in up:
+                sub_specs.append(('AWB must show FREIGHT PREPAID',
+                                  'FREIGHT PREPAID'))
+            if 'CONSIGNED TO' in up or re.search(r'\bCONSIGNEE\b', up):
+                m = re.search(
+                    r'CONSIGNED\s+TO\s+([A-Z][A-Z\s,&\.\-]{4,80}?)'
+                    r'(?:\s+SHOWING|\s+MARKED|\s+NOTIFY|$)', up)
+                target = m.group(1).strip() if m else ''
+                sub_specs.append((
+                    f'AWB must be consigned to {target}'.strip()
+                    if target else 'AWB consignee must match the LC',
+                    target or 'consignee'))
+            if 'NOTIFY' in up:
+                m = re.search(r'NOTIFY\s+([A-Z][A-Z\s,&\.\-]{4,120})', up)
+                target = m.group(1).strip() if m else ''
+                # Strip trailing connectors
+                target = re.split(r'\s+(?:AIRWAY|MUST|AND\s+A\s+COPY)', target)[0].strip()
+                sub_specs.append((
+                    f'AWB must be marked NOTIFY {target}'.strip()
+                    if target else 'AWB must show notify party',
+                    target or 'NOTIFY'))
+            if 'ACCOMPANY' in up:
+                sub_specs.append((
+                    'AWB must evidence that a copy of invoice and a copy '
+                    'of airway bill accompany the consignment',
+                    'accompany the consignment'))
+            if len(sub_specs) >= 2:
+                new_conds = []
+                for k, (text, lookfor) in enumerate(sub_specs, 1):
+                    new_conds.append(Condition(
+                        condition_id=f"{dc.clause_ref}-C{k}",
+                        condition_text=text,
+                        document_to_check=doc0,
+                        look_for_value=lookfor,
+                    ))
+                dc.conditions = new_conds
+                _progress(
+                    f"  [P198gx AWB splitter] {dc.clause_ref}: "
+                    f"1 -> {len(new_conds)} conditions"
+                )
+        except Exception:
+            pass
 
     # Post-processing: multi-document auto-add REMOVED — temperature 0 + prompt is sufficient
 

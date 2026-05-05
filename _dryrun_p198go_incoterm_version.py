@@ -77,10 +77,10 @@ def simulate_p198go(condition, doc_text, current_compliance):
     lc_version = lc_ver_m.group(1)
     doc_ver_m = _INCOTERMS_VERSION_RE.search(doc_text_up)
     if not doc_ver_m:
-        if current_compliance.upper() in ('PASS', 'COMPLIED',
-                                            'N/A', 'INFORMATIONAL'):
+        # P198go ONLY overrides LLM PASS — never N/A / INFORMATIONAL
+        if current_compliance.upper() in ('PASS', 'COMPLIED'):
             return 'FAIL', f'doc silent (LC={lc_version})'
-        return current_compliance, 'doc silent but already FAIL/REVIEW'
+        return current_compliance, f'silent — {current_compliance} preserved'
     doc_version = doc_ver_m.group(1)
     if doc_version != lc_version:
         return 'FAIL', f'wrong version (LC={lc_version}, doc={doc_version})'
@@ -117,6 +117,14 @@ CASES = [
     ('Document must show LC number on every page',
      'no incoterm here', 'PASS',
      'PASS', 'Non-Incoterm condition with year-like number → no fire'),
+    # P198gr→P198go interaction — N/A from fan-out skip should NOT be
+    # overridden to FAIL by P198go (the doc isn't actually present).
+    ('CPT KARACHI AIRPORT (INCOTERMS : 2020) on Commercial Invoice',
+     '', 'N/A',
+     'N/A', 'P198gr N/A (fan-out skip) → P198go must NOT flip to FAIL'),
+    ('CPT KARACHI (Incoterms 2020)',
+     '', 'INFORMATIONAL',
+     'INFORMATIONAL', 'INFORMATIONAL row preserved'),
 ]
 for cond, doc, current, expected, label in CASES:
     new, reason = simulate_p198go(cond, doc, current)

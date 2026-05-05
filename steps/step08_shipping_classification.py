@@ -172,6 +172,28 @@ Based on the image AND the document text above, classify this page:
    Certificate", "Time Sheet", "Tanker Cleanliness Certificate", "Shore Tank
    Measurements", "Vessel Experience Factor", "Master Receipt for Sealed
    Samples", "Letter of Authority", etc.).
+   ★ ANTI-FORCE-FIT RULE — DO NOT relabel a specific document to a broader
+     LC category. Examples:
+       • Page heading says "DRAFT SURVEY REPORT" — output "Draft Survey
+         Report", NOT "Inspection Certificate" / "Survey Report" just
+         because those appear in the LC list.
+       • Page heading says "COAL SPECIFICATIONS AT THE LOADING PORT" —
+         output "Coal Specifications at the Loading Port", NOT
+         "Inspection Certificate".
+       • Page is a back-of-form / "Instructions for filling out a
+         Certificate of Origin" — output "Certificate of Origin
+         Instructions" or "Unknown", NOT "Certificate of Origin".
+       • Page heading says "VESSEL ADVICE" or "DETAILED MESSAGE" —
+         keep it as such (or "Shipment Advice" only if no specific
+         page-title heading exists).
+     The LC required-doc list is for SPELLING DISAMBIGUATION ONLY when the
+     page actually IS that document. Never up-cast a specific real title
+     into a broader LC requirement.
+   ★ EVIDENCE OVER LC LIST — your verdict must cite a phrase from the page
+     image / OCR text that matches the chosen document_type. If you cannot
+     find supporting heading or boilerplate text on the page, default to
+     the page's literal title or "Unknown" rather than guessing from the
+     LC list.
    FORBIDDEN VALUES: "Letter of Credit", "LC", "MT700", "MT707", "MT799",
    "Amendment". If the page truly has no recognisable shipping content,
    return "Unknown" or "Header Page" or "Blank Page".
@@ -634,6 +656,9 @@ def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tupl
     if not doc_type:
         return -1, ""
     dt_upper = doc_type.upper().strip()
+    # Whitespace-only / empty after strip — treat as alien.
+    if not dt_upper:
+        return -1, ""
 
     # P198gj — Reject "instructions / guidelines / explanatory notes"
     # documents from matching their PARENT doc type. A page titled
@@ -655,6 +680,15 @@ def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tupl
         # Treat as alien — meta-doc, not a real shipping doc.
         return -1, ""
 
+    # P198gz3 — Hint-based meta-doc demotion. VLM may label a page
+    # "Certificate of Origin" while its hint says "Instructions for
+    # filling out a Certificate of Origin and corresponding
+    # application". The hint reveals it's the back-of-form / how-to
+    # page, not the actual certificate. Caller passes hint via
+    # `__doc_hint__` keyed expected_docs entry (we read packet-level
+    # doc-hint at the call site instead — keep this guard purely on
+    # dt_upper here).
+
     # AWB / Courier Receipt are the same family — match either label to
     # whichever the LC required.
     if _is_courier_or_awb_label(dt_upper):
@@ -670,6 +704,80 @@ def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tupl
         # UCP 600 / ISBP 745.
         return -1, ""
 
+    # P198gz16 — Acronym / abbreviation + alias pre-resolution.
+    # Short forms (PSI, MTC, CoC, etc.) and word-order variants
+    # (Compliance Certificate ↔ Certificate of Compliance) get
+    # canonicalized BEFORE substring/fuzzy matching, so reordered or
+    # abbreviated inputs find their proper LC slot.
+    _ACRONYMS = {
+        'PSI': 'PRE-SHIPMENT INSPECTION CERTIFICATE',
+        'MTC': 'MILL TEST CERTIFICATE',
+        'COC': 'CERTIFICATE OF CONFORMITY',
+        'COA': 'CERTIFICATE OF ANALYSIS',
+        'GSP': 'GSP / PREFERENTIAL ORIGIN CERTIFICATE',
+        'CPP': 'CERTIFICATE OF PHARMACEUTICAL PRODUCT',
+        'GMP': 'GMP CERTIFICATE',
+        'ISPM-15': 'ISPM-15 COMPLIANCE CERTIFICATE',
+        'ISPM 15': 'ISPM-15 COMPLIANCE CERTIFICATE',
+        'CFS': 'CERTIFICATE OF FREE SALE',
+        'REACH': 'REACH COMPLIANCE CERTIFICATE',
+        'ROHS': 'ROHS CERTIFICATE',
+    }
+    _ALIASES_PRE = {
+        'COMPLIANCE CERTIFICATE': 'CERTIFICATE OF COMPLIANCE',
+        'CONFORMITY CERTIFICATE': 'CERTIFICATE OF CONFORMITY',
+        'ORIGIN CERTIFICATE': 'CERTIFICATE OF ORIGIN',
+        'STERILITY CERTIFICATE': 'CERTIFICATE OF STERILITY',
+        'CLEANLINESS CERTIFICATE': 'CERTIFICATE OF CLEANLINESS',
+        'ANALYSIS CERTIFICATE': 'CERTIFICATE OF ANALYSIS',
+        'WEIGHT CERTIFICATE': 'WEIGHT CERTIFICATE',
+        'FREE SALE CERTIFICATE': 'CERTIFICATE OF FREE SALE',
+        "BENEFICIARY'S DECLARATION": 'BENEFICIARY CERTIFICATE',
+        'BENEFICIARY DECLARATION': 'BENEFICIARY CERTIFICATE',
+        "BENEFICIARY STATEMENT": 'BENEFICIARY CERTIFICATE',
+        "BENEFICIARY'S STATEMENT": 'BENEFICIARY CERTIFICATE',
+        'COLD CHAIN CERTIFICATE': 'TEMPERATURE CERTIFICATE',
+        'LASHING CERTIFICATE': 'CARGO SECURING CERTIFICATE',
+        'GSP CERTIFICATE': 'GSP / PREFERENTIAL ORIGIN CERTIFICATE',
+        'PREFERENTIAL ORIGIN CERTIFICATE': 'GSP / PREFERENTIAL ORIGIN CERTIFICATE',
+        'TANKER CLEANLINESS CERTIFICATE': 'CERTIFICATE OF CLEANLINESS',
+        'CONTAINER CLEANLINESS CERTIFICATE': 'CERTIFICATE OF CLEANLINESS',
+        'STUFFING CERTIFICATE': 'CONTAINER LOADING / STUFFING CERTIFICATE',
+        'CONTAINER LOADING CERTIFICATE': 'CONTAINER LOADING / STUFFING CERTIFICATE',
+        'CONTAINER STUFFING CERTIFICATE': 'CONTAINER LOADING / STUFFING CERTIFICATE',
+        'MATERIAL TEST CERTIFICATE': 'MILL TEST CERTIFICATE',
+        'NO CHILD LABOUR DECLARATION': 'NO CHILD LABOR DECLARATION',
+        'EMBARGO DECLARATION': 'EMBARGO COMPLIANCE DECLARATION',
+        'NON-RADIATION CERTIFICATE': 'RADIATION CERTIFICATE',
+        'NON-BLACKLIST DECLARATION': 'BLACKLIST / SANCTIONS DECLARATION',
+        'BLACKLIST DECLARATION': 'BLACKLIST / SANCTIONS DECLARATION',
+        'SANCTIONS DECLARATION': 'BLACKLIST / SANCTIONS DECLARATION',
+        'SHIPPING ADVICE': 'SHIPMENT ADVICE',
+        # P198gz21 — Don't collapse "Weight and Packing List" to
+        # "Packing List". When the LC has BOTH slots (a common
+        # pattern), collapsing causes the W&PL slot to stay empty.
+        # Let the matcher handle exact match against either slot.
+        # 'WEIGHT AND PACKING LIST': 'PACKING LIST',  # REMOVED
+    }
+    _dt_stripped = dt_upper.strip()
+    # Try direct LC-name match first using ORIGINAL input (so input
+    # "GSP" still matches LC "GSP / Preferential Origin Certificate"
+    # via substring; only expand if no match).
+    _orig_dt_upper = dt_upper
+    if _dt_stripped in _ACRONYMS:
+        # Try original (e.g. "GSP") first against any LC slot — done
+        # below in the for-loops. Fall back to expansion afterward.
+        pass
+    if _dt_stripped in _ALIASES_PRE:
+        dt_upper = _ALIASES_PRE[_dt_stripped]
+    elif _dt_stripped in _ACRONYMS:
+        dt_upper = _ACRONYMS[_dt_stripped]
+    else:
+        # "PSI CERTIFICATE" / "COC CERTIFICATE" patterns
+        m = re.match(r'^([A-Z]{2,5})(?:[-\s]15)?\s+CERTIFICATE$', _dt_stripped)
+        if m and m.group(1) in _ACRONYMS:
+            dt_upper = _ACRONYMS[m.group(1)]
+
     # Normalize: strip plurals and common words for better matching
     def _normalize(s):
         s = s.upper()
@@ -682,15 +790,68 @@ def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tupl
 
     dt_norm = _normalize(dt_upper)
 
+    # P198gz — Block bare-generic substring matches. A doc_type that
+    # is just "CERTIFICATE" (or "DOCUMENT" / "FORM" etc.) must NOT
+    # auto-bind to a multi-word expected like "CERTIFICATE OF ORIGIN"
+    # via simple substring containment. Generic single-word VLM
+    # outputs lack the qualifier needed to identify the certificate
+    # family — the fuzzy/family-aware path below is the right place
+    # to decide if anything matches at all.
+    _GENERIC_SOLO = {
+        'CERTIFICATE', 'CERTIFICATES', 'CERT',
+        'DOCUMENT', 'DOCUMENTS', 'DOC',
+        'FORM', 'FORMS', 'PAGE', 'ATTACHMENT',
+        'NOTE', 'NOTICE', 'STATEMENT',
+    }
+    _dt_is_solo_generic = (
+        dt_upper.strip() in _GENERIC_SOLO
+        or dt_norm.strip() in _GENERIC_SOLO
+    )
+
+    # P198gz17 — First pass: EXACT match (case-insensitive normalized)
+    # always wins. This prevents substring matches from stealing.
+    for i, ed in enumerate(expected_docs):
+        ed_name = ed.get('document_name', '').upper()
+        if dt_upper.strip() == ed_name.strip():
+            return i, ed.get('document_name', '')
+        if dt_norm.strip() == _normalize(ed_name).strip():
+            return i, ed.get('document_name', '')
+
     for i, ed in enumerate(expected_docs):
         ed_name = ed.get('document_name', '').upper()
         ed_norm = _normalize(ed_name)
+        if _dt_is_solo_generic:
+            continue
+        # P198gz17 — Tighter substring containment: the SHORTER side
+        # must have ≥2 significant tokens. A short input like
+        # "Compliance Certificate" should NOT match "ISPM-15
+        # Compliance Certificate" via substring — that's a more
+        # specific doc and the input could be a separate Certificate
+        # of Compliance. Only allow substring when the shorter side
+        # IS the full longer side (containment is tight).
+        def _sig_tok_count(s):
+            return len([t for t in re.findall(r'[A-Z]{3,}', s)
+                        if t not in ('THE','OF','AND','FOR','WITH','TO','A','AN',
+                                     'IN','ON','AT','BY','OR','CERTIFICATE',
+                                     'DECLARATION','REPORT','LIST','LETTER')])
         # Exact containment
         if dt_upper in ed_name or ed_name in dt_upper:
-            return i, ed.get('document_name', '')
-        # Normalized containment
+            shorter = dt_upper if len(dt_upper) <= len(ed_name) else ed_name
+            longer = ed_name if shorter is dt_upper else dt_upper
+            # Allow if shorter is at WORD BOUNDARY in longer AND
+            # the shorter has at least 1 significant non-filler token
+            if _sig_tok_count(shorter) >= 1:
+                # Word-boundary check: the shorter must align as words
+                # (not partial substring of a longer word)
+                if re.search(rf'\b{re.escape(shorter.strip())}\b', longer):
+                    return i, ed.get('document_name', '')
+        # Normalized containment (same tightening)
         if dt_norm in ed_norm or ed_norm in dt_norm:
-            return i, ed.get('document_name', '')
+            shorter = dt_norm if len(dt_norm) <= len(ed_norm) else ed_norm
+            longer = ed_norm if shorter is dt_norm else dt_norm
+            if _sig_tok_count(shorter) >= 1:
+                if re.search(rf'\b{re.escape(shorter.strip())}\b', longer):
+                    return i, ed.get('document_name', '')
 
     # ── Pharma regulatory form alias matching (P198gh — comprehensive) ──
     # Pakistani LCs reference forms by EITHER the form number ("Form 7")
@@ -780,6 +941,14 @@ def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tupl
         return None
     # Try to find a form number in the doc_type string itself
     _dt_form_no = _extract_form_no(dt_upper)
+    # When dt has a SPECIFIC form-N annotation but the dt itself is
+    # just that annotation (e.g. "FORM-E", "FORM 7"), failing to find
+    # the same form number in expected_docs means this is an alien
+    # regulatory form. Don't let fuzzy bind it to a different Form N.
+    _dt_is_just_form_anno = bool(
+        _dt_form_no and re.fullmatch(
+            r'FORM[-\s]+(?:NO\.?\s*)?[-]?\s*[A-Z\d]{1,3}', dt_upper)
+    )
     if _dt_form_no:
         # Doc has explicit form-N annotation — match against any LC
         # required doc that ALSO has the same form number OR the
@@ -796,7 +965,18 @@ def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tupl
             ed_form_no = _extract_form_no(ed_upper)
             if ed_form_no and ed_form_no == _dt_form_no:
                 return i, ed.get('document_name', '')
-    # Check both directions: doc_type → expected and expected → doc_type
+        # If dt is JUST a form annotation (e.g. "FORM-E" / "FORM 7")
+        # and we found no matching Form-N in expected_docs above,
+        # it's an alien regulatory form. Stop here — don't fuzz it
+        # into a different form via the FORM token alone.
+        if _dt_is_just_form_anno:
+            return -1, ""
+    # Check both directions: doc_type → expected and expected → doc_type.
+    # Bare-generic dt_upper ("CERTIFICATE" / "FORM" / etc) must not bind
+    # via this loose substring path either — same rule as the
+    # earlier substring guard.
+    if _dt_is_solo_generic:
+        return -1, ""
     for _alias_key, _alias_set in _PHARMA_ALIASES.items():
         if _alias_key in dt_upper or dt_upper in _alias_key:
             # doc_type matches an alias key — look for any alias value in expected
@@ -850,6 +1030,25 @@ def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tupl
     _is_cert_dt = 'CERTIFICATE' in dt_words
     dt_families = _cert_family(dt_words) if _is_cert_dt else set()
 
+    # P198gz13 — Advice family disambiguation. Vessel Advice and
+    # Shipment Advice share the token "ADVICE" but are DISTINCT
+    # documents (Vessel Advice = ship/voyage details, Shipment
+    # Advice = cargo/shipment details). Block the fuzzy matcher
+    # from cross-binding them via the shared "ADVICE" token alone.
+    _ADVICE_FAMILIES = {
+        'vessel':   {'VESSEL'},
+        'shipment': {'SHIPMENT', 'SHIPPING'},
+    }
+    def _advice_family(words):
+        if 'ADVICE' not in words:
+            return set()
+        f = set()
+        for fam, toks in _ADVICE_FAMILIES.items():
+            if words & toks:
+                f.add(fam)
+        return f
+    _dt_advice_fam = _advice_family(dt_words)
+
     _key_words = {'BILL', 'LADING', 'INVOICE', 'DRAFT', 'EXCHANGE',
                   'ADVICE', 'PACKING', 'WEIGHT', 'QUALITY', 'INSURANCE',
                   'FUMIGATION', 'PHYTOSANITARY'}
@@ -868,6 +1067,11 @@ def _match_type_to_requirement(doc_type: str, expected_docs: List[dict]) -> tupl
             ed_families = _cert_family(ed_words)
             if dt_families and ed_families and not (dt_families & ed_families):
                 continue  # cross-family — reject
+
+        # P198gz13 — Advice family cross-reject
+        _ed_advice_fam = _advice_family(ed_words)
+        if _dt_advice_fam and _ed_advice_fam and not (_dt_advice_fam & _ed_advice_fam):
+            continue  # Vessel Advice ↔ Shipment Advice — distinct docs
 
         # Non-CERTIFICATE overlap tokens count most
         _non_cert_overlap = overlap - {'CERTIFICATE'}
@@ -1230,6 +1434,103 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
                 document_type = _prior_dt_for_match
                 reasoning = f"Step 3 prior classification (preferred): {_prior_dt_for_match}"
                 match_confidence = max(match_confidence, 0.90)
+            else:
+                # P198gz2 — Per-page heading-based labels that the VLM
+                # at packet level commonly mis-routes. When step 3 saw
+                # the literal heading on the page (DETAILED MESSAGE /
+                # VESSEL ADVICE), trust that over the packet-level VLM
+                # which doesn't see the heading text. The VLM otherwise
+                # tends to relabel "Detailed Message" → "Commercial
+                # Invoice" and "Vessel Advice" → various siblings.
+                # GENERIC heading-preference rule (not a hardcoded list).
+                # When step3 has a SPECIFIC, multi-word heading taken
+                # from the literal page title and the packet-level VLM
+                # collapsed it to a generic LC-family label, prefer
+                # step3. Specific = 2+ significant tokens AND step3
+                # title is NOT a substring of the packet VLM's label.
+                _prior_up_tag = _prior_dt_for_match.upper().strip()
+                _vlm_up_tag = (document_type or '').upper().strip()
+                _STOP = {'THE','OF','AND','FOR','WITH','TO','A','AN',
+                         'IN','ON','AT','BY','OR','PAGE','BLANK',
+                         'HEADER','UNKNOWN','CONTINUATION'}
+                _prior_tokens = [
+                    t for t in re.findall(r'[A-Z]{3,}', _prior_up_tag)
+                    if t not in _STOP
+                ]
+                _vlm_tokens = [
+                    t for t in re.findall(r'[A-Z]{3,}', _vlm_up_tag)
+                    if t not in _STOP
+                ]
+                _prior_is_specific = len(_prior_tokens) >= 2
+                _vlm_is_subset_of_prior = (
+                    bool(_vlm_tokens)
+                    and set(_vlm_tokens).issubset(set(_prior_tokens))
+                )
+                _prior_substring_in_vlm = (
+                    _prior_up_tag and _prior_up_tag in _vlm_up_tag
+                )
+                # CONSERVATIVE override: only when step3 is specific
+                # AND VLM and step3 share ZERO significant tokens (i.e.
+                # VLM force-fit to a fundamentally different category).
+                # Three additional guards prevent false-fires:
+                #   1. Normalized-form match — "Air Waybill" and "Airway
+                #      Bill" become "AIRWAYBILL" both. Spelling variants
+                #      should not trigger override.
+                #   2. Step3 is a known back-page / continuation label
+                #      whose packet rightly belongs to the parent doc
+                #      family (BL Conditions / Standard Conditions /
+                #      Terms of Carriage). These are merged INTO the
+                #      parent packet by step03, so override would break
+                #      aggregation.
+                _prior_norm = re.sub(r'\W+', '', _prior_up_tag)
+                _vlm_norm = re.sub(r'\W+', '', _vlm_up_tag)
+                _norm_match = (
+                    _prior_norm and _vlm_norm
+                    and (_prior_norm in _vlm_norm
+                         or _vlm_norm in _prior_norm)
+                )
+                _BACK_PAGE_LABELS = (
+                    'CONDITIONS OF CARRIAGE',
+                    'BL CONDITIONS', 'BILL OF LADING CONDITIONS',
+                    'STANDARD CONDITIONS', 'STANDARD TERMS',
+                    'TERMS AND CONDITIONS',
+                    'TERMS OF CARRIAGE',
+                    'TERMS OF SERVICE',
+                    'GENERAL CONDITIONS',
+                    # BL attachments (rider / continuation / description
+                    # sheet) commonly bundled with the actual BL — must
+                    # stay grouped under the BL packet.
+                    'ATTACH LIST', 'ATTACHED LIST',
+                    'ATTACH RIDER', 'ATTACHED RIDER',
+                    'RIDER',
+                    'DESCRIPTION OF GOODS',
+                    'DESCRIPTION OF CARGO',
+                    'GOODS DESCRIPTION',
+                    'CARGO MANIFEST',
+                    'CONTINUATION SHEET',
+                )
+                _prior_is_back_page = any(
+                    bp in _prior_up_tag for bp in _BACK_PAGE_LABELS
+                )
+                _prefer_prior = (
+                    _prior_is_specific
+                    and bool(_vlm_tokens)
+                    and not (set(_prior_tokens) & set(_vlm_tokens))
+                    and not _prior_substring_in_vlm
+                    and not _norm_match
+                    and not _prior_is_back_page
+                )
+                if _prefer_prior:
+                    document_type = _prior_dt_for_match
+                    reasoning = (
+                        f"P198gz2 heading-based step3 label "
+                        f"'{_prior_dt_for_match}' preferred over "
+                        f"packet-level VLM '{_vlm_dt_lower}' (the "
+                        f"heading is visible on the page; VLM at "
+                        f"packet level often routes detail/vessel "
+                        f"messages to invoice/cover-letter siblings)."
+                    )
+                    match_confidence = max(match_confidence, 0.92)
 
         # ── P198gl — REGULATORY FORM PRESERVATION ──
         # When step 3's prior classification clearly identifies a
@@ -1295,6 +1596,58 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
                                  f"normalised to canonical {canonical}.")
                     match_confidence = max(match_confidence, 0.95)
                     break
+
+        # ── P198gq — ACU-format Beneficiary's Certificate detection ──
+        # Some Pakistani-bank ACU drawings come on a single page that
+        # has none of the line-item structure of a Commercial Invoice
+        # but DOES carry: an "ACU $" amount, "IN WORDS:" amount-in-
+        # words, the Pakistani drawee bank's name + address, importer
+        # block, beneficiary signature, and a reference to the
+        # underlying invoice. The VLM mis-classifies this as
+        # "Commercial Invoice" because of the "INVOICE NO." header
+        # and signed amount, but it's really a Beneficiary's
+        # Certificate / drawing certificate that accompanies the
+        # actual invoice. Recognize the distinctive ACU-format
+        # signature and override.
+        try:
+            _glm_up = (glm_text or '').upper()
+            _vlm_dt_lower = (document_type or '').strip().lower()
+            _is_ci_or_unknown = (
+                'invoice' in _vlm_dt_lower
+                and 'proforma' not in _vlm_dt_lower
+                and 'tax' not in _vlm_dt_lower
+            ) or _vlm_dt_lower in ('unknown', 'document', '')
+            # ACU signature: ACU $ amount + IN WORDS + drawee bank ref
+            _has_acu_amount = bool(re.search(
+                r'\bACU\s*\$\s*[:\-]?\s*[\d,\.]+', _glm_up))
+            _has_in_words = 'IN WORDS' in _glm_up
+            _has_drawee_bank = bool(re.search(
+                r'(?:PAK\s+BANK|DRAWEE\s+BANK|BANK\s+AL\s+HABIB|HABIB\s+BANK)',
+                _glm_up))
+            _has_invoice_ref = bool(re.search(
+                r'BENEFICIARY\s+INVOICE|INVOICE\s+NO\.?\s*[A-Z0-9\-/]+',
+                _glm_up))
+            _no_line_items = not bool(re.search(
+                r'\b(QUANTITY|UNIT\s+PRICE|HS\s+CODE|H\.S\.\s*CODE|'
+                r'TOTAL\s+AMOUNT|EX\s+WORKS|EXW|FOB|CIF|CFR|CPT|CIP)\b',
+                _glm_up))
+            if (_is_ci_or_unknown and _has_acu_amount and _has_in_words
+                    and _has_drawee_bank and _has_invoice_ref
+                    and _no_line_items):
+                document_type = 'Beneficiary Certificate'
+                reasoning = (
+                    "P198gq ACU-format Beneficiary's Certificate: "
+                    "doc carries 'ACU $' amount, 'IN WORDS', drawee "
+                    "Pakistani bank, importer block, beneficiary "
+                    "signature, references the underlying invoice, "
+                    "but has NO commercial-invoice line items "
+                    "(no quantity / unit price / HS code / Incoterms). "
+                    "This is the Pakistani-bank ACU drawing format — a "
+                    "Beneficiary's Certificate, not a Commercial Invoice."
+                )
+                match_confidence = max(match_confidence, 0.92)
+        except Exception:
+            pass
 
         # ── P198cx — Block "Shipping Company Certificate" force-fit ──
         # An LC's "Shipping Company Certificate" requirement is a
@@ -1401,6 +1754,148 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
                     f"attestation). SCC false-match blocked."
                 )
                 match_confidence = max(match_confidence, 0.90)
+
+        # ── P198gz12 — Block "Certificate of Origin" force-fit ──
+        # A genuine Certificate of Origin is issued by a Chamber of
+        # Commerce / customs authority and carries explicit "ORIGIN"
+        # field structure (Country of Origin, Origin Criteria,
+        # Chamber of Commerce stamp). When step8's packet-VLM sees a
+        # generic certificate page that says "we certify the goods
+        # comply with LC" or similar beneficiary-issued language, it
+        # force-fits to "Certificate of Origin" because that's what
+        # the LC required. But such pages are usually Beneficiary
+        # Certificates, not CoOs.
+        #
+        # Rule: if VLM returned "Certificate of Origin" but the page
+        # body lacks the genuine CoO markers AND has Beneficiary-
+        # Certificate signals, override to "Beneficiary Certificate".
+        _vlm_dt_u2 = (document_type or '').strip().upper()
+        if _vlm_dt_u2 == 'CERTIFICATE OF ORIGIN':
+            _glm_up = (glm_text or '').upper()
+            _COO_MARKERS = (
+                'COUNTRY OF ORIGIN',
+                'ORIGIN CRITERIA',
+                'CHAMBER OF COMMERCE',
+                'CERTIFICATE OF ORIGIN',
+                'CERTIFICAT DORIGINE',
+                'OPRINDELSESCERTIFIKAT',
+                'EUR.1', 'EUR1',
+                'GENERALIZED SYSTEM OF PREFERENCES',
+                'FORM A',
+                'CERT OF ORIGIN',
+                # P198gz23 — OCR typo / phonetic variants of "CERTIFICATE"
+                'CERTIFICATATE OF ORIGIN',
+                'CERTIFCATE OF ORIGIN',
+                'CERTIFICAATE OF ORIGIN',
+                'ARE OF ITALY ORIGIN',
+                'ARE OF EU ORIGIN',
+                'ARE OF EUROPEAN UNION ORIGIN',
+                # Self-declared origin variants — bene-issued CoO is
+                # still a CoO when the doc title says so
+                'DECLARE THAT GOODS ARE OF',
+                'DECLARE THE ORIGIN',
+                'GOODS ARE MANUFACTURED IN',
+            )
+            # P198gz23b — Catch any "CERTIFICAT*" + "ORIGIN" within
+            # a short window (handles OCR misspellings, line breaks,
+            # and language variants like "CERTIFICATATE OF ORIGIN").
+            _coo_proximity = bool(re.search(
+                r'\bCERTIFI?C[A-Z]{0,5}\b[\s\S]{0,40}?\bORIGIN\b',
+                _glm_up
+            ))
+            _BENE_CERT_MARKERS = (
+                'WE HEREBY CERTIFY',
+                'WE CERTIFY THAT',
+                "BENEFICIARY'S CERTIFICATE",
+                'BENEFICIARY CERTIFICATE',
+                'COMPLY WITH LC',
+                'COMPLY WITH L/C',
+                'COMPLY WITH THE LETTER OF CREDIT',
+                'AS PER L/C',
+                'AS PER THE LC',
+                'CERTIFY THE GOODS',
+            )
+            _has_coo_markers = (
+                any(m in _glm_up for m in _COO_MARKERS)
+                or _coo_proximity  # P198gz23: OCR-tolerant CERTIFICAT* + ORIGIN
+            )
+            _has_bene_markers = any(m in _glm_up for m in _BENE_CERT_MARKERS)
+            if _has_bene_markers and not _has_coo_markers:
+                # Override — this is a Beneficiary Certificate, not a CoO
+                _override_target = 'Beneficiary Certificate'
+                # Check if step3 had a more specific label
+                _prior_up2 = (_prior_dt_for_match or '').upper()
+                if 'BENEFICIARY' in _prior_up2:
+                    _override_target = _prior_dt_for_match
+                print(
+                    f"[Step 8] P198gz12: overriding VLM "
+                    f"'Certificate of Origin' -> '{_override_target}' "
+                    f"for packet {packet_index} (no CoO markers; "
+                    f"has beneficiary-cert language)"
+                )
+                document_type = _override_target
+                reasoning = (
+                    f"P198gz12: VLM labelled 'Certificate of "
+                    f"Origin' but page lacks CoO markers (no "
+                    f"'Country of Origin', 'Origin Criteria', or "
+                    f"Chamber-of-Commerce stamp) and has "
+                    f"beneficiary-cert language ('we hereby "
+                    f"certify' / 'comply with LC'). Reclassified "
+                    f"as {_override_target}."
+                )
+                match_confidence = max(match_confidence, 0.88)
+                # Re-resolve match against expected docs
+                matched_index, matched_name = _match_type_to_requirement(
+                    document_type, expected_docs)
+                classification_status = (
+                    "matched_document" if matched_index >= 0
+                    else "alien_document")
+
+        # P198gz25 — Block "Draft Bill of Exchange" misclassification
+        # of Draft Survey Report. The word "DRAFT" appears in both
+        # "Draft Survey Report" (vessel-draft measurement by an
+        # independent surveyor like SGS) and "Draft / Bill of Exchange"
+        # (a financial draft drawn under the LC). VLM commonly confuses
+        # the two on coal / bulk cargo LCs. If the text has DSR markers
+        # ("DRAFT SURVEY REPORT" header, vessel-draft language,
+        # hydrostatic-tables reference, surveyor stamps), reclassify.
+        _vlm_dt_dsr = (document_type or '').strip().upper()
+        if _vlm_dt_dsr in ('DRAFT BILL OF EXCHANGE', 'BILL OF EXCHANGE',
+                           'DRAFT'):
+            _glm_for_dsr = (glm_text or '').upper()
+            _is_dsr = bool(re.search(
+                r'\bDRAFT\s+SURVEY\s+REPORT\b'
+                r'|VESSEL\'?S?\s+DRAFT\b'
+                r'|\bHYDROSTATIC\s+TABLES?\b'
+                r'|\bDRAFT\s+SURVEY\s+(?:COMMENCED|COMPLETED)\b'
+                r'|\bSGS\s+SECURED\s+DOCUMENT\b'
+                r'|\bDRAFT\s+MEASUREMENTS?\b',
+                _glm_for_dsr,
+            ))
+            if _is_dsr:
+                print(
+                    f"[Step 8] P198gz25: overriding VLM "
+                    f"'Draft Bill of Exchange' -> 'Draft Survey Report' "
+                    f"for packet {packet_index} (DSR markers present: "
+                    f"draft-survey / vessel-draft / hydrostatic / SGS)"
+                )
+                document_type = 'Draft Survey Report'
+                reasoning = (
+                    "P198gz25: VLM labelled 'Draft Bill of Exchange' "
+                    "but text contains 'DRAFT SURVEY REPORT' or "
+                    "vessel-draft language ('hydrostatic tables', "
+                    "'draft survey commenced'). The word 'DRAFT' here "
+                    "refers to vessel water-displacement, NOT a "
+                    "financial draft. Reclassified as Draft Survey "
+                    "Report."
+                )
+                match_confidence = max(match_confidence, 0.95)
+                matched_index, matched_name = _match_type_to_requirement(
+                    document_type, expected_docs)
+                classification_status = (
+                    "matched_document" if matched_index >= 0
+                    else "alien_document")
+
         document_summary = vlm_result.get('summary', '')
         document_number = vlm_result.get('document_number', '')
         document_date = vlm_result.get('date', '')
@@ -1568,6 +2063,125 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
             'COURIER RECEIPT': 'Courier Receipt',
             'SHIPMENT ADVICE': 'Shipment Advice',
             'SHIPPING ADVICE': 'Shipment Advice',
+            # P198gz13 — Vessel Advice is DISTINCT from Shipment
+            # Advice. Vessel Advice = ship/voyage details (vessel
+            # name, ETA, port). Shipment Advice = cargo/shipment
+            # details (goods, quantity, BL#). They are separate
+            # documents and must not be auto-collapsed.
+            'VESSEL ADVICE': 'Vessel Advice',
+            'VESSEL ARRIVAL ADVICE': 'Vessel Advice',
+            # P198gz14 — Comprehensive certificate-family taxonomy.
+            # All distinct cert types preserved with proper labels
+            # so no doc ever drops to a meaningless "alien" status.
+            'CERTIFICATE OF COMPLIANCE': 'Certificate of Compliance',
+            'COMPLIANCE CERTIFICATE': 'Certificate of Compliance',
+            'PRE-SHIPMENT INSPECTION CERTIFICATE': 'Pre-Shipment Inspection Certificate',
+            'PRE SHIPMENT INSPECTION CERTIFICATE': 'Pre-Shipment Inspection Certificate',
+            'PSI CERTIFICATE': 'Pre-Shipment Inspection Certificate',
+            'PRE-SHIPMENT INSPECTION REPORT': 'Pre-Shipment Inspection Certificate',
+            'CERTIFICATE OF CONFORMITY': 'Certificate of Conformity',
+            'CONFORMITY CERTIFICATE': 'Certificate of Conformity',
+            'COC CERTIFICATE': 'Certificate of Conformity',
+            'ISPM-15 CERTIFICATE': 'ISPM-15 Compliance Certificate',
+            'ISPM 15 CERTIFICATE': 'ISPM-15 Compliance Certificate',
+            'NO WOOD PACKING DECLARATION': 'No Wood Packing Declaration',
+            'NON WOOD PACKING DECLARATION': 'No Wood Packing Declaration',
+            'WOOD PACKING DECLARATION': 'No Wood Packing Declaration',
+            'BLACKLIST DECLARATION': 'Blacklist / Sanctions Declaration',
+            'SANCTIONS DECLARATION': 'Blacklist / Sanctions Declaration',
+            'NON-BLACKLIST DECLARATION': 'Blacklist / Sanctions Declaration',
+            'NON BLACKLIST CERTIFICATE': 'Blacklist / Sanctions Declaration',
+            'CERTIFICATE OF CLEANLINESS': 'Certificate of Cleanliness',
+            'CLEANLINESS CERTIFICATE': 'Certificate of Cleanliness',
+            'TANKER CLEANLINESS CERTIFICATE': 'Certificate of Cleanliness',
+            'CONTAINER CLEANLINESS CERTIFICATE': 'Certificate of Cleanliness',
+            "MANUFACTURER CERTIFICATE": "Manufacturer's Certificate",
+            "MANUFACTURER'S CERTIFICATE": "Manufacturer's Certificate",
+            "MANUFACTURERS CERTIFICATE": "Manufacturer's Certificate",
+            "PRODUCER'S CERTIFICATE": "Manufacturer's Certificate",
+            'PACKING MATERIAL DECLARATION': 'Packing Material Declaration',
+            'PACKAGING MATERIAL DECLARATION': 'Packing Material Declaration',
+            'RADIATION CERTIFICATE': 'Radiation Certificate',
+            'NON-RADIATION CERTIFICATE': 'Radiation Certificate',
+            'RADIOACTIVITY CERTIFICATE': 'Radiation Certificate',
+            'CERTIFICATE OF NON-RADIOACTIVITY': 'Radiation Certificate',
+            'CERTIFICATE OF FREE SALE': 'Certificate of Free Sale',
+            'FREE SALE CERTIFICATE': 'Certificate of Free Sale',
+            'ANTI-DUMPING DECLARATION': 'Anti-Dumping Declaration',
+            'ANTI DUMPING DECLARATION': 'Anti-Dumping Declaration',
+            'PRICING DECLARATION': 'Anti-Dumping Declaration',
+            'BENEFICIARY DECLARATION': 'Beneficiary Certificate',
+            "BENEFICIARY'S DECLARATION": 'Beneficiary Certificate',
+            "BENEFICIARY'S STATEMENT": 'Beneficiary Certificate',
+            'BENEFICIARY STATEMENT': 'Beneficiary Certificate',
+            'NON-NEGOTIABLE COPY DOCUMENTS CERTIFICATE': 'Beneficiary Certificate',
+            'PACKING LIST CERTIFICATE': 'Packing List Certificate',
+            'CERTIFICATE OF PACKING': 'Packing List Certificate',
+            # P198gz15 — Trade / regulatory certificates
+            'EXPORT LICENSE DECLARATION': 'Export License Declaration',
+            'EXPORT LICENCE DECLARATION': 'Export License Declaration',
+            'EXPORT LICENSE': 'Export License Declaration',
+            'IMPORT PERMIT REFERENCE CERTIFICATE': 'Import Permit Reference Certificate',
+            'IMPORT PERMIT': 'Import Permit Reference Certificate',
+            'CUSTOMS DECLARATION COPY': 'Customs Declaration',
+            'CUSTOMS DECLARATION': 'Customs Declaration',
+            'GSP CERTIFICATE': 'GSP / Preferential Origin Certificate',
+            'PREFERENTIAL ORIGIN CERTIFICATE': 'GSP / Preferential Origin Certificate',
+            'GSP / PREFERENTIAL ORIGIN CERTIFICATE': 'GSP / Preferential Origin Certificate',
+            'FORM A CERTIFICATE': 'GSP / Preferential Origin Certificate',
+            # P198gz15 — Product-specific certificates
+            'MILL TEST CERTIFICATE': 'Mill Test Certificate',
+            'MATERIAL TEST CERTIFICATE': 'Mill Test Certificate',
+            'MTC': 'Mill Test Certificate',
+            'CALIBRATION CERTIFICATE': 'Calibration Certificate',
+            'WARRANTY CERTIFICATE': 'Warranty Certificate',
+            'WARRANTY DECLARATION': 'Warranty Certificate',
+            'SHELF LIFE CERTIFICATE': 'Shelf Life Certificate',
+            'SHELF-LIFE CERTIFICATE': 'Shelf Life Certificate',
+            'BATCH CERTIFICATE': 'Batch / Lot Certificate',
+            'LOT CERTIFICATE': 'Batch / Lot Certificate',
+            'BATCH / LOT CERTIFICATE': 'Batch / Lot Certificate',
+            'BATCH/LOT CERTIFICATE': 'Batch / Lot Certificate',
+            'CERTIFICATE OF STERILITY': 'Certificate of Sterility',
+            'STERILITY CERTIFICATE': 'Certificate of Sterility',
+            'TEMPERATURE CERTIFICATE': 'Temperature Certificate',
+            'TEMPERATURE LOG CERTIFICATE': 'Temperature Certificate',
+            'COLD CHAIN CERTIFICATE': 'Temperature Certificate',
+            # P198gz15 — Shipping / logistics declarations
+            'CONTAINER SEAL CERTIFICATE': 'Container Seal Certificate',
+            'SEAL CERTIFICATE': 'Container Seal Certificate',
+            'CONTAINER LOADING CERTIFICATE': 'Container Loading / Stuffing Certificate',
+            'STUFFING CERTIFICATE': 'Container Loading / Stuffing Certificate',
+            'LOADING CERTIFICATE': 'Container Loading / Stuffing Certificate',
+            'CARGO SECURING CERTIFICATE': 'Cargo Securing Certificate',
+            'LASHING CERTIFICATE': 'Cargo Securing Certificate',
+            'FREIGHT CERTIFICATE': 'Freight Certificate',
+            'DEMURRAGE DECLARATION': 'Demurrage / Detention-Free Declaration',
+            'DETENTION-FREE DECLARATION': 'Demurrage / Detention-Free Declaration',
+            'DEMURRAGE / DETENTION-FREE DECLARATION': 'Demurrage / Detention-Free Declaration',
+            # P198gz15 — Ethical / compliance declarations
+            'NO CHILD LABOR DECLARATION': 'No Child Labor Declaration',
+            'NO CHILD LABOUR DECLARATION': 'No Child Labor Declaration',
+            'CHILD LABOR DECLARATION': 'No Child Labor Declaration',
+            'REACH COMPLIANCE CERTIFICATE': 'REACH Compliance Certificate',
+            'REACH CERTIFICATE': 'REACH Compliance Certificate',
+            'ROHS CERTIFICATE': 'RoHS Certificate',
+            'ROHS COMPLIANCE': 'RoHS Certificate',
+            'CONFLICT MINERALS DECLARATION': 'Conflict Minerals Declaration',
+            'CONFLICT MINERAL DECLARATION': 'Conflict Minerals Declaration',
+            'ENVIRONMENTAL COMPLIANCE CERTIFICATE': 'Environmental Compliance Certificate',
+            'ENVIRONMENTAL CERTIFICATE': 'Environmental Compliance Certificate',
+            # P198gz15 — Country/buyer-specific declarations
+            'BOYCOTT DECLARATION': 'Boycott Declaration',
+            'NON-BOYCOTT DECLARATION': 'Boycott Declaration',
+            'EMBARGO COMPLIANCE DECLARATION': 'Embargo Compliance Declaration',
+            'EMBARGO DECLARATION': 'Embargo Compliance Declaration',
+            'TRADE EMBARGO CERTIFICATE': 'Embargo Compliance Declaration',
+            "BENEFICIARY'S CERTIFICATE OF FAX/EMAIL ADVICE": 'Beneficiary Fax/Email Advice Certificate',
+            "BENEFICIARY CERTIFICATE OF FAX ADVICE": 'Beneficiary Fax/Email Advice Certificate',
+            "BENEFICIARY CERTIFICATE OF EMAIL ADVICE": 'Beneficiary Fax/Email Advice Certificate',
+            'FAX ADVICE CERTIFICATE': 'Beneficiary Fax/Email Advice Certificate',
+            'EMAIL ADVICE CERTIFICATE': 'Beneficiary Fax/Email Advice Certificate',
         }
         if document_type:
             _key = document_type.upper().strip()

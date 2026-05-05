@@ -2420,7 +2420,11 @@ def _group_into_packets(classifications: List[dict]) -> List[DocumentPacket]:
             'loading inspection report', 'full loading survey report',
             'survey report', 'inspection report', 'inspection certificate',
             'pre-shipment inspection report', 'draught survey report',
+            'draft survey report',  # P198gz4
             'loading report', 'discharge report',
+            'sgs secured document',  # SGS continuation pages
+            'coal specifications at the loading port',
+            'coal specifications', 'cargo specifications',
         }
         _curr_lower = doc_type.lower().strip()
         _pkt_lower = current_packet.document_type.lower().strip() if current_packet else ''
@@ -4003,6 +4007,20 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             return True
         if 'conditions of carriage' in dtl:
             return True
+        # P198gz28 — Carrier-named generic terms documents bound
+        # behind a BL face (e.g. "Archroma General Terms And
+        # Conditions Of Sale", "Maersk Terms And Conditions",
+        # "Hapag-Lloyd General Conditions"). The carrier/shipper
+        # name appears as a prefix, but the structural content is
+        # the BL's reverse-side terms.
+        if (('terms and conditions' in dtl
+             or 'general terms' in dtl
+             or 'general conditions' in dtl
+             or 'conditions of sale' in dtl)
+                and 'invoice' not in dtl
+                and 'packing' not in dtl
+                and 'insurance' not in dtl):
+            return True
         return False
 
     def _is_bl_attach(dt: str) -> bool:
@@ -4037,64 +4055,93 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         # widens the threshold so T&Cs immediately BEFORE their BL also
         # match (common when the scan order is T&C-then-BL).
         if _is_bl(dt):
-            # P191 — If the BL packet already contains a T&C page
-            # (from the initial grouping phase, which sometimes unions
-            # the BL with a same-doc-type-neighbour T&C before Rule 1
-            # runs), skip absorption. Each BL may carry exactly ONE
-            # T&C — a second one would be a duplicate that leaves
-            # another BL blank-back by mistake.
-            _already_has_tc = False
-            for _pg in (pkt.pages or []):
-                _pdt = ''
-                if isinstance(_pg, dict):
-                    _pdt = str(_pg.get('document_type') or '').lower()
-                if _pdt and _is_bl_tc(_pdt):
-                    _already_has_tc = True
-                    break
-            if _already_has_tc:
-                merged_packets.append(pkt)
-                continue
             _bl_max = max(pkt.page_numbers) if pkt.page_numbers else 0
             _bl_min = min(pkt.page_numbers) if pkt.page_numbers else 9999
-            _best_tc = None
-            _best_dist = 999
-            for j, other in enumerate(packets):
-                if j in _consumed or j == i:
+            # P198gz8 — Absorb ALL consecutive T&C packets that follow
+            # this BL face, up to the next BL face. Maersk-style multi-
+            # original BLs commonly carry 4–5 T&C pages per BL set
+            # (not just 1). Previously P191 capped absorption at 1
+            # T&C — that left orphan T&C packets like [30,31] when
+            # they were part of the BL at page 27. Now we walk forward
+            # through unconsumed packets and absorb every T&C up to
+            # the next BL face packet.
+            # Find next BL face packet after this one
+            _next_bl_face_min = 999999
+            for _j, _o in enumerate(packets):
+                if _j == i or _j in _consumed:
                     continue
-                odt = other.document_type.lower().strip()
-                if not _is_bl_tc(odt):
+                _odt2 = _o.document_type.lower().strip()
+                if _is_bl(_odt2) and not _is_bl_tc(_odt2):
+                    _o_min = min(_o.page_numbers) if _o.page_numbers else 9999
+                    if _o_min > _bl_max and _o_min < _next_bl_face_min:
+                        _next_bl_face_min = _o_min
+            # P198gz9 — Hard boundary: stop T&C absorption at the next
+            # BL face packet (different BL set). Other doc types
+            # (Commercial Invoice, Packing List, etc.) interspersed
+            # between our BL and the next BL face are NOT a boundary —
+            # T&C past them can still belong to our BL when they share
+            # the same BL reference. The unrelated page is simply
+            # SKIPPED, never absorbed.
+            _hard_boundary_min = _next_bl_face_min
+            # Collect candidate T&C packets in [_bl_max+1, boundary)
+            _absorbed_count = 0
+            for _j, _o in enumerate(packets):
+                if _j == i or _j in _consumed:
                     continue
-                _tc_min = min(other.page_numbers) if other.page_numbers else 9999
-                _tc_max = max(other.page_numbers) if other.page_numbers else 0
-                # After-preference: T&C AFTER the BL is the typical
-                # overleaf ordering. Before is still allowed with a
-                # small +1 penalty so after wins on ties but before is
-                # still reachable within the threshold.
-                if _tc_min > _bl_max:
-                    _dist = _tc_min - _bl_max
-                elif _tc_max < _bl_min:
-                    _dist = (_bl_min - _tc_max) + 1
-                else:
-                    _dist = 0
-                if _dist < _best_dist:
-                    _best_tc = j
-                    _best_dist = _dist
-            # P190 — threshold raised from 3 to 6 so T&Cs that are a few
-            # pages away from their BL (common with interleaved attach
-            # lists / rider sheets) still merge.
-            if _best_tc is not None and _best_dist <= 6:
-                other = packets[_best_tc]
-                pkt.page_numbers.extend(other.page_numbers)
-                pkt.pages.extend(other.pages)
-                pkt.stamps.extend(other.stamps)
-                pkt.signatures.extend(other.signatures)
-                pkt.seals.extend(other.seals)
-                # P191 — annotate the packet label so the UI shows the
-                # merged T&C explicitly instead of just "Bill of Lading".
+                _odt2 = _o.document_type.lower().strip()
+                if not _is_bl_tc(_odt2):
+                    continue
+                _tc_min = min(_o.page_numbers) if _o.page_numbers else 9999
+                # Forward-only absorption: T&C must lie BETWEEN this
+                # BL face and the hard boundary (next BL face OR next
+                # unrelated doc family, whichever comes first).
+                if _tc_min > _bl_max and _tc_min < _hard_boundary_min:
+                    pkt.page_numbers.extend(_o.page_numbers)
+                    pkt.pages.extend(_o.pages)
+                    pkt.stamps.extend(_o.stamps)
+                    pkt.signatures.extend(_o.signatures)
+                    pkt.seals.extend(_o.seals)
+                    _consumed.add(_j)
+                    _absorbed_count += 1
+                    _progress(
+                        f"  Merged {_o.packet_id} (BL T&C pg "
+                        f"{_o.page_numbers}) into {pkt.packet_id} "
+                        f"(BL pg {pkt.page_numbers[:3]}…) — extended "
+                        f"BL set absorption (P198gz8/gz9)"
+                    )
+            # Also absorb a T&C immediately BEFORE the BL face (cover-
+            # back ordering) if no T&C was absorbed forward.
+            if _absorbed_count == 0:
+                _best_tc = None; _best_dist = 999
+                for _j, _o in enumerate(packets):
+                    if _j == i or _j in _consumed:
+                        continue
+                    _odt2 = _o.document_type.lower().strip()
+                    if not _is_bl_tc(_odt2):
+                        continue
+                    _tc_max = max(_o.page_numbers) if _o.page_numbers else 0
+                    if _tc_max < _bl_min:
+                        _d = (_bl_min - _tc_max) + 1
+                        if _d < _best_dist and _d <= 6:
+                            _best_tc = _j; _best_dist = _d
+                if _best_tc is not None:
+                    _o = packets[_best_tc]
+                    pkt.page_numbers.extend(_o.page_numbers)
+                    pkt.pages.extend(_o.pages)
+                    pkt.stamps.extend(_o.stamps)
+                    pkt.signatures.extend(_o.signatures)
+                    pkt.seals.extend(_o.seals)
+                    _consumed.add(_best_tc)
+                    _absorbed_count = 1
+                    _progress(
+                        f"  Merged {_o.packet_id} (BL T&C pg "
+                        f"{_o.page_numbers}) into {pkt.packet_id} "
+                        f"(BL pg {pkt.page_numbers[:3]}) — back-cover "
+                        f"absorption (distance {_best_dist})"
+                    )
+            if _absorbed_count > 0:
                 if '+ conditions of carriage' not in pkt.document_type.lower():
                     pkt.document_type = f"{pkt.document_type} + Conditions of Carriage"
-                _consumed.add(_best_tc)
-                _progress(f"  Merged {other.packet_id} (BL T&C pg {other.page_numbers}) into {pkt.packet_id} (BL pg {pkt.page_numbers[:3]}) — distance {_best_dist}")
 
         # Rule 2: Bill of Exchange — absorb endorsement pages
         elif _is_boe(dt):

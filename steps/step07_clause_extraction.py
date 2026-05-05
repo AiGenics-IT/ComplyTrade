@@ -605,6 +605,18 @@ def run(step6_result: dict, output_dir: str = None, progress_callback=None) -> d
         # Forwarder / carrier prohibitions (rules, not doc requirements)
         r'\bFREIGHT\s+FORWARDER\b.*\b(?:NOT\s+ACCEPT|ACCEPTABLE)',
         r'\bCHARTER\s+PARTY\s+(?:BILL|DATE)\b',
+        # P198gz20 — Bank-to-bank certification clauses are CONTENT
+        # requirements on the Documentary Remittance / Forwarding
+        # Schedule, NOT standalone documents. Filter so phantom
+        # "Charges Certificate" entries don't get emitted.
+        r'\b(?:NEGOTIATING|ADVISING|REIMBURSING)\s+BANK\s+'
+        r'(?:MUST|SHALL|TO)\s+CERTIFY\b',
+        r'\bCERTIF(?:Y|ICATION)\s+ON\s+(?:THEIR|THE)\s+'
+        r'(?:DOCUMENTS?\s+)?FORWARDING\s+SCHEDULE\b',
+        r'\bON\s+(?:THEIR|THE)\s+(?:COVERING\s+|COVER\s+)?'
+        r'SCHEDULE\b.*\bCHARGES\b',
+        r'\bALL\s+(?:THEIR\s+)?CHARGES\s+(?:OF\s+THE\s+)?'
+        r'(?:ADVISING|NEGOTIATING)\s+BANK\s+(?:ARE\s+)?(?:PAID|TO\s+BE)',
         # Overwriting / alteration rules
         r'\bOVERWRITING\b',
         r'\bALTERATION\b',

@@ -565,15 +565,35 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
     # the 1-digit alt and then "6" fails the [.)] requirement).
     numbered = re.split(r'\n\s*(2[0-5]|1\d|[1-9])\s*[.)]\s*(?!\d)', '\n' + _normalized)
     if len(numbered) >= 3:
+        # P198gz22 — Merge by parsed clause-number (not assign-by-position).
+        # When amendments add narrative that re-uses numbers like "1)" / "2)"
+        # already present in the original LC, the previous behaviour created
+        # extra clauses (45A-3, 45A-4 etc.) that don't match how SWIFT
+        # amendments work. Real amendments ADD content to the existing
+        # numbered items — the system should merge by number.
+        _by_num = {}
+        _order = []
         for i in range(1, len(numbered) - 1, 2):
+            try:
+                _n = int(numbered[i])
+            except (ValueError, TypeError):
+                continue
             clause_text = numbered[i + 1].strip()
-            if clause_text:
-                clauses.append(Clause(
-                    clause_number=len(clauses) + 1,
-                    clause_id=f"{tag}-{len(clauses) + 1}",
-                    text=clause_text,
-                    parent_tag=tag,
-                ))
+            if not clause_text:
+                continue
+            if _n in _by_num:
+                # Append amendment content to existing clause body
+                _by_num[_n] = (_by_num[_n].rstrip() + '\n' + clause_text).strip()
+            else:
+                _by_num[_n] = clause_text
+                _order.append(_n)
+        for _n in _order:
+            clauses.append(Clause(
+                clause_number=_n,
+                clause_id=f"{tag}-{_n}",
+                text=_by_num[_n],
+                parent_tag=tag,
+            ))
         if clauses:
             return clauses
 

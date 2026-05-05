@@ -1464,15 +1464,24 @@ CRITICAL RULES:
                 "prompt": f"""You are a trade finance document examiner. Verify the amount on the Covering Schedule.
 
 LC Amount & Currency: {amount_str}
+LC Tolerance (F39A): {tol_str if tol_str else 'Not specified — apply ±5% standard buffer'}
 Invoice amounts found: {_inv_amounts_str}
 
 RULES:
 1. Find the TOTAL VALUE / AMOUNT declared on the covering schedule
-2. This amount must match the sum of all presented Commercial Invoices
+2. This amount must match the sum of all presented Commercial Invoices,
+   APPLYING the LC's F39A tolerance (or ±5% if F39A not specified). A small
+   rounding / FX difference within tolerance is NOT a discrepancy.
 3. DO NOT compare the cover amount to the LC amount — compare to invoice total
-4. Any variance between cover schedule amount and invoice total is a discrepancy
-5. The currency must match the LC currency
-6. Extract: amount, currency from the covering schedule""",
+4. ONLY when the variance EXCEEDS the LC tolerance is it a discrepancy.
+   In your verdict the discrepancy text MUST state the diff percentage
+   AND that it exceeds the applied tolerance, e.g.:
+   "Cover/invoice mismatch: USD 4,201,185.85 vs USD 4,667,984.28 — diff
+    11.1%, exceeds ±10% tolerance per F39A."
+5. If within tolerance, PASS the row with reason explaining the tolerance
+   was applied, e.g.: "Within ±10% tolerance per F39A (diff 2.3%)."
+6. The currency must match the LC currency
+7. Extract: amount, currency from the covering schedule""",
                 "doc_text": _get_doc_text(cover),
                 "image_path": (cover.get('page_image_paths', [None]) or [None])[0],
                 "clause_ref": "F32B", "condition": f"Cover schedule amount must match invoice total",
