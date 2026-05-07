@@ -3935,6 +3935,147 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     packets = _group_into_packets(classifications)
 
     # ─────────────────────────────────────────────────────────────────
+    # P198gz44 — Same-N "Page K of N" continuation merger.
+    #
+    # When consecutive packets share the same "Page K of N" marker
+    # series (e.g. pkt_A covers Page 1-3 of 4, pkt_B covers Page 4
+    # of 4), the second packet is the tail of the first multi-page
+    # document — even when the VLM gave it a different doc_type
+    # because the page LOOKED like a different certificate. Real
+    # signal: same N, sequential K, adjacent PDF pages.
+    #
+    # Anchor: 5a0c7112 — Survey Report pages 17-20 ("Page 1..4 of 4")
+    # split into pkt_11 (Survey Report, pgs 17-19) + pkt_12 ("SHIPPED
+    # WEIGHT AND SHIPPED QUALITY FINAL AT LOADPORT", pg20). pg20 is
+    # actually Page 4 of 4 of the same Survey Report — a new section
+    # heading INSIDE the report, not a different document. Should
+    # merge into pkt_11; the per-page document_type still reflects
+    # the section header on each page.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        # Reuse _hdr_text_lookup if already built; build if not.
+        if '_hdr_text_lookup' not in dir():
+            _hdr_text_lookup = {}
+            for _pg in pages:
+                _pn = (_pg.page_number if hasattr(_pg, 'page_number')
+                       else _pg.get('page_number', 0))
+                _txt = (_pg.cleaned_text if hasattr(_pg, 'cleaned_text')
+                        else _pg.get('cleaned_text', '')) or ''
+                _hdr_text_lookup[_pn] = _txt
+        _PXY_RE = re.compile(
+            r'\bPage\s+(\d{1,2})\s*(?:of|/)\s*(\d{1,2})\b',
+            flags=re.IGNORECASE,
+        )
+        # Skip packet types that should NOT be merged via Page-of-N
+        # (BL face packets handled by P198gz39 separately; SWIFT msgs
+        # handled by amendment splitter).
+        _SKIP_PXY_TYPES = (
+            'lc', 'amendment', 'mt700', 'mt701', 'mt707', 'mt708',
+            'mt799', 'mt999', 'mt705', 'mt710', 'mt711', 'mt720',
+            'mt721', 'mt730', 'mt740',
+        )
+
+        def _packet_pxy_range(_p):
+            """Return (min_x, max_x, n) across all pages of a packet,
+            or (0, 0, 0) if no marker found."""
+            _min_x = 0
+            _max_x = 0
+            _n = 0
+            for _pn in sorted(_p.page_numbers or []):
+                _t = _hdr_text_lookup.get(_pn, '') or ''
+                _m = _PXY_RE.search(_t)
+                if _m:
+                    _x = int(_m.group(1))
+                    _y = int(_m.group(2))
+                    if _y < 2:
+                        continue
+                    if _n and _y != _n:
+                        # Different N — skip (not part of same series)
+                        continue
+                    _n = _y
+                    if _min_x == 0 or _x < _min_x:
+                        _min_x = _x
+                    if _x > _max_x:
+                        _max_x = _x
+            return (_min_x, _max_x, _n)
+
+        _consume_44 = set()
+        # Sort packets by min page so we walk in PDF order
+        _packets_sorted_44 = sorted(
+            range(len(packets)),
+            key=lambda _i: (
+                min(packets[_i].page_numbers)
+                if packets[_i].page_numbers else 0
+            ),
+        )
+        for _idx_pos in range(len(_packets_sorted_44)):
+            _i = _packets_sorted_44[_idx_pos]
+            if _i in _consume_44:
+                continue
+            _pkt_i = packets[_i]
+            _dt_i_low = (_pkt_i.document_type or '').lower().strip()
+            if _dt_i_low in _SKIP_PXY_TYPES:
+                continue
+            _min_xi, _max_xi, _ni = _packet_pxy_range(_pkt_i)
+            if _ni < 2:
+                continue
+            _last_x = _max_xi
+            for _j_pos in range(_idx_pos + 1, len(_packets_sorted_44)):
+                _j = _packets_sorted_44[_j_pos]
+                if _j in _consume_44:
+                    continue
+                _pkt_j = packets[_j]
+                _dt_j_low = (_pkt_j.document_type or '').lower().strip()
+                if _dt_j_low in _SKIP_PXY_TYPES:
+                    break
+                # Adjacency: pdf-page gap small
+                _pi_max = (max(_pkt_i.page_numbers)
+                           if _pkt_i.page_numbers else 0)
+                _pj_min = (min(_pkt_j.page_numbers)
+                           if _pkt_j.page_numbers else 9999)
+                if _pj_min - _pi_max > 2:
+                    break
+                _min_xj, _max_xj, _nj = _packet_pxy_range(_pkt_j)
+                if _nj != _ni:
+                    break
+                # Sequential: pkt_j's min_x should be exactly
+                # _last_x + 1 (or _last_x + 2 to tolerate an
+                # in-between blank/stamp page).
+                if _min_xj == _last_x + 1 or _min_xj == _last_x + 2:
+                    _pkt_i.page_numbers.extend(_pkt_j.page_numbers)
+                    _pkt_i.pages.extend(_pkt_j.pages)
+                    _pkt_i.stamps.extend(_pkt_j.stamps)
+                    _pkt_i.signatures.extend(_pkt_j.signatures)
+                    _pkt_i.seals.extend(_pkt_j.seals)
+                    _consume_44.add(_j)
+                    _last_x = _max_xj
+                    try:
+                        _progress(
+                            f"  [P198gz44] merged {_pkt_j.packet_id} "
+                            f"(was '{_pkt_j.document_type}' Page "
+                            f"{_min_xj}-{_max_xj}/{_nj} pg "
+                            f"{_pkt_j.page_numbers}) into "
+                            f"{_pkt_i.packet_id} ({_pkt_i.document_type} "
+                            f"Page-of-N continuation)"
+                        )
+                    except Exception:
+                        pass
+                    if _last_x >= _ni:
+                        break  # series complete
+                else:
+                    break
+        if _consume_44:
+            packets = [p for _i, p in enumerate(packets)
+                       if _i not in _consume_44]
+            for _idx, _pkt in enumerate(packets, start=1):
+                _pkt.packet_id = f"pkt_{_idx}"
+    except Exception as _e:
+        try:
+            _progress(f"[P198gz44 Page-of-N continuation merger] exception: {_e}")
+        except Exception:
+            pass
+
+    # ─────────────────────────────────────────────────────────────────
     # P198gz41 — Multi-invoice / multi-PL splitter via repeating issuer
     # header. The VLM commonly marks new-invoice header pages as
     # "Commercial Invoice cont=True" when consecutive invoices come
