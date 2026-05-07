@@ -1520,7 +1520,75 @@ def _classify_single_packet(packet: dict, expected_docs: List[dict], packet_inde
                     and not _norm_match
                     and not _prior_is_back_page
                 )
-                if _prefer_prior:
+                # ─────────────────────────────────────────────────
+                # P198gz51 — Multi-word specific-doc preservation.
+                # When step 3's prior label is a clearly-named
+                # specific document with multiple distinguishing
+                # words (e.g. "CONTAINER WISE DETAILED STUFFING
+                # LIST", "DRAFT SURVEY REPORT", "CERTIFICATE OF
+                # SAMPLING AND ANALYSIS") AND the VLM tried to
+                # collapse it to a generic single-or-two-word
+                # bucket (PACKING LIST, INVOICE, CERTIFICATE),
+                # prefer the prior label even when there's
+                # token overlap.
+                # Anchor: 174c1ef0 pg32 — step 3 had it as
+                # "CONTAINER WISE DETAILED STUFFING LIST" but
+                # step 8's VLM force-fit to "Packing List"
+                # because the LC's required-doc list contained
+                # "Packing List" (LC also lists this stuffing
+                # list separately under F46A).
+                # ─────────────────────────────────────────────────
+                _SPECIFIC_DOC_MARKERS = (
+                    'STUFFING LIST', 'STUFFING SHEET',
+                    'CONTAINER WISE', 'CONTAINER-WISE',
+                    'DETAILED STUFFING', 'CONTAINER STUFFING',
+                    'DRAFT SURVEY', 'DRAFT MEASUREMENTS',
+                    'FOSFA', 'GAFTA', 'INTERTEK',
+                    'SAMPLING AND ANALYSIS', 'SAMPLING & ANALYSIS',
+                    'PRE-SHIPMENT INSPECTION',
+                    'BENZIDINE', 'AZO DYE',
+                    'COAL QUALITY', 'COAL ANALYSIS',
+                    'CALORIFIC VALUE', 'PROXIMATE ANALYSIS',
+                    'ULTIMATE ANALYSIS',
+                    'BATCH CERTIFICATE',
+                    'CERTIFICATE OF FREE SALE',
+                    'CERTIFICATE OF PHARMACEUTICAL PRODUCT',
+                    'WHO-GMP', 'GMP CERTIFICATE',
+                    'MANUFACTURER\'S CERTIFICATE',
+                    'MILL TEST', 'MILL CERTIFICATE',
+                    'CALIBRATION CERTIFICATE',
+                    'ISPM-15', 'FUMIGATION',
+                    'PHYTOSANITARY',
+                )
+                _prior_has_specific_marker = any(
+                    m in _prior_up_tag
+                    for m in _SPECIFIC_DOC_MARKERS
+                )
+                # Word-count gate: prior must have ≥ 3 distinct
+                # words to qualify as a "specific multi-word"
+                # name (avoids collapsing legitimate generic
+                # disagreements).
+                _prior_word_count = len(_prior_tokens)
+                _vlm_is_generic = (_vlm_dt_lower in {
+                    'packing list', 'invoice', 'certificate',
+                    'commercial invoice', 'bill of lading',
+                    'beneficiary certificate', 'inspection certificate',
+                } or len(_vlm_tokens) <= 2)
+                if (_prior_has_specific_marker
+                        and _prior_word_count >= 3
+                        and _vlm_is_generic
+                        and not _prior_is_back_page):
+                    document_type = _prior_dt_for_match
+                    reasoning = (
+                        f"P198gz51 specific-doc preservation: "
+                        f"step 3 prior label "
+                        f"'{_prior_dt_for_match}' contains a "
+                        f"distinguishing marker; refusing to "
+                        f"collapse to generic VLM verdict "
+                        f"'{_vlm_dt_lower}'."
+                    )
+                    match_confidence = max(match_confidence, 0.92)
+                elif _prefer_prior:
                     document_type = _prior_dt_for_match
                     reasoning = (
                         f"P198gz2 heading-based step3 label "
