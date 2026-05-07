@@ -3935,6 +3935,22 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     packets = _group_into_packets(classifications)
 
     # ─────────────────────────────────────────────────────────────────
+    # Shared page-text lookup for all P198gz38-44 post-passes. Hoisted
+    # so each fix can reference it without re-building (and without
+    # NameError if an earlier fix's try-block fails).
+    # ─────────────────────────────────────────────────────────────────
+    _step03_page_text = {}
+    try:
+        for _pg in pages:
+            _pn = (_pg.page_number if hasattr(_pg, 'page_number')
+                   else _pg.get('page_number', 0))
+            _txt = (_pg.cleaned_text if hasattr(_pg, 'cleaned_text')
+                    else _pg.get('cleaned_text', '')) or ''
+            _step03_page_text[_pn] = _txt
+    except Exception:
+        _step03_page_text = {}
+
+    # ─────────────────────────────────────────────────────────────────
     # P198gz44 — Same-N "Page K of N" continuation merger.
     #
     # When consecutive packets share the same "Page K of N" marker
@@ -3953,15 +3969,15 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     # the section header on each page.
     # ─────────────────────────────────────────────────────────────────
     try:
-        # Reuse _hdr_text_lookup if already built; build if not.
-        if '_hdr_text_lookup' not in dir():
-            _hdr_text_lookup = {}
+        # Reuse _step03_page_text if already built; build if not.
+        if '_step03_page_text' not in dir():
+            _step03_page_text = {}
             for _pg in pages:
                 _pn = (_pg.page_number if hasattr(_pg, 'page_number')
                        else _pg.get('page_number', 0))
                 _txt = (_pg.cleaned_text if hasattr(_pg, 'cleaned_text')
                         else _pg.get('cleaned_text', '')) or ''
-                _hdr_text_lookup[_pn] = _txt
+                _step03_page_text[_pn] = _txt
         _PXY_RE = re.compile(
             r'\bPage\s+(\d{1,2})\s*(?:of|/)\s*(\d{1,2})\b',
             flags=re.IGNORECASE,
@@ -3982,7 +3998,7 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             _max_x = 0
             _n = 0
             for _pn in sorted(_p.page_numbers or []):
-                _t = _hdr_text_lookup.get(_pn, '') or ''
+                _t = _step03_page_text.get(_pn, '') or ''
                 _m = _PXY_RE.search(_t)
                 if _m:
                     _x = int(_m.group(1))
@@ -4098,13 +4114,13 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     _progress("Detecting multi-document packets and splitting at repeated headers...")
     try:
         # Build page text lookup
-        _hdr_text_lookup = {}
+        _step03_page_text = {}
         for _pg in pages:
             _pn = (_pg.page_number if hasattr(_pg, 'page_number')
                    else _pg.get('page_number', 0))
             _txt = (_pg.cleaned_text if hasattr(_pg, 'cleaned_text')
                     else _pg.get('cleaned_text', '')) or ''
-            _hdr_text_lookup[_pn] = _txt
+            _step03_page_text[_pn] = _txt
 
         def _header_signature(_txt):
             """Normalised signature of the FIRST 200 chars: uppercase,
@@ -4135,13 +4151,13 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                 _new_packets.append(_pkt)
                 continue
             # Compute signatures, find repeating header positions
-            _first_sig = _header_signature(_hdr_text_lookup.get(_pkt_pages[0], ''))
+            _first_sig = _header_signature(_step03_page_text.get(_pkt_pages[0], ''))
             if not _first_sig:
                 _new_packets.append(_pkt)
                 continue
             _split_starts = [0]
             for _i, _pn in enumerate(_pkt_pages[1:], start=1):
-                _sig = _header_signature(_hdr_text_lookup.get(_pn, ''))
+                _sig = _header_signature(_step03_page_text.get(_pn, ''))
                 # Header repeats — new doc instance.
                 # Use a similarity check: ≥80% of first sig's tokens
                 # appear in this sig and length within 25%.
@@ -4234,7 +4250,7 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     # "Certificate"; pg63-66 all dropped to bare "Sending Report".
     # ─────────────────────────────────────────────────────────────────
     try:
-        # Use the same _hdr_text_lookup built above
+        # Use the same _step03_page_text built above
         _SUFFIXABLE_TYPES = {
             'certificate', 'sending report', 'beneficiary certificate',
             'shipping advice', 'shipment advice', 'shipment notice',
@@ -4251,7 +4267,7 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                              if _pkt.page_numbers else None)
                 if _pg_first is None:
                     continue
-                _txt = _hdr_text_lookup.get(_pg_first, '') or ''
+                _txt = _step03_page_text.get(_pg_first, '') or ''
                 _head = _txt[:400].upper()
                 # Search for "<TYPE>-N" or "<TYPE> - N" or "<TYPE> N"
                 # Use the canonical doc_type's words as the prefix.
@@ -4343,7 +4359,7 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                 continue
             # Get pkt_j first page's text
             _pj_first_pg = sorted(_pkt_j.page_numbers)[0]
-            _pj_text = (_hdr_text_lookup.get(_pj_first_pg, '') or '').upper()
+            _pj_text = (_step03_page_text.get(_pj_first_pg, '') or '').upper()
             if not _pj_text:
                 continue
             # Check title absence
@@ -4409,13 +4425,13 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     try:
         # Build a quick page_number -> cleaned_text map for header
         # detection. step02's pages list is already in `pages` here.
-        _amd_text_lookup = {}
+        _step03_page_text = {}
         for _pg in pages:
             _pn = (_pg.page_number if hasattr(_pg, 'page_number')
                    else _pg.get('page_number', 0))
             _txt = (_pg.cleaned_text if hasattr(_pg, 'cleaned_text')
                     else _pg.get('cleaned_text', '')) or ''
-            _amd_text_lookup[_pn] = _txt
+            _step03_page_text[_pn] = _txt
         _AMD_HEADER_RE = re.compile(
             r'\bMessage\s+Details\s+#\s*\d+\b'
             r'|(?:^|\n|\s):?\s*F?26E\s*:?\s*[A-Za-z]'
@@ -4443,7 +4459,7 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             # Find page indices where a fresh amendment header starts
             _split_starts = []
             for _i, _pn in enumerate(_pkt_pages):
-                _txt = _amd_text_lookup.get(_pn, '') or ''
+                _txt = _step03_page_text.get(_pn, '') or ''
                 if _AMD_HEADER_RE.search(_txt):
                     _split_starts.append(_i)
             if len(_split_starts) <= 1:
@@ -4812,7 +4828,7 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             # Get the second packet's first-page text and verify
             # endorsement-only pattern.
             _pj_first_pg = sorted(_pkt_j.page_numbers)[0]
-            _pj_text = _amd_text_lookup.get(_pj_first_pg, '') or ''
+            _pj_text = _step03_page_text.get(_pj_first_pg, '') or ''
             if not _ENDORSE_ONLY_RE.search(_pj_text):
                 continue
             if _BOE_BODY_RE.search(_pj_text):
@@ -4877,13 +4893,13 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     # ─────────────────────────────────────────────────────────────────
     try:
         # Build page text lookup once
-        _bl_text_lookup = {}
+        _step03_page_text = {}
         for _pg in pages:
             _pn = (_pg.page_number if hasattr(_pg, 'page_number')
                    else _pg.get('page_number', 0))
             _txt = (_pg.cleaned_text if hasattr(_pg, 'cleaned_text')
                     else _pg.get('cleaned_text', '')) or ''
-            _bl_text_lookup[_pn] = _txt
+            _step03_page_text[_pn] = _txt
         _BL_NO_RE = re.compile(
             r'\bB\s*/?\s*L\s*(?:NO\.?|NUMBER|N°)?\s*[:.]?\s*'
             r'([A-Z][A-Z0-9\-]{6,})\b',
@@ -4909,7 +4925,7 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             _x = 0
             _n = 0
             for _pn in sorted(_p.page_numbers or []):
-                _t = _bl_text_lookup.get(_pn, '') or ''
+                _t = _step03_page_text.get(_pn, '') or ''
                 if not _t:
                     continue
                 if not _bl_no:
