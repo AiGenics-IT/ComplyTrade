@@ -211,6 +211,85 @@ Return ONLY valid JSON:
 }}"""
 
 
+# ─────────────────────────────────────────────────────────────────
+# P198gz46 — Stamp-date year sanity guard.
+#
+# When the VLM/OCR extracts a date from a rubber stamp / received-
+# stamp on a document and the extracted year is far in the past
+# relative to the document's own issue date, the year was almost
+# certainly mis-read because the digit was cut off, blurred, or
+# overlapped by other ink. Common pattern: "30 APR 2026" gets read
+# as "30 APR 2020" because the trailing "6" looks like a "0".
+#
+# Rule: when an extracted date's year is more than 1 year BEFORE
+# the document's own issue date, replace the year with the issue
+# date's year and log the correction. The day/month are kept as
+# extracted (those are usually correct; only the year digit is
+# OCR-fragile when partially cut off).
+#
+# Anchor: cb7d7bbf pg32 — Documentary Remittance issued 28-Apr-26;
+# the bank received-stamp on the bottom right reads "30 APR 2026"
+# but VLM extracted "30 APR 2020". The 2020 year is 6 years before
+# the doc's own issue date, so it's clearly a misread.
+# ─────────────────────────────────────────────────────────────────
+
+_STAMP_DATE_RE = re.compile(
+    r'\b(\d{1,2})[\s\-/.]+'
+    r'(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|'
+    r'JANUARY|FEBRUARY|MARCH|APRIL|JUNE|JULY|AUGUST|'
+    r'SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)[\s\-/.]+'
+    r'(\d{4})\b',
+    flags=re.IGNORECASE,
+)
+
+
+def _sanity_correct_stamp_years(text, doc_date, doc_issue_date, change_log):
+    """Scan text for date-like tokens whose year is implausibly far
+    BEFORE the document's own date, and replace the year with the
+    document year. Returns the (possibly corrected) text."""
+    if not text:
+        return text
+    try:
+        # Reference year = the doc's own issue date year (or document_date)
+        _ref_year = None
+        for _src in (doc_issue_date, doc_date):
+            if _src:
+                _m_y = re.search(r'\b(20\d{2})\b', str(_src))
+                if _m_y:
+                    _ref_year = int(_m_y.group(1))
+                    break
+        if _ref_year is None:
+            return text
+
+        def _fix_year(m):
+            day = m.group(1)
+            mon = m.group(2)
+            yr = int(m.group(3))
+            if yr < _ref_year - 1:
+                # Year is implausibly old — replace
+                new_yr = _ref_year
+                if change_log is not None:
+                    try:
+                        change_log.append(asdict(ChangeLogEntry(
+                            field="stamp_year_corrected",
+                            old_value=m.group(0),
+                            new_value=f"{day} {mon} {new_yr}",
+                            reason=(f"P198gz46: extracted year {yr} is "
+                                    f"{_ref_year - yr} years before doc "
+                                    f"issue year {_ref_year} — likely "
+                                    f"OCR misread of cut-off digit; "
+                                    f"corrected year to {new_yr}"),
+                            timestamp=time.time(),
+                        )))
+                    except Exception:
+                        pass
+                return f"{day} {mon} {new_yr}"
+            return m.group(0)
+        return _STAMP_DATE_RE.sub(_fix_year, text)
+    except Exception:
+        return text
+
+
 def _reconcile_single_packet(packet: dict, expected_docs: List[dict], packet_index: int) -> dict:
     """
     Reconcile a single shipping packet: send image + GLM text + classification
@@ -449,7 +528,12 @@ def _reconcile_single_packet(packet: dict, expected_docs: List[dict], packet_ind
         page_image_paths=packet.get('page_image_paths', []),
         raw_text=packet.get('raw_text', ''),
         cleaned_text=packet.get('cleaned_text', glm_text),
-        refined_text=refined_text,
+        refined_text=_sanity_correct_stamp_years(
+            refined_text,
+            packet.get('document_date', ''),
+            (packet.get('unified_summary') or {}).get('issue_date', ''),
+            change_log,
+        ),
         document_type=doc_type,
         classification_status=packet.get('classification_status', original_status),
         match_confidence=confidence,
@@ -462,7 +546,15 @@ def _reconcile_single_packet(packet: dict, expected_docs: List[dict], packet_ind
         document_number=packet.get('document_number', ''),
         document_date=packet.get('document_date', ''),
         document_amount=packet.get('document_amount', ''),
-        stamps=packet.get('stamps', []),
+        stamps=[
+            (lambda _s: ({**_s, 'text': _sanity_correct_stamp_years(
+                _s.get('text', ''),
+                packet.get('document_date', ''),
+                (packet.get('unified_summary') or {}).get('issue_date', ''),
+                change_log,
+            )} if isinstance(_s, dict) else _s))(_s)
+            for _s in (packet.get('stamps', []) or [])
+        ],
         signatures=packet.get('signatures', []),
         seals=packet.get('seals', []),
         logos=packet.get('logos', []),
