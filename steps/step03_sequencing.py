@@ -3934,6 +3934,138 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     _progress("Grouping pages into document packets...")
     packets = _group_into_packets(classifications)
 
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz38 — Multi-amendment packet splitter.
+    #
+    # _force_merge_swift in _group_into_packets aggressively merges
+    # consecutive Amendment-typed pages into one packet — a correct
+    # behaviour for a SINGLE multi-page MT707, but wrong when N
+    # separate amendments appear back-to-back. Each MT707 is its own
+    # SWIFT message carrying its own F26E (Number of Amendment) and
+    # F30 (Date of Amendment) fields, and step06 sorts amendments by
+    # F26E to apply them in chronological order. Merging them all
+    # into one packet collapses N amendments → 1 and step06 cannot
+    # apply them in sequence.
+    #
+    # This post-pass scans every Amendment / MT707 / MT708 packet
+    # whose pages contain MULTIPLE fresh-amendment-start signals
+    # (Message Details # / :26E: / Identifier fin.707 / Message type
+    # 707 / MT707 header). Splits the packet at each boundary so each
+    # logical amendment becomes its own packet.
+    #
+    # Anchor: cb7d7bbf (LC 1003LC55989/2026, Sumitomo). 13 amendments
+    # were merged into 2 packets (pages 1-14 = pkt_1, pages 16-27 =
+    # pkt_3); after splitting, each amendment becomes one packet so
+    # step06 can apply Amendment 1 -> 2 -> ... -> 13 in order via
+    # F26E sorting.
+    # ─────────────────────────────────────────────────────────────────
+    _progress("Detecting multi-amendment packets and splitting...")
+    try:
+        # Build a quick page_number -> cleaned_text map for header
+        # detection. step02's pages list is already in `pages` here.
+        _amd_text_lookup = {}
+        for _pg in pages:
+            _pn = (_pg.page_number if hasattr(_pg, 'page_number')
+                   else _pg.get('page_number', 0))
+            _txt = (_pg.cleaned_text if hasattr(_pg, 'cleaned_text')
+                    else _pg.get('cleaned_text', '')) or ''
+            _amd_text_lookup[_pn] = _txt
+        _AMD_HEADER_RE = re.compile(
+            r'\bMessage\s+Details\s+#\s*\d+\b'
+            r'|(?:^|\n|\s):?\s*F?26E\s*:?\s*[A-Za-z]'
+            r'|\bNumber\s+of\s+Amendment\b'
+            r'|\bIdentifier\s*:\s*fin\.?\s*707\b'
+            r'|\bMessage\s+type\s*[:\s]+707\b'
+            r'|^\s*MT\s*707\b'
+            r'|\bSWIFT_MT\s*707\b',
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+        _AMD_TYPES = {
+            'amendment', 'mt707', 'mt708', 'amendment to a documentary credit',
+        }
+        _split_count = 0
+        _new_packets = []
+        for _pkt in packets:
+            _dt_low = (_pkt.document_type or '').lower().strip()
+            if _dt_low not in _AMD_TYPES:
+                _new_packets.append(_pkt)
+                continue
+            _pkt_pages = sorted(_pkt.page_numbers or [])
+            if len(_pkt_pages) <= 1:
+                _new_packets.append(_pkt)
+                continue
+            # Find page indices where a fresh amendment header starts
+            _split_starts = []
+            for _i, _pn in enumerate(_pkt_pages):
+                _txt = _amd_text_lookup.get(_pn, '') or ''
+                if _AMD_HEADER_RE.search(_txt):
+                    _split_starts.append(_i)
+            if len(_split_starts) <= 1:
+                # Single-amendment packet — keep as-is
+                _new_packets.append(_pkt)
+                continue
+            # Walk splits: each [start_i, next_start_i) becomes its own packet
+            for _sp_idx, _start_i in enumerate(_split_starts):
+                _end_i = (_split_starts[_sp_idx + 1]
+                          if _sp_idx + 1 < len(_split_starts)
+                          else len(_pkt_pages))
+                _sub_pages = _pkt_pages[_start_i:_end_i]
+                _sub_pages_data = [
+                    pg for pg in (_pkt.pages or [])
+                    if (pg.get('page_number') if isinstance(pg, dict)
+                        else getattr(pg, 'page_number', None)) in _sub_pages
+                ]
+                if not _sub_pages_data:
+                    continue
+                _sub_pkt = DocumentPacket(
+                    packet_id=(_pkt.packet_id
+                               + (f"_amd{_sp_idx + 1}"
+                                  if len(_split_starts) > 1 else '')),
+                    document_type=_pkt.document_type,
+                    pages=_sub_pages_data,
+                    page_numbers=_sub_pages,
+                    boundary_confidence=_pkt.boundary_confidence,
+                    copy_status=_pkt.copy_status,
+                    copy_label=_pkt.copy_label,
+                    marking_status=_pkt.marking_status,
+                    stamps=[s for pg in _sub_pages_data
+                            for s in (pg.get('stamps') or [])
+                            if isinstance(pg, dict)],
+                    signatures=[s for pg in _sub_pages_data
+                                for s in (pg.get('signatures') or [])
+                                if isinstance(pg, dict)],
+                    seals=[s for pg in _sub_pages_data
+                           for s in (pg.get('seals') or [])
+                           if isinstance(pg, dict)],
+                    logos=[l for pg in _sub_pages_data
+                           for l in (pg.get('logos') or [])
+                           if isinstance(pg, dict)],
+                    doc_hint=_pkt.doc_hint,
+                )
+                _new_packets.append(_sub_pkt)
+            _split_count += 1
+            try:
+                _progress(
+                    f"  [P198gz38] {_pkt.packet_id} "
+                    f"(pages {_pkt_pages[0]}-{_pkt_pages[-1]}) "
+                    f"split into {len(_split_starts)} amendment packets"
+                )
+            except Exception:
+                pass
+        # Reassign sequential packet_ids so downstream code's
+        # pkt_N convention stays intact.
+        if _split_count:
+            for _idx, _pkt in enumerate(_new_packets, start=1):
+                _pkt.packet_id = f"pkt_{_idx}"
+            packets = _new_packets
+            _progress(f"  [P198gz38] split {_split_count} merged amendment "
+                      f"packet(s); total packets now {len(packets)}")
+    except Exception as _e:
+        try:
+            _progress(f"[P198gz38 amendment-splitter] exception: {_e}")
+        except Exception:
+            pass
+
     # ── Smart Document Merging ──
     # After initial packet building, merge related documents that are on
     # different (non-adjacent) pages:
@@ -4159,6 +4291,286 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                     break
 
         merged_packets.append(pkt)
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz40 — Draft (BoE) front + back endorsement merger.
+    #
+    # When a Bill of Exchange spans two physical pages — front (page
+    # 1) carries the BoE body ("BILL OF EXCHANGE / FOR USD / AT
+    # SIGHT / pay to ...") and back (page 2) carries only endorsement
+    # stamps ("PAY TO THE ORDER OF ANY BANK") plus signatures — the
+    # VLM tends to classify the back page as another Draft Bill of
+    # Exchange (because it "looks like a BoE-related page"), so
+    # _group_into_packets emits two consecutive Draft packets for
+    # what is actually one logical BoE.
+    #
+    # Detection: consecutive Draft packets where the second packet's
+    # first page carries endorsement-only content (PAY TO THE ORDER
+    # / endorsed / for value received) AND has NO BoE body markers
+    # (BILL OF EXCHANGE, FOR USD, AT SIGHT, AT XX DAYS, "of this
+    # FIRST/SECOND Bill of Exchange") -> merge into the previous
+    # Draft packet.
+    #
+    # Anchor: cb7d7bbf (LC 1003LC55989/2026, Sumitomo). pkt_6 (pg33)
+    # was the BoE front (FIRST + SECOND on one page), pkt_7 (pg34)
+    # was the back-side endorsement page — currently two separate
+    # Draft packets, should be one.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        _ENDORSE_ONLY_RE = re.compile(
+            r'\bPAY\s+TO\s+THE\s+ORDER\s+OF\s+ANY\s+BANK\b'
+            r'|\bPAY\s+TO\s+THE\s+ORDER\s+OF\b'
+            r'|\bENDORSED\s+TO\b'
+            r'|\bFOR\s+VALUE\s+RECEIVED\b',
+            flags=re.IGNORECASE,
+        )
+        _BOE_BODY_RE = re.compile(
+            r'\bBILL\s+OF\s+EXCHANGE\b'
+            r'|\bFOR\s+USD\b'
+            r'|\bAT\s+SIGHT\b'
+            r'|\bAT\s+\d{1,3}\s+DAYS\b'
+            r'|\bof\s+this\s+(?:FIRST|SECOND|SOLE)\s+Bill\s+of\s+Exchange\b',
+            flags=re.IGNORECASE,
+        )
+        _DRAFT_TYPES_Z40 = {
+            'draft bill of exchange', 'bill of exchange',
+            'draft', 'sight draft', 'usance draft', 'boe',
+        }
+        # Walk packets in order, look for consecutive Drafts where the
+        # second is endorsement-only.
+        _to_consume = set()
+        _packets_sorted = sorted(
+            range(len(packets)),
+            key=lambda _i: (
+                min(packets[_i].page_numbers)
+                if packets[_i].page_numbers else 0
+            ),
+        )
+        for _idx_pos in range(len(_packets_sorted) - 1):
+            _i = _packets_sorted[_idx_pos]
+            _j = _packets_sorted[_idx_pos + 1]
+            if _i in _to_consume or _j in _to_consume:
+                continue
+            _pkt_i = packets[_i]
+            _pkt_j = packets[_j]
+            _dt_i = (_pkt_i.document_type or '').lower().strip()
+            _dt_j = (_pkt_j.document_type or '').lower().strip()
+            if (_dt_i not in _DRAFT_TYPES_Z40
+                    or _dt_j not in _DRAFT_TYPES_Z40):
+                continue
+            # Adjacent pages?
+            _pi_max = max(_pkt_i.page_numbers) if _pkt_i.page_numbers else 0
+            _pj_min = min(_pkt_j.page_numbers) if _pkt_j.page_numbers else 9999
+            if _pj_min != _pi_max + 1:
+                continue
+            # Get the second packet's first-page text and verify
+            # endorsement-only pattern.
+            _pj_first_pg = sorted(_pkt_j.page_numbers)[0]
+            _pj_text = _amd_text_lookup.get(_pj_first_pg, '') or ''
+            if not _ENDORSE_ONLY_RE.search(_pj_text):
+                continue
+            if _BOE_BODY_RE.search(_pj_text):
+                continue
+            # Merge pkt_j into pkt_i
+            _pkt_i.page_numbers.extend(_pkt_j.page_numbers)
+            _pkt_i.pages.extend(_pkt_j.pages)
+            _pkt_i.stamps.extend(_pkt_j.stamps)
+            _pkt_i.signatures.extend(_pkt_j.signatures)
+            _pkt_i.seals.extend(_pkt_j.seals)
+            _to_consume.add(_j)
+            try:
+                _progress(
+                    f"  [P198gz40] merged {_pkt_j.packet_id} "
+                    f"(endorsement pg {_pkt_j.page_numbers}) into "
+                    f"{_pkt_i.packet_id} (Draft pg {_pkt_i.page_numbers[:2]})"
+                )
+            except Exception:
+                pass
+        if _to_consume:
+            packets = [p for _i, p in enumerate(packets)
+                       if _i not in _to_consume]
+            # Re-number sequentially
+            for _idx, _pkt in enumerate(packets, start=1):
+                _pkt.packet_id = f"pkt_{_idx}"
+    except Exception as _e:
+        try:
+            _progress(f"[P198gz40 Draft endorsement merger] exception: {_e}")
+        except Exception:
+            pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz39 — BL multi-page set unifier.
+    #
+    # Some BL forms span 3 pages with T&C pages interleaved:
+    #   pg N   = BL page 1 of 3 (face)
+    #   pg N+1 = T&C
+    #   pg N+2 = BL page 2 of 3 (continuation)
+    #   pg N+3 = T&C
+    #   pg N+4 = BL page 3 of 3 (continuation)
+    #   pg N+5 = T&C
+    # The VLM commonly marks the BL pages 2 & 3 as cont=False, so
+    # _group_into_packets starts a new BL packet at each face page.
+    # Rule 1 then absorbs T&Cs into each face packet but stops at the
+    # next BL face — leaving the multi-page BL set split across 2-3
+    # packets with the SAME B/L number.
+    #
+    # Detection: BL packet's first page shows "PAGE: 1 OF N" (or has
+    # no PAGE marker) starts a new logical BL ORIGINAL; subsequent
+    # BL packets whose first page shows "PAGE: K OF N" (K>1) of the
+    # SAME B/L number should be merged into the previous BL packet.
+    #
+    # Multi-original presentations (3 originals + 3 copies) keep
+    # their own packets because each original starts with a fresh
+    # "PAGE: 1 OF N" marker — the unifier only merges WITHIN one
+    # original, not across originals.
+    #
+    # Anchor: cb7d7bbf (LC 1003LC55989/2026, ONE/Sumitomo). 3 BL
+    # originals split into 6 packets (pgs 99-100, 101-104, 105-106,
+    # 107-110, 111-112, 113-116); after unifying, each original
+    # becomes one packet (pgs 99-104, 105-110, 111-116).
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        # Build page text lookup once
+        _bl_text_lookup = {}
+        for _pg in pages:
+            _pn = (_pg.page_number if hasattr(_pg, 'page_number')
+                   else _pg.get('page_number', 0))
+            _txt = (_pg.cleaned_text if hasattr(_pg, 'cleaned_text')
+                    else _pg.get('cleaned_text', '')) or ''
+            _bl_text_lookup[_pn] = _txt
+        _BL_NO_RE = re.compile(
+            r'\bB\s*/?\s*L\s*(?:NO\.?|NUMBER|N°)?\s*[:.]?\s*'
+            r'([A-Z][A-Z0-9\-]{6,})\b',
+            re.IGNORECASE,
+        )
+        # Carrier-prefixed BL number patterns common in real-world docs.
+        # Used as a fallback when the explicit "B/L NO.:" label was lost
+        # in OCR (e.g. ONEYBKKGA..., MAEU..., MEDU..., COSU..., HLCU...).
+        _BL_NO_CARRIER_RE = re.compile(
+            r'\b(?:ONEY|MAEU|MEDU|COSU|HLCU|YMLU|HJSC|EVRG|EGLV|'
+            r'KKLU|MSCU|OOLU|APLU|CMDU|SUDU|UASC|HMMU|ZIMU|PILU|'
+            r'NYKS|SAFM|TLLU)[A-Z0-9]{8,16}\b',
+        )
+        _PAGE_X_OF_N_RE = re.compile(
+            r'\bPAGE\s*[:.]?\s*(\d{1,2})\s+OF\s+(\d{1,2})\b',
+            re.IGNORECASE,
+        )
+
+        def _bl_meta_for_packet(_p):
+            """Return (bl_no, page_x, page_n) for a BL packet by
+            scanning ALL its pages and merging any markers found."""
+            _bl_no = ''
+            _x = 0
+            _n = 0
+            for _pn in sorted(_p.page_numbers or []):
+                _t = _bl_text_lookup.get(_pn, '') or ''
+                if not _t:
+                    continue
+                if not _bl_no:
+                    _m_no = _BL_NO_RE.search(_t) or _BL_NO_CARRIER_RE.search(_t)
+                    if _m_no:
+                        _bl_no = (_m_no.group(1) if _m_no.lastindex
+                                  else _m_no.group(0)).upper().strip()
+                if not _x:
+                    _m_pgx = _PAGE_X_OF_N_RE.search(_t)
+                    if _m_pgx:
+                        _x = int(_m_pgx.group(1))
+                        _n = int(_m_pgx.group(2))
+                if _bl_no and _x:
+                    break
+            return (_bl_no, _x, _n)
+
+        # Sort merged_packets by minimum page so we can walk in order
+        _merged_sorted = sorted(
+            range(len(merged_packets)),
+            key=lambda _i: (
+                min(merged_packets[_i].page_numbers)
+                if merged_packets[_i].page_numbers else 0
+            ),
+        )
+        _absorbed_z39 = set()
+        # Walk through packets and resolve multi-page BL sets. Two
+        # cases handled:
+        #   (a) Forward absorption — packet at idx i has known PAGE
+        #       1 OF N marker; subsequent BL packets with PAGE 2..N
+        #       OF N of the same B/L number merge into i.
+        #   (b) Backward absorption — packet at idx i has no marker
+        #       (OCR-corrupt face page or carrier form without PAGE
+        #       label) but the next BL packet starts with PAGE: 2 OF
+        #       N — that means our packet IS page 1. Absorb forward
+        #       still, but keying off the next packet's BL No.
+        for _idx_pos in range(len(_merged_sorted)):
+            _i = _merged_sorted[_idx_pos]
+            if _i in _absorbed_z39:
+                continue
+            _pkt_i = merged_packets[_i]
+            _dt_i = (_pkt_i.document_type or '').lower().strip()
+            if 'bill of lading' not in _dt_i:
+                continue
+            _bl_no_i, _x_i, _n_i = _bl_meta_for_packet(_pkt_i)
+            # Determine the BL set's expected N. If we don't have
+            # markers on the current packet, peek at the NEXT BL
+            # packet to learn the N and B/L No.
+            _set_bl_no = _bl_no_i
+            _set_n = _n_i
+            _last_x = _x_i
+            if _set_n < 2:
+                # Peek next BL packet
+                if _idx_pos + 1 < len(_merged_sorted):
+                    _peek_j = _merged_sorted[_idx_pos + 1]
+                    if _peek_j not in _absorbed_z39:
+                        _peek_pkt = merged_packets[_peek_j]
+                        if 'bill of lading' in (
+                            _peek_pkt.document_type or '').lower():
+                            _peek_no, _peek_x, _peek_n = _bl_meta_for_packet(_peek_pkt)
+                            if _peek_n >= 2 and _peek_x == 2:
+                                # Current packet is implicitly PAGE 1 OF N
+                                _set_bl_no = _peek_no
+                                _set_n = _peek_n
+                                _last_x = 1
+            if _set_n < 2:
+                continue  # Not a multi-page set
+            for _j_pos in range(_idx_pos + 1, len(_merged_sorted)):
+                _j = _merged_sorted[_j_pos]
+                if _j in _absorbed_z39:
+                    continue
+                _pkt_j = merged_packets[_j]
+                _dt_j = (_pkt_j.document_type or '').lower().strip()
+                if 'bill of lading' not in _dt_j:
+                    break
+                _bl_no_j, _x_j, _n_j = _bl_meta_for_packet(_pkt_j)
+                # Match: same B/L number, same N, sequential X
+                if (_bl_no_j and _bl_no_j == _set_bl_no
+                        and _n_j == _set_n and _x_j > _last_x
+                        and _x_j <= _set_n):
+                    _pkt_i.page_numbers.extend(_pkt_j.page_numbers)
+                    _pkt_i.pages.extend(_pkt_j.pages)
+                    _pkt_i.stamps.extend(_pkt_j.stamps)
+                    _pkt_i.signatures.extend(_pkt_j.signatures)
+                    _pkt_i.seals.extend(_pkt_j.seals)
+                    _absorbed_z39.add(_j)
+                    _last_x = _x_j
+                    try:
+                        _progress(
+                            f"  [P198gz39] merged {_pkt_j.packet_id} "
+                            f"(BL pg {_x_j}/{_n_j} {_bl_no_j} pages "
+                            f"{_pkt_j.page_numbers}) into "
+                            f"{_pkt_i.packet_id} (multi-page BL set)"
+                        )
+                    except Exception:
+                        pass
+                else:
+                    break
+        if _absorbed_z39:
+            merged_packets = [
+                p for _i, p in enumerate(merged_packets)
+                if _i not in _absorbed_z39
+            ]
+    except Exception as _e:
+        try:
+            _progress(f"[P198gz39 BL multi-page unifier] exception: {_e}")
+        except Exception:
+            pass
 
     # P198fq — Reset _consumed before Rule 1b. The Rule 1 (BL T&C) loop
     # populated _consumed with indices into the ORIGINAL `packets` list
