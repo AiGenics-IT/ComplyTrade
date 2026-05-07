@@ -15291,43 +15291,48 @@ def run(
                 _doc_ver_m = _INCOTERMS_VERSION_RE.search(_doc_text_up)
                 _current = str(_get(row, 'compliance', '')).upper()
                 if not _doc_ver_m:
-                    # P198gz6 — Skip "doc silent on version" override
-                    # when this row's document type doesn't normally
-                    # carry the Incoterm trade-term (Packing List,
-                    # Health Cert, Beneficiary Cert, etc.). On these
-                    # docs, missing Incoterm version is not a
-                    # discrepancy — only a wrong version would be.
-                    if _is_non_incoterm_doc:
-                        continue
-                    # Document is silent on version. If LLM said PASS,
-                    # override to FAIL — LC explicitly required the
-                    # version. NEVER touch N/A / INFORMATIONAL rows
-                    # (those mean the doc is genuinely not present
-                    # via P198gr fan-out skip or doc_not_found —
-                    # treating those as version-FAILs would double-
-                    # count the missing-doc discrepancy).
-                    if _current in ('PASS', 'COMPLIED'):
-                        _msg = (
-                            f"LC requires 'Incoterms {_lc_version}' but the "
-                            f"document does not state any Incoterms version. "
-                            f"Per the LC's explicit version annotation, the "
-                            f"document must include the version (e.g. "
-                            f"'Incoterms {_lc_version}')."
-                        )
-                        _set(row, 'compliance', 'FAIL')
-                        _set(row, 'result', _msg)
-                        _set(row, 'findings', _msg)
-                        _set(row, 'verification_notes',
-                             f"P198go: LC version={_lc_version}, "
-                             f"doc version=missing")
-                        try:
-                            _progress(
-                                f"  [P198go incoterm version] {_row_id}: "
-                                f"PASS->FAIL (LC says Incoterms "
-                                f"{_lc_version}, doc silent on version)"
-                            )
-                        except Exception:
-                            pass
+                    # P198gz47 — Disable the "doc silent on version"
+                    # FAIL override per business rule update:
+                    # the actual Incoterm code (CFR/CIF/FOB/etc.)
+                    # must be on the document, but the explicit
+                    # "Incoterms 2020" version annotation is NOT a
+                    # discrepancy when omitted. Bank examiners
+                    # accept the trade term without the year tag —
+                    # the year is implied from the LC date and
+                    # market convention. Only an EXPLICIT WRONG
+                    # version (covered in the else branch below)
+                    # remains a discrepancy.
+                    #
+                    # Previous behavior (commented out): if LLM said
+                    # PASS and the doc had no version, force-FAIL
+                    # with "doc must include 'Incoterms 2020'". This
+                    # was over-strict.
+                    #
+                    # if _is_non_incoterm_doc:
+                    #     continue
+                    # if _current in ('PASS', 'COMPLIED'):
+                    #     _msg = (
+                    #         f"LC requires 'Incoterms {_lc_version}' but the "
+                    #         f"document does not state any Incoterms version. "
+                    #         f"Per the LC's explicit version annotation, the "
+                    #         f"document must include the version (e.g. "
+                    #         f"'Incoterms {_lc_version}')."
+                    #     )
+                    #     _set(row, 'compliance', 'FAIL')
+                    #     _set(row, 'result', _msg)
+                    #     _set(row, 'findings', _msg)
+                    #     _set(row, 'verification_notes',
+                    #          f"P198go: LC version={_lc_version}, "
+                    #          f"doc version=missing")
+                    #     try:
+                    #         _progress(
+                    #             f"  [P198go incoterm version] {_row_id}: "
+                    #             f"PASS->FAIL (LC says Incoterms "
+                    #             f"{_lc_version}, doc silent on version)"
+                    #         )
+                    #     except Exception:
+                    #         pass
+                    continue  # Doc silent on version — not a discrepancy.
                 else:
                     _doc_version = _doc_ver_m.group(1)
                     # Skip mismatch override on N/A / INFORMATIONAL rows
