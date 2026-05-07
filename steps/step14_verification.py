@@ -10170,18 +10170,65 @@ def run(
             'this', 'that', 'as', 'from', 'be', 'are', 'at', 'we', 'or', 'an',
             'will', 'all', 'have', 'has', 'no', 'not', 'a', 'shall', 'any', 'date',
         }
+        # P198gz52 — English form-field markers. Many trade-finance
+        # docs are predominantly structured labels (FAX NO., L/C
+        # ISSUING BANK, DATE, REF, AMOUNT, INVOICE NO, B/L NO, etc.)
+        # not flowing prose. The stop-word heuristic alone misses
+        # them. Adding a parallel form-field score that catches
+        # English-language structured documents (FAX cover sheets,
+        # remittance schedules, certificates with mostly labelled
+        # fields).
+        _ENGLISH_FORM_MARKERS = {
+            'fax', 'tel', 'email', 'phone', 'date', 'time', 'mode',
+            'pages', 'result', 'send', 'received', 'ok', 'no', 'ref',
+            'reference', 'invoice', 'amount', 'currency', 'usd',
+            'eur', 'gbp', 'lc', 'l/c', 'bank', 'limited', 'ltd',
+            'inc', 'corp', 'corporation', 'co', 'company', 'address',
+            'from', 'to', 'subject', 're', 'attn', 'attention',
+            'shipper', 'consignee', 'notify', 'vessel', 'voyage',
+            'port', 'origin', 'destination', 'package', 'weight',
+            'gross', 'net', 'measurement', 'quantity', 'description',
+            'goods', 'commodity', 'incoterms', 'cfr', 'cif', 'fob',
+            'industry', 'pakistan', 'china', 'india', 'thailand',
+            'karachi', 'shanghai', 'tokyo', 'hong', 'kong',
+            'issuing', 'beneficiary', 'applicant', 'discharge',
+        }
 
         def _is_english_text(txt):
             if not txt or len(txt) < 50:
                 return False, 0.0, 0
-            letters = sum(1 for c in txt if c.isalpha() and ord(c) < 128)
-            nonspace = sum(1 for c in txt if not c.isspace())
+            # Strip "[STAMP]" / "[SIGNATURE]" / "[SEAL]" placeholders
+            # and OCR `?` artefacts (un-rendered non-Latin chars in
+            # stamps) BEFORE counting — they bias the ratio downward
+            # without representing real document content.
+            _t = re.sub(
+                r'\[(?:STAMP|SIGNATURE|SEAL|LOGO|IMAGE|PHOTO)\]',
+                ' ', txt, flags=re.IGNORECASE,
+            )
+            _t = re.sub(r'\?+', ' ', _t)
+            if len(_t) < 50:
+                return False, 0.0, 0
+            letters = sum(1 for c in _t if c.isalpha() and ord(c) < 128)
+            nonspace = sum(1 for c in _t if not c.isspace())
             if nonspace == 0:
                 return False, 0.0, 0
             ratio = letters / nonspace
-            words = re.findall(r'\b[a-zA-Z]{2,}\b', txt.lower())
+            words = re.findall(r'\b[a-zA-Z]{2,}\b', _t.lower())
             stops = sum(1 for w in words if w in _STOPWORDS)
-            return (ratio >= 0.70 and stops >= 5), ratio, stops
+            # Form-field marker score: structured docs (FAX cover
+            # sheets, remittance schedules) have many English
+            # labels but few flowing-prose stop-words.
+            form_hits = sum(1 for w in words if w in _ENGLISH_FORM_MARKERS)
+            # English if EITHER:
+            #   • prose-style: ratio >= 70% AND >= 5 stop-words
+            #   • structured: ratio >= 60% AND >= 6 form-field markers
+            #   • short-form: ratio >= 75% AND (stops + form_hits) >= 4
+            _is_english = (
+                (ratio >= 0.70 and stops >= 5)
+                or (ratio >= 0.60 and form_hits >= 6)
+                or (ratio >= 0.75 and (stops + form_hits) >= 4)
+            )
+            return _is_english, ratio, max(stops, form_hits)
 
         def _find_packet_by_name(name):
             n = (name or '').lower().strip()

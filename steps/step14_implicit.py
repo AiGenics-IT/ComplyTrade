@@ -857,26 +857,22 @@ def _hybrid_date_check(check_id: str, clause_ref: str, lc_date_str: str,
                     return CheckResult(
                         check_id=check_id, clause_ref=clause_ref, condition=condition,
                         document_checked=doc_type,
-                        findings=(
-                            f"Presentation date from RECEIVED stamp: "
-                            f"'{doc_date_str}' (parsed {doc_date:%Y-%m-%d})"
-                        ),
+                        findings=f"Documents received on {doc_date:%Y-%m-%d}",
                         result=(
-                            f"Received {doc_date:%Y-%m-%d} — within deadline "
-                            f"{lc_date_str}"
+                            f"Documents received on {doc_date:%Y-%m-%d}, "
+                            f"within the LC deadline of {lc_date:%Y-%m-%d}."
                         ),
                         compliance="PASS", severity="hard",
                     )
+                _days_late = (doc_date - lc_date).days
                 return CheckResult(
                     check_id=check_id, clause_ref=clause_ref, condition=condition,
                     document_checked=doc_type,
-                    findings=(
-                        f"Presentation date from RECEIVED stamp: "
-                        f"'{doc_date_str}' (parsed {doc_date:%Y-%m-%d})"
-                    ),
+                    findings=f"Documents received on {doc_date:%Y-%m-%d}",
                     result=(
-                        f"Received {doc_date:%Y-%m-%d} — AFTER deadline "
-                        f"{lc_date_str}"
+                        f"Documents received on {doc_date:%Y-%m-%d}, which is "
+                        f"{_days_late} day(s) AFTER the LC expiry of "
+                        f"{lc_date:%Y-%m-%d}. Late presentation."
                     ),
                     compliance="FAIL", severity="hard",
                 )
