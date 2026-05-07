@@ -5496,29 +5496,113 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
                     pkt.bl_subtype = {"_error": str(e)}
 
     # Phase V4: Packet summary for every packet (tiered chunking)
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz48 — Single-model batching to eliminate VLM↔LLM swap
+    # thrashing.
+    #
+    # Step 3e routes each packet to either VLM (small ≤4 pages) or
+    # LLM (medium/large). Previously all packets were submitted to a
+    # single parallel pool, so workers fired VLM and LLM calls
+    # simultaneously — on infrastructure that swaps a single GPU
+    # between models, this caused repeated load/unload cycles, long
+    # latency per call, and intermittent 502 errors during the swap
+    # window.
+    #
+    # Fix: split packets by required model, run all VLM-bound packets
+    # in one pass (model loaded once, kept warm), then all LLM-bound
+    # packets in a second pass (one swap, model kept warm). One swap
+    # per phase instead of N.
+    # ─────────────────────────────────────────────────────────────────
     _progress(f"[3e] Generating packet summaries for {len(packets)} packets (tiered by page count)...")
     _size_bucket = {"small": 0, "medium": 0, "large": 0}
-    with ThreadPoolExecutor(max_workers=max(1, MAX_CONCURRENT_VLM // 2)) as executor:
-        _sfutures = {}
-        for pkt in packets:
-            _pg_texts = _packet_texts[pkt.packet_id].split("\n\n--- PAGE BREAK ---\n\n")
-            _pg_imgs = _packet_images[pkt.packet_id]
-            n = len(pkt.page_numbers)
-            if n <= 4:
-                _size_bucket["small"] += 1
-            elif n <= 20:
-                _size_bucket["medium"] += 1
-            else:
-                _size_bucket["large"] += 1
-            _sfutures[executor.submit(
-                _summarize_packet, pkt.document_type, _pg_texts, _pg_imgs
-            )] = pkt
-        for fut in as_completed(_sfutures):
-            pkt = _sfutures[fut]
+    _vlm_packets = []   # ≤4 pages — uses VLM
+    _llm_packets = []   # 5+ pages — uses LLM
+    for pkt in packets:
+        n = len(pkt.page_numbers)
+        if n <= 4:
+            _size_bucket["small"] += 1
+            _vlm_packets.append(pkt)
+        elif n <= 20:
+            _size_bucket["medium"] += 1
+            _llm_packets.append(pkt)
+        else:
+            _size_bucket["large"] += 1
+            _llm_packets.append(pkt)
+
+    def _wait_for_model_swap(model_kind):
+        """Block until the requested model (vlm | llm) responds to a
+        warm-up ping. Tolerates 502 / connection refused while the GPU
+        loads the model. Retries with exponential backoff up to ~5 min.
+
+        On infrastructure that swaps a single GPU between VLM and LLM
+        model weights, the FIRST request after a model boundary triggers
+        the swap. If the parallel batch fires before the swap completes,
+        every worker hits the same 502 simultaneously. This warm-up
+        pings ONCE, takes the load hit alone, then signals the batch
+        is safe to start."""
+        import requests as _req
+        if model_kind == 'vlm':
+            url = QWEN_VLM_URL
+            payload = {
+                "model": QWEN_VLM_MODEL,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1, "temperature": 0.0,
+            }
+        else:
+            url = QWEN_TEXT_LLM_URL
+            payload = {
+                "model": QWEN_TEXT_LLM_MODEL,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1, "temperature": 0.0,
+            }
+        if not url:
+            return  # endpoint not configured — caller will surface its own error
+        _backoff = [5, 10, 20, 30, 45, 60, 60, 60]  # ~4.7 min total
+        for _i, _wait in enumerate(_backoff):
             try:
-                pkt.unified_summary = fut.result()
-            except Exception as e:
-                pkt.unified_summary = {"_error": str(e)}
+                r = _req.post(url, json=payload, timeout=120)
+                if r.status_code == 200:
+                    if _i > 0:
+                        _progress(f"  [3e] {model_kind.upper()} warm-up: model loaded after "
+                                  f"{sum(_backoff[:_i])}s of swap wait")
+                    return
+                _progress(f"  [3e] {model_kind.upper()} warm-up: HTTP {r.status_code} "
+                          f"(swap in progress, waiting {_wait}s)")
+            except Exception as _e:
+                _progress(f"  [3e] {model_kind.upper()} warm-up: {type(_e).__name__} "
+                          f"(swap in progress, waiting {_wait}s)")
+            time.sleep(_wait)
+        _progress(f"  [3e] {model_kind.upper()} warm-up: model still not responding "
+                  f"after ~5 min — proceeding anyway (workers will retry per call)")
+
+    def _run_summary_batch(batch_packets, label, model_kind):
+        if not batch_packets:
+            return
+        # Wait for the required model to be loaded BEFORE fanning out
+        # parallel workers. Avoids N simultaneous 502s during swap.
+        _wait_for_model_swap(model_kind)
+        _progress(f"  [3e] {label}: {len(batch_packets)} packet(s) "
+                  f"(single-model batch, model warm)")
+        with ThreadPoolExecutor(max_workers=max(1, MAX_CONCURRENT_VLM // 2)) as executor:
+            _sfutures = {}
+            for pkt in batch_packets:
+                _pg_texts = _packet_texts[pkt.packet_id].split("\n\n--- PAGE BREAK ---\n\n")
+                _pg_imgs = _packet_images[pkt.packet_id]
+                _sfutures[executor.submit(
+                    _summarize_packet, pkt.document_type, _pg_texts, _pg_imgs
+                )] = pkt
+            for fut in as_completed(_sfutures):
+                pkt = _sfutures[fut]
+                try:
+                    pkt.unified_summary = fut.result()
+                except Exception as e:
+                    pkt.unified_summary = {"_error": str(e)}
+
+    # Pass 1 — VLM batch (small packets, image-based summaries).
+    _run_summary_batch(_vlm_packets, "VLM batch (small ≤4pg)", 'vlm')
+    # Pass 2 — LLM batch (medium + large packets, text-only summaries).
+    _run_summary_batch(_llm_packets, "LLM batch (medium 5-20pg + large 21+pg)", 'llm')
+
     _progress(f"  summaries: {_size_bucket['small']} small (≤4pg VLM), "
               f"{_size_bucket['medium']} medium (5-20pg LLM), "
               f"{_size_bucket['large']} large (21+pg chunked LLM)")
