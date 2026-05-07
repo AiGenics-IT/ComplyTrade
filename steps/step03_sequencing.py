@@ -3935,6 +3935,311 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
     packets = _group_into_packets(classifications)
 
     # ─────────────────────────────────────────────────────────────────
+    # P198gz41 — Multi-invoice / multi-PL splitter via repeating issuer
+    # header. The VLM commonly marks new-invoice header pages as
+    # "Commercial Invoice cont=True" when consecutive invoices come
+    # from the same issuer (because the page LOOKS like a continuation
+    # to the model — same header, same item-table layout). The result
+    # is N consecutive invoices collapsed into one packet.
+    #
+    # Detection: pages that share an identical issuer-header signature
+    # (the first ~120 normalized characters of the page text) are
+    # likely separate-document boundaries when the layout otherwise
+    # contains a fresh-invoice opening. We split a CI / Packing List /
+    # Beneficiary Certificate packet whenever ≥2 of its pages start
+    # with the SAME normalized header signature.
+    #
+    # Anchor: c1d9277c (LC 1003LC55989/2026, GP Industry). 8 invoices
+    # × 3 pages each (24 pages) all merged into one CI packet
+    # (pages 14-37); after splitting, each invoice is its own packet
+    # so step08 + step09 can verify per-invoice.
+    # ─────────────────────────────────────────────────────────────────
+    _progress("Detecting multi-document packets and splitting at repeated headers...")
+    try:
+        # Build page text lookup
+        _hdr_text_lookup = {}
+        for _pg in pages:
+            _pn = (_pg.page_number if hasattr(_pg, 'page_number')
+                   else _pg.get('page_number', 0))
+            _txt = (_pg.cleaned_text if hasattr(_pg, 'cleaned_text')
+                    else _pg.get('cleaned_text', '')) or ''
+            _hdr_text_lookup[_pn] = _txt
+
+        def _header_signature(_txt):
+            """Normalised signature of the FIRST 200 chars: uppercase,
+            collapse whitespace, drop punctuation/page-numbers."""
+            if not _txt:
+                return ''
+            _h = _txt[:300].upper()
+            _h = re.sub(r'\d+', '', _h)
+            _h = re.sub(r'[^A-Z\s]+', ' ', _h)
+            _h = re.sub(r'\s+', ' ', _h).strip()
+            return _h[:150]
+
+        # Splittable doc types (multi-instance docs from the same issuer)
+        _SPLIT_TYPES = {
+            'commercial invoice', 'invoice', 'packing list',
+            'weight list', 'weight and packing list',
+        }
+        _split41_count = 0
+        _new_packets = []
+        for _pkt in packets:
+            _dt_low = (_pkt.document_type or '').lower().strip()
+            if _dt_low not in _SPLIT_TYPES:
+                _new_packets.append(_pkt)
+                continue
+            _pkt_pages = sorted(_pkt.page_numbers or [])
+            if len(_pkt_pages) < 4:
+                # Don't split short packets — typical doc spans 1-3 pgs
+                _new_packets.append(_pkt)
+                continue
+            # Compute signatures, find repeating header positions
+            _first_sig = _header_signature(_hdr_text_lookup.get(_pkt_pages[0], ''))
+            if not _first_sig:
+                _new_packets.append(_pkt)
+                continue
+            _split_starts = [0]
+            for _i, _pn in enumerate(_pkt_pages[1:], start=1):
+                _sig = _header_signature(_hdr_text_lookup.get(_pn, ''))
+                # Header repeats — new doc instance.
+                # Use a similarity check: ≥80% of first sig's tokens
+                # appear in this sig and length within 25%.
+                if not _sig:
+                    continue
+                _sig_set = set(_sig.split())
+                _first_set = set(_first_sig.split())
+                if not _first_set:
+                    continue
+                _overlap = len(_sig_set & _first_set) / max(1, len(_first_set))
+                if (_overlap >= 0.8
+                        and abs(len(_sig) - len(_first_sig))
+                        <= 0.30 * max(len(_sig), len(_first_sig))):
+                    _split_starts.append(_i)
+            if len(_split_starts) <= 1:
+                _new_packets.append(_pkt)
+                continue
+            for _sp_idx, _start_i in enumerate(_split_starts):
+                _end_i = (_split_starts[_sp_idx + 1]
+                          if _sp_idx + 1 < len(_split_starts)
+                          else len(_pkt_pages))
+                _sub_pages = _pkt_pages[_start_i:_end_i]
+                _sub_pages_data = [
+                    pg for pg in (_pkt.pages or [])
+                    if (pg.get('page_number') if isinstance(pg, dict)
+                        else getattr(pg, 'page_number', None)) in _sub_pages
+                ]
+                if not _sub_pages_data:
+                    continue
+                _sub_pkt = DocumentPacket(
+                    packet_id=(_pkt.packet_id
+                               + (f"_doc{_sp_idx + 1}"
+                                  if len(_split_starts) > 1 else '')),
+                    document_type=_pkt.document_type,
+                    pages=_sub_pages_data,
+                    page_numbers=_sub_pages,
+                    boundary_confidence=_pkt.boundary_confidence,
+                    copy_status=_pkt.copy_status,
+                    copy_label=_pkt.copy_label,
+                    marking_status=_pkt.marking_status,
+                    stamps=[s for pg in _sub_pages_data
+                            for s in (pg.get('stamps') or [])
+                            if isinstance(pg, dict)],
+                    signatures=[s for pg in _sub_pages_data
+                                for s in (pg.get('signatures') or [])
+                                if isinstance(pg, dict)],
+                    seals=[s for pg in _sub_pages_data
+                           for s in (pg.get('seals') or [])
+                           if isinstance(pg, dict)],
+                    logos=[l for pg in _sub_pages_data
+                           for l in (pg.get('logos') or [])
+                           if isinstance(pg, dict)],
+                    doc_hint=_pkt.doc_hint,
+                )
+                _new_packets.append(_sub_pkt)
+            _split41_count += 1
+            try:
+                _progress(
+                    f"  [P198gz41] {_pkt.packet_id} "
+                    f"({_pkt.document_type} pages "
+                    f"{_pkt_pages[0]}-{_pkt_pages[-1]}) split into "
+                    f"{len(_split_starts)} doc instances"
+                )
+            except Exception:
+                pass
+        if _split41_count:
+            for _idx, _pkt in enumerate(_new_packets, start=1):
+                _pkt.packet_id = f"pkt_{_idx}"
+            packets = _new_packets
+    except Exception as _e:
+        try:
+            _progress(f"[P198gz41 multi-doc splitter] exception: {_e}")
+        except Exception:
+            pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz42 — Numbered sub-document preservation.
+    #
+    # When a packet's first page text contains a doc-type label with
+    # an embedded ordinal suffix ("CERTIFICATE-1", "CERTIFICATE - 3",
+    # "SENDING REPORT-2", "BENEFICIARY CERTIFICATE NO. 3"), preserve
+    # the suffix in the packet's document_type. The VLM frequently
+    # drops the numeric tail during canonicalisation, collapsing what
+    # are 4 distinct documents (Certificate-1..4 / Sending Report 1..4)
+    # into 4 packets all labelled "Certificate" / "Sending Report" —
+    # downstream code can no longer tell them apart.
+    #
+    # Anchor: c1d9277c (LC 1003LC55989/2026, GP Industry). pg58
+    # "Certificate-1", pg59 "Certificate-2", pg60-61 dropped to bare
+    # "Certificate"; pg63-66 all dropped to bare "Sending Report".
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        # Use the same _hdr_text_lookup built above
+        _SUFFIXABLE_TYPES = {
+            'certificate', 'sending report', 'beneficiary certificate',
+            'shipping advice', 'shipment advice', 'shipment notice',
+            'sales contract', 'proforma invoice', 'commercial invoice',
+            'packing list',
+        }
+        for _pkt in packets:
+            try:
+                _dt_low = (_pkt.document_type or '').lower().strip()
+                if _dt_low not in _SUFFIXABLE_TYPES:
+                    continue
+                # Grab first page's text head
+                _pg_first = (sorted(_pkt.page_numbers)[0]
+                             if _pkt.page_numbers else None)
+                if _pg_first is None:
+                    continue
+                _txt = _hdr_text_lookup.get(_pg_first, '') or ''
+                _head = _txt[:400].upper()
+                # Search for "<TYPE>-N" or "<TYPE> - N" or "<TYPE> N"
+                # Use the canonical doc_type's words as the prefix.
+                _esc = re.escape(_dt_low.upper())
+                _m = re.search(
+                    rf'\??\s*{_esc}\s*[-–—]?\s*(\d{{1,3}})\s*\??',
+                    _head,
+                )
+                if not _m:
+                    # Try with NO. variant: "CERTIFICATE NO. 3"
+                    _m = re.search(
+                        rf'{_esc}\s+NO\.?\s+(\d{{1,3}})\b',
+                        _head,
+                    )
+                if not _m:
+                    continue
+                _num = _m.group(1)
+                if not _num.isdigit():
+                    continue
+                # Apply suffix
+                _new_dt = f"{_pkt.document_type}-{_num}"
+                _pkt.document_type = _new_dt
+                try:
+                    _progress(
+                        f"  [P198gz42] {_pkt.packet_id} pg{_pg_first}: "
+                        f"preserved suffix '-{_num}' -> '{_new_dt}'"
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+    except Exception as _e:
+        try:
+            _progress(f"[P198gz42 sub-number preservation] exception: {_e}")
+        except Exception:
+            pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz43 — PL continuation rescued from "Commercial Invoice".
+    #
+    # The VLM frequently classifies a header-less Packing List
+    # continuation page (item table only, no document title) as a new
+    # "Commercial Invoice cont=False" because the layout looks like an
+    # invoice continuation. When such a CI cont=False packet directly
+    # follows a Packing List packet AND its text has weight-only PL
+    # columns and no CI columns, merge it into the prev PL packet.
+    #
+    # Anchor: c1d9277c. pg82 / pg92 / pg94 are PL continuations marked
+    # as Commercial Invoice — should be PL continuations of pg81 / pg91
+    # / pg93 respectively.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        _PL_COLS_43 = ('NET-WEIGHT', 'NET WEIGHT', 'GROSS-WEIGHT',
+                       'GROSS WEIGHT', 'MEASUREMENT')
+        _CI_COLS_43 = ('UNIT PRICE', 'TOTAL AMOUNT', 'AMOUNT IN USD',
+                       'AMOUNT IN EUR', 'AMOUNT (USD)', 'AMOUNT (EUR)',
+                       'AMOUNT/USD', 'TOTAL/USD', 'INVOICE VALUE',
+                       'INVOICE TOTAL', 'TOTAL VALUE',
+                       'TOTAL CFR', 'TOTAL FOB', 'TOTAL CIF',
+                       'PRICE PER UNIT')
+        _consume_43 = set()
+        _packets_sorted_43 = sorted(
+            range(len(packets)),
+            key=lambda _i: (
+                min(packets[_i].page_numbers)
+                if packets[_i].page_numbers else 0
+            ),
+        )
+        for _idx_pos in range(len(_packets_sorted_43) - 1):
+            _i = _packets_sorted_43[_idx_pos]
+            _j = _packets_sorted_43[_idx_pos + 1]
+            if _i in _consume_43 or _j in _consume_43:
+                continue
+            _pkt_i = packets[_i]
+            _pkt_j = packets[_j]
+            _dt_i_low = (_pkt_i.document_type or '').lower().strip()
+            _dt_j_low = (_pkt_j.document_type or '').lower().strip()
+            if 'packing list' not in _dt_i_low:
+                continue
+            if 'commercial invoice' not in _dt_j_low \
+                    and 'invoice' != _dt_j_low:
+                continue
+            # Adjacent pages?
+            _pi_max = (max(_pkt_i.page_numbers)
+                       if _pkt_i.page_numbers else 0)
+            _pj_min = (min(_pkt_j.page_numbers)
+                       if _pkt_j.page_numbers else 9999)
+            if _pj_min != _pi_max + 1:
+                continue
+            # Get pkt_j first page's text
+            _pj_first_pg = sorted(_pkt_j.page_numbers)[0]
+            _pj_text = (_hdr_text_lookup.get(_pj_first_pg, '') or '').upper()
+            if not _pj_text:
+                continue
+            # Check title absence
+            if 'COMMERCIAL INVOICE' in _pj_text[:300]:
+                continue  # Has its own CI title — leave alone
+            _has_pl = sum(1 for m in _PL_COLS_43 if m in _pj_text) >= 2
+            _has_ci = any(m in _pj_text for m in _CI_COLS_43)
+            if not _has_pl or _has_ci:
+                continue
+            # Merge pkt_j into pkt_i
+            _pkt_i.page_numbers.extend(_pkt_j.page_numbers)
+            _pkt_i.pages.extend(_pkt_j.pages)
+            _pkt_i.stamps.extend(_pkt_j.stamps)
+            _pkt_i.signatures.extend(_pkt_j.signatures)
+            _pkt_i.seals.extend(_pkt_j.seals)
+            _consume_43.add(_j)
+            try:
+                _progress(
+                    f"  [P198gz43] merged {_pkt_j.packet_id} "
+                    f"(was '{_pkt_j.document_type}' pg "
+                    f"{_pkt_j.page_numbers}) into {_pkt_i.packet_id} "
+                    f"(Packing List continuation)"
+                )
+            except Exception:
+                pass
+        if _consume_43:
+            packets = [p for _i, p in enumerate(packets)
+                       if _i not in _consume_43]
+            for _idx, _pkt in enumerate(packets, start=1):
+                _pkt.packet_id = f"pkt_{_idx}"
+    except Exception as _e:
+        try:
+            _progress(f"[P198gz43 PL continuation rescue] exception: {_e}")
+        except Exception:
+            pass
+
+    # ─────────────────────────────────────────────────────────────────
     # P198gz38 — Multi-amendment packet splitter.
     #
     # _force_merge_swift in _group_into_packets aggressively merges
