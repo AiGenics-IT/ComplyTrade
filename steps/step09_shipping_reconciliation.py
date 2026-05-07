@@ -212,25 +212,34 @@ Return ONLY valid JSON:
 
 
 # ─────────────────────────────────────────────────────────────────
-# P198gz46 — Stamp-date year sanity guard.
+# P198gz46 — Stamp-date sanity guard (year + day/month).
 #
 # When the VLM/OCR extracts a date from a rubber stamp / received-
-# stamp on a document and the extracted year is far in the past
-# relative to the document's own issue date, the year was almost
-# certainly mis-read because the digit was cut off, blurred, or
-# overlapped by other ink. Common pattern: "30 APR 2026" gets read
-# as "30 APR 2020" because the trailing "6" looks like a "0".
+# stamp on a document and the extracted date is BEFORE the document's
+# own issue date, the date was almost certainly mis-read because a
+# digit was cut off, blurred, or overlapped by other ink.
 #
-# Rule: when an extracted date's year is more than 1 year BEFORE
-# the document's own issue date, replace the year with the issue
-# date's year and log the correction. The day/month are kept as
-# extracted (those are usually correct; only the year digit is
-# OCR-fragile when partially cut off).
+# Common patterns:
+#   • Year cut off: "30 APR 2026" read as "30 APR 2020" (trailing
+#     "6" looked like "0"). Anchor: cb7d7bbf pg32.
+#   • Day digit cut off: "30 APR 2026" read as "10 APR 2026"
+#     (top bar of "3" was cut, looks like "1"). Anchor: c1d9277c pg9
+#     where doc issue is 27-APR-26 but extracted stamp says 10 APR.
 #
-# Anchor: cb7d7bbf pg32 — Documentary Remittance issued 28-Apr-26;
-# the bank received-stamp on the bottom right reads "30 APR 2026"
-# but VLM extracted "30 APR 2020". The 2020 year is 6 years before
-# the doc's own issue date, so it's clearly a misread.
+# Rule: a received stamp on a document MUST be on or after the
+# document's own issue date — that's a hard physical reality
+# (the bank can't stamp a doc before the doc was issued).
+#
+# Correction strategy:
+#   1. If extracted year is >1 year before doc issue year → replace
+#      year with issue year (year-misread case).
+#   2. If extracted year matches but date is still before issue
+#      date → try common digit substitutions in the day position
+#      (1→3, 1→7, 1→2, 0→8, 5→6, 5→8, 2→3) and pick the first
+#      candidate that produces a date >= doc issue date AND within
+#      60 days of it.
+#   3. If no correction works, leave as-is and let downstream
+#      verification flag it.
 # ─────────────────────────────────────────────────────────────────
 
 _STAMP_DATE_RE = re.compile(
@@ -242,18 +251,86 @@ _STAMP_DATE_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
+_MONTH_TO_NUM = {
+    'JAN': 1, 'JANUARY': 1, 'FEB': 2, 'FEBRUARY': 2,
+    'MAR': 3, 'MARCH': 3, 'APR': 4, 'APRIL': 4,
+    'MAY': 5, 'JUN': 6, 'JUNE': 6, 'JUL': 7, 'JULY': 7,
+    'AUG': 8, 'AUGUST': 8, 'SEP': 9, 'SEPTEMBER': 9,
+    'OCT': 10, 'OCTOBER': 10, 'NOV': 11, 'NOVEMBER': 11,
+    'DEC': 12, 'DECEMBER': 12,
+}
+
+# OCR-misread digit pairs (visual confusion). Each tuple is
+# (wrong_digit, candidate_correct_digit). Order matters — most
+# common confusions first.
+_DIGIT_CONFUSIONS = (
+    ('1', '3'),  # 3 with cut top-bar reads as 1
+    ('1', '7'),  # 7 with serif reads as 1
+    ('1', '2'),  # 2 partial reads as 1
+    ('0', '8'),  # 8 with broken sides reads as 0
+    ('5', '6'),  # similar curves
+    ('5', '8'),  # similar curves
+    ('2', '3'),  # similar shape
+    ('7', '1'),  # reverse case
+    ('8', '0'),  # reverse case
+)
+
+
+def _try_day_correction(day_str, month_num, year, ref_date_tuple):
+    """Try substituting digits in day_str. Return (new_day, new_day_str)
+    if a valid candidate produces a date >= ref AND within 60 days, else
+    None."""
+    import datetime as _dt
+    if len(day_str) > 2 or not day_str.isdigit():
+        return None
+    try:
+        ref = _dt.date(*ref_date_tuple)
+    except Exception:
+        return None
+    for pos in range(len(day_str)):
+        ch = day_str[pos]
+        for _wrong, _right in _DIGIT_CONFUSIONS:
+            if ch != _wrong:
+                continue
+            new_day_str = day_str[:pos] + _right + day_str[pos + 1:]
+            try:
+                new_day = int(new_day_str)
+                if not (1 <= new_day <= 31):
+                    continue
+                cand = _dt.date(year, month_num, new_day)
+            except Exception:
+                continue
+            if cand >= ref and (cand - ref).days <= 60:
+                return (new_day, new_day_str)
+    return None
+
 
 def _sanity_correct_stamp_years(text, doc_date, doc_issue_date, change_log):
-    """Scan text for date-like tokens whose year is implausibly far
-    BEFORE the document's own date, and replace the year with the
-    document year. Returns the (possibly corrected) text."""
+    """Scan text for date-like tokens that are inconsistent with the
+    document's own issue date and correct them.
+
+    1. Year is far before doc year → bump year to doc year.
+    2. Date is before doc issue date (same year) → try day-digit
+       substitutions to find a plausible OCR correction.
+    """
     if not text:
         return text
     try:
+        import datetime as _dt
         # Reference year = the doc's own issue date year (or document_date)
         _ref_year = None
+        _ref_date_tuple = None
         for _src in (doc_issue_date, doc_date):
             if _src:
+                _m_full = re.search(r'\b(20\d{2})-(\d{1,2})-(\d{1,2})\b', str(_src))
+                if _m_full:
+                    _ref_year = int(_m_full.group(1))
+                    _ref_date_tuple = (
+                        int(_m_full.group(1)),
+                        int(_m_full.group(2)),
+                        int(_m_full.group(3)),
+                    )
+                    break
                 _m_y = re.search(r'\b(20\d{2})\b', str(_src))
                 if _m_y:
                     _ref_year = int(_m_y.group(1))
@@ -261,19 +338,20 @@ def _sanity_correct_stamp_years(text, doc_date, doc_issue_date, change_log):
         if _ref_year is None:
             return text
 
-        def _fix_year(m):
-            day = m.group(1)
-            mon = m.group(2)
+        def _fix_date(m):
+            day_str = m.group(1)
+            mon_label = m.group(2)
             yr = int(m.group(3))
+            mon_num = _MONTH_TO_NUM.get(mon_label.upper())
+            # Case 1: year is implausibly old → bump to ref year
             if yr < _ref_year - 1:
-                # Year is implausibly old — replace
                 new_yr = _ref_year
                 if change_log is not None:
                     try:
                         change_log.append(asdict(ChangeLogEntry(
                             field="stamp_year_corrected",
                             old_value=m.group(0),
-                            new_value=f"{day} {mon} {new_yr}",
+                            new_value=f"{day_str} {mon_label} {new_yr}",
                             reason=(f"P198gz46: extracted year {yr} is "
                                     f"{_ref_year - yr} years before doc "
                                     f"issue year {_ref_year} — likely "
@@ -283,9 +361,45 @@ def _sanity_correct_stamp_years(text, doc_date, doc_issue_date, change_log):
                         )))
                     except Exception:
                         pass
-                return f"{day} {mon} {new_yr}"
+                return f"{day_str} {mon_label} {new_yr}"
+
+            # Case 2: same/close year but DATE before doc issue date
+            # → try day-digit substitution
+            if (_ref_date_tuple is not None and yr == _ref_year
+                    and mon_num is not None):
+                try:
+                    cand_date = _dt.date(yr, mon_num, int(day_str))
+                    ref_date = _dt.date(*_ref_date_tuple)
+                    if cand_date < ref_date:
+                        fix = _try_day_correction(
+                            day_str, mon_num, yr, _ref_date_tuple,
+                        )
+                        if fix is not None:
+                            new_day, new_day_str = fix
+                            if change_log is not None:
+                                try:
+                                    change_log.append(asdict(ChangeLogEntry(
+                                        field="stamp_day_corrected",
+                                        old_value=m.group(0),
+                                        new_value=f"{new_day_str} {mon_label} {yr}",
+                                        reason=(
+                                            f"P198gz46: extracted date "
+                                            f"{day_str}-{mon_label}-{yr} is "
+                                            f"before doc issue date "
+                                            f"{ref_date.isoformat()} — "
+                                            f"likely OCR digit misread "
+                                            f"({day_str} -> {new_day_str}); "
+                                            f"corrected"
+                                        ),
+                                        timestamp=time.time(),
+                                    )))
+                                except Exception:
+                                    pass
+                            return f"{new_day_str} {mon_label} {yr}"
+                except Exception:
+                    pass
             return m.group(0)
-        return _STAMP_DATE_RE.sub(_fix_year, text)
+        return _STAMP_DATE_RE.sub(_fix_date, text)
     except Exception:
         return text
 
