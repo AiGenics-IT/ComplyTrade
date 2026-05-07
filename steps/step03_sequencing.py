@@ -3946,6 +3946,226 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         _step03_page_text = {}
 
     # ─────────────────────────────────────────────────────────────────
+    # P198gz53 — Fresh-doc-title override on cont=True pages.
+    #
+    # When the VLM marks a page as "X cont=True" (continuation of
+    # previous packet of type X) but the page's OCR text actually
+    # contains a DIFFERENT specific document title at the top, the
+    # VLM made the wrong call — it should be a NEW document, not a
+    # continuation. Override cont→False and replace the doc_type
+    # with the title visible on the page.
+    #
+    # Anchor: 5a0c7112 pg11 — text begins "APM PT. ADHIGANA PRATAMA
+    # MULYA | BIMCO | MEMBER | INDONESIA | SHIPPING AGENCIES | ...
+    # | SHIP AGENT CERTIFICATE | VESSEL : MT. CARTAGENA ...". VLM
+    # marked it as "Beneficiary Certificate cont=True" (continuation
+    # of pg10 BeneCert). Should be classified as Ship Agent
+    # Certificate (its own doc).
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        # Specific doc-title patterns. When found in a page's first
+        # ~300 chars, the page IS that document, not a continuation.
+        _FRESH_TITLE_RE = re.compile(
+            r'\b(?:'
+            r'SHIP\s+AGENT\s+CERTIFICATE|'
+            r'SHIPPING\s+COMPANY\s+CERTIFICATE|'
+            r'SHIPPING\s+AGENT\s+CERTIFICATE|'
+            r'CARRIER[\'’]?S?\s+CERTIFICATE|'
+            r'CARRIER[\'’]?S?\s+OWNER[\'’]?S?\s+CERTIFICATE|'
+            r'CERTIFICATE\s+OF\s+ORIGIN|'
+            r'CERTIFICATE\s+OF\s+ANALYSIS|'
+            r'CERTIFICATE\s+OF\s+QUALITY|'
+            r'CERTIFICATE\s+OF\s+WEIGHT|'
+            r'HEALTH\s+CERTIFICATE|'
+            r'PHYTOSANITARY\s+CERTIFICATE|'
+            r'FUMIGATION\s+CERTIFICATE|'
+            r'HALAL\s+CERTIFICATE|SERTIFIKAT\s+HALAL|'
+            r'KOSHER\s+CERTIFICATE|'
+            r'INSURANCE\s+(?:POLICY|CERTIFICATE)|'
+            r'BILL\s+OF\s+LADING|'
+            r'AIR\s*WAY\s*BILL|AIRWAY\s+BILL|'
+            r"BENEFICIARY[\'’]?S?\s+CERTIFICATE|"
+            r'COMMERCIAL\s+INVOICE|'
+            r'PACKING\s+LIST|'
+            r'WEIGHT\s+(?:AND\s+)?PACKING\s+LIST|'
+            r'SHIPMENT\s+ADVICE|VESSEL\s+ADVICE|'
+            r'BILL\s+OF\s+EXCHANGE|'
+            r'DRAFT\s+SURVEY\s+REPORT|'
+            r'SURVEY\s+REPORT|'
+            r'INSPECTION\s+(?:REPORT|CERTIFICATE)|'
+            r'MILL\s+TEST\s+CERTIFICATE|'
+            r'BATCH\s+CERTIFICATE|'
+            r'FOSFA\s+HEATING\s+INSTRUCTIONS|'
+            r'FOSFA\s+CERTIFICATE'
+            r')\b',
+            flags=re.IGNORECASE,
+        )
+        # Doc-type label canonicalisation: map regex match → label
+        def _canonicalise_title(_m_str):
+            _u = _m_str.upper()
+            if 'SHIP AGENT' in _u or 'SHIPPING AGENT' in _u:
+                return 'Ship Agent Certificate'
+            if 'SHIPPING COMPANY' in _u:
+                return 'Shipping Company Certificate'
+            if 'CARRIER' in _u and 'CERTIFICATE' in _u:
+                return "Carrier's Certificate"
+            if 'CERTIFICATE OF ORIGIN' in _u:
+                return 'Certificate of Origin'
+            if 'CERTIFICATE OF ANALYSIS' in _u:
+                return 'Certificate of Analysis'
+            if 'CERTIFICATE OF QUALITY' in _u:
+                return 'Certificate of Quality'
+            if 'CERTIFICATE OF WEIGHT' in _u:
+                return 'Certificate of Weight'
+            if 'HEALTH' in _u: return 'Health Certificate'
+            if 'PHYTOSANITARY' in _u: return 'Phytosanitary Certificate'
+            if 'FUMIGATION' in _u: return 'Fumigation Certificate'
+            if 'HALAL' in _u: return 'Halal Certificate'
+            if 'KOSHER' in _u: return 'Kosher Certificate'
+            if 'INSURANCE' in _u: return 'Insurance Policy'
+            if 'AIR' in _u and ('WAY BILL' in _u or 'WAYBILL' in _u): return 'Airway Bill'
+            if 'BILL OF LADING' in _u: return 'Bill of Lading'
+            if 'BENEFICIARY' in _u: return "Beneficiary's Certificate"
+            if 'COMMERCIAL INVOICE' in _u: return 'Commercial Invoice'
+            if 'PACKING LIST' in _u: return 'Packing List'
+            if 'SHIPMENT ADVICE' in _u: return 'Shipment Advice'
+            if 'VESSEL ADVICE' in _u: return 'Vessel Advice'
+            if 'BILL OF EXCHANGE' in _u: return 'Bill of Exchange'
+            if 'DRAFT SURVEY' in _u: return 'Draft Survey Report'
+            if 'SURVEY REPORT' in _u: return 'Survey Report'
+            if 'INSPECTION' in _u: return 'Inspection Report'
+            if 'MILL TEST' in _u: return 'Mill Test Certificate'
+            if 'BATCH' in _u: return 'Batch Certificate'
+            if 'FOSFA HEATING' in _u: return 'FOSFA Heating Instructions'
+            if 'FOSFA' in _u: return 'FOSFA Certificate'
+            return _m_str.title()
+
+        _gz53_count = 0
+        for cls in classifications:
+            try:
+                pn = cls.get('page_number', 0)
+                if pn <= 0:
+                    continue
+                if not cls.get('is_continuation'):
+                    continue  # Only override cont=True pages
+                _txt = _step03_page_text.get(pn, '') or ''
+                _head = _txt[:400]
+                _m = _FRESH_TITLE_RE.search(_head)
+                if not _m:
+                    continue
+                _new_dt = _canonicalise_title(_m.group(0))
+                _cur_dt = (cls.get('document_type', '') or '').lower().strip()
+                if _new_dt.lower() == _cur_dt:
+                    continue  # same type — VLM was right, just continuation
+                # Different type → override
+                cls['_original_document_type'] = cls.get('document_type', '')
+                cls['document_type'] = _new_dt
+                cls['is_continuation'] = False
+                cls['_reclassified_by'] = 'P198gz53_fresh_title_override'
+                _gz53_count += 1
+                try:
+                    _progress(
+                        f"  [P198gz53] pg{pn}: '{cls['_original_document_type']}' "
+                        f"cont=True -> '{_new_dt}' cont=False "
+                        f"(page text has '{_m.group(0).strip()}' header)"
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        if _gz53_count:
+            _progress(f"  [P198gz53] overrode {_gz53_count} cont=True page(s) with fresh doc title")
+    except Exception as _e:
+        try:
+            _progress(f"[P198gz53 fresh-title override] exception: {_e}")
+        except Exception:
+            pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz54 — "LAMPIRAN" / "ATTACHMENT OF X" → continuation of X.
+    #
+    # Indonesian Halal Certificates split the main certificate from
+    # its attachment(s): pg N = "SERTIFIKAT HALAL (HALAL CERTIFICATE)",
+    # pg N+1, N+2, ... = "LAMPIRAN SERTIFIKAT HALAL (THE ATTACHMENT
+    # OF HALAL CERTIFICATE)". Each Lampiran page is a separate
+    # physical page but is logically PART of the parent certificate.
+    # The VLM classifies each Lampiran as its own packet, leaving the
+    # parent Halal Certificate as a 1-page packet and the Lampiran
+    # pages as separate 1-page packets.
+    #
+    # Rule: when a page's first ~300 chars match "LAMPIRAN ..." or
+    # "(THE ATTACHMENT OF X CERTIFICATE)" or "ATTACHMENT TO ..."
+    # patterns, and the previous packet is a doc that this is an
+    # attachment OF (Halal Certificate, etc.), reclassify as the
+    # parent's type with is_continuation=True so it merges naturally.
+    #
+    # Anchor: 5a0c7112 pgs 14-16 — three "LAMPIRAN SERTIFIKAT HALAL
+    # (THE ATTACHMENT OF HALAL CERTIFICATE)" pages following the
+    # main Halal Certificate on pg13.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        _LAMPIRAN_RE = re.compile(
+            r'\bLAMPIRAN\s+SERTIFIKAT\s+HALAL\b'
+            r'|\(THE\s+ATTACHMENT\s+OF\s+HALAL\s+CERTIFICATE\)'
+            r'|\(ATTACHMENT\s+OF\s+CERTIFICATE\)'
+            r'|\bATTACHMENT\s+TO\s+CERTIFICATE\b'
+            r'|\(ANNEX\s+TO\s+CERTIFICATE\)',
+            flags=re.IGNORECASE,
+        )
+        _gz54_count = 0
+        # Build prev-page lookup
+        _cls_by_pg_g54 = {c.get('page_number', 0): c for c in classifications
+                          if isinstance(c, dict) and c.get('page_number')}
+        for cls in classifications:
+            try:
+                pn = cls.get('page_number', 0)
+                if pn <= 1:
+                    continue
+                _txt = _step03_page_text.get(pn, '') or ''
+                _head = _txt[:400]
+                if not _LAMPIRAN_RE.search(_head):
+                    continue
+                # Find parent — walk back from pn-1 looking for a non-
+                # Lampiran page with a recognised parent doc type.
+                _parent_dt = None
+                for _back in range(pn - 1, max(pn - 6, 0), -1):
+                    _prev = _cls_by_pg_g54.get(_back)
+                    if not _prev:
+                        continue
+                    _prev_txt = _step03_page_text.get(_back, '') or ''
+                    if _LAMPIRAN_RE.search(_prev_txt[:400]):
+                        continue  # also a Lampiran — keep going back
+                    _prev_dt = (_prev.get('document_type', '') or '').strip()
+                    if 'halal' in _prev_dt.lower() or 'certificate' in _prev_dt.lower():
+                        _parent_dt = _prev_dt
+                        break
+                if not _parent_dt:
+                    # Default to Halal Certificate (anchor case).
+                    _parent_dt = 'Halal Certificate'
+                cls['_original_document_type'] = cls.get('document_type', '')
+                cls['document_type'] = _parent_dt
+                cls['is_continuation'] = True
+                cls['_reclassified_by'] = 'P198gz54_lampiran_attachment'
+                _gz54_count += 1
+                try:
+                    _progress(
+                        f"  [P198gz54] pg{pn}: '{cls['_original_document_type']}' "
+                        f"-> '{_parent_dt}' cont=True (Lampiran/attachment "
+                        f"of preceding {_parent_dt})"
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        if _gz54_count:
+            _progress(f"  [P198gz54] reclassified {_gz54_count} Lampiran/attachment page(s)")
+    except Exception as _e:
+        try:
+            _progress(f"[P198gz54 lampiran attachment] exception: {_e}")
+        except Exception:
+            pass
+
+    # ─────────────────────────────────────────────────────────────────
     # P198gz50 — Header-less continuation page rescue.
     #
     # When a page's OCR text starts directly with raw item rows
