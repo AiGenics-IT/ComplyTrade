@@ -3930,14 +3930,9 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
         # Update previous-page tracker for next iteration
         _prev_pg_num = pg_num
 
-    # ── Phase 2: Group pages into document packets ──
-    _progress("Grouping pages into document packets...")
-    packets = _group_into_packets(classifications)
-
     # ─────────────────────────────────────────────────────────────────
-    # Shared page-text lookup for all P198gz38-44 post-passes. Hoisted
-    # so each fix can reference it without re-building (and without
-    # NameError if an earlier fix's try-block fails).
+    # Build shared page-text lookup BEFORE post-passes / packet
+    # grouping so fixes that need OCR text can reference it.
     # ─────────────────────────────────────────────────────────────────
     _step03_page_text = {}
     try:
@@ -3949,6 +3944,203 @@ def run(step2_result: dict, output_dir: str = None, progress_callback=None) -> d
             _step03_page_text[_pn] = _txt
     except Exception:
         _step03_page_text = {}
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz50 — Header-less continuation page rescue.
+    #
+    # When a page's OCR text starts directly with raw item rows
+    # (item-codes, quantities, weights — no document title in the
+    # first ~200 chars), it's almost always a CONTINUATION of the
+    # previous page, not a new document. The VLM frequently mis-
+    # classifies such pages as "Commercial Invoice cont=False" or
+    # similar because the table layout matches what an invoice page
+    # looks like, even though the page literally has no title or
+    # header band.
+    #
+    # Anchor: c1d9277c pg82, pg92, pg94 — Packing List continuation
+    # pages whose text starts with "A690-A691 380650056-0001 OIL
+    # SEAL ..." (raw item rows, no header). VLM classified them as
+    # "Commercial Invoice cont=False"; should be PL continuation of
+    # the preceding PL (pg81, 91, 93).
+    #
+    # Rule: when a page is classified cont=False but its first 200
+    # chars contain NO document-title keyword (COMMERCIAL INVOICE,
+    # PACKING LIST, BILL OF LADING, CERTIFICATE OF ORIGIN, etc.),
+    # AND the previous page is a sibling document type (PL/CI), AND
+    # the previous page text DID contain a title, treat current
+    # page as a continuation of the previous page.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        _DOC_TITLE_RE = re.compile(
+            r'\b(?:COMMERCIAL\s+INVOICE|PACKING\s+LIST|'
+            r'WEIGHT\s+(?:AND\s+)?PACKING\s+LIST|'
+            r'BILL\s+OF\s+LADING|AIRWAY\s+BILL|AIR\s+WAY\s*BILL|AWB|'
+            r'CERTIFICATE\s+OF\s+ORIGIN|CERTIFICATE\s+OF\s+'
+            r'(?:ANALYSIS|CONFORMITY|QUALITY|WEIGHT)|'
+            r"BENEFICIARY[\'']?S?\s+CERTIFICATE|"
+            r'SHIPMENT\s+ADVICE|VESSEL\s+ADVICE|'
+            r'INSURANCE\s+(?:POLICY|CERTIFICATE)|'
+            r'BILL\s+OF\s+EXCHANGE|DRAFT|REMITTANCE|'
+            r'SURVEY\s+REPORT|INSPECTION\s+(?:REPORT|CERTIFICATE)|'
+            r'HEALTH\s+CERTIFICATE|HALAL\s+CERTIFICATE|'
+            r'PHYTOSANITARY|FUMIGATION|MILL\s+TEST|'
+            r'AMENDMENT|MT\s*70[0-9]|MT\s*79[59]|'
+            r'INVOICE\s+NO|INVOICE\s+NUMBER|'
+            r'PROFORMA\s+INVOICE)\b',
+            flags=re.IGNORECASE,
+        )
+        # Sort classifications by page number for prev-page lookup
+        _cls_by_pg = {c.get('page_number', 0): c for c in classifications
+                      if isinstance(c, dict) and c.get('page_number')}
+        _gz50_count = 0
+        for cls in classifications:
+            try:
+                pn = cls.get('page_number', 0)
+                if pn <= 1:
+                    continue
+                if cls.get('is_continuation'):
+                    continue
+                _txt = _step03_page_text.get(pn, '') or ''
+                if len(_txt) < 50:
+                    continue  # too short to judge
+                _head = _txt[:300]
+                # Skip if page already has its own title
+                if _DOC_TITLE_RE.search(_head):
+                    continue
+                # Don't override SWIFT / LC / Amendment messages —
+                # those are handled by their own pre-classifier.
+                _cur_dt = (cls.get('document_type', '') or '').lower()
+                if any(k in _cur_dt for k in (
+                    'mt7', 'mt9', 'amendment', 'lc',
+                    'documentary credit', 'letter of credit',
+                    'attachment', 'rider', 'attached',
+                )):
+                    continue
+                # Look at previous page
+                _prev = _cls_by_pg.get(pn - 1)
+                if not _prev:
+                    continue
+                _prev_dt = (_prev.get('document_type', '') or '').lower()
+                _prev_txt = (_step03_page_text.get(pn - 1, '') or '')[:300]
+                _prev_has_title = bool(_DOC_TITLE_RE.search(_prev_txt))
+                if not _prev_has_title:
+                    continue  # prev didn't establish a fresh doc either
+                # Override → use prev's doc type, mark as continuation
+                cls['_original_document_type'] = cls.get('document_type', '')
+                cls['document_type'] = _prev.get('document_type', cls['document_type'])
+                cls['is_continuation'] = True
+                cls['_reclassified_by'] = 'P198gz50_headerless_continuation'
+                _gz50_count += 1
+                try:
+                    _progress(
+                        f"  [P198gz50] pg{pn}: '{cls['_original_document_type']}' "
+                        f"cont=False -> '{cls['document_type']}' cont=True "
+                        f"(header-less page, prev pg{pn - 1} is "
+                        f"{_prev.get('document_type')})"
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        if _gz50_count:
+            _progress(f"  [P198gz50] reclassified {_gz50_count} header-less page(s) as continuations")
+    except Exception as _e:
+        try:
+            _progress(f"[P198gz50 header-less continuation] exception: {_e}")
+        except Exception:
+            pass
+
+    # ─────────────────────────────────────────────────────────────────
+    # P198gz49 — Pre-grouping page-level "Attachment" override.
+    #
+    # Some carriers (Evergreen, ONE, etc.) print attachment / rider
+    # pages with the same "BILL OF LADING" form layout that the VLM
+    # routinely tags as "Bill of Lading" cont=False. The header text
+    # CLEARLY says "ATTACHMENT" / "ATTACHED LIST PAGE: N/M" before
+    # any "BILL OF LADING" wording, but the VLM's image-based
+    # classifier sometimes fixates on the form template.
+    #
+    # When this happens, _group_into_packets sees the rider as a
+    # fresh BL packet and the existing BL+rider absorption (Rule 1b)
+    # can't pick it up because its doc_type is now "Bill of Lading"
+    # not "Attachment".
+    #
+    # Fix: scan each page's first ~250 chars. If the head literally
+    # contains "ATTACHMENT" or "ATTACHED LIST PAGE" / "ATTACHED LIST
+    # BL NO" or "ATTACHED RIDER" / "ATTACHED SHEET" BEFORE any BL
+    # face fields (Shipper/Exporter, Consignee, Notify Party block),
+    # override the doc_type to "Attachment". Rule 1b then merges
+    # naturally into the preceding BL packet.
+    #
+    # Anchor: c1d9277c pg43 — Evergreen attachment / rider page
+    # ("EVERGREEN LINE | A Joint Service Agreement | ATTACHMENT |
+    # ... | ATTACHED LIST PAGE: 1/1") was classified as "Bill of
+    # Lading" by VLM, breaking BL set 2 (pgs 41-43). Pg40 and pg46
+    # — same content — got "Attachment" correctly.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        _ATTACH_HEADER_RE = re.compile(
+            r'\bATTACHMENT\b\s*[\|\n]'
+            r'|\bATTACHED\s+LIST\s+(?:PAGE|BL|B/L|NO|NUMBER)\b'
+            r'|\bATTACHED\s+RIDER\b'
+            r'|\bATTACHED\s+SHEET\b',
+            flags=re.IGNORECASE,
+        )
+        _BL_FACE_FIELDS_RE = re.compile(
+            r'\bShipper\s*/\s*Exporter\b'
+            r'|\bShipper\s+\(complete\b'
+            r'|\bConsignee\s*\(\b'
+            r'|\bNotify\s+Party\b',
+            flags=re.IGNORECASE,
+        )
+        _override_count = 0
+        for cls in classifications:
+            try:
+                pn = cls.get('page_number', 0)
+                if pn <= 0:
+                    continue
+                _txt = _step03_page_text.get(pn, '') or ''
+                _head = _txt[:300]
+                # Trigger only when current label is BL family
+                _dt_low = (cls.get('document_type', '') or '').lower()
+                if 'bill of lading' not in _dt_low:
+                    continue
+                # Already an attachment/conditions label? skip
+                if any(k in _dt_low for k in (
+                    'attachment', 'attached', 'rider', 'sheet',
+                    'conditions of carriage', 'terms and conditions',
+                )):
+                    continue
+                if not _ATTACH_HEADER_RE.search(_head):
+                    continue
+                # If the head ALSO has BL-face fields very early, prefer
+                # BL classification (the page might genuinely be both).
+                if _BL_FACE_FIELDS_RE.search(_head):
+                    continue
+                # Override → Attachment, drop is_continuation flag so
+                # Rule 1b's nearest-BL absorption works naturally.
+                cls['_original_document_type'] = cls.get('document_type', '')
+                cls['document_type'] = 'Attachment'
+                cls['_reclassified_by'] = 'P198gz49_attachment_header'
+                _override_count += 1
+                try:
+                    _progress(f"  [P198gz49] pg{pn}: '{cls['_original_document_type']}' "
+                              f"-> 'Attachment' (head text starts with ATTACHMENT/ATTACHED LIST)")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        if _override_count:
+            _progress(f"  [P198gz49] overrode {_override_count} page(s) to 'Attachment'")
+    except Exception as _e:
+        try:
+            _progress(f"[P198gz49 attachment-header override] exception: {_e}")
+        except Exception:
+            pass
+
+    # ── Phase 2: Group pages into document packets ──
+    _progress("Grouping pages into document packets...")
+    packets = _group_into_packets(classifications)
 
     # ─────────────────────────────────────────────────────────────────
     # P198gz44 — Same-N "Page K of N" continuation merger.
