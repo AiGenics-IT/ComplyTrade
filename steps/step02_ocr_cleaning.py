@@ -225,6 +225,12 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
                 if _resp.status_code == 200:
                     _content = _resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
                     if _content and len(_content.strip()) > 10:
+                        # P198gz45 — VLM hallucination guard (full
+                        # extraction path). Reject runs of >=50 same-
+                        # char tokens.
+                        import re as _re
+                        if _re.search(r'(.)\1{49,}', _content):
+                            return pg_num, None, False
                         return pg_num, _content.strip(), True  # True = full replacement
                 return pg_num, None, False
 
@@ -251,6 +257,18 @@ def run(step1_result: dict, output_dir: str = None, progress_callback=None) -> d
                     _clean = _re.sub(r'#{1,6}\s+', '', _clean)
                     _clean = _re.sub(r'-{3,}\|?', '', _clean)
                     _clean = _clean.strip()
+                    # P198gz45 — VLM hallucination guard. Reject VLM
+                    # output when it contains an absurd run of repeating
+                    # characters (>= 50 of the same digit/letter in a
+                    # row), which is a known model-failure mode where
+                    # the VLM gets stuck producing one token. Fall back
+                    # to GLM in that case so the report doesn't show
+                    # garbage. Anchor: cb7d7bbf pg84 — VLM produced
+                    # "USWn 99111111051015911111..." with hundreds of
+                    # consecutive 1's after the legitimate header.
+                    _hallucinated = bool(_re.search(r'(.)\1{49,}', _clean))
+                    if _hallucinated:
+                        return pg_num, None, False
                     # Use VLM if it got reasonable content (at least 50% of GLM length)
                     if len(_clean) >= len(cleaned) * 0.5:
                         return pg_num, _clean, True  # Replace with VLM
