@@ -92,15 +92,13 @@ import base64 as _b64
 
 # ── Step module imports ──
 # Each step is a separate module in the steps/ directory with a run() function.
-from steps import step01_raw_ocr
-from steps import step02_ocr_cleaning
-from steps import step03_sequencing
-from steps import step04_mt_identification
-from steps import step05_mt_reconciliation
+# step01..step05 removed — 8083 classifier (bridge package) now owns
+# OCR + cleaning + sequencing + MT identification + reconciliation.
 from steps import step06_final_lc
 from steps import step07_clause_extraction
-from steps import step08_shipping_classification
-from steps import step09_shipping_reconciliation
+# step08/09 removed — 8083 classifier does shipping classification +
+# field extraction in its STEP6-MATCH + STEP7-FIELDS stages, surfaced
+# via the adapter as step08 / step09 result shapes.
 from steps import step10_traceability
 from steps import step11_human_review
 from steps import step12_decomposition
@@ -230,25 +228,55 @@ def extracted_text_page():
 
 @app.get("/api/page-image/{job_id}/{page_num}")
 def get_page_image(job_id: str, page_num: int, w: int = 0):
-    """Serve a page image, optionally resized for faster loading."""
+    """Serve a page image, optionally resized for faster loading.
+
+    Sources, in order:
+      1. Local cache: results/<job_id>/step01/images/page_NNN.png — used
+         when this job was processed by the legacy pipeline (rare now)
+         OR when an earlier UI fetch already populated the cache.
+      2. 8083 proxy: when 8083 originally classified this job, the page
+         images live on the 8083 box at /api/page-image/<8083_job_id>/N.
+         Fetch from there. Required for separate-machine deployments.
+
+    Streams the image back to the caller so the UI doesn't need to know
+    where the file physically lives.
+    """
     img_path = os.path.join(RESULTS_DIR, job_id, 'step01', 'images', f'page_{page_num:03d}.png')
-    if not os.path.exists(img_path):
-        raise HTTPException(404, "Page image not found")
-    if w and w < 2000:
+    if os.path.exists(img_path):
+        if w and w < 2000:
+            try:
+                from PIL import Image as _PILImage
+                import io as _io
+                img = _PILImage.open(img_path)
+                ratio = w / img.width
+                new_h = int(img.height * ratio)
+                img = img.resize((w, new_h), _PILImage.LANCZOS)
+                buf = _io.BytesIO()
+                img.save(buf, format='JPEG', quality=85)
+                buf.seek(0)
+                return StreamingResponse(buf, media_type="image/jpeg")
+            except Exception:
+                pass
+        return FileResponse(img_path, media_type="image/png")
+
+    # No local cache — proxy from 8083 if this job was classified there.
+    c8083_path = os.path.join(RESULTS_DIR, job_id, 'classification_8083.json')
+    if os.path.exists(c8083_path):
         try:
-            from PIL import Image as _PILImage
-            import io as _io
-            img = _PILImage.open(img_path)
-            ratio = w / img.width
-            new_h = int(img.height * ratio)
-            img = img.resize((w, new_h), _PILImage.LANCZOS)
-            buf = _io.BytesIO()
-            img.save(buf, format='JPEG', quality=85)
-            buf.seek(0)
-            return StreamingResponse(buf, media_type="image/jpeg")
-        except Exception:
-            pass
-    return FileResponse(img_path, media_type="image/png")
+            from bridge import EightThreeClient
+            import requests as _req
+            client = EightThreeClient()
+            url = client.page_image_url(job_id, page_num,
+                                          dpi=100 if not w else max(72, w))
+            r = _req.get(url, timeout=30)
+            if r.status_code == 200:
+                return StreamingResponse(
+                    iter([r.content]),
+                    media_type=r.headers.get('content-type', 'image/png'),
+                )
+        except Exception as _e:
+            raise HTTPException(502, f"8083 page-image proxy failed: {_e}")
+    raise HTTPException(404, "Page image not found")
 
 
 @app.get("/api/extracted-text/{job_id}")
@@ -1139,19 +1167,11 @@ def _rerun_classification_pipeline(job_id: str):
         job.setdefault('step_results', {})['step02'] = s2
         job.setdefault('step_results', {})['step03'] = s3
     else:
-        # Legacy path: load step02 + re-run step03 sequencing
-        s2_path = os.path.join(results_dir, 'step02', 'step02_result.json')
-        if not os.path.isfile(s2_path):
-            raise FileNotFoundError(
-                "step02_result.json not found — cannot rerun. "
-                "Re-upload the PDF instead."
-            )
-        with open(s2_path, 'r', encoding='utf-8') as f:
-            s2 = _json.load(f)
-        job['current_step'] = 3
-        _p("Step 3: Re-running page sequencing & classification...")
-        s3 = _to_dict(step03_sequencing.run(s2, os.path.join(results_dir, 'step03'), _p))
-        job.setdefault('step_results', {})['step03'] = s3
+        raise FileNotFoundError(
+            "No cached 8083 classification.json for this job — legacy "
+            "step03_sequencing was removed in the 8083 integration. "
+            "Re-upload the PDF to re-run with the 8083 classifier."
+        )
 
     # P198gn — Continue through Steps 6-9 (Final LC + Shipping
     # Classification chain) so the dashboard / extracted-text /
@@ -1262,18 +1282,10 @@ def _rerun_classification_pipeline(job_id: str):
             _p(f"[8083] Step 8/9 from cached classification: "
                f"{len(s8.get('classified_packets', []))} shipping packets")
         else:
-            job['current_step'] = 8
-            _p("Step 8: Shipping Document Classification...")
-            s8 = _to_dict(step08_shipping_classification.run(
-                _s6_with_shipping, s7,
-                os.path.join(results_dir, 'step08'), _p))
-            job['step_results']['step08'] = s8
-
-            job['current_step'] = 9
-            _p("Step 9: Shipping OCR Reconciliation...")
-            s9 = _to_dict(step09_shipping_reconciliation.run(
-                s8, s7, os.path.join(results_dir, 'step09'), _p))
-            job['step_results']['step09'] = s9
+            raise FileNotFoundError(
+                "No cached 8083 classification.json — step08/09 legacy "
+                "code was removed; this job needs to be re-uploaded."
+            )
     except Exception as _e:
         import traceback
         _p(f"Steps 6-9 failed: {_e}")
@@ -2335,65 +2347,29 @@ def _do_regenerate(job_id: str):
         _log(f"Step 7 failed: {e}")
         s7 = {}
 
-    # Re-run Step 8 (Shipping Classification) — needs step03 packets +
-    # step07 required docs + per-page image paths + GLM text. The
-    # original pipeline path (around the main upload flow) enriches
-    # each shipping packet with image paths and cleaned text from
-    # step02 before handing it to Step 8; without that enrichment,
-    # Step 8 can't classify / extract and Step 9 falls back to
-    # placeholder output. P198av — mirror the original-pipeline
-    # enrichment here.
-    try:
-        s8_dir = os.path.join(results_dir, 'step08')
-        os.makedirs(s8_dir, exist_ok=True)
-        _img_dir = os.path.join(results_dir, 'images')
-        _ship_pkts = []
-        for _p in s3.get('packets', []):
-            _dt = (_p.get('document_type', '') or '').lower()
-            if _dt in ('lc', 'letter of credit', 'amendment',
-                       'mt799', 'mt999', 'mt754', 'mt940',
-                       'mt730', 'mt740', 'mt747'):
-                continue
-            _spkt_copy = dict(_p)
-            _pg_nums = _spkt_copy.get('page_numbers', []) or []
-            _img_paths = []
-            for _pn in _pg_nums:
-                _ip = os.path.join(_img_dir, f"page_{_pn:03d}.png")
-                if os.path.exists(_ip):
-                    _img_paths.append(_ip)
-            _spkt_copy['page_image_paths'] = _img_paths
-            _texts = []
-            for _pn in _pg_nums:
-                _t = s5_input.get('page_texts', {}).get(_pn, '') or \
-                     s5_input.get('page_texts', {}).get(str(_pn), '')
-                if _t:
-                    _texts.append(_t)
-            _joined = '\n'.join(_texts)
-            _spkt_copy['text'] = _joined
-            _spkt_copy['cleaned_text'] = _joined
-            _spkt_copy['raw_text'] = _joined
-            _ship_pkts.append(_spkt_copy)
-        # Pass the enriched packets via the s6.shipping_packets field
-        # (same contract as the main pipeline path at server.py:3128)
-        _s6_with_shipping = dict(s6)
-        _s6_with_shipping['shipping_packets'] = _ship_pkts
-        s8 = _to_dict(step08_shipping_classification.run(
-            _s6_with_shipping, s7, s8_dir, _log))
+    # Step 8/9: use 8083 adapter output (no legacy fallback — the
+    # step08_shipping_classification and step09_shipping_reconciliation
+    # modules were removed in the 8083 integration).
+    if _adapter_out is not None:
+        s8 = _adapter_out['step08']
+        s9 = _adapter_out['step09']
         if job_id in _jobs:
             _jobs[job_id]['step_results']['step08'] = s8
-    except Exception as e:
-        _log(f"Step 8 failed: {e}")
-        s8 = {}
-
-    # Re-run Step 9 (Shipping Reconciliation)
-    try:
-        s9_dir = os.path.join(results_dir, 'step09')
-        os.makedirs(s9_dir, exist_ok=True)
-        s9 = _to_dict(step09_shipping_reconciliation.run(s8, s7, s9_dir, _log))
-        if job_id in _jobs:
             _jobs[job_id]['step_results']['step09'] = s9
-    except Exception as e:
-        _log(f"Step 9 failed: {e}")
+        # Persist to disk so downstream UI / disk-reading code finds it
+        for _stage_name, _payload in (('step08', s8), ('step09', s9)):
+            _stage_dir = os.path.join(results_dir, _stage_name)
+            os.makedirs(_stage_dir, exist_ok=True)
+            with open(os.path.join(_stage_dir, f'{_stage_name}_result.json'),
+                      'w', encoding='utf-8') as _f:
+                json.dump(_payload, _f, ensure_ascii=False, indent=2,
+                          default=str)
+        _log(f"Step 8/9 from 8083 cache: "
+             f"{len(s8.get('classified_packets', []))} shipping packets")
+    else:
+        _log("Step 8/9 SKIPPED — no 8083 classification cache; "
+             "this job needs to be re-uploaded with USE_8083=true.")
+        s8 = {}
         s9 = {}
 
     # P198av — Sanity check step 9 output. If packets came back with
@@ -3425,206 +3401,12 @@ def _process_pipeline(job_id: str):
                f"{len(s5['page_texts'])} pages with text")
 
         if not USE_8083:
-            # ── Step 1: Raw OCR (GLM) ──
-            # Extract raw text from each PDF page using the GLM-OCR model.
-            # Each page image is sent to the model server for text extraction.
-            job['current_step'] = 1
-            _p("Step 1: Page-Level Raw OCR Extraction...")
-            s1 = step01_raw_ocr.run(pdf_path, os.path.join(results_dir, 'step01'), _p)
-            if s1.get('error'):
-                raise Exception(f"Step 1 failed: {s1['error']}")
-            job['step_results']['step01'] = _to_dict(s1)  # Full data — convert dataclasses to dicts
-            _p(f"Step 1 done: {s1['total_pages']} pages in {s1['elapsed_seconds']}s")
-
-            # ── Step 2: OCR Cleaning ──
-            # Fix common OCR errors: B->8, G->6, misread characters, normalize whitespace.
-            job['current_step'] = 2
-            _p("Step 2: OCR Text Cleaning...")
-            s2 = step02_ocr_cleaning.run(s1, os.path.join(results_dir, 'step02'), _p)
-            job['step_results']['step02'] = _to_dict(s2)  # Full data — convert dataclasses to dicts
-
-            # ── Step 3: Page Sequencing ──
-            # Group pages into logical document packets (e.g., pages 3-5 = one BL).
-            # Uses document boundary detection (headers, stamps, content changes).
-            job['current_step'] = 3
-            _p("Step 3: Page Sequencing & Document Packet Formation...")
-            s3 = _to_dict(step03_sequencing.run(s2, os.path.join(results_dir, 'step03'), _p))
-            job['step_results']['step03'] = s3
-
-            # ── Step 4: MT Identification (uses Step 3 classification as base) ──
-            # Step 3 already classified every page. Step 4 separates MT from shipping
-            # and verifies the MT type using text patterns (F-tags, MT headers)
-            s4 = {}
-            if _is_step_enabled(4):
-                job['current_step'] = 4
-                _p("Step 4: MT Document Identification (from Step 3 classification)...")
-
-                _lc_types = {'lc', 'amendment', 'mt700', 'mt701', 'mt705', 'mt707', 'mt708',
-                             'mt710', 'mt711', 'mt720', 'mt721'}
-                # MT799 / MT999 = SWIFT free-format messages. These are NOT LCs but
-                # they often carry amendment instructions in the narrative body
-                # ("UNDER FIELD 45A SHOULD READ AS X I/O Y"). When that happens we
-                # promote the packet to MT707 so step06 will apply the amendment
-                # via _extract_mt799_amendment_fields().
-                _free_format_types = {'mt799', 'mt999', 'free format message',
-                                      'free_format_message', 'bank-to-bank message'}
-                # Endorsement pages and blank pages are BACK SIDES of the previous document
-                # They carry stamps, endorsements, signatures — merge into previous packet
-                _back_page_types = {'blank page', 'blank_page', 'endorsement page'}
-                _s3_packets = s3.get('packets', [])
-
-                # Import the MT799 amendment detector from step04 so we can apply
-                # the same promotion logic the standalone runner uses.
-                from steps.step04_mt_identification import (
-                    _is_mt799_amendment as _s4_is_mt799_amendment,
-                    _looks_like_mt799_free_format as _s4_looks_like_mt799_ff,
-                )
-
-                # Build a {page_number: cleaned_text} index from Step 2's output.
-                # Step 3 stores packets with only page-number references, not the
-                # actual cleaned text — so a `_pkt['pages'][i]['cleaned_text']`
-                # lookup returns empty. We must source text from Step 2 directly.
-                _s2_page_text = {}
-                for _pg in s2.get('pages', []) or []:
-                    if isinstance(_pg, dict):
-                        _pn = _pg.get('page_number')
-                        _txt = _pg.get('cleaned_text') or _pg.get('raw_text') or ''
-                    else:
-                        _pn = getattr(_pg, 'page_number', None)
-                        _txt = getattr(_pg, 'cleaned_text', '') or getattr(_pg, 'raw_text', '')
-                    if _pn is not None and _txt:
-                        _s2_page_text[int(_pn)] = _txt
-
-                def _packet_full_text(_pkt):
-                    """Concatenate cleaned text for every page in the packet,
-                    pulling from the Step-2 page-text index (Step-3 packets do
-                    not carry the cleaned text inline)."""
-                    _parts = []
-                    # Try inline pages first (covers the case where step3 did
-                    # carry cleaned_text in some configurations)
-                    for _pg in _pkt.get('pages', []) or []:
-                        if isinstance(_pg, dict):
-                            _t = _pg.get('cleaned_text') or _pg.get('raw_text') or ''
-                        else:
-                            _t = getattr(_pg, 'cleaned_text', '') or getattr(_pg, 'raw_text', '')
-                        if _t:
-                            _parts.append(_t)
-                    # Fall back to the Step-2 index by page number
-                    if not _parts:
-                        for _pn in _pkt.get('page_numbers', []) or []:
-                            try:
-                                _t = _s2_page_text.get(int(_pn), '')
-                            except (TypeError, ValueError):
-                                _t = ''
-                            if _t:
-                                _parts.append(_t)
-                    return '\n'.join(_parts)
-
-                _mt_packets = []
-                _shipping_packets = []
-                _prev_packet = None
-                for _pkt in _s3_packets:
-                    _dt = (_pkt.get('document_type', '') or '').lower()
-                    if _dt in _back_page_types:
-                        # This is the back side of the previous document — merge
-                        if _prev_packet:
-                            _prev_packet['page_numbers'] = _prev_packet.get('page_numbers', []) + _pkt.get('page_numbers', [])
-                            # Merge stamps/signatures from back page into previous doc
-                            for _field in ('stamps', 'signatures', 'seals', 'logos'):
-                                _prev_list = _prev_packet.get(_field, [])
-                                _back_list = _pkt.get(_field, [])
-                                if isinstance(_back_list, list):
-                                    _prev_list.extend(_back_list)
-                                    _prev_packet[_field] = _prev_list
-                            _p(f"  Merged {_dt} (pg {_pkt.get('page_numbers', [])}) into previous {_prev_packet.get('document_type', '?')}")
-                        continue
-                    _pkt_copy = dict(_pkt)
-
-                    # ── MT799 / MT999 free-format ──
-                    # Check this BEFORE the LC branch because step03 may have
-                    # mislabelled an MT799 as "LC" if its body references F-tags.
-                    # We re-inspect the packet text for free-format markers and
-                    # amendment instructions and route accordingly.
-                    _pkt_text = _packet_full_text(_pkt)
-                    _is_ff = _dt in _free_format_types or _s4_looks_like_mt799_ff(_pkt_text)
-                    if _is_ff:
-                        if _s4_is_mt799_amendment(_pkt_text):
-                            _pkt_copy['mt_type'] = 'MT707'
-                            _pkt_copy['source_mt'] = 'MT799'
-                            _pkt_copy['is_799_amendment'] = True
-                            _p(f"  pkt {_pkt.get('packet_id','?')} pages={_pkt.get('page_numbers',[])} → MT799 amendment (promoted to MT707)")
-                            _mt_packets.append(_pkt_copy)
-                        else:
-                            _pkt_copy['mt_type'] = 'MT799'
-                            _pkt_copy['source_mt'] = 'MT799'
-                            _pkt_copy['is_799_amendment'] = False
-                            _p(f"  pkt {_pkt.get('packet_id','?')} pages={_pkt.get('page_numbers',[])} → MT799 free format")
-                            _mt_packets.append(_pkt_copy)
-                            # P198db — Also keep a SHIPPING-side copy of
-                            # non-amendment MT799 / MT999 packets. The
-                            # beneficiary may attach a copy of the
-                            # negotiating bank's authenticated SWIFT
-                            # advice to satisfy F47A-9 ("copy of such
-                            # SWIFT message must accompany original
-                            # documents"). Without a shipping-side
-                            # copy, step 8/9/14 never see the SWIFT
-                            # advice and the F47A-9 check (P198da) is
-                            # forced to FAIL even when the SWIFT advice
-                            # IS in the presentation.
-                            _ship_copy = dict(_pkt_copy)
-                            _ship_copy['mt_type'] = 'shipping'
-                            _ship_copy['document_type'] = (
-                                _pkt.get('document_type') or 'MT799'
-                            )
-                            _ship_copy['source_mt'] = 'MT799'
-                            _ship_copy['is_swift_advice_copy'] = True
-                            _shipping_packets.append(_ship_copy)
-                            _p(
-                                f"  pkt {_pkt.get('packet_id','?')} also "
-                                f"copied to shipping (MT799 SWIFT advice "
-                                f"for F47A-9 check)"
-                            )
-                        _prev_packet = _pkt_copy
-                        continue
-
-                    if _dt in _lc_types:
-                        _pkt_copy['mt_type'] = 'MT707' if 'amend' in _dt else 'MT700'
-                        _mt_packets.append(_pkt_copy)
-                        _prev_packet = _pkt_copy
-                    # P103: BAHL informational MT types — not LC, not shipping
-                    elif _dt.upper().startswith('MT') and _dt.upper() in (
-                        'MT754', 'MT940', 'MT730', 'MT740', 'MT742',
-                        'MT734', 'MT750', 'MT752', 'MT747',
-                    ):
-                        _pkt_copy['mt_type'] = _dt.upper()
-                        _mt_packets.append(_pkt_copy)
-                        _prev_packet = _pkt_copy
-                        _p(f"  pkt {_pkt.get('packet_id','?')} pages={_pkt.get('page_numbers',[])} → {_dt.upper()} (informational)")
-                    else:
-                        _pkt_copy['mt_type'] = 'shipping'
-                        _shipping_packets.append(_pkt_copy)
-                        _prev_packet = _pkt_copy
-
-                s4 = {'packets': _mt_packets + _shipping_packets}
-                job['step_results']['step04'] = s4
-                _p(f"  MT/LC: {len(_mt_packets)}, Shipping: {len(_shipping_packets)}")
-            else:
-                _p("Step 4: SKIPPED (disabled in settings)")
-                s4 = s3
-
-            # ── Step 5: Passthrough ──
-            # VLM text completion for ALL pages (including MT/LC) is now handled in
-            # Step 2 (OCR Cleaning). Step 2's cleaned_text is the single source of
-            # truth for all downstream steps. Step 5 just passes through.
-            s5 = {}
-            if _is_step_enabled(5):
-                job['current_step'] = 5
-                _p("Step 5: Passthrough (VLM text review handled in Step 2 for all pages)")
-                s5 = s4
-                job['step_results']['step05'] = s5
-            else:
-                _p("Step 5: SKIPPED (disabled in settings)")
-                s5 = s4
+            raise NotImplementedError(
+                "Legacy classification path (step01-step05) was removed in the "
+                "8083 integration. Set USE_8083_CLASSIFIER=true (default) and "
+                "ensure the 8083 classifier-server is reachable at "
+                f"http://localhost:8083 (currently USE_8083={USE_8083!r})."
+            )
 
         # ── Step 6: Final LC Consolidation ──
         # Build Final LC from MT packets using GLM text extracted by Step 1
@@ -3676,50 +3458,11 @@ def _process_pipeline(job_id: str):
             _p(f"[8083] Using 8083 shipping classification: "
                f"{len(s8.get('classified_packets', []))} shipping packets")
         else:
-            job['current_step'] = 8
-            _p("Step 8: Shipping Document Classification...")
-            # Pass non-LC packets from Step 3 as shipping docs
-            # Enrich each packet with page image paths and GLM text
-            _img_dir = os.path.join(results_dir, 'step01', 'images')
-            _shipping_from_s3 = []
-            for _spkt in s3.get('packets', []):
-                if not isinstance(_spkt, dict):
-                    continue
-                _dt = (_spkt.get('document_type', '') or '').lower()
-                if _dt in ('lc', 'amendment', 'blank page', 'blank_page', 'endorsement page',
-                           'mt799', 'mt999', 'mt730', 'mt754', 'mt940', 'mt740', 'mt747', 'mt734',
-                           'header page'):
-                    continue
-                _spkt_copy = dict(_spkt)
-                # Add image paths
-                _pg_nums = _spkt_copy.get('page_numbers', [])
-                _img_paths = []
-                for _pn in _pg_nums:
-                    _ip = os.path.join(_img_dir, f"page_{_pn:03d}.png")
-                    if os.path.exists(_ip):
-                        _img_paths.append(_ip)
-                _spkt_copy['page_image_paths'] = _img_paths
-                # Add GLM text
-                _texts = []
-                for _pn in _pg_nums:
-                    _t = _s6_input.get('page_texts', {}).get(_pn, '')
-                    if _t:
-                        _texts.append(_t)
-                _spkt_copy['text'] = '\n'.join(_texts)
-                _spkt_copy['cleaned_text'] = _spkt_copy['text']
-                _shipping_from_s3.append(_spkt_copy)
-            _s6_with_shipping = dict(s6)
-            _s6_with_shipping['shipping_packets'] = _shipping_from_s3
-            s8 = _to_dict(step08_shipping_classification.run(_s6_with_shipping, s7, os.path.join(results_dir, 'step08'), _p))
-            job['step_results']['step08'] = s8  # Full data needed by Step 9
-
-            # ── Step 9: Shipping OCR Reconciliation ──
-            # Extract structured fields from shipping documents (amounts, dates,
-            # consignee, notify party, etc.) and match to LC requirements.
-            job['current_step'] = 9
-            _p("Step 9: Shipping OCR Reconciliation...")
-            s9 = _to_dict(step09_shipping_reconciliation.run(s8, s7, os.path.join(results_dir, 'step09'), _p))
-            job['step_results']['step09'] = s9  # Full data needed by Step 14
+            raise NotImplementedError(
+                "Legacy step08/step09 path was removed in the 8083 "
+                "integration. The 8083 adapter should have populated "
+                "_adapter_out['step08'] and ['step09'] — got None."
+            )
 
         # ── Step 10: Traceability ──
         s10 = {}
