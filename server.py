@@ -444,6 +444,7 @@ def get_extracted_text(job_id: str):
             'is_house_bl':          _cpkt.get('is_house_bl'),
             'is_carrier_signed':    _cpkt.get('is_carrier_signed'),
             'bl_status_flags':      _cpkt.get('bl_status_flags') or [],
+            'bl_subtype_label':     _cpkt.get('bl_subtype_label', ''),
             'awb_subtype':          _cpkt.get('awb_subtype', ''),
             'printout_index':       _cpkt.get('printout_index'),
             'printout_total':       _cpkt.get('printout_total'),

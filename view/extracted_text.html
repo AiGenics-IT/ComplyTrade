@@ -777,6 +777,13 @@ function toggleSummary(evt) {
     const p = pages[si];
     if (!p) return;
 
+    // Wrap the full panel build in try/catch so a future shape
+    // mismatch in any one field's data can't silently kill the
+    // button. Worst case the user sees an empty panel + a console
+    // log instead of "nothing happens" on click.
+    let _panel_built_ok = false;
+    try {
+
     // Create overlay to catch outside clicks
     const overlay = document.createElement('div');
     overlay.className = 'summary-overlay';
@@ -980,7 +987,15 @@ function toggleSummary(evt) {
     }
 
     // ── Step 3 BL Sub-type block (only for Bill of Lading pages) ──
-    if (blSubtype && Object.keys(blSubtype).length > 0) {
+    // P198gz60 — guard against a STRING bl_subtype. The 8083 path
+    // sometimes emits bl_subtype as a plain title string (e.g.
+    // "Multimodal Transport Bill of Lading"); Object.keys() of a
+    // string returns char indexes and the loop below would iterate
+    // each character. The badge bar in "Document Details" above
+    // already shows the title as a chip, so just skip this legacy
+    // structured block when the value isn't a dict.
+    if (blSubtype && typeof blSubtype === 'object' && !Array.isArray(blSubtype)
+            && Object.keys(blSubtype).length > 0) {
         // Preferred order for readability; any other keys fall through at the bottom.
         const blOrder = [
             'bl_type_description',
@@ -1280,13 +1295,42 @@ function toggleSummary(evt) {
     const btnRect = evt.target.closest('.summary-btn').getBoundingClientRect();
     let top = btnRect.bottom + 6;
     let left = btnRect.left;
-    // Keep within viewport
+    // Keep within viewport. If the panel is taller than the available
+    // space below AND above, anchor it to the top of the viewport so
+    // it never renders off-screen — the user can scroll inside the
+    // panel (max-height:78vh + overflow-y:auto).
     const panelRect = panel.getBoundingClientRect();
     if (left + panelRect.width > window.innerWidth - 12) left = window.innerWidth - panelRect.width - 12;
     if (left < 12) left = 12;
-    if (top + panelRect.height > window.innerHeight - 12) top = btnRect.top - panelRect.height - 6;
+    if (top + panelRect.height > window.innerHeight - 12) {
+        const flipped = btnRect.top - panelRect.height - 6;
+        // If flipping up would put it above the viewport (negative top),
+        // pin it to a safe spot near the top of the viewport instead.
+        top = flipped >= 12 ? flipped : 12;
+    }
     panel.style.top = top + 'px';
     panel.style.left = left + 'px';
+    _panel_built_ok = true;
+    } catch (err) {
+        console.error('[toggleSummary] panel build failed:', err);
+        // Clean up partial state so the next click starts fresh
+        const _o = document.getElementById('summary-overlay'); if (_o) _o.remove();
+        const _p = document.getElementById('summary-panel');   if (_p) _p.remove();
+        // Show a minimal fallback panel so the user gets feedback
+        const fb = document.createElement('div');
+        fb.className = 'summary-panel';
+        fb.id = 'summary-panel';
+        fb.style.cssText = 'top:80px;left:50%;transform:translateX(-50%);width:min(600px,90vw)';
+        fb.innerHTML = `<div class="summary-panel-hdr"><h3>Document Summary — page ${p.page_number}</h3><button class="summary-panel-close" onclick="closeSummary()">&#10005;</button></div>
+            <div class="summary-panel-body"><div style="padding:14px;color:#b91c1c;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;font-size:.84em">
+              <b>Summary rendering hit an issue.</b><br>
+              <span style="color:#555">${e(String(err && err.message || err))}</span><br>
+              <small>Open the browser console for the full stack.</small>
+            </div></div>`;
+        const ov = document.createElement('div'); ov.className='summary-overlay'; ov.id='summary-overlay'; ov.onclick=closeSummary;
+        document.body.appendChild(ov);
+        document.body.appendChild(fb);
+    }
 }
 
 function closeSummary() {

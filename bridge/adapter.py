@@ -171,11 +171,79 @@ _BL_STATUS_FLAG_LABELS = {
 }
 
 
+def _build_bl_subtype_dict(ld: Dict) -> Dict:
+    """Convert 8083's BL flags + signing capacity into the dict shape
+    step14_verification expects under pkt['bl_subtype'].
+
+    The legacy 8082 step03 emitted `bl_subtype` as a DICT with keys like
+    is_house_bl, is_short_form, is_blank_back, has_terms_overleaf,
+    contract_type, signing_type, issuer_type, cleanness, is_claused_bl,
+    clausing_notes — and step14 does direct `bl_subtype.get('is_house_bl')`
+    lookups (see step14_verification.py:3604-3771 + :11699).
+
+    8083 emits the same information across several flat fields:
+      • ld['bl_subtype']            — string title (e.g. "Multimodal …")
+      • ld['bl_status_flags']       — ['has_overleaf','blank_back',…]
+      • ld['bl_signing_capacity']   — {label, capacity, evidence}
+      • ld['is_house_bl'], ld['is_carrier_signed']  — bools
+      • ld['bl_terms_on_back'], ld['bl_blank_back'] — bools
+      • ld['signing_capacity_code'] — enum
+
+    We re-assemble those into the dict step14 wants so the legacy
+    BL signing/contract/cleanness verification logic keeps working
+    end-to-end. Without this, ALL BL signing/clean/short-form
+    checks silently fall back to 'unknown' because the dict lookups
+    return None on the string value.
+    """
+    flags = set(ld.get('bl_status_flags') or [])
+    sig = ld.get('bl_signing_capacity') or {}
+    sc_code = (ld.get('signing_capacity_code') or sig.get('capacity') or '').lower()
+    # Map 8083's capacity enum → step14's signing_type lowercase string
+    signing_type = ''
+    if sc_code in ('carrier_signed', 'master_signed', 'carrier'):
+        signing_type = 'carrier'
+    elif sc_code in ('agent_for_carrier', 'agent_for_master', 'agent_for_owner'):
+        signing_type = 'agent'
+    elif sc_code in ('forwarder_signed', 'forwarder'):
+        signing_type = 'forwarder'
+    # issuer_type — derive from house vs carrier
+    issuer_type = ''
+    if ld.get('is_house_bl') is True:
+        issuer_type = 'house'
+    elif ld.get('is_carrier_signed') is True:
+        issuer_type = 'carrier'
+    # cleanness — 8083 doesn't have explicit cleanness, but
+    # clean_on_board flag is the proxy
+    cleanness = ''
+    if 'clean_on_board' in flags:
+        cleanness = 'clean'
+    out: Dict = {
+        'bl_type_description': ld.get('bl_subtype') or '',
+        'is_house_bl':         ld.get('is_house_bl'),
+        'is_charter_party_bl': None,
+        'is_short_form':       ('short_form' in flags) or (ld.get('bl_blank_back') is True),
+        'is_blank_back':       ('blank_back' in flags) or (ld.get('bl_blank_back') is True),
+        'has_terms_overleaf':  ('has_overleaf' in flags) or (ld.get('bl_terms_on_back') is True),
+        'shipped_on_board_status': 'shipped_on_board' if 'shipped_on_board' in flags else '',
+        'signing_type':        signing_type,
+        'issuer_type':         issuer_type,
+        'cleanness':           cleanness,
+        'is_claused_bl':       None,
+        'clausing_notes':      '',
+        'carrier_name':        (sig.get('evidence') or '') if signing_type == 'carrier' else '',
+        'forwarder_name':      (sig.get('evidence') or '') if signing_type == 'forwarder' else '',
+        'contract_type':       '',  # 8083 doesn't track this
+        'form_type':           '',
+    }
+    return out
+
+
 def _bl_status_flag_labels(ld: Dict) -> List[str]:
     """Pretty-print bl_status_flags + signing capacity + printout/copy
     info into a flat list of human-readable badge labels. Used by the
     extracted-text Summary panel + verification (step14 searches the
-    list for things like 'agent for carrier')."""
+    list for things like 'agent for carrier').
+    """
     out: List[str] = []
     bl_st = ld.get('bl_subtype')
     if bl_st: out.append(str(bl_st))
@@ -279,9 +347,13 @@ def _build_packets(c8083: Dict, page_texts: Dict[int, str]) -> List[Dict]:
             'document_summary': _build_doc_summary(doc_type, ld.get('fields') or {}),
             'document_type':   doc_type,
             'kind_from_8083':  kind,
-            'bl_subtype':      ld.get('bl_subtype', ''),
-            'bl_status_flags': ld.get('bl_status_flags', []),
-            'awb_subtype':     ld.get('awb_subtype', ''),
+            # step14 expects bl_subtype as a DICT (legacy step03 shape);
+            # keep the 8083 title string under bl_subtype_label for the
+            # UI badge.
+            'bl_subtype':       _build_bl_subtype_dict(ld),
+            'bl_subtype_label': ld.get('bl_subtype', ''),
+            'bl_status_flags':  ld.get('bl_status_flags', []),
+            'awb_subtype':      ld.get('awb_subtype', ''),
             'bl_signing_capacity':  ld.get('bl_signing_capacity'),
             'awb_signing_capacity': ld.get('awb_signing_capacity'),
             'is_house_bl':       ld.get('is_house_bl'),
@@ -785,9 +857,82 @@ def adapt_8083_to_step_results(c8083: Dict,
         # Concatenate the per-page cleaned text into a single body for
         # the packet, in page order. This mirrors what _build_packets
         # does for step03_packets at lines 580-582 above.
-        _full_text = '\n'.join(
+        _doc_body = '\n'.join(
             (page_texts.get(pn, '') for pn in pkt['page_numbers'])
         )
+        # ── Audit header injection ───────────────────────────────
+        # step14 reads the packet body as the entire evidence for
+        # each verification clause. The new 8083 fields (status
+        # flags, signing capacity, originals/copies counts, sections,
+        # attachments, must_show LC phrases, match reason) are NOT
+        # in the OCR text itself — they're metadata that the
+        # classifier computed. Prepending them as a small audit
+        # header makes them visible to the LLM verifier without
+        # any step14 code changes. The verifier treats this as
+        # extra context, then the doc text follows.
+        _audit_lines = []
+        _audit_lines.append(f"DOCUMENT TYPE: {pkt.get('document_type', '')}")
+        _bl_lbl = pkt.get('bl_subtype_label', '')
+        if _bl_lbl:
+            _audit_lines.append(f"DOCUMENT SUBTYPE: {_bl_lbl}")
+        _flags = pkt.get('status_flag_labels') or []
+        if _flags:
+            _audit_lines.append(f"STATUS FLAGS: {' · '.join(_flags)}")
+        _sig = pkt.get('bl_signing_capacity') or pkt.get('awb_signing_capacity') or {}
+        if isinstance(_sig, dict) and _sig.get('label'):
+            _ev = _sig.get('evidence') or ''
+            _audit_lines.append(
+                f"SIGNED AS: {_sig['label']}" + (f" (evidence: {_ev[:120]})" if _ev else '')
+            )
+        _orig_c = pkt.get('originals_count', 0)
+        _copy_c = pkt.get('copies_count', 0)
+        _lc_o   = pkt.get('lc_required_originals')
+        _lc_c   = pkt.get('lc_required_copies')
+        if _orig_c or _copy_c or _lc_o is not None or _lc_c is not None:
+            _req = f"LC requires: {_lc_o if _lc_o is not None else '?'} originals + {_lc_c if _lc_c is not None else '?'} copies"
+            _sub = f"Submitted: {_orig_c} originals + {_copy_c} copies"
+            _audit_lines.append(f"COPY COUNTS: {_sub} ({_req})")
+        _copies = pkt.get('copies') or []
+        if _copies:
+            _audit_lines.append("PRINTOUTS:")
+            for i, _cp in enumerate(_copies, 1):
+                _lbl = _cp.get('copy_label') or 'UNMARKED'
+                _cat = _cp.get('copy_category') or ''
+                _pgs = ','.join(str(_p) for _p in (_cp.get('pages') or []))
+                _audit_lines.append(f"  {i}. {_lbl} [{_cat}] — pages {_pgs}")
+        _secs = pkt.get('sections') or []
+        if len(_secs) > 1:
+            _audit_lines.append("SECTIONS:")
+            for i, _s in enumerate(_secs, 1):
+                _t = _s.get('type', 'Section')
+                _pgs = ','.join(str(_p) for _p in (_s.get('pages') or []))
+                _audit_lines.append(f"  {i}. {_t} — page(s) {_pgs}")
+        _att_req = pkt.get('attachments_required') or []
+        _att_fnd = pkt.get('attachments_found') or []
+        if _att_req:
+            _audit_lines.append(f"ATTACHMENTS REQUIRED: {' · '.join(str(a) for a in _att_req)}")
+        if _att_fnd:
+            _audit_lines.append(f"ATTACHMENTS FOUND: {' · '.join(str(a) for a in _att_fnd)}")
+        _must = pkt.get('must_show') or []
+        if _must:
+            _audit_lines.append("LC MUST-SHOW PHRASES (each must appear in this document):")
+            for i, _m in enumerate(_must, 1):
+                _audit_lines.append(f"  {i}. {_m}")
+        _reason = pkt.get('match_reason', '')
+        if _reason:
+            _audit_lines.append(f"CLASSIFIER MATCH REASON: {_reason}")
+        _doc_ref = pkt.get('doc_ref', '')
+        if _doc_ref:
+            _audit_lines.append(f"DOC REF: {_doc_ref}")
+        if _audit_lines:
+            _full_text = (
+                "=== DOCUMENT AUDIT (from classifier) ===\n"
+                + '\n'.join(_audit_lines)
+                + "\n=== END AUDIT — DOCUMENT TEXT FOLLOWS ===\n\n"
+                + _doc_body
+            )
+        else:
+            _full_text = _doc_body
         _shipping_packets.append({
             'packet_id':     pkt['packet_id'],
             'document_type': pkt.get('document_type', ''),
@@ -797,9 +942,10 @@ def adapt_8083_to_step_results(c8083: Dict,
             'signatures':    pkt['signatures'],
             'extracted_fields': pkt.get('extracted_fields', {}),
             'document_summary': pkt.get('document_summary', ''),
-            'bl_subtype':    pkt.get('bl_subtype', ''),
-            'bl_status_flags': pkt.get('bl_status_flags', []),
-            'awb_subtype':   pkt.get('awb_subtype', ''),
+            'bl_subtype':       pkt.get('bl_subtype', {}),
+            'bl_subtype_label': pkt.get('bl_subtype_label', ''),
+            'bl_status_flags':  pkt.get('bl_status_flags', []),
+            'awb_subtype':      pkt.get('awb_subtype', ''),
             # Signing capacity, house BL, carrier-signed, printout
             # index/total, copies list, sections, attachments — all
             # the things the 8083 Summary panel shows. Verification
