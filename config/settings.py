@@ -48,7 +48,11 @@ BUILD_TAG = "2026-04-29-P198dx"
 
 # ── Processing ──
 MAX_CONCURRENT_OCR = 5
-MAX_CONCURRENT_VLM = 8
+# Was 8 — bumped to 24 so verification (step14 fan-out) finishes
+# fast. The Qwen-text endpoint handles this comfortably; the
+# connection pool is sized to MAX_CONCURRENT_VLM * 2 so it grows
+# in step (see step14_verification:_pool_size).
+MAX_CONCURRENT_VLM = 24
 # Timeouts disabled per user request — rely on the LLM/VLM to complete
 # however long it needs. Setting to a very high value (7 days) rather
 # than None so all call sites that pass this into requests.post(timeout=)

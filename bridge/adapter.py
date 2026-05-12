@@ -646,31 +646,55 @@ def adapt_8083_to_step_results(c8083: Dict,
     # can render structured tables (Containers, Parties, etc.).
     # `document_summary` powers the identified-documents view + the
     # extracted-text page summary panel.
+    #
+    # CRITICAL — verification (step14) reads the document body via
+    # `_pkt_text(pkt)` which checks refined_text → cleaned_text →
+    # text → raw_text. If NONE of those keys are present the
+    # verifier has no evidence and every clause comes back as
+    # REVIEW or FAIL ("doc not found / cannot verify"). The old
+    # legacy step08 path always emitted these — we must too.
+    _shipping_packets = []
+    for pkt in packets:
+        if pkt['mt_type'] != 'shipping':
+            continue
+        # Concatenate the per-page cleaned text into a single body for
+        # the packet, in page order. This mirrors what _build_packets
+        # does for step03_packets at lines 580-582 above.
+        _full_text = '\n'.join(
+            (page_texts.get(pn, '') for pn in pkt['page_numbers'])
+        )
+        _shipping_packets.append({
+            'packet_id':     pkt['packet_id'],
+            'document_type': pkt.get('document_type', ''),
+            'page_numbers':  pkt['page_numbers'],
+            'mt_type':       pkt['mt_type'],
+            'stamps':        pkt['stamps'],
+            'signatures':    pkt['signatures'],
+            'extracted_fields': pkt.get('extracted_fields', {}),
+            'document_summary': pkt.get('document_summary', ''),
+            'bl_subtype':    pkt.get('bl_subtype', ''),
+            'bl_status_flags': pkt.get('bl_status_flags', []),
+            'awb_subtype':   pkt.get('awb_subtype', ''),
+            # ── Verification text (REQUIRED by step14._pkt_text) ──
+            'text':          _full_text,
+            'cleaned_text':  _full_text,
+            'refined_text':  _full_text,
+            'raw_text':      _full_text,
+            # step14._pkt_images reads this; we keep it empty because
+            # the VLM call deliberately skips the image payload
+            # (see step14:5205-5207) — text-only verification is
+            # both faster and stays under the 72B's 16k token limit.
+            'page_image_paths': [],
+            # Flat verification keys (step14 reads these directly)
+            'document_number': pkt.get('document_number', ''),
+            'document_date':   pkt.get('document_date', ''),
+            'document_amount': pkt.get('document_amount', ''),
+            'currency':        pkt.get('currency', ''),
+            'issued_by':       pkt.get('issued_by', ''),
+            'lc_reference':    pkt.get('lc_reference', ''),
+        })
     step08 = {
-        'classified_packets': [
-            {
-                'packet_id':     pkt['packet_id'],
-                'document_type': pkt.get('document_type', ''),
-                'page_numbers':  pkt['page_numbers'],
-                'mt_type':       pkt['mt_type'],
-                'stamps':        pkt['stamps'],
-                'signatures':    pkt['signatures'],
-                'extracted_fields': pkt.get('extracted_fields', {}),
-                'document_summary': pkt.get('document_summary', ''),
-                'bl_subtype':    pkt.get('bl_subtype', ''),
-                'bl_status_flags': pkt.get('bl_status_flags', []),
-                'awb_subtype':   pkt.get('awb_subtype', ''),
-                # Flat verification keys (step14 reads these directly)
-                'document_number': pkt.get('document_number', ''),
-                'document_date':   pkt.get('document_date', ''),
-                'document_amount': pkt.get('document_amount', ''),
-                'currency':        pkt.get('currency', ''),
-                'issued_by':       pkt.get('issued_by', ''),
-                'lc_reference':    pkt.get('lc_reference', ''),
-            }
-            for pkt in packets
-            if pkt['mt_type'] == 'shipping'
-        ],
+        'classified_packets': _shipping_packets,
         'source': '8083_classifier',
     }
 
