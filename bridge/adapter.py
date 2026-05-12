@@ -126,6 +126,76 @@ def _build_page_texts(c8083: Dict) -> Dict[int, str]:
     return out
 
 
+def _compute_sections(ld: Dict, pages_by_num: Dict[int, Dict]) -> List[Dict]:
+    """Compute the sub-sections inside a logical document by walking
+    its all_pages list and grouping consecutive same-doc-type runs.
+
+    Mirrors the client-side JS in classifier_server/server.py:2012-2026
+    so the 8082 Summary panel can show e.g.:
+       "Sections inside this document (2)
+        1. Bill of Lading       page 7  · 1 pg
+        2. Attached Rider       page 15 · 1 pg"
+
+    Returns a list of {type, pages: [int, ...]} dicts.
+    """
+    all_pages = ld.get('all_pages') or []
+    if not all_pages:
+        return []
+    parent_dt = ld.get('document_type') or ''
+    sections: List[Dict] = []
+    cur: Dict = {}
+    for pn in all_pages:
+        p = pages_by_num.get(pn, {}) or {}
+        sec_type = p.get('doc_type') or parent_dt
+        if (cur and cur.get('type') == sec_type
+                and cur['pages']
+                and pn == cur['pages'][-1] + 1):
+            cur['pages'].append(pn)
+        else:
+            if cur:
+                sections.append(cur)
+            cur = {'type': sec_type, 'pages': [pn]}
+    if cur:
+        sections.append(cur)
+    return sections
+
+
+# Status-flag codes 8083 emits → human-readable labels (same wording
+# the 8083 UI uses so 8082 stays consistent).
+_BL_STATUS_FLAG_LABELS = {
+    'has_overleaf':     'T&C overleaf',
+    'blank_back':       'Blank back',
+    'short_form':       'Short form',
+    'shipped_on_board': 'Shipped on board',
+    'clean_on_board':   'Clean on board',
+}
+
+
+def _bl_status_flag_labels(ld: Dict) -> List[str]:
+    """Pretty-print bl_status_flags + signing capacity + printout/copy
+    info into a flat list of human-readable badge labels. Used by the
+    extracted-text Summary panel + verification (step14 searches the
+    list for things like 'agent for carrier')."""
+    out: List[str] = []
+    bl_st = ld.get('bl_subtype')
+    if bl_st: out.append(str(bl_st))
+    awb_st = ld.get('awb_subtype')
+    if awb_st: out.append(str(awb_st))
+    for f in (ld.get('bl_status_flags') or []):
+        out.append(_BL_STATUS_FLAG_LABELS.get(f, f))
+    sig = ld.get('bl_signing_capacity') or ld.get('awb_signing_capacity')
+    if sig and isinstance(sig, dict) and sig.get('label'):
+        out.append(f"✍ {sig['label']}")
+    if ld.get('is_house_bl') is True:
+        out.append('House BL (forwarder)')
+    elif ld.get('is_carrier_signed') is True:
+        out.append('Carrier-signed (UCP art. 20)')
+    pi, pt = ld.get('printout_index'), ld.get('printout_total')
+    if pi and pt and pt > 1:
+        out.append(f'Printout {pi}/{pt}')
+    return out
+
+
 def _build_packets(c8083: Dict, page_texts: Dict[int, str]) -> List[Dict]:
     """Map 8083 `logical_documents` → 8082 packet list.
 
@@ -135,6 +205,15 @@ def _build_packets(c8083: Dict, page_texts: Dict[int, str]) -> List[Dict]:
     page_number + refined_text so step06's _get_packet_refined_text
     works whether or not _PAGE_TEXT_LOOKUP is set.
     """
+    # Build a page-number → 8083-page lookup so we can compute the
+    # in-doc sections for each logical document (consecutive same-
+    # doc-type page runs).
+    pages_by_num: Dict[int, Dict] = {}
+    for _p in c8083.get('pages', []) or []:
+        _pn = _p.get('page_number')
+        if isinstance(_pn, int) and _pn > 0:
+            pages_by_num[_pn] = _p
+
     packets: List[Dict] = []
     next_id = 1
     for ld in c8083.get('logical_documents', []) or []:
@@ -203,10 +282,56 @@ def _build_packets(c8083: Dict, page_texts: Dict[int, str]) -> List[Dict]:
             'bl_subtype':      ld.get('bl_subtype', ''),
             'bl_status_flags': ld.get('bl_status_flags', []),
             'awb_subtype':     ld.get('awb_subtype', ''),
-            'bl_signing_capacity': ld.get('bl_signing_capacity'),
+            'bl_signing_capacity':  ld.get('bl_signing_capacity'),
             'awb_signing_capacity': ld.get('awb_signing_capacity'),
-            'is_house_bl':     ld.get('is_house_bl'),
+            'is_house_bl':       ld.get('is_house_bl'),
             'is_carrier_signed': ld.get('is_carrier_signed'),
+            # ── Multi-printout / copy-status / sub-section data ──
+            # 8083's logical document tracks every printout of the
+            # same logical doc (each copy / non-negotiable / original)
+            # and the inferred sub-sections inside (e.g. BL + Attached
+            # Rider). Pass them all through so the extracted-text
+            # Summary panel can show the same details the 8083 UI
+            # shows, AND so verification can reason about copy counts,
+            # signing capacity, etc.
+            'printout_index':   ld.get('printout_index'),
+            'printout_total':   ld.get('printout_total'),
+            'copies':           ld.get('copies') or [],
+            'originals_count':  ld.get('originals_count', 0),
+            'copies_count':     ld.get('copies_count', 0),
+            'unknown_marker_count': ld.get('unknown_marker_count', 0),
+            # Compute sub-sections inside this logical doc (same way
+            # the 8083 client JS does at server.py:2012-2026) so the
+            # 8082 Summary panel can show e.g. "1. Bill of Lading p7 ·
+            # 2. Attached Rider p15".
+            'sections':         _compute_sections(ld, pages_by_num),
+            'logical_doc_id':   ld.get('logical_doc_id', ''),
+            'attachments_required': ld.get('attachments_required') or [],
+            'attachments_found':    ld.get('attachments_found') or [],
+            # ── LC matching audit-trail — verification reads these to
+            # answer "do the originals + copies counts match what the
+            # LC asked for in 46A?" without re-extracting.
+            'doc_ref':                ld.get('doc_ref', ''),
+            'lc_requirement_index':   ld.get('lc_requirement_index', -1),
+            'lc_required_originals':  ld.get('lc_required_originals'),
+            'lc_required_copies':     ld.get('lc_required_copies'),
+            'matched_originals_count': ld.get('matched_originals_count'),
+            'matched_copies_count':   ld.get('matched_copies_count'),
+            'total_instances':        ld.get('total_instances'),
+            'must_show':              ld.get('must_show') or [],
+            'match_reason':           ld.get('reason', ''),
+            'methods':                ld.get('methods') or [],
+            # BL T&C flags — also surfaced as a status_flag_labels
+            # entry, but kept raw here so verification can check
+            # directly (e.g. for short-form BL warnings).
+            'bl_terms_on_back':       ld.get('bl_terms_on_back'),
+            'bl_blank_back':          ld.get('bl_blank_back'),
+            'signing_capacity_code':  ld.get('signing_capacity_code', ''),
+            # Hand-y derived field: a flat human-readable list of
+            # status badges (e.g. ["Blank back", "Carrier-signed (UCP
+            # art. 20)", "Printout 1/3"]). step14 can search this for
+            # things like 'shipped on board' / 'agent for carrier'.
+            'status_flag_labels': _bl_status_flag_labels(ld),
         })
         next_id += 1
     return packets
@@ -675,13 +800,47 @@ def adapt_8083_to_step_results(c8083: Dict,
             'bl_subtype':    pkt.get('bl_subtype', ''),
             'bl_status_flags': pkt.get('bl_status_flags', []),
             'awb_subtype':   pkt.get('awb_subtype', ''),
+            # Signing capacity, house BL, carrier-signed, printout
+            # index/total, copies list, sections, attachments — all
+            # the things the 8083 Summary panel shows. Verification
+            # (step14) can also reason about copy counts vs LC's
+            # "in N originals + M copies" requirement.
+            'bl_signing_capacity':  pkt.get('bl_signing_capacity'),
+            'awb_signing_capacity': pkt.get('awb_signing_capacity'),
+            'is_house_bl':       pkt.get('is_house_bl'),
+            'is_carrier_signed': pkt.get('is_carrier_signed'),
+            'printout_index':    pkt.get('printout_index'),
+            'printout_total':    pkt.get('printout_total'),
+            'copies':            pkt.get('copies') or [],
+            'originals_count':   pkt.get('originals_count', 0),
+            'copies_count':      pkt.get('copies_count', 0),
+            'unknown_marker_count': pkt.get('unknown_marker_count', 0),
+            'sections':          pkt.get('sections') or [],
+            'logical_doc_id':    pkt.get('logical_doc_id', ''),
+            'attachments_required': pkt.get('attachments_required') or [],
+            'attachments_found':    pkt.get('attachments_found') or [],
+            'status_flag_labels':   pkt.get('status_flag_labels') or [],
+            # LC-matching audit trail (originals + copies vs required)
+            'doc_ref':                pkt.get('doc_ref', ''),
+            'lc_requirement_index':   pkt.get('lc_requirement_index', -1),
+            'lc_required_originals':  pkt.get('lc_required_originals'),
+            'lc_required_copies':     pkt.get('lc_required_copies'),
+            'matched_originals_count': pkt.get('matched_originals_count'),
+            'matched_copies_count':   pkt.get('matched_copies_count'),
+            'total_instances':        pkt.get('total_instances'),
+            'must_show':              pkt.get('must_show') or [],
+            'match_reason':           pkt.get('match_reason', ''),
+            'methods':                pkt.get('methods') or [],
+            'bl_terms_on_back':       pkt.get('bl_terms_on_back'),
+            'bl_blank_back':          pkt.get('bl_blank_back'),
+            'signing_capacity_code':  pkt.get('signing_capacity_code', ''),
             # ── Verification text (REQUIRED by step14._pkt_text) ──
             'text':          _full_text,
             'cleaned_text':  _full_text,
             'refined_text':  _full_text,
             'raw_text':      _full_text,
             # step14._pkt_images reads this; we keep it empty because
-            # the VLM call deliberately skips the image payload
+            # the LLM call deliberately skips the image payload
             # (see step14:5205-5207) — text-only verification is
             # both faster and stays under the 72B's 16k token limit.
             'page_image_paths': [],

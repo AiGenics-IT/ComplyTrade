@@ -383,6 +383,10 @@ def get_extracted_text(job_id: str):
     # 8083-extracted full structured fields, surfaced per page so the
     # extracted-text Summary panel can render scalar + array/table fields.
     _page_extracted_fields = {}
+    # Packet-level info shown on the Summary panel for every member
+    # page (status flags, signing capacity, printout/copies, sections,
+    # LC originals/copies requirement vs matched).
+    _page_packet_info = {}
     for _cpkt in _s8.get('classified_packets', []):
         if not isinstance(_cpkt, dict):
             continue
@@ -429,6 +433,39 @@ def get_extracted_text(job_id: str):
                 _seals.extend(_op.get('seals', []))
 
         _pkt_extracted = _cpkt.get('extracted_fields', {}) or {}
+        # Packet-level audit data that should appear on the Summary
+        # panel of EVERY member page (status flags, signing capacity,
+        # printout index, copies, sub-sections, LC originals/copies
+        # requirement vs. matched counts).
+        _packet_info = {
+            'status_flag_labels':   _cpkt.get('status_flag_labels') or [],
+            'bl_signing_capacity':  _cpkt.get('bl_signing_capacity'),
+            'awb_signing_capacity': _cpkt.get('awb_signing_capacity'),
+            'is_house_bl':          _cpkt.get('is_house_bl'),
+            'is_carrier_signed':    _cpkt.get('is_carrier_signed'),
+            'bl_status_flags':      _cpkt.get('bl_status_flags') or [],
+            'awb_subtype':          _cpkt.get('awb_subtype', ''),
+            'printout_index':       _cpkt.get('printout_index'),
+            'printout_total':       _cpkt.get('printout_total'),
+            'copies':               _cpkt.get('copies') or [],
+            'originals_count':      _cpkt.get('originals_count', 0),
+            'copies_count':         _cpkt.get('copies_count', 0),
+            'unknown_marker_count': _cpkt.get('unknown_marker_count', 0),
+            'sections':             _cpkt.get('sections') or [],
+            'logical_doc_id':       _cpkt.get('logical_doc_id', ''),
+            'attachments_required': _cpkt.get('attachments_required') or [],
+            'attachments_found':    _cpkt.get('attachments_found') or [],
+            'doc_ref':              _cpkt.get('doc_ref', ''),
+            'lc_required_originals': _cpkt.get('lc_required_originals'),
+            'lc_required_copies':    _cpkt.get('lc_required_copies'),
+            'matched_originals_count': _cpkt.get('matched_originals_count'),
+            'matched_copies_count':    _cpkt.get('matched_copies_count'),
+            'must_show':            _cpkt.get('must_show') or [],
+            'match_reason':         _cpkt.get('match_reason', ''),
+            'bl_terms_on_back':     _cpkt.get('bl_terms_on_back'),
+            'bl_blank_back':        _cpkt.get('bl_blank_back'),
+            'signing_capacity_code': _cpkt.get('signing_capacity_code', ''),
+        }
         for _pn in _pkt_pages:
             _summary_text = f"{_doc_type}"
             if _doc_summary:
@@ -445,6 +482,8 @@ def get_extracted_text(job_id: str):
                     'seals': _seals,
                     'logos': _logos,
                 }
+            # Stash the packet-level info for this page
+            _page_packet_info[_pn] = _packet_info
 
     # Build page type lookup from Step 3 (including new bl_subtype + unified_summary)
     _page_types = {}
@@ -624,6 +663,11 @@ def get_extracted_text(job_id: str):
                 # display "currently Agents Certificate (originally Quality Certificate)"
                 # when Step 9 reclassified. document_type above reflects CURRENT type.
                 'original_document_type': _page_original_type.get(pn, ''),
+                # NEW: packet-level audit data (status flags, signing
+                # capacity, printout/copies counts, sub-sections, LC
+                # requirement vs matched) — the Summary panel renders
+                # this as additional badges + a sub-sections list.
+                'packet_info': _page_packet_info.get(pn, {}),
             })
 
     return {
