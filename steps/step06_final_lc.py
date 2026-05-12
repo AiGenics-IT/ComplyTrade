@@ -54,18 +54,16 @@ except ImportError:
     QWEN_TEXT_LLM_URL = None
     QWEN_TEXT_LLM_MODEL = None
 
-
-# == Dataclasses ==============================================================
-
 @dataclass
 class SwiftField:
     """A single extracted SWIFT field from an LC message."""
-    tag: str                   # e.g. "20", "31C", "46A"
-    label: str                 # e.g. "Documentary Credit Number"
+    tag: str
+    label: str
     value: str
     source_page: int = 0
-    source_mt: str = ""        # MT700, MT707, etc.
+    source_mt: str = ""
 
+    mt799_replace_anchor: Optional[str] = None
 
 @dataclass
 class Clause:
@@ -73,11 +71,13 @@ class Clause:
     A single clause extracted from a multi-clause SWIFT field.
     e.g. F46A clause 1: "COMMERCIAL INVOICE IN 3 ORIGINALS"
     """
-    clause_number: int         # 1-based position
-    clause_id: str             # e.g. "46A-1", "47A-3"
+    clause_number: int
+    clause_id: str
     text: str
-    parent_tag: str            # e.g. "46A"
+    parent_tag: str
 
+    section: str = ''
+    is_section_header: bool = False
 
 @dataclass
 class AmendmentRecord:
@@ -87,7 +87,6 @@ class AmendmentRecord:
     amendment_date: str
     fields_changed: List[str] = field(default_factory=list)
     change_details: Dict[str, dict] = field(default_factory=dict)
-
 
 @dataclass
 class FinalLC:
@@ -102,12 +101,11 @@ class FinalLC:
     source_packets: List[int] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
 
-
-# == SWIFT Field Definitions ==================================================
-
 SWIFT_FIELD_LABELS = {
     '20': 'Documentary Credit Number',
     '21': 'Related Reference',
+
+    '22A': 'Purpose of Message',
     '23': 'Reference to Pre-Advice',
     '26E': 'Number of Amendment',
     '27': 'Sequence of Total',
@@ -153,6 +151,8 @@ SWIFT_FIELD_LABELS = {
     '53A': 'Reimbursing Bank',
     '57A': 'Advising Through Bank',
     '57D': 'Advising Through Bank',
+
+    '58A': 'Requested Confirmation Party',
     '59': 'Beneficiary',
     '71D': 'Charges',
     '72': 'Sender to Receiver Information',
@@ -160,20 +160,18 @@ SWIFT_FIELD_LABELS = {
     '79': 'Narrative',
 }
 
-# Tags that contain clause-type content (split into individual clauses)
 CLAUSE_TAGS = {'45A', '45B', '46A', '46B', '47A', '47B', '78', '79', '72'}
 
-# Tags to extract -- ordered by typical SWIFT message appearance
 EXTRACTION_TAGS = [
-    '20', '21', '23', '26E', '27', '30', '31C', '31D', '32B', '33B', '34B',
+
+    '20', '21', '22A', '23', '26E', '27', '30', '31C', '31D', '32B', '33B',
+    '34B',
     '39A', '39B', '39C', '40A', '40E', '41A', '41D', '42A', '42C', '42D',
     '42M', '42P', '43P', '43T', '44A', '44B', '44C', '44D', '44E', '44F',
     '45A', '45B', '46A', '46B', '47A', '47B', '48', '49', '50', '51A',
-    '51D', '52A', '52D', '53A', '57A', '57D', '59', '71D', '72', '78', '79',
+
+    '51D', '52A', '52D', '53A', '57A', '57D', '58A', '59', '71D', '72', '78', '79',
 ]
-
-
-# == SWIFT field extraction ===================================================
 
 def _build_tag_patterns(tags: list) -> list:
     """
@@ -187,7 +185,7 @@ def _build_tag_patterns(tags: list) -> list:
     """
     patterns = []
     for tag in tags:
-        # Alliance format: :TAG:VALUE
+
         patterns.append({
             'tag': tag,
             'format': 'alliance',
@@ -196,7 +194,7 @@ def _build_tag_patterns(tags: list) -> list:
                 re.DOTALL,
             ),
         })
-        # Fusion format: FTAG: VALUE
+
         patterns.append({
             'tag': tag,
             'format': 'fusion',
@@ -205,8 +203,7 @@ def _build_tag_patterns(tags: list) -> list:
                 re.DOTALL,
             ),
         })
-        # Bare Fusion format: TAG: Label\nVALUE  (OCR'd Fusion pages without F prefix)
-        # Lookahead stops at next bare TAG: pattern or end of text
+
         patterns.append({
             'tag': tag,
             'format': 'bare_fusion',
@@ -217,49 +214,48 @@ def _build_tag_patterns(tags: list) -> list:
         })
     return patterns
 
-
 _TAG_PATTERNS = _build_tag_patterns(EXTRACTION_TAGS)
-
 
 def _extract_swift_fields(text: str, source_page: int = 0, source_mt: str = '') -> List[SwiftField]:
     """
     Extract all known SWIFT fields from GLM text using regex.
     First match wins per tag (avoids duplicates when both formats match).
     """
-    # P120g: Normalize full-width colons (U+FF1A) to standard colons.
-    # Some OCR engines (especially for CJK documents) produce F43T：
-    # instead of F43T: — the regex won't match full-width colons.
+
     text = text.replace('\uff1a', ':')
 
-    # P101: Pre-normalize — insert newline before F-tags that are glued to
-    # the previous field's value (OCR artifact).
-    # e.g. "#31,674.67F45B: Description..." → "#31,674.67\nF45B: Description..."
+    _TS_PROTECT = '___TIMECOLON___'
+    text = re.sub(
+        r'(\d{1,2}):(\d{2}):(\d{2})',
+        lambda _m: f"{_m.group(1)}{_TS_PROTECT}{_m.group(2)}{_TS_PROTECT}{_m.group(3)}",
+        text,
+    )
+
     text = re.sub(r'([^\n])(F\d{2}[A-Z]?\s*:)', r'\1\n\2', text)
-    # Also for Alliance colon-format: "...valueF:32B:" → "...value\n:32B:"
+
     text = re.sub(r'([^\n])(:\d{2}[A-Z]?:)', r'\1\n\2', text)
 
-    # P107: Fix OCR-truncated tags where leading digits are lost.
-    # e.g. "D: Date and Place of Expiry" → "31D: Date and Place of Expiry"
-    # Only fix known SWIFT field label patterns to avoid false positives.
     _TRUNCATED_TAG_FIXES = [
-        (r'(?<=\n)\s*D:\s*(?=Date\s+and\s+Place\s+of\s+Expiry)',   '31D: '),
-        (r'(?<=\n)\s*C:\s*(?=Date\s+of\s+Issue)',                   '31C: '),
-        (r'(?<=\n)\s*B:\s*(?=Currency\s+Code)',                     '32B: '),
-        (r'(?<=\n)\s*A:\s*(?=Form\s+of\s+Documentary\s+Credit)',    '40A: '),
-        (r'(?<=\n)\s*A:\s*(?=Available\s+With)',                    '41A: '),
-        (r'(?<=\n)\s*D:\s*(?=Available\s+With)',                    '41D: '),
-        (r'(?<=\n)\s*C:\s*(?=Drafts\s+at)',                         '42C: '),
-        (r'(?<=\n)\s*D:\s*(?=Drawee)',                              '42D: '),
-        (r'(?<=\n)\s*P:\s*(?=Partial\s+Shipment)',                  '43P: '),
-        (r'(?<=\n)\s*T:\s*(?=Transship)',                           '43T: '),
-        (r'(?<=\n)\s*A:\s*(?=(?:Place|Port)\s+of\s+(?:Loading|Taking))', '44A: '),
-        (r'(?<=\n)\s*E:\s*(?=Port\s+of\s+(?:Loading|Discharge))',  '44E: '),
-        (r'(?<=\n)\s*F:\s*(?=Port\s+of\s+Discharge)',              '44F: '),
-        (r'(?<=\n)\s*B:\s*(?=Place\s+of\s+Final\s+Destination)',   '44B: '),
-        (r'(?<=\n)\s*D:\s*(?=Charges)',                             '71D: '),
+        (r'(?<=\n)\s*\d{0,2}D:\s*(?=Date\s+and\s+Place\s+of\s+Expiry)',   'F31D: '),
+        (r'(?<=\n)\s*\d{0,2}C:\s*(?=Date\s+of\s+Issue)',                   'F31C: '),
+        (r'(?<=\n)\s*\d{0,2}B:\s*(?=Currency\s+Code)',                     'F32B: '),
+        (r'(?<=\n)\s*\d{0,2}A:\s*(?=Form\s+of\s+Documentary\s+Credit)',    'F40A: '),
+        (r'(?<=\n)\s*\d{0,2}A:\s*(?=Available\s+With)',                    'F41A: '),
+        (r'(?<=\n)\s*\d{0,2}D:\s*(?=Available\s+With)',                    'F41D: '),
+        (r'(?<=\n)\s*\d{0,2}C:\s*(?=Drafts\s+at)',                         'F42C: '),
+        (r'(?<=\n)\s*\d{0,2}D:\s*(?=Drawee)',                              'F42D: '),
+        (r'(?<=\n)\s*\d{0,2}P:\s*(?=Partial\s+Shipment)',                  'F43P: '),
+        (r'(?<=\n)\s*\d{0,2}T:\s*(?=Transship)',                           'F43T: '),
+        (r'(?<=\n)\s*\d{0,2}A:\s*(?=(?:Place|Port)\s+of\s+(?:Loading|Taking))', 'F44A: '),
+        (r'(?<=\n)\s*\d{0,2}E:\s*(?=Port\s+of\s+(?:Loading|Discharge))',  'F44E: '),
+        (r'(?<=\n)\s*\d{0,2}F:\s*(?=Port\s+of\s+Discharge)',              'F44F: '),
+        (r'(?<=\n)\s*\d{0,2}B:\s*(?=Place\s+of\s+Final\s+Destination)',   'F44B: '),
+        (r'(?<=\n)\s*\d{0,2}D:\s*(?=Charges)',                             'F71D: '),
     ]
     for _pat, _repl in _TRUNCATED_TAG_FIXES:
         text = re.sub(_pat, _repl, text, count=1, flags=re.IGNORECASE)
+
+    text = text.replace(_TS_PROTECT, ':')
 
     fields = []
     found_tags = set()
@@ -270,7 +266,7 @@ def _extract_swift_fields(text: str, source_page: int = 0, source_mt: str = '') 
         m = pat['regex'].search(text)
         if m:
             value = m.group(1).strip()
-            # Collapse excessive blank lines
+
             value = re.sub(r'\n{3,}', '\n\n', value)
             value = value.strip()
             if value:
@@ -285,8 +281,6 @@ def _extract_swift_fields(text: str, source_page: int = 0, source_mt: str = '') 
 
     return fields
 
-
-# MT799 free-format → amendment field map
 _MT799_TAG_TO_FIELD = {
     '45A': '45A', '45B': '45A',
     '46A': '46A', '46B': '46A',
@@ -299,7 +293,7 @@ _MT799_TAG_TO_FIELD = {
     '49': '49',
     '50': '50', '59': '59',
 }
-
+_MT799_CANON_TAGS = frozenset(_MT799_TAG_TO_FIELD.values())
 
 def _extract_mt799_amendment_fields(
     text: str, source_page: int = 0, source_mt: str = 'MT799'
@@ -330,9 +324,6 @@ def _extract_mt799_amendment_fields(
     if not text:
         return []
 
-    # Pre-normalise: collapse runs of single/double quotes (e.g. `''X''` →
-    # `'X'`) so the value-capture regexes only need to handle one quote on
-    # each side. Also normalise smart quotes to ASCII.
     norm = text
     norm = norm.replace('\u2018', "'").replace('\u2019', "'")
     norm = norm.replace('\u201c', '"').replace('\u201d', '"')
@@ -343,6 +334,9 @@ def _extract_mt799_amendment_fields(
     seen_tags = set()
 
     def _record(canon_tag, new_val, old_val):
+
+        if canon_tag not in _MT799_CANON_TAGS:
+            return
         if canon_tag in seen_tags or not new_val:
             return
         seen_tags.add(canon_tag)
@@ -354,18 +348,13 @@ def _extract_mt799_amendment_fields(
             source_mt=source_mt,
         ))
 
-    # ── Pattern 1a: QUOTED form ──
-    #   UNDER FIELD 45A [RATE] SHOULD READ AS
-    #   'EUR 141,396.00' I/O 'EUR 141,396.56'
-    # The value char class excludes quotes and newlines, so the closing
-    # quote bounds the capture cleanly even with periods inside the value.
     pat_field_quoted = re.compile(
-        r'(?:UNDER\s+)?FIELD\s+(\d{2}[A-Z]?)\b[^\n]{0,80}?'   # FIELD 45A [RATE]
-        r'(?:SHOULD|SHALL|NOW|TO)\s+READ\s+AS'                # SHOULD READ AS
-        r'[\s\n\r]*'                                          # whitespace incl. newline
-        r'[\'"]\s*([^\'"\n\r]+?)\s*[\'"]'                     # 'new value'
-        r'\s*(?:I\s*/\s*O|INSTEAD\s+OF)\s*'                   # I/O / INSTEAD OF
-        r'[\'"]\s*([^\'"\n\r]+?)\s*[\'"]',                    # 'old value'
+        r'(?:UNDER\s+)?FIELD\s+(\d{2}[A-Z]?)\b[^\n]{0,80}?'
+        r'(?:SHOULD|SHALL|NOW|TO)\s+READ\s+AS'
+        r'[\s\n\r]*'
+        r'[\'"]\s*([^\'"\n\r]+?)\s*[\'"]'
+        r'\s*(?:I\s*/\s*[OE]|INSTEAD\s+OF)\s*'
+        r'[\'"]\s*([^\'"\n\r]+?)\s*[\'"]',
         re.IGNORECASE,
     )
     for m in pat_field_quoted.finditer(norm):
@@ -375,15 +364,39 @@ def _extract_mt799_amendment_fields(
         canon_tag = _MT799_TAG_TO_FIELD.get(raw_tag, raw_tag)
         _record(canon_tag, new_val, old_val)
 
-    # ── Pattern 1b: UNQUOTED form ──
-    #   UNDER FIELD 45A SHOULD READ AS EUR 141.00 I/O EUR 140.00
-    # Bound by newline, period, or another keyword.
+    _SINGLE_VAL_TAGS = {'31D', '42C', '44C', '44E', '44F', '32B', '39A'}
+    _CLAUSE_TAGS = {'45A', '46A', '47A'}
+    pat_field_no_old = re.compile(
+        r'(?:UNDER\s+)?FIELD\s+(\d{2}[A-Z]?)\b[^\n]{0,80}?'
+        r'(?:SHOULD|SHALL|NOW|TO)\s+READ\s+AS'
+        r'[\s\n\r]*'
+        r'[\'"]\s*([^\'"\n\r]+?)\s*[\'"]'
+        r'\s*(?:I\s*/\s*[OE]|INSTEAD\s+OF\s+EXISTING)\s*'
+        r'(?=\s*(?:[\.\n\r]|$|REGARDS\b|THANKS\b))',
+        re.IGNORECASE,
+    )
+    for m in pat_field_no_old.finditer(norm):
+        raw_tag = m.group(1).upper().strip()
+        new_val = m.group(2).strip()
+        canon_tag = _MT799_TAG_TO_FIELD.get(raw_tag, raw_tag)
+
+        if canon_tag not in _SINGLE_VAL_TAGS or canon_tag in seen_tags:
+            continue
+        seen_tags.add(canon_tag)
+        out.append(SwiftField(
+            tag=canon_tag,
+            label=SWIFT_FIELD_LABELS.get(canon_tag, f'Field {canon_tag}'),
+            value=new_val,
+            source_page=source_page,
+            source_mt=source_mt,
+        ))
+
     pat_field_unquoted = re.compile(
         r'(?:UNDER\s+)?FIELD\s+(\d{2}[A-Z]?)\b[^\n]{0,80}?'
         r'(?:SHOULD|SHALL|NOW|TO)\s+READ\s+AS\s+'
-        r'([^\n\r\'"]{1,200}?)'                                # new value (no quotes, no newline)
-        r'\s+(?:I\s*/\s*O|INSTEAD\s+OF)\s+'
-        r'([^\n\r\'"]{1,200}?)'                                # old value
+        r'([^\n\r\'"]{1,200}?)'
+        r'\s+(?:I\s*/\s*[OE]|INSTEAD\s+OF)\s+'
+        r'([^\n\r\'"]{1,200}?)'
         r'(?=\s*(?:[\n\r]|$|REGARDS\b|THANKS\b))',
         re.IGNORECASE,
     )
@@ -394,8 +407,6 @@ def _extract_mt799_amendment_fields(
         canon_tag = _MT799_TAG_TO_FIELD.get(raw_tag, raw_tag)
         _record(canon_tag, new_val, old_val)
 
-    # ── Pattern 2: "<TAG>: <label> SHOULD READ AS X I/O Y" ──
-    # Same dual quoted/unquoted handling.
     pat_colon_quoted = re.compile(
         r'(?:^|\n)\s*(\d{2}[A-Z]?)\s*:[^\n]{0,80}?'
         r'(?:SHOULD|SHALL|NOW|TO)\s+READ\s+AS'
@@ -416,7 +427,7 @@ def _extract_mt799_amendment_fields(
         r'(?:^|\n)\s*(\d{2}[A-Z]?)\s*:[^\n]{0,80}?'
         r'(?:SHOULD|SHALL|NOW|TO)\s+READ\s+AS\s+'
         r'([^\n\r\'"]{1,200}?)'
-        r'\s+(?:I\s*/\s*O|INSTEAD\s+OF)\s+'
+        r'\s+(?:I\s*/\s*[OE]|INSTEAD\s+OF)\s+'
         r'([^\n\r\'"]{1,200}?)'
         r'(?=\s*(?:[\n\r]|$|REGARDS\b|THANKS\b))',
         re.IGNORECASE,
@@ -428,7 +439,6 @@ def _extract_mt799_amendment_fields(
         canon_tag = _MT799_TAG_TO_FIELD.get(raw_tag, raw_tag)
         _record(canon_tag, new_val, old_val)
 
-    # Pattern 3: amount-only "AMOUNT INCREASED/DECREASED BY <CCY> <NUM>"
     if '32B' not in seen_tags:
         m = re.search(
             r'(?:AMOUNT|VALUE)\s+(INCREASED|DECREASED|REDUCED|RAISED)\s+BY\s+'
@@ -449,13 +459,11 @@ def _extract_mt799_amendment_fields(
             ))
             seen_tags.add('32B')
 
-    # Pattern 4: simple "PLEASE AMEND <description> TO READ AS X I/O Y"
-    # Lands in 47A (Additional Conditions) since no specific tag is given.
     if '47A' not in seen_tags:
         m = re.search(
             r'PLEASE\s+(?:AMEND|CHANGE|CORRECT|REPLACE)\s+(.{5,80}?)\s+'
             r'TO\s+READ\s+AS[\s\n\r]*["\']?\s*([^\'"\n\r]+?)\s*["\']?\s*'
-            r'(?:I\s*/\s*O|INSTEAD\s+OF)\s*["\']?\s*([^\'"\n\r]+?)\s*["\']?'
+            r'(?:I\s*/\s*[OE]|INSTEAD\s+OF)\s*["\']?\s*([^\'"\n\r]+?)\s*["\']?'
             r'(?=\s*(?:[\.\n\r]|$))',
             norm, re.IGNORECASE,
         )
@@ -471,14 +479,288 @@ def _extract_mt799_amendment_fields(
                 source_mt=source_mt,
             ))
 
+    pat_bahl_under = re.compile(
+        r'(?:^|\n)\s*\+\s*FIELD\s+(\d{2}[A-Z]?)\b[^\n]*?'
+        r'TO\s+BE\s+READ\s+AS\s+UNDER\s+'
+        r'I\s*/?\s*[OE]\s+EXISTING\s*\n'
+        r'(.+?)'
+        r'(?=\n\s*\+\s*FIELD\b'
+        r'|\n\s*\.?\s*\n\s*(?:REGRET|PLEASE\s+(?:INFORM|NOTE)|REGARDS|CENTRALIZED|YOURS\s+(?:TRULY|FAITHFULLY)|BANK\s+AL\s+HABIB)\b'
+        r'|\Z)',
+        re.IGNORECASE | re.DOTALL,
+    )
+    for m in pat_bahl_under.finditer(norm):
+        raw_tag = m.group(1).upper().strip()
+        new_val = m.group(2).strip()
+
+        new_val = re.sub(r'^\s*\.\s*\n', '', new_val)
+        new_val = re.sub(r'\n\s*\.\s*$', '', new_val).strip()
+
+        new_val = re.sub(
+            r'\n\s*\.?\s*(?:REGRET\s+ERROR|PLEASE\s+(?:INFORM|NOTE)|REGARDS|CENTRALIZED\s+OPERATIONS|BANK\s+AL\s+HABIB|YOURS\s+(?:TRULY|FAITHFULLY))\b.*$',
+            '', new_val, flags=re.IGNORECASE | re.DOTALL,
+        ).strip()
+        if not new_val:
+            continue
+        canon_tag = _MT799_TAG_TO_FIELD.get(raw_tag, raw_tag)
+        if canon_tag in seen_tags:
+            continue
+        seen_tags.add(canon_tag)
+
+        anchor = None
+        if canon_tag in _CLAUSE_TAGS:
+            m_anchor = re.search(
+                r'CONTRACT\s+(?:NO\.?|NOS?\.?)\s*'
+                r'([A-Z][A-Z0-9][A-Z0-9\-]{3,30})',
+                new_val, re.IGNORECASE,
+            )
+            if m_anchor:
+                anchor = m_anchor.group(1).upper().rstrip('.,;')
+        out.append(SwiftField(
+            tag=canon_tag,
+            label=SWIFT_FIELD_LABELS.get(canon_tag, f'Field {canon_tag}'),
+            value=new_val,
+            source_page=source_page,
+            source_mt=source_mt,
+            mt799_replace_anchor=anchor,
+        ))
+
+    pat_ubl_field = re.compile(
+        r'(?:^|\n)\s*(\d{2}[A-Z]?)\s*:-\s*[^\n]{0,80}?'
+        r'\bRead\s+as\b[\s\n\r]*[\'"]\s*([^\'"\n\r]+?)\s*[\'"]'
+        r'\s*(?:instead\s+of\s+existing|i\s*/\s*[oe])',
+        re.IGNORECASE,
+    )
+    for m in pat_ubl_field.finditer(norm):
+        raw_tag = m.group(1).upper().strip()
+        new_val = m.group(2).strip()
+        canon_tag = _MT799_TAG_TO_FIELD.get(raw_tag, raw_tag)
+        if canon_tag not in _SINGLE_VAL_TAGS or canon_tag in seen_tags:
+            continue
+        seen_tags.add(canon_tag)
+        out.append(SwiftField(
+            tag=canon_tag,
+            label=SWIFT_FIELD_LABELS.get(canon_tag, f'Field {canon_tag}'),
+            value=new_val,
+            source_page=source_page,
+            source_mt=source_mt,
+        ))
+
+    _clause_ops: Dict[str, List[str]] = {}
+
+    def _add_op(canon_tag: str, op_line: str):
+        if canon_tag not in _CLAUSE_TAGS:
+            return
+        _clause_ops.setdefault(canon_tag, []).append(op_line)
+
+    for m in re.finditer(
+        r'(?:^|\n)\s*(\d{2}[A-Z]?)\s*\(\s*(\d{1,3})\s*\)\s*:?\s*-?\s*'
+        r'PLEASE\s+DELETE\s+COMPLETELY',
+        norm, re.IGNORECASE,
+    ):
+        raw_tag = m.group(1).upper()
+        clause_n = int(m.group(2))
+        _add_op(_MT799_TAG_TO_FIELD.get(raw_tag, raw_tag), f"/DELETE/ CLAUSE {clause_n}")
+
+    for m in re.finditer(
+        r'(?:^|\n)\s*(\d{2}[A-Z]?)\s+(\d{1,3})\s+PLEASE\s+DELETE\s+COMPLETELY',
+        norm, re.IGNORECASE,
+    ):
+        raw_tag = m.group(1).upper()
+        clause_n = int(m.group(2))
+        _add_op(_MT799_TAG_TO_FIELD.get(raw_tag, raw_tag), f"/DELETE/ CLAUSE {clause_n}")
+
+    for canon_tag, ops in _clause_ops.items():
+        if canon_tag in seen_tags or not ops:
+            continue
+        seen_tags.add(canon_tag)
+        out.append(SwiftField(
+            tag=canon_tag,
+            label=SWIFT_FIELD_LABELS.get(canon_tag, f'Field {canon_tag}'),
+            value='\n'.join(ops),
+            source_page=source_page,
+            source_mt=source_mt,
+        ))
+
     return out
 
+def _strip_mt799_anchor_block(text: str, anchor: str) -> str:
+    """P273 — remove the F45A/F46A/F47A block referencing `anchor`.
+
+    Used when an MT799 "+FIELD XX TO BE READ AS UNDER I/O EXISTING"
+    amendment carries an explicit contract reference. The bank's
+    semantic is REPLACE the existing /ADD/ block for that contract;
+    without this strip, the new /ADD/ appends and the previous block
+    remains as a stale duplicate (eg. BAHL 1003LC55989's BKKJP26-0090
+    appearing once with old goods description and once with the
+    corrected one).
+
+    Strip rule (conservative — only the contract-ref pair):
+      • Find the line containing the anchor.
+      • Drop that line.
+      • If the line above is a "AS PER BENEFICIARY... PROFORMA INVOICE
+        CONTRACT [NO.]" continuation line, drop it too.
+
+    The goods description line above the "AS PER ..." pair is left
+    intact: in real consolidated F45As that line is often shared with
+    a sibling contract's block (cross-amendment dedup), so removing it
+    would orphan another contract's goods. The MT799's own /ADD/ then
+    appends its full new block (goods + AS PER + contract ref),
+    producing the expected single corrected block.
+
+    No-op when anchor is missing or not present in `text` — preserves
+    the pre-P273 append behaviour as a safe fallback.
+    """
+    if not anchor or anchor not in text:
+        return text
+    lines = text.split('\n')
+    out: List[str] = []
+    as_per_re = re.compile(
+        r'AS\s+PER\s+BENEFICIARY[^\n]*PROFORMA\s+INVOICE\s+CONTRACT',
+        re.IGNORECASE,
+    )
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if anchor in ln:
+
+            if out and as_per_re.search(out[-1]):
+                out.pop()
+            i += 1
+            continue
+        out.append(ln)
+        i += 1
+    return '\n'.join(out)
+
+def _trim_resolved_for_name_address_field(text: str) -> str:
+    """P276 (+P277/P278 ext) — trim a cross-ref resolved clause when
+    destination is F50/F59 (name+address fields).
+
+    Some banks place the beneficiary's name+address in a numbered
+    F47A clause and reference it from F59 ("REFER TO FIELD 47A(10)
+    FOR COMPLETE NAME AND ADDRESS"). The bank then appends an
+    UNRELATED legal/disclaimer paragraph to the same clause,
+    separated by a SWIFT lone-'.' or lone-'+' line (paragraph
+    delimiter). The cross-ref resolver pulls the whole clause, so
+    the consolidated F59 ends up with both the address AND the
+    disclaimer.
+
+    Trim rule (additive, generic):
+      1. Truncate at the first lone-'.' OR lone-'+' line — both are
+         SWIFT paragraph delimiters in different bank exports.
+         Pure-address clauses with no break = no-op.
+      2. Strip leading SWIFT decorator line that is only "+" chars
+         (≥3 chars, e.g. "+++++++"). Banks insert this under the
+         label as a visual separator; it is not address content.
+         Phone-style "+92-..." inside a real address line is
+         untouched (full-line match required).
+      3. Strip leading clause-level label preambles — generic
+         meta-labels that identify the clause as F50/F59's value:
+           • "<X> [COMPLETE] NAME AND ADDRESS" — party-name form
+             (BAHL/UBL/FUSION typical).
+           • "FIELD <N> TO BE READ AS UNDER" — MT707 amendment
+             narrative form (BAHL job 10cf936f case). Requires
+             both "FIELD <N>" and "READ AS" tokens in the line so
+             body text never falsely matches.
+         Both label forms enforced ≤10 words to keep body lines
+         intact.
+
+    No-op when none of the conditions match → safe fallback.
+    """
+    if not text:
+        return text
+    lines = text.splitlines()
+    para_end = None
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+
+        if s == '.' or s == '+':
+            para_end = i
+            break
+    if para_end is not None:
+        lines = lines[:para_end]
+    while lines:
+        first = lines[0].strip()
+        if not first:
+            lines.pop(0)
+            continue
+
+        if re.fullmatch(r'\+{3,}', first):
+            lines.pop(0)
+            continue
+
+        if len(first.split()) <= 10:
+            up = first.upper()
+
+            if re.search(r'\bNAME\s+AND\s+ADDRESS\b', up):
+                lines.pop(0)
+                continue
+
+            if (re.search(r'\bFIELD\s+\d{2}[A-Z]?\b', up)
+                    and re.search(r'\bREAD\s+AS\b', up)):
+                lines.pop(0)
+                continue
+        break
+    return '\n'.join(lines).strip()
+
+def _find_name_address_clause(clauses, party_keyword: str, dest_tag: str = ''):
+    """P277 (+P278 ext) — locate a clause whose first non-empty line
+    is a META-LABEL identifying it as F<dest_tag>'s value.
+
+    Used when F50/F59 references its parent F47A WITHOUT a clause
+    number ("REFER FIELD 47A" / "(REFER TO FIELD 47A)" / "REFER 47A").
+    Banks embed the actual name+address inside one of F47A's clauses
+    using one of two equivalent label conventions — both are short
+    label/header lines (≤10 words):
+
+      • Form A — party-name: line contains `party_keyword`
+        (e.g. "APPLICANT" / "BENEFICIARY") AND the phrase
+        "NAME AND ADDRESS". Examples:
+            APPLICANT'S COMPLETE NAME AND ADDRESS:
+            BENEFICIARY COMPLETE NAME AND ADDRESS:
+
+      • Form B — field-number reference: line matches
+        "FIELD <dest_tag>" or "F<dest_tag>" as a token. Used by
+        BAHL MT707 amendment narratives (job 10cf936f). Example:
+            FIELD 59 TO BE READ AS UNDER
+
+    Match rules (strict, to avoid false positives):
+      • Only the first non-empty line of each clause is examined.
+      • Line length ≤ 10 words — body text never matches.
+      • Form A requires both party keyword + "NAME AND ADDRESS".
+      • Form B requires field-number token (FIELD / F prefix).
+
+    Returns the matched Clause or None. None = caller falls back to
+    its existing behaviour (no replacement) — zero regression.
+    """
+    if not clauses:
+        return None
+    pk = (party_keyword or '').upper()
+    dt = (dest_tag or '').upper()
+    for c in clauses:
+        text = getattr(c, 'text', '') or ''
+        for ln in text.splitlines():
+            stripped = ln.strip()
+            if not stripped:
+                continue
+            up = stripped.upper()
+            if len(stripped.split()) > 10:
+                break
+
+            if (pk and pk in up and 'NAME AND ADDRESS' in up):
+                return c
+
+            if dt and re.search(
+                rf'\b(?:FIELD\s+|F){re.escape(dt)}\b', up):
+                return c
+            break
+    return None
 
 def _detect_format_from_text(text: str) -> str:
     """Detect SWIFT format from GLM text content."""
     fusion_count = len(re.findall(r'\bF\d{2}[A-Z]?\s*:', text))
     alliance_count = len(re.findall(r':\d{2}[A-Z]?:', text))
-    # Bare fusion: "20: Documentary Credit Number" pattern (number colon space label)
+
     bare_fusion_count = len(re.findall(r'(?:^|\n)\s*\d{2}[A-Z]?:\s+[A-Z]', text))
     if fusion_count > alliance_count and fusion_count > bare_fusion_count:
         return 'fusion'
@@ -488,10 +770,253 @@ def _detect_format_from_text(text: str) -> str:
         return 'bare_fusion'
     return 'unknown'
 
+def _has_top_level_sections(text: str) -> bool:
+    """Cheap structural gate: does this field begin with a top-level
+    letter-paren section marker AND contain at least one more such marker
+    at column 0? Minimum-possible heuristic — enumerates no specific
+    keywords (no PART / SET / release%); just checks that the first
+    non-blank content of the field starts with '<UPPERCASE>) ' (signalling
+    a real section grouping rather than a sub-bullet inside a numbered
+    clause body, since sub-bullets never occupy the field-start position).
+    """
+    if not text or not text.strip():
+        return False
+    stripped = text.lstrip()
+    first_line = stripped.split('\n', 1)[0].strip()
+    if not re.match(r'^[A-Z]\)\s+\S', first_line):
+        return False
 
-# == Clause splitting =========================================================
+    distinct = set()
+    for m in re.finditer(r'(?:^|\n)([A-Z])\)\s+\S', text):
+        distinct.add(m.group(1))
+    return len(distinct) >= 2
 
-def _split_into_clauses(tag: str, text: str) -> List[Clause]:
+_LLM_CLAUSE_SPLIT_PROMPT = """You are parsing a SWIFT trade-finance text field. Split it into individual clauses and return structured JSON.
+
+═══════════════════════════════════════════════════════════════════════
+RULE — MULTI-SECTION (HIERARCHICAL) STRUCTURE
+═══════════════════════════════════════════════════════════════════════
+
+CONDITION (when this rule applies):
+The field starts with a top-level letter-paren marker like "A)" at the very
+beginning AND contains at least one more such marker like "B)" / "C)" /
+... at the start of a line (column 0). This pattern means the field is
+DIVIDED into multiple top-level groups, each governing a different set
+of nested sub-items.
+
+Real examples of when this division pattern shows up in LCs:
+  • Partial-release credits — "A) FOR RELEASE OF 90 PERCENT PAYMENT" /
+    "B) FOR RELEASE OF 10 PERCENT" — each section lists the documents
+    required to release that payment portion.
+  • Multi-tranche credits — "A) FOR FIRST SHIPMENT" / "B) FOR SECOND
+    SHIPMENT" — each section lists shipment-specific documents.
+  • Conditional document sets — "A) IF SHIPMENT IS BY VESSEL" /
+    "B) IF SHIPMENT IS BY AIR" — alternative document requirements.
+  • Any other A)/B)/C)/... division regardless of the heading wording.
+
+WHAT TO PRODUCE for each section when the condition holds:
+  1. ONE clause for the section's introductory line(s) — the "X) ..."
+     line plus any descriptive header text BEFORE the first sub-item.
+     This clause carries:
+         section          = the section letter (e.g. "A")
+         is_section_header = true
+  2. ONE clause for EACH numbered/Roman sub-item in the section's body
+     (1), 2), 3), i), ii), iii), 1., 2., etc.). Each carries:
+         section          = the SAME section letter as the parent
+         is_section_header = false
+  3. Sub-items belong to the NEAREST preceding section letter — never to
+     the wrong section.
+
+OCR TOLERANCE: If the very first sub-item of a section is "i)" (lowercase
+roman) but the rest are Arabic ("2)", "3)", ...), this is OCR mis-reading
+the digit "1" as the letter "i" because they look near-identical in some
+fonts. Treat "i)" as the first sub-item — split it like any other.
+
+═══════════════════════════════════════════════════════════════════════
+RULE — FLAT (NON-HIERARCHICAL) STRUCTURE
+═══════════════════════════════════════════════════════════════════════
+
+CONDITION: The field has NO top-level letter-paren division at column 0,
+or only one such marker. It's a flat list (or a single block).
+
+WHAT TO PRODUCE: All clauses with section="" and is_section_header=false.
+Split the same way the field would normally split — one clause per
+numbered/Roman sub-item, or one clause for the whole field if nothing
+splits cleanly.
+
+═══════════════════════════════════════════════════════════════════════
+WORKED EXAMPLE
+═══════════════════════════════════════════════════════════════════════
+
+INPUT:
+A) FOR RELEASE OF 90 PERCENT PAYMENT OF LC VALUE, FOLLOWING
+DOCUMENTS ARE REQUIRED
+i) BENEFICIARY MANUALLY SIGNED COMMERCIAL INVOICE
+2) FULL SET OF THREE ORIGINAL BILLS OF LADING
+
+B) FOR RELEASE OF 10 PERCENT OF LC VALUE FOLLOWING
+DOCUMENTS ARE REQUIRED:
+1) BENEFICIARY MANUALLY SIGNED COMMERCIAL INVOICE
+2) CERTIFICATE OF WEIGHT IN ONE ORIGINAL
+
+EXPECTED OUTPUT:
+{
+  "clauses": [
+    {"text": "A) FOR RELEASE OF 90 PERCENT PAYMENT OF LC VALUE, FOLLOWING\\nDOCUMENTS ARE REQUIRED", "section": "A", "is_section_header": true},
+    {"text": "i) BENEFICIARY MANUALLY SIGNED COMMERCIAL INVOICE", "section": "A", "is_section_header": false},
+    {"text": "2) FULL SET OF THREE ORIGINAL BILLS OF LADING", "section": "A", "is_section_header": false},
+    {"text": "B) FOR RELEASE OF 10 PERCENT OF LC VALUE FOLLOWING\\nDOCUMENTS ARE REQUIRED:", "section": "B", "is_section_header": true},
+    {"text": "1) BENEFICIARY MANUALLY SIGNED COMMERCIAL INVOICE", "section": "B", "is_section_header": false},
+    {"text": "2) CERTIFICATE OF WEIGHT IN ONE ORIGINAL", "section": "B", "is_section_header": false}
+  ]
+}
+
+═══════════════════════════════════════════════════════════════════════
+CRITICAL CONSTRAINTS (apply in BOTH cases)
+═══════════════════════════════════════════════════════════════════════
+
+1. Return text VERBATIM — do NOT paraphrase, fix typos, alter wording,
+   normalise quotes, expand abbreviations, or summarise.
+2. Preserve ALL original markers inside each clause's text exactly
+   (1), 2), A), B), i), ii), 1., 2., dashes, parentheses, etc.).
+3. Concatenating every clause's "text" with newlines must reproduce the
+   ORIGINAL input modulo whitespace. Do NOT drop, add, or merge content.
+4. Output ONLY the JSON object. No prose, no markdown fences, no
+   commentary, no leading or trailing text.
+
+INPUT TEXT:
+{text}
+"""
+
+def _validate_clause_split(clauses: List['Clause'], original_text: str) -> bool:
+    """Reject the LLM's split if joining its clauses doesn't reproduce the
+    original text. Whitespace-normalised character compare — catches drops,
+    paraphrases, hallucinations, single-character substitutions. The only
+    differences allowed are runs of whitespace (newlines, tabs, multiple
+    spaces) collapsed to a single space."""
+    if not clauses:
+        return False
+    if len(clauses) > 60:
+        return False
+    joined = '\n'.join(c.text for c in clauses)
+
+    def _norm(s: str) -> str:
+
+        return re.sub(r'\s+', ' ', s).strip().lower()
+
+    return _norm(joined) == _norm(original_text)
+
+def _split_into_clauses_llm(tag: str, text: str, _progress=None) -> Optional[List['Clause']]:
+    """LLM-driven clause splitter. Used only when `_has_top_level_sections`
+    detects a multi-section hierarchy. Returns None on any failure
+    (network, parse, validation) so the caller falls back to the legacy
+    regex splitter — i.e. the worst case is the legacy behaviour, never
+    a corrupted output.
+
+    Endpoint strategy: try the configured Text-LLM first, then fall through
+    to the VLM endpoint (which accepts text-only chat completions). This
+    keeps the call working when one endpoint is mid-migration or returning
+    a transient error — `_apply_amendment_vlm` uses the same chain.
+    """
+    if not text or not text.strip():
+        return None
+
+    candidates = []
+    if QWEN_TEXT_LLM_URL and QWEN_TEXT_LLM_MODEL:
+        candidates.append((QWEN_TEXT_LLM_URL, QWEN_TEXT_LLM_MODEL))
+    if QWEN_VLM_URL and QWEN_VLM_MODEL:
+        candidates.append((QWEN_VLM_URL, QWEN_VLM_MODEL))
+    if not candidates:
+        return None
+
+    prompt = _LLM_CLAUSE_SPLIT_PROMPT.replace('{text}', text)
+    content = ''
+    for _url, _model in candidates:
+        try:
+            resp = requests.post(_url, json={
+                "model": _model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 8000,
+                "temperature": 0.0,
+            }, timeout=None)
+            if resp.status_code != 200:
+                if _progress:
+                    _progress(
+                        f"  F{tag}: LLM split HTTP {resp.status_code} on "
+                        f"{_url} — trying next endpoint"
+                    )
+                continue
+            content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            if content:
+                break
+        except Exception as e:
+            if _progress:
+                _progress(f"  F{tag}: LLM split error on {_url} ({e}) — trying next endpoint")
+            continue
+
+    if not content:
+        if _progress:
+            _progress(f"  F{tag}: all LLM endpoints failed — falling back to regex")
+        return None
+
+    content = re.sub(r'```(?:json|plaintext|text)?\s*', '', content, flags=re.IGNORECASE)
+    content = re.sub(r'\s*```\s*$', '', content).strip()
+
+    m = re.search(r'\{.*\}', content, re.DOTALL)
+    if not m:
+        if _progress:
+            _progress(f"  F{tag}: LLM returned no JSON — falling back to regex")
+        return None
+    try:
+        parsed = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        if _progress:
+            _progress(f"  F{tag}: LLM JSON parse failed — falling back to regex")
+        return None
+
+    items = parsed.get('clauses', [])
+    if not isinstance(items, list) or not items:
+        return None
+
+    out: List[Clause] = []
+    for it in items:
+        if not isinstance(it, dict):
+            return None
+        clause_text = str(it.get('text', '') or '').strip()
+        if not clause_text:
+            continue
+        section = str(it.get('section', '') or '').strip()
+        is_header = bool(it.get('is_section_header', False))
+        out.append(Clause(
+            clause_number=len(out) + 1,
+            clause_id=f"{tag}-{len(out) + 1}",
+            text=clause_text,
+            parent_tag=tag,
+            section=section,
+            is_section_header=is_header,
+        ))
+    if not out:
+        return None
+
+    if not _validate_clause_split(out, text):
+        if _progress:
+            _progress(f"  F{tag}: LLM split rejected by integrity check — falling back to regex")
+        return None
+
+    if any(c.section for c in out):
+        _sub_count: Dict[str, int] = {}
+        for c in out:
+            if not c.section:
+                continue
+            if c.is_section_header:
+                c.clause_id = f"{tag}-{c.section}0"
+            else:
+                _sub_count[c.section] = _sub_count.get(c.section, 0) + 1
+                c.clause_id = f"{tag}-{c.section}{_sub_count[c.section]}"
+
+    return out
+
+def _split_into_clauses(tag: str, text: str, _progress=None) -> List[Clause]:
     """
     Split a multi-clause SWIFT field into individual clauses.
 
@@ -505,72 +1030,76 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
     if not text or not text.strip():
         return []
 
-    # Handle list input (from JSON deserialization)
     if isinstance(text, list):
         text = '\n'.join(str(item) for item in text)
+
+    _normalised = text.strip()
+    if tag in ('46A', '47A', '45A', '78') and _has_top_level_sections(_normalised):
+        _llm_clauses = _split_into_clauses_llm(tag, _normalised, _progress=_progress)
+        if _llm_clauses:
+            if _progress:
+                _progress(
+                    f"  F{tag}: split into {len(_llm_clauses)} clauses via LLM "
+                    f"(hierarchical multi-section)"
+                )
+            return _llm_clauses
 
     clauses = []
     text = text.strip()
 
-    # F45A: split if it has numbered sub-items (1-, 2-, 1., 2.), otherwise keep as one
     if tag in ('45A', 'F45A'):
-        # Check if it has numbered sub-items like "1-", "2-", "1.", "2)"
+
         if not re.search(r'(?:^|\n)\s*\d+\s*[-.)]\s+', text):
             return [Clause(clause_number=1, clause_id=f"{tag}-1", text=text, parent_tag=tag)]
-        # Fall through to normal splitting
 
-    # Try numbered: "1.", "2.", "1)", "2)", "1-", "2-"
-    # P77/P80: Also handles "7.THE" (no space after the period) and
-    # mid-line clause starts like "...EXPIRY. 7.THE CARRIER..." where
-    # there is no newline before the clause number. We pre-normalize
-    # the text by inserting \n before any mid-line "N." / "N)" / "N-"
-    # pattern that follows a sentence-ending period or whitespace.
+    if tag in ('78', 'F78', '72', 'F72', '79', 'F79'):
+        _has_structural_marker = bool(re.search(
+            r'(?:^|\n)\s*(?:'
+            r'\d{1,2}\s*[-.)\)]'
+            r'|\(\s*\d{1,2}\s*\)'
+            r'|[A-Z]\s*[.)\)]'
+            r'|\+\s'
+            r'|[-*]\s'
+            r')',
+            text,
+        ))
+        if not _has_structural_marker:
+            return [Clause(clause_number=1, clause_id=f"{tag}-1",
+                           text=text, parent_tag=tag)]
+
     _normalized = text
-    # Insert \n before mid-line numbered clause starts:
-    # Match: (sentence-end punctuation + space(s)) + (digit(s)) + (clause delimiter)
-    # e.g. "EXPIRY. 7.THE" → "EXPIRY.\n7.THE"
-    # e.g. "SEPARATELY. 10. SOME" → "SEPARATELY.\n10. SOME"
-    # P90: Added (?!\d) after the delimiter to exclude dates like
-    # "DATED: 07-01-2025" where "07-" looks like a clause number
-    # but is actually a date. A real clause number is followed by
-    # a letter (the clause text), not another digit.
-    # P198au — Broaden the lookbehind to include whitespace, comma,
-    # and digit-end (so "NTN NO. 3075811-4 2)" also gets split).
-    # Guards: (?!\d) after the delimiter still excludes dates like
-    # "07-01-2025"; and the uppercase/"(" lookahead still rejects
-    # matches whose RHS is not a clause-body start.
+
     _normalized = re.sub(
-        r'(?<=[\s.;:!?,])(\d{1,2})\s*([.\-)])\s*(?=[A-Z\(])',
+        r'(?<=[\s.;:!?,])(\d{1,2})\s*([.)])\s*(?=[A-Z\(])',
         r'\n\1\2 ',
         _normalized,
     )
-    # P90: The split regex must NOT match dates like "07-01-2025" or
-    # "01.2025" that start a line after a colon ("DATED:\n07-01-2025").
-    # A clause number is followed by text content, not by more digits.
-    # Use a negative lookahead (?!\d) to exclude digit-after-delimiter.
-    #
-    # P198gf — Also reject street-address patterns like "36-B," / "10-A,"
-    # / "5C," where the number-dash-letter is part of a building/block
-    # address, not a clause marker. Real F46A clauses on real LCs don't
-    # use the form "<num>-<single-letter>," for clause numbering. Two
-    # guards added:
-    #   • Drop "-" from the marker chars on the SPLIT regex (clause
-    #     numbers in LCs use "1.", "1)", or "1." — never "1-"). The
-    #     dash-bullet splitter at the bottom of this function still
-    #     handles "- foo / + foo / * foo" lists.
-    #   • Cap clause-number magnitude at ≤ 25 (LCs almost never have
-    #     more than 20 items in a single F-tag list).
-    # Numbers 1-25 only (LCs almost never have 26+ clauses in one tag).
-    # Order matters: 2-digit forms FIRST so "26" is rejected (only "2" matches
-    # the 1-digit alt and then "6" fails the [.)] requirement).
+
     numbered = re.split(r'\n\s*(2[0-5]|1\d|[1-9])\s*[.)]\s*(?!\d)', '\n' + _normalized)
     if len(numbered) >= 3:
-        # P198gz22 — Merge by parsed clause-number (not assign-by-position).
-        # When amendments add narrative that re-uses numbers like "1)" / "2)"
-        # already present in the original LC, the previous behaviour created
-        # extra clauses (45A-3, 45A-4 etc.) that don't match how SWIFT
-        # amendments work. Real amendments ADD content to the existing
-        # numbered items — the system should merge by number.
+
+        _prefix_text = (numbered[0] or '').strip()
+
+        _CLAUSE_BEARING_TAGS_FOR_HEADER = (
+            '45A', '45B', '46A', '46B', '47A', '47B', '72', '78', '79',
+        )
+        _has_substantive_prefix_header = (
+            tag in _CLAUSE_BEARING_TAGS_FOR_HEADER
+            and _prefix_text
+            and len(_prefix_text) >= 20
+            and not _prefix_text[0].isdigit()
+        )
+
+        if _has_substantive_prefix_header:
+            clauses.append(Clause(
+                clause_number=0,
+                clause_id=f"{tag}-H0",
+                text=_prefix_text,
+                parent_tag=tag,
+                section='',
+                is_section_header=True,
+            ))
+
         _by_num = {}
         _order = []
         for i in range(1, len(numbered) - 1, 2):
@@ -582,11 +1111,16 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
             if not clause_text:
                 continue
             if _n in _by_num:
-                # Append amendment content to existing clause body
+
                 _by_num[_n] = (_by_num[_n].rstrip() + '\n' + clause_text).strip()
             else:
                 _by_num[_n] = clause_text
                 _order.append(_n)
+
+        if (not _has_substantive_prefix_header) and _prefix_text and _order:
+            _first_n = _order[0]
+            _by_num[_first_n] = f"{_prefix_text}\n{_by_num[_first_n]}".strip()
+
         for _n in _order:
             clauses.append(Clause(
                 clause_number=_n,
@@ -597,7 +1131,6 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
         if clauses:
             return clauses
 
-    # Try lettered: "A.", "B.", "A)", "B)"
     lettered = re.split(r'\n\s*([A-Z])\s*[.)]\s+', '\n' + text)
     if len(lettered) >= 3:
         for i in range(1, len(lettered) - 1, 2):
@@ -612,7 +1145,6 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
         if clauses:
             return clauses
 
-    # Try dash/bullet
     dashed = re.split(r'\n\s*[-+*]\s+', '\n' + text)
     if len(dashed) >= 3:
         for part in dashed:
@@ -627,13 +1159,12 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
         if clauses:
             return clauses
 
-    # Try line-by-line grouping
     lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
     if len(lines) >= 2:
         grouped = []
         current = []
         for ln in lines:
-            # New clause starts with uppercase, is long enough, and not a continuation word
+
             if current and (
                 re.match(r'^[A-Z0-9]', ln)
                 and len(ln) > 20
@@ -658,7 +1189,6 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
                     ))
             return clauses
 
-    # Fallback: entire text as one clause
     clauses.append(Clause(
         clause_number=1,
         clause_id=f"{tag}-1",
@@ -666,9 +1196,6 @@ def _split_into_clauses(tag: str, text: str) -> List[Clause]:
         parent_tag=tag,
     ))
     return clauses
-
-
-# == Amendment text operations ================================================
 
 def _extract_swift_ops(amd_text: str) -> list:
     """P198du — Parse SWIFT amendment operation tokens out of an
@@ -681,7 +1208,7 @@ def _extract_swift_ops(amd_text: str) -> list:
     if not amd_text:
         return ops
     t = str(amd_text)
-    # Normalize fancy quotes
+
     t = (t.replace('‘', "'").replace('’', "'")
           .replace('“', '"').replace('”', '"')
           .replace("''", '"'))
@@ -691,8 +1218,6 @@ def _extract_swift_ops(amd_text: str) -> list:
                 re.finditer(r'CLAUSE\s+(?:NO\.?\s+)?(\d+)',
                              scope, re.IGNORECASE)]
 
-    # /DELETE/ or /DEL/ — typically followed by CLAUSE N or
-    # 'PLEASE READ WORDS IN FIELD ... AS DELETED'
     for m in re.finditer(r'/DEL(?:ETE)?/([^/]*?)(?=/[A-Z]+/|$)',
                           t, re.IGNORECASE | re.DOTALL):
         scope = m.group(1) or ''
@@ -701,7 +1226,7 @@ def _extract_swift_ops(amd_text: str) -> list:
             for tgt in targets:
                 ops.append({'op': 'DELETE', 'target': f'Clause {tgt}'})
         else:
-            # Try to capture a quoted phrase to delete
+
             qm = re.search(r"['\"]([^'\"]+)['\"]\s*AS\s+DELETED",
                            scope, re.IGNORECASE)
             if qm:
@@ -710,7 +1235,6 @@ def _extract_swift_ops(amd_text: str) -> list:
             else:
                 ops.append({'op': 'DELETE'})
 
-    # /ADD/ — typically followed by CLAUSE N or new clause text
     for m in re.finditer(r'/ADD/([^/]*?)(?=/[A-Z]+/|$)',
                           t, re.IGNORECASE | re.DOTALL):
         scope = m.group(1) or ''
@@ -721,11 +1245,9 @@ def _extract_swift_ops(amd_text: str) -> list:
         else:
             ops.append({'op': 'ADD'})
 
-    # /REPALL/ — full-field replacement
     if re.search(r'/REPALL/', t, re.IGNORECASE):
         ops.append({'op': 'REPLACE-ALL'})
 
-    # "TO READ AS '<new>' INSTEAD OF '<old>'" — narrative-form replacement
     for m in re.finditer(
         r'(?:CLAUSE\s+(?:NO\.?\s+)?(\d+)\s+)?'
         r'TO\s+READ\s+AS\s*[\'"]([^\'"]+)[\'"]'
@@ -737,7 +1259,6 @@ def _extract_swift_ops(amd_text: str) -> list:
             'target': f'Clause {cl}' if cl else None,
         })
 
-    # De-dupe while preserving order
     seen = set()
     out = []
     for o in ops:
@@ -748,8 +1269,507 @@ def _extract_swift_ops(amd_text: str) -> list:
         out.append(o)
     return out
 
+def _strip_amendment_prefix(line: str) -> str:
+    """Remove SWIFT report sub-labels from one amendment line."""
+    text = (line or '').strip()
+    while True:
+        upper = text.upper()
+        if upper.startswith('CODE:'):
+            text = text[5:].strip()
+            continue
+        if upper.startswith('NARRATIVE:'):
+            text = text[10:].strip()
+            continue
+        break
+    return text
 
-def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
+def _is_amendment_line_marker(text: str) -> bool:
+    """True for structural markers like 'Line 1' or 'Lines 2-100'."""
+    clean = (text or '').strip().rstrip(':')
+    if not clean:
+        return False
+    parts = clean.replace('-', ' ').replace('–', ' ').split()
+    if not parts or parts[0].upper() not in ('LINE', 'LINES'):
+        return False
+    return any(part.isdigit() for part in parts[1:])
+
+def _is_amendment_page_marker(text: str) -> bool:
+    s = (text or '').strip()
+
+    if re.fullmatch(r'-{3,}\s*PAGE\b[^-]*-{3,}', s, re.IGNORECASE):
+        return True
+    parts = s.split()
+    if len(parts) != 4:
+        return False
+    return (
+        parts[0].upper() == 'PAGE'
+        and parts[1].isdigit()
+        and parts[2].upper() == 'OF'
+        and parts[3].isdigit()
+    )
+
+def _is_operation_footer_start(text: str) -> bool:
+    upper = (text or '').strip().upper()
+    if not upper:
+        return False
+    if upper in {'OTHER', 'REPORT FOOTER', 'END OF REPORT'}:
+        return True
+    return upper.startswith((
+        'DELIVERY OVERDUE',
+        'NETWORK DELIVERY',
+        'PAYMENT CONFIRMATION',
+        'CONFIRMED CURRENCY',
+        'CONFIRMED AMOUNT',
+        'CONFIRMED DATE',
+    ))
+
+def _operation_from_line(line: str):
+    """Return (operation, rest_of_line) for /ADD/, /DELETE/, /REPALL/ lines."""
+    text = _strip_amendment_prefix(line)
+    upper = text.upper().lstrip()
+    aliases = (
+        ('/REPALL/', 'REPALL'),
+        ('/DELETE/', 'DELETE'),
+        ('/DEL/', 'DELETE'),
+        ('/ADD/', 'ADD'),
+    )
+    for marker, op in aliases:
+        if upper.startswith(marker):
+            rest = text[len(marker):].strip()
+            rest = rest.lstrip('+').lstrip(')').strip()
+            return op, rest
+    return None, ''
+
+def _clean_operation_lines(lines: List[str], keep_dot_lines: bool = False) -> List[str]:
+    cleaned = []
+    for raw in lines:
+        line = _strip_amendment_prefix(raw)
+        if not line:
+
+            if keep_dot_lines and cleaned and cleaned[-1] != '.':
+                cleaned.append('.')
+            continue
+        if _is_operation_footer_start(line):
+            break
+        if _is_amendment_page_marker(line):
+            continue
+        if _is_amendment_line_marker(line):
+            continue
+        op, rest = _operation_from_line(line)
+        if op:
+            if rest:
+                cleaned.append(rest)
+            continue
+        if not keep_dot_lines and line.strip() == '.':
+            continue
+        cleaned.append(line)
+    return cleaned
+
+def _drop_clause_word(text: str) -> str:
+    stripped = (text or '').lstrip()
+    upper = stripped.upper()
+
+    for word in ('CLAUSES', 'CALUSES', 'CLAUSE', 'CALUSE'):
+        if upper.startswith(word):
+            rest = stripped[len(word):].lstrip()
+            rest_upper = rest.upper()
+            if rest_upper.startswith('NO.'):
+                rest = rest[3:].lstrip()
+            elif rest_upper.startswith('NO '):
+                rest = rest[2:].lstrip()
+            return rest
+    return stripped
+
+_CLAUSE_KEYWORD_RE = re.compile(r'^(?:CLAUSES?|CALUSES?)\b', re.IGNORECASE)
+
+def _delete_clause_numbers_from_lines(lines: List[str]) -> List[int]:
+    nums = []
+    seen = set()
+    for line in _clean_operation_lines(lines):
+        stripped = line.lstrip()
+
+        if not _CLAUSE_KEYWORD_RE.match(stripped):
+            continue
+        rest = _drop_clause_word(stripped)
+
+        for tok in re.findall(r'\d+', rest):
+            num = int(tok)
+            if num not in seen:
+                nums.append(num)
+                seen.add(num)
+    return nums
+
+def _line_clause_number(line: str) -> Optional[int]:
+    text = (line or '').lstrip()
+    if not text:
+        return None
+    if text.startswith('('):
+        pos = 1
+        token = ''
+        while pos < len(text) and text[pos].isdigit():
+            token += text[pos]
+            pos += 1
+        if token and pos < len(text) and text[pos] == ')':
+            return int(token)
+        return None
+    pos = 0
+    token = ''
+    while pos < len(text) and text[pos].isdigit():
+        token += text[pos]
+        pos += 1
+    if token and pos < len(text) and text[pos] in {')', '.', ':'}:
+        return int(token)
+    return None
+
+def _split_numbered_clause_blocks(text: str):
+    prefix = []
+    blocks = []
+    current = None
+    for line in (text or '').splitlines():
+        clause_num = _line_clause_number(line)
+        if clause_num is not None:
+            if current is not None:
+                blocks.append(current)
+            current = {'num': clause_num, 'lines': [line.rstrip()]}
+            continue
+        if current is None:
+            prefix.append(line.rstrip())
+        else:
+            current['lines'].append(line.rstrip())
+    if current is not None:
+        blocks.append(current)
+    return prefix, blocks
+
+def _render_numbered_clause_blocks(prefix: List[str], blocks: List[dict]) -> str:
+    parts = [line for line in prefix if line.strip()]
+    for block in blocks:
+        block_text = '\n'.join(line.rstrip() for line in block.get('lines', [])).strip()
+        if block_text:
+            parts.append(block_text)
+    return '\n'.join(parts).strip()
+
+def _remove_numbered_clauses(text: str, nums: List[int]) -> str:
+    if not nums:
+        return text
+    prefix, blocks = _split_numbered_clause_blocks(text)
+    if not blocks:
+        return text
+    remove = set(nums)
+    kept = [block for block in blocks if block.get('num') not in remove]
+    return _render_numbered_clause_blocks(prefix, kept)
+
+def _parse_add_clause_header(line: str):
+    text = _drop_clause_word(_strip_amendment_prefix(line))
+    pos = 0
+    token = ''
+    while pos < len(text) and text[pos].isdigit():
+        token += text[pos]
+        pos += 1
+    if not token or pos >= len(text) or text[pos] not in {')', '.', ':'}:
+        return None, ''
+    return int(token), text[pos + 1:].strip()
+
+def _add_clause_entries_from_lines(lines: List[str]):
+    entries = []
+    current_num = None
+    current_lines = []
+    for line in _clean_operation_lines(lines):
+        num, rest = _parse_add_clause_header(line)
+        if num is not None:
+            if current_num is not None:
+                entries.append((current_num, '\n'.join(current_lines).strip()))
+            current_num = num
+            current_lines = [rest] if rest else []
+            continue
+        if current_num is not None:
+            current_lines.append(line)
+    if current_num is not None:
+        entries.append((current_num, '\n'.join(current_lines).strip()))
+    return [(num, text) for num, text in entries if text]
+
+def _insert_or_replace_numbered_clause(text: str, clause_num: int, clause_text: str) -> str:
+    content_lines = [line.rstrip() for line in (clause_text or '').splitlines()]
+    content_lines = [line for line in content_lines if line.strip()]
+    if not content_lines:
+        return text
+    new_block = {
+        'num': clause_num,
+        'lines': [f"{clause_num}) {content_lines[0].strip()}"] + content_lines[1:],
+    }
+    prefix, blocks = _split_numbered_clause_blocks(text)
+    if not blocks:
+        base = (text or '').rstrip()
+        addition = '\n'.join(new_block['lines']).strip()
+        return f"{base}\n{addition}".strip() if base else addition
+
+    replaced = False
+    for idx, block in enumerate(blocks):
+        if block.get('num') == clause_num:
+            blocks[idx] = new_block
+            replaced = True
+            break
+    if not replaced:
+        insert_at = len(blocks)
+        for idx, block in enumerate(blocks):
+            if block.get('num', 0) > clause_num:
+                insert_at = idx
+                break
+        blocks.insert(insert_at, new_block)
+    return _render_numbered_clause_blocks(prefix, blocks)
+
+def _parse_sub_clause_edit(lines):
+    """Return ('WORDS', clause_n, text) | ('SUB', clause_n, letter) | None.
+
+    Detects the BAHL labelled sub-clause edit forms inside an op block's
+    payload lines (already stripped of `Code:` / `Narrative:` / `Lines N`
+    framing by `_clean_operation_lines`)."""
+    cleaned = _clean_operation_lines(lines)
+    if not cleaned:
+        return None
+    first = cleaned[0].strip()
+
+    m = re.match(r'WORDS\s+IN\s+CLAUSE\s+(\d+)\b', first, re.IGNORECASE)
+    if m:
+        clause_n = int(m.group(1))
+
+        payload = '\n'.join(cleaned[1:]).strip()
+
+        payload = re.sub(r"^['\"]+", '', payload)
+        payload = re.sub(r"['\"]+$", '', payload)
+        payload = payload.strip()
+        if payload:
+            return ('WORDS', clause_n, payload)
+        return None
+
+    m = re.match(r'SUB\s+CLAUSE\s+(\d+)\s*\(\s*([A-Z])\s*\)+', first, re.IGNORECASE)
+    if m:
+        clause_n = int(m.group(1))
+        letter = m.group(2).upper()
+        return ('SUB', clause_n, letter)
+
+    return None
+
+def _apply_sub_clause_word_delete(text, clause_n, payload):
+    """Strip `payload` substring from clause N's body. Returns new text
+    (unchanged when clause N missing or substring not found — bank
+    sometimes targets a wrong clause number)."""
+    prefix, blocks = _split_numbered_clause_blocks(text)
+    if not blocks:
+        return text
+    target = next((b for b in blocks if b.get('num') == clause_n), None)
+    if target is None:
+        return text
+    body = '\n'.join(target['lines'])
+    if not body:
+        return text
+
+    new_body = body
+    if payload in body:
+        new_body = body.replace(payload, '', 1)
+    else:
+
+        try:
+            tolerant = re.escape(payload)
+            tolerant = tolerant.replace(r'\ ', r'\s+').replace(r'\\\n', r'\s+')
+            new_body = re.sub(tolerant, '', body, count=1, flags=re.IGNORECASE)
+        except re.error:
+            new_body = body
+
+    if new_body == body:
+        return text
+
+    new_body = re.sub(r' {2,}', ' ', new_body)
+    new_body = re.sub(r'\n[ \t]*\n[ \t]*\n+', '\n\n', new_body)
+    target['lines'] = new_body.splitlines()
+    return _render_numbered_clause_blocks(prefix, blocks)
+
+def _apply_sub_clause_word_add(text, clause_n, payload):
+    """Append `payload` to clause N's body on a new line. Returns new
+    text (unchanged when clause N missing)."""
+    prefix, blocks = _split_numbered_clause_blocks(text)
+    if not blocks:
+        return text
+    target = next((b for b in blocks if b.get('num') == clause_n), None)
+    if target is None:
+        return text
+    if payload in '\n'.join(target['lines']):
+
+        return text
+    target['lines'].extend(payload.splitlines())
+    return _render_numbered_clause_blocks(prefix, blocks)
+
+def _apply_sub_bullet_delete(text, clause_n, letter):
+    """Remove sub-bullet `(letter)` (or stutter `(letter))`) line(s)
+    from clause N's body. Sub-bullet body extends until the next sibling
+    sub-bullet `(LETTER)` or end of clause N."""
+    prefix, blocks = _split_numbered_clause_blocks(text)
+    if not blocks:
+        return text
+    target = next((b for b in blocks if b.get('num') == clause_n), None)
+    if target is None:
+        return text
+
+    sub_open_pat = re.compile(r'^\s*\(\s*' + re.escape(letter) + r'\s*\)+', re.IGNORECASE)
+    any_sub_pat = re.compile(r'^\s*\(\s*[A-Z]\s*\)+', re.IGNORECASE)
+
+    new_lines = []
+    skip = False
+    removed = False
+    for ln in target['lines']:
+        if skip:
+
+            if any_sub_pat.match(ln):
+                skip = False
+                new_lines.append(ln)
+
+            continue
+        if not removed and sub_open_pat.match(ln):
+            skip = True
+            removed = True
+            continue
+        new_lines.append(ln)
+    if not removed:
+        return text
+    target['lines'] = new_lines
+    return _render_numbered_clause_blocks(prefix, blocks)
+
+def _parse_operation_blocks(amendment_text: str):
+    blocks = []
+    current_op = None
+    current_lines = []
+    for raw_line in (amendment_text or '').splitlines():
+        op, rest = _operation_from_line(raw_line)
+        if op:
+            if current_op:
+                blocks.append((current_op, current_lines))
+            current_op = op
+            current_lines = [rest] if rest else []
+            continue
+        if current_op:
+            current_lines.append(raw_line)
+    if current_op:
+        blocks.append((current_op, current_lines))
+    return blocks
+
+def _apply_line_based_operations(base_text: str, amendment_text: str):
+    """Apply direct MT707 operation blocks without relying on broad matching.
+
+    P231 — Returns four values: (result_text, fully_handled, clauses_changed,
+    clauses_deleted).
+
+    `clauses_changed` is a list of 1-based clause numbers whose CONTENT
+    changed in place (only /ADD/ N) entries — these stay at position N
+    in the output, with new text). The renderer marks these positions
+    AMENDED.
+
+    P244 — `clauses_deleted` is a separate list of 1-based clause numbers
+    that were /DELETE/d. After deletion the trailing clauses shift up to
+    fill the gap — so position N in the post-renumber output now points
+    to a DIFFERENT clause whose content is unchanged. Marking that
+    shifted-up position AMENDED was misleading the user (e.g., F46A
+    clause 5 wrongly highlighted when only original clause 5 was
+    deleted, current display 5 = original clause 6). Tracking deletes
+    separately lets the renderer distinguish "delete-only amendment →
+    header AMENDED, no per-clause marks" from "REPALL/VLM → whole-field
+    AMENDED on every clause" from "explicit ADD/REPLACE → mark just
+    those positions".
+
+    REPALL is a whole-field replace and contributes nothing (legacy
+    behaviour preserved — both lists stay empty so caller falls back to
+    whole-field AMENDED rendering).
+    """
+    blocks = _parse_operation_blocks(amendment_text)
+    if not blocks:
+        return base_text, False, [], []
+
+    result = base_text
+    handled_any = False
+    unsupported = False
+
+    clauses_changed: List[int] = []
+    _seen_changed: set = set()
+    clauses_deleted: List[int] = []
+    _seen_deleted: set = set()
+
+    def _track_changed(nums):
+        for _n in nums:
+            if _n not in _seen_changed:
+                _seen_changed.add(_n)
+                clauses_changed.append(_n)
+
+    def _track_deleted(nums):
+        for _n in nums:
+            if _n not in _seen_deleted:
+                _seen_deleted.add(_n)
+                clauses_deleted.append(_n)
+
+    for op, lines in blocks:
+        if op == 'REPALL':
+            clean_lines = _clean_operation_lines(lines, keep_dot_lines=True)
+            payload = '\n'.join(clean_lines).strip()
+            upper_payload = payload.upper()
+            has_nested_instruction = (
+                'PLEASE READ' in upper_payload
+                or 'UNDER FIELD' in upper_payload
+                or ' TO READ AS' in upper_payload
+                or 'DELETE WORDING' in upper_payload
+            )
+            if payload and not has_nested_instruction:
+                result = payload
+                handled_any = True
+
+            else:
+                unsupported = True
+        elif op == 'DELETE':
+            nums = _delete_clause_numbers_from_lines(lines)
+            if nums:
+                result = _remove_numbered_clauses(result, nums)
+                handled_any = True
+
+                _track_deleted(nums)
+            else:
+
+                _sub = _parse_sub_clause_edit(lines)
+                if _sub is None:
+                    unsupported = True
+                else:
+                    _kind, _cn, _payload = _sub
+                    if _kind == 'WORDS':
+                        _new = _apply_sub_clause_word_delete(result, _cn, _payload)
+                    else:
+                        _new = _apply_sub_bullet_delete(result, _cn, _payload)
+
+                    handled_any = True
+                    if _new != result:
+                        result = _new
+
+                        _track_changed([_cn])
+        elif op == 'ADD':
+            entries = _add_clause_entries_from_lines(lines)
+            if entries:
+                for clause_num, clause_text in entries:
+                    result = _insert_or_replace_numbered_clause(result, clause_num, clause_text)
+                handled_any = True
+                _track_changed([num for num, _ in entries])
+            else:
+
+                _sub = _parse_sub_clause_edit(lines)
+                if _sub is None or _sub[0] != 'WORDS':
+
+                    unsupported = True
+                else:
+                    _, _cn, _payload = _sub
+                    _new = _apply_sub_clause_word_add(result, _cn, _payload)
+                    handled_any = True
+                    if _new != result:
+                        result = _new
+                        _track_changed([_cn])
+
+    return result, handled_any and not unsupported, clauses_changed, clauses_deleted
+
+def _apply_text_amendment(base_text: str, amendment_text: str,
+                          _clauses_changed_out: Optional[List[int]] = None,
+                          _clauses_deleted_out: Optional[List[int]] = None) -> str:
     """
     Apply amendment operations to base field text.
 
@@ -768,65 +1788,75 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
       /ADD/ PLEASE READ FIELD 47A-19 AS "new clause text"
 
     If no patterns match, return base text unchanged (don't corrupt it).
+
+    P231 \u2014 Optional `_clauses_changed_out` list parameter. When provided,
+    the function appends 1-based clause numbers that were touched by
+    deterministic line-based operations (`/DELETE/ CLAUSE N`, `/ADD/
+    CLAUSE N) ...`). The caller (`_apply_amendment`) records this list
+    in `record.change_details[tag]['clauses_changed']` so the FLC
+    renderer can mark only those specific clauses as AMENDED instead of
+    the whole field. When the amendment uses non-clause-numbered patterns
+    (full REPALL, narrative DELETE/REPLACE BY, word substitutions) the
+    out-list stays empty and the renderer falls back to whole-field
+    AMENDED \u2014 preserving the legacy behaviour for those cases.
     """
     if not base_text:
         return base_text
 
     result = base_text
-    # Normalize all quote types to regular double quote for matching
-    amd = amendment_text
-    amd = amd.replace('\u2018', "'").replace('\u2019', "'")  # smart single quotes
-    amd = amd.replace('\u201C', '"').replace('\u201D', '"')  # smart double quotes
-    amd = amd.replace("''", '"')  # two single quotes = one double quote
 
-    # Quote pattern: matches any combination of single/double quotes
+    amd = amendment_text
+    amd = amd.replace('\u2018', "'").replace('\u2019', "'")
+    amd = amd.replace('\u201C', '"').replace('\u201D', '"')
+    amd = amd.replace("''", '"')
+
+    line_result, line_handled, line_clauses, line_deleted = _apply_line_based_operations(result, amd)
+    if line_handled:
+        if _clauses_changed_out is not None and line_clauses:
+            for _n in line_clauses:
+                if _n not in _clauses_changed_out:
+                    _clauses_changed_out.append(_n)
+
+        if _clauses_deleted_out is not None and line_deleted:
+            for _n in line_deleted:
+                if _n not in _clauses_deleted_out:
+                    _clauses_deleted_out.append(_n)
+        return line_result
+
     Q = r"""['"]+"""
 
-    # ── FULL REPLACEMENT ──
-    # If amendment is just /REPALL/ followed by unquoted text, replace everything
     _repall_m = re.match(r'\s*/REPALL/\s*(.+)', amd, re.IGNORECASE | re.DOTALL)
     if _repall_m:
         new_content = _repall_m.group(1).strip()
-        # Clean Narrative: prefixes from Alliance format
+
         new_content = re.sub(r'(?:Narrative\d?:\s*)+', '', new_content).strip()
         new_content = re.sub(r'\n\s*Narrative\d?:\s*', '\n', new_content).strip()
         new_content = re.sub(r'^Lines?\s*\d*(?:\s*-\s*\d+)?(?:\s*to\s*\d+)?\s*:?\s*$', '', new_content, flags=re.MULTILINE).strip()
         new_content = re.sub(r'^\s*Line\s+\d+\s*$', '', new_content, flags=re.MULTILINE).strip()
         new_content = re.sub(r'^\s*Code\s*[-:]?\s*(?:/REPALL/)?\s*$', '', new_content, flags=re.MULTILINE).strip()
         new_content = re.sub(r'^\s*Code\s*-\s*Narrative\s*$', '', new_content, flags=re.MULTILINE).strip()
-        # P87: Detect structured amendment instructions inside /REPALL/ blocks.
-        # Alliance MT707 often puts instructions like:
-        #   "FIELD 47A-1 TO READ AS ..."
-        #   "FIELD 47A-2 DELETE WORDING AS ..."
-        #   "UNDER FIELD 47A ADD CLAUSE AS ..."
-        # inside a /REPALL/ block. These are NOT replacement text — they're
-        # operations that modify the existing base field.
+
         _has_field_instructions = bool(re.search(
             r'(?:^|\n)\s*(?:UNDER\s+)?FIELD\s+\d{2}[A-Z]?(?:-\d+)?\s+'
             r'(?:TO\s+READ\s+AS|WORD\s+TO\s+READ\s+AS|DELETE\s+WORDING|ADD\s+(?:CLAUSE|LOI|WORDING))',
             new_content, re.IGNORECASE,
         ))
 
-        # P102: Handle "UNDER FIELD XXA, NOW TO BE READ AS, 'new content'"
-        # This is a full replacement where the new content is quoted after
-        # "NOW TO BE READ AS" / "TO BE READ AS" / "TO READ AS".
         _read_as_m = re.search(
             r'(?:NOW\s+)?TO\s+(?:BE\s+)?READ\s+AS\s*,?\s*' + Q + r'(.+?)' + Q + r'\s*(?:I/?O\s|$)',
             new_content, re.IGNORECASE | re.DOTALL,
         )
         if not _read_as_m:
-            # Try without closing quote (content runs to end)
+
             _read_as_m = re.search(
                 r'(?:NOW\s+)?TO\s+(?:BE\s+)?READ\s+AS\s*,?\s*' + Q + r'(.+)',
                 new_content, re.IGNORECASE | re.DOTALL,
             )
-        if _read_as_m:
+        if _read_as_m and not _has_field_instructions:
             _extracted = _read_as_m.group(1).strip().rstrip("'\"")
             if _extracted:
                 result = _extracted
 
-        # P102: Handle "UNDER FIELD XX ADD <thing> AS 'value'" inside REPALL
-        # This appends the quoted value to the base text.
         if not _read_as_m:
             _add_as_m = re.search(
                 r'UNDER\s+FIELD\s+\d{2}[A-Z]?\s+ADD\s+(.+?)\s+AS\s*\n?\s*' + Q + r'(.+?)' + Q,
@@ -838,27 +1868,20 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
                 if _add_value and _add_value not in result:
                     result = result.rstrip() + '\nAND ADD ' + _add_label + ' ' + _add_value
 
-        # If it contains PLEASE READ patterns or FIELD instruction patterns,
-        # don't do full replace — let patterns handle it below
-        elif not re.search(r'PLEASE\s+READ', new_content, re.IGNORECASE) and not _has_field_instructions:
-            if new_content:
-                result = new_content
-                # Still process remaining patterns (there might be /ADD/ blocks after)
+            elif not re.search(r'PLEASE\s+READ', new_content, re.IGNORECASE) and not _has_field_instructions:
+                if new_content:
+                    result = new_content
 
-    # ── ALLIANCE FORMAT ──
-
-    # A1: /DELETE/ PLEASE READ WORDS IN FIELD XX-N "text" AS DELETED
     for m in re.finditer(
             r'PLEASE\s+READ\s+WORDS\s+IN\s+FIELD\s+\w+-?\d*\s+' + Q + r'(.+?)' + Q + r'\s+AS\s+DELETED',
             amd, re.IGNORECASE | re.DOTALL):
         del_text = m.group(1).strip()
         if del_text in result:
             result = result.replace(del_text, '')
-            # Clean up double spaces / empty lines left behind
+
             result = re.sub(r'  +', ' ', result)
             result = re.sub(r'\n\s*\n\s*\n', '\n\n', result)
 
-    # A2: /REPALL/ or /ADD/ PLEASE READ FIELD XX-N AS "new text"
     for m in re.finditer(
             r'PLEASE\s+READ\s+FIELD\s+\w+-(\d+)\s+AS\s+' + Q + r'(.+?)' + Q,
             amd, re.IGNORECASE | re.DOTALL):
@@ -880,9 +1903,6 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
             if new_text not in result:
                 result = result.rstrip() + clause_line
 
-    # ── FUSION FORMAT ──
-
-    # F1: DELETE ''old'' REPLACE BY ''new''
     for m in re.finditer(r'DELETE\s+' + Q + r'(.+?)' + Q + r'\s+REPLACE\s+BY\s+' + Q + r'(.+?)' + Q,
                          amd, re.IGNORECASE | re.DOTALL):
         old_text = m.group(1).strip()
@@ -890,29 +1910,12 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
         if old_text in result:
             result = result.replace(old_text, new_text)
 
-    # F1b: bare "TO READ AS 'new' INSTEAD OF 'old'" (no clause-number prefix).
-    # Produced by _extract_mt799_amendment_fields() for MT799 free-format
-    # rate / value corrections like:
-    #     UNDER FIELD 45A RATE SHOULD READ AS
-    #     ''EUR 141,396.00'' I/O ''EUR 141,396.56''
-    # The parser converts this to: TO READ AS 'EUR 141,396.00' INSTEAD OF 'EUR 141,396.56'
-    # which we apply as a targeted substring replace inside the base field
-    # — leaving the rest of the goods description intact.
-    #
-    # Real-world wrinkle: the amendment usually quotes the value with its
-    # currency prefix ("EUR 141,396.56"), but the base F45A may have the
-    # currency on a different line ("EURO\n141,396.56"). So an exact-match
-    # replace fails. We try several candidate forms in priority order:
-    #   1. Exact text from the amendment
-    #   2. Without the leading currency code (3-letter or "EURO" word)
-    #   3. Just the bare numeric value (digits + grouping + decimals)
-    # The first form that's actually present in the base field wins.
     def _replace_old_with_new(base: str, old_text: str, new_text: str) -> str:
         if not old_text:
             return base
         candidates_old = [old_text]
         candidates_new = [new_text]
-        # Strip leading currency code (USD, EUR, GBP, etc. or "EURO")
+
         _strip_ccy = re.compile(
             r'^(?:[A-Z]{3}|EURO|DOLLAR|POUND|YEN)\s+',
             re.IGNORECASE,
@@ -922,8 +1925,7 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
         if _bare_old != old_text:
             candidates_old.append(_bare_old)
             candidates_new.append(_bare_new)
-        # Just the numeric part — last resort, only when both old and new
-        # parse as numbers. This catches "EUR 141,396.56" → "141,396.56".
+
         _num_re = re.compile(r'[\d,]+(?:\.\d+)?')
         _num_old = _num_re.search(old_text)
         _num_new = _num_re.search(new_text)
@@ -943,7 +1945,6 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
         old_text = m.group(2).strip()
         result = _replace_old_with_new(result, old_text, new_text)
 
-    # F2a: CLAUSE NO. X TO READ AS "new" INSTEAD OF "old"
     for m in re.finditer(r'C\w{1,5}E\s+NO\.?\s*(\d+)\s+(?:NOW\s+)?TO\s+READ\s+AS\s+' + Q + r'(.+?)' + Q + r'\s+INSTEAD\s+OF\s+' + Q + r'(.+?)' + Q,
                          amd, re.IGNORECASE | re.DOTALL):
         old_text = m.group(3).strip()
@@ -951,7 +1952,6 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
         if old_text in result:
             result = result.replace(old_text, new_text)
 
-    # F2b: CLAUSE NO. X TO READ AS "new text" (no INSTEAD OF)
     for m in re.finditer(r'C\w{1,5}E\s+NO\.?\s*(\d+)\s+(?:NOW\s+)?TO\s+READ\s+AS\s+' + Q + r'(.+?)' + Q,
                          amd, re.IGNORECASE | re.DOTALL):
         full = m.group(0)
@@ -966,11 +1966,15 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
         if cm:
             result = result[:cm.start(2)] + new_text + result[cm.end(2):]
 
-    # F3: /ADD/ new clause text (generic — append if not an instruction)
-    for m in re.finditer(r'/ADD/\s*\+?\s*\)?\s*(.+?)(?=\n\s*/(?:ADD|DEL|REPALL)/|\Z)',
+    for m in re.finditer(r'/ADD/\s*\+?\s*\)?\s*(.+?)(?=\n\s*/(?:ADD|DEL(?:ETE)?|REPALL)/|\Z)',
                          amd, re.IGNORECASE | re.DOTALL):
         add_text = m.group(1).strip()
-        # Skip if it's an instruction already handled above
+
+        add_text = re.sub(
+            r'^[\s/]*(?:(?:ADD|DELETE|DEL|REPALL)\s*/+\s*)+',
+            '', add_text, flags=re.IGNORECASE,
+        ).strip()
+
         if re.search(r'C\w{1,5}E\s+NO', add_text, re.IGNORECASE):
             continue
         if re.search(r'DELETE.*REPLACE', add_text, re.IGNORECASE):
@@ -983,23 +1987,84 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
             continue
         if re.search(r'TO\s+READ\s+AS', add_text, re.IGNORECASE):
             continue
-        # Append as new content
+
+        if re.search(r'WORDS\s+IN\s+CLAUSE', add_text, re.IGNORECASE):
+            continue
+        if re.search(r'SUB\s+CLAUSE\b', add_text, re.IGNORECASE):
+            continue
+
         if add_text and add_text not in result:
             result = result.rstrip() + '\n' + add_text
 
-    # ── ADDITIONAL PATTERNS ──
+    for m in re.finditer(
+        r'/DELETE/\s*\n?\s*(.+?)(?=\n\s*/(?:ADD|DEL(?:ETE)?|REPALL)/|\Z)',
+        amd, re.IGNORECASE | re.DOTALL,
+    ):
+        del_text = m.group(1).strip()
 
-    # P1: /ADD/+)TO READ AS "new text" (no clause number — replaces entire field, e.g. 45A goods)
+        del_text = re.sub(
+            r'^[\s/]*(?:(?:ADD|DELETE|DEL|REPALL)\s*/+\s*)+',
+            '', del_text, flags=re.IGNORECASE,
+        ).strip()
+
+        del_text = re.sub(r'^\s*\.\s*\n', '', del_text)
+        del_text = re.sub(r'\n\s*\.\s*$', '', del_text).strip()
+
+        del_text = re.sub(
+            r'(?m)^[ \t]*Narrative[ \t]*:[ \t]*', '', del_text,
+        )
+        del_text = re.sub(
+            r'(?m)^[ \t]*Code[ \t]*:[ \t]*', '', del_text,
+        )
+        del_text = re.sub(
+            r'(?m)^[ \t]*Lines?[ \t]+\d+(?:[ \t]*[-–][ \t]*\d+)?[ \t]*$',
+            '', del_text,
+        )
+        del_text = re.sub(
+            r'(?m)^[ \t]*Page\s+\d+\s+of\s+\d+[ \t]*$',
+            '', del_text, flags=re.IGNORECASE,
+        )
+
+        del_text = re.sub(r'\n[ \t]*\n+', '\n', del_text).strip()
+        if not del_text or len(del_text) < 20:
+
+            continue
+
+        if re.search(r'^\s*C\w{1,5}E\s+(?:NO\.?\s*)?\d', del_text, re.IGNORECASE):
+            continue
+        if re.search(r'WORDS\s+IN\s+CLAUSE', del_text, re.IGNORECASE):
+            continue
+        if re.search(r'SUB\s+CLAUSE\b', del_text, re.IGNORECASE):
+            continue
+        if re.search(r'PLEASE\s+READ', del_text, re.IGNORECASE):
+            continue
+
+        if del_text in result:
+            result = result.replace(del_text, '', 1)
+        else:
+            try:
+                tolerant = re.escape(del_text)
+                tolerant = tolerant.replace(r'\ ', r'\s+').replace('\\\n', r'\s+')
+                new_result = re.sub(
+                    tolerant, '', result, count=1,
+                    flags=re.IGNORECASE,
+                )
+                if new_result != result:
+                    result = new_result
+            except re.error:
+                pass
+
+        result = re.sub(r'\n[ \t]*\n[ \t]*\n+', '\n\n', result)
+
     for m in re.finditer(r'/ADD/\s*\+?\s*\)?\s*TO\s+READ\s+AS\s+' + Q + r'(.+?)' + Q,
                          amd, re.IGNORECASE | re.DOTALL):
         new_text = m.group(1).strip()
-        # This replaces a portion of the field text — check if there's a DELETE..REPLACE nearby
+
         if not re.search(r'DELETE.*REPLACE', amd[max(0,m.start()-50):m.start()], re.IGNORECASE):
-            # Full field replacement
+
             if new_text and new_text not in result:
                 result = new_text
 
-    # P2: PLEASE READ CLAUSE XX-N AS "new text" (Alliance, uses CLAUSE instead of FIELD)
     for m in re.finditer(r'PLEASE\s+READ\s+C\w{1,5}E\s+\w+-(\d+)\s+AS\s+' + Q + r'(.+?)' + Q,
                          amd, re.IGNORECASE | re.DOTALL):
         clause_num = int(m.group(1))
@@ -1011,39 +2076,40 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
         if cm:
             result = result[:cm.start(2)] + new_text + result[cm.end(2):]
 
-    # P3: PLEASE READ FIELD XXX AS "new text" (no clause number — replaces entire field)
     for m in re.finditer(r'PLEASE\s+READ\s+FIELD\s+\w+\s+AS\s+' + Q + r'(.+?)' + Q,
                          amd, re.IGNORECASE | re.DOTALL):
-        # Only if no clause number (already handled by A2)
+
         if not re.search(r'FIELD\s+\w+-\d+', m.group(0)):
             new_text = m.group(1).strip()
             if new_text:
                 result = new_text
 
-    # P4: IN FIELD XXX: ADD CLAUSE NO.N "text" (PPL6 style)
     for m in re.finditer(r'IN\s+FIELD\s+\w+:\s*ADD\s+C\w{1,5}E\s+NO\.?\s*(\d+)',
                          amd, re.IGNORECASE):
         clause_num = int(m.group(1))
-        # Get remaining text after the match as the clause content
+
         remaining = amd[m.end():].strip()
         if remaining and remaining not in result:
             result = result.rstrip() + f'\n{clause_num}.{remaining}'
 
-    # P5: /DELETE/ CLAUSE 2,3,5,7 — delete multiple clauses by number
+    _PRE_CLAUSE_SKIP_RE = re.compile(r'(?:^|\s)(?:WORDS\s+IN|SUB)$')
     for m in re.finditer(r'C\w{1,5}E\s+([\d,\s]+)', amd):
         pre = amd[:m.start()].upper()
+
+        _pre_tail = pre[-20:].rstrip()
+        if _PRE_CLAUSE_SKIP_RE.search(_pre_tail):
+            continue
         if '/DELETE/' not in pre[max(0,pre.rfind('/')-10):]:
             continue
         nums = [int(n.strip()) for n in m.group(1).split(',') if n.strip().isdigit()]
         for clause_num in nums:
-            # Remove the clause from base text
+
             clause_pat = re.compile(
                 r'(\(' + str(clause_num) + r'\)|' + str(clause_num) + r'[\).:])\s*(.+?)(?=\n\s*(?:\(\d+\)|\d+[\).:])\s|\Z)',
                 re.DOTALL)
             result = clause_pat.sub('', result)
         result = re.sub(r'\n\s*\n\s*\n', '\n\n', result)
 
-    # P6: /ADD/ CLAUSE N)text (direct clause add, no quotes)
     for m in re.finditer(r'C\w{1,5}E\s+(\d+)\)\s*(.+?)(?=\n\s*C\w{1,5}E\s+\d+\)|\n\s*Code:|\Z)',
                          amd, re.IGNORECASE | re.DOTALL):
         pre = amd[:m.start()].upper()
@@ -1051,39 +2117,47 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
             continue
         clause_num = int(m.group(1))
         new_text = m.group(2).strip()
-        # Clean up Narrative: prefixes from Alliance format
+
         new_text = re.sub(r'(?:Narrative\d?:\s*)+', '', new_text).strip()
         new_text = re.sub(r'\n\s*Narrative\d?:\s*', '\n', new_text).strip()
         if new_text and new_text not in result:
             result = result.rstrip() + f'\n{clause_num}){new_text}'
 
-    # P7: IN FIELD XX: FOR EXISTING PLEASE READ "value" (replace field value)
     for m in re.finditer(r'IN\s+FIELD\s+\w+:\s*FOR\s+EXISTING\s+PLEASE\s+READ\s+' + Q + r'(.+?)' + Q,
                          amd, re.IGNORECASE | re.DOTALL):
         new_val = m.group(1).strip()
         if new_val:
             result = new_val
 
-    # ── P87: ALLIANCE FIELD-INSTRUCTION FORMAT ──
-    # These appear inside /REPALL/ blocks as structured operations:
-    #
-    #   "FIELD 47A-1 TO READ AS\n<quoted or unquoted new clause text>"
-    #   "FIELD 47A-2 DELETE WORDING AS\n<quoted text to delete>"
-    #   "UNDER FIELD 47A ADD CLAUSE AS\n<quoted text for new clause(s)>"
-    #   "UNDER FIELD 46A ADD LOI CLAUSE AS\n<text>"
-    #   "UNDER FIELD 46A-2 WORD TO READ AS\n<quoted new> I/O <quoted old>"
+    Q = r"""['"]+"""
 
-    Q = r"""['"]+"""  # re-define for this section
+    for m in re.finditer(
+        r'FIELD\s+\d{2}[A-Z]?(?!\s*-\d|\s+WORD\b)\s+(?:NOW\s+)?TO\s+READ\s+AS\s*\n?\s*'
+        + Q + r'?(.+?)'
+        r'(?=\n\s*(?:'
+        r'FIELD\s+\d{2}[A-Z]'
+        r'|UNDER\s+FIELD'
+        r'|/(?:REPALL|ADD|DELETE|DEL)/'
+        r'|Other\b|Page\s+\d+\s+of'
+        r'|Delivery\s+overdue|Network\s+delivery'
+        r'|Payment\s+Confirmation|Confirmed\s+(?:Currency|Amount|Date)'
+        r'|Block\s+\d|Report\s+(?:Header|Footer|Content)'
+        r'|Message\s+(?:Header|Identifier|Details)'
+        r')|\Z)',
+        amd, re.IGNORECASE | re.DOTALL,
+    ):
+        new_text = m.group(1).strip()
+        new_text = new_text.lstrip("'\"").rstrip("'\"").strip()
+        if new_text:
+            result = new_text
 
-    # I1: FIELD XX-N TO READ AS "new clause text"
-    # Replaces clause N entirely with the new text.
     for m in re.finditer(
         r'FIELD\s+\d{2}[A-Z]?-(\d+)\s+(?:NOW\s+)?TO\s+READ\s+AS\s*\n?\s*' + Q + r'(.+?)' + Q,
         amd, re.IGNORECASE | re.DOTALL,
     ):
         clause_num = int(m.group(1))
         new_text = m.group(2).strip()
-        # Find and replace clause N in the result
+
         clause_pat = re.compile(
             r'(' + str(clause_num) + r'[\).:\s])\s*(.+?)(?=\n\s*(?:\d+[\).:])\s|\Z)',
             re.DOTALL,
@@ -1092,8 +2166,6 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
         if cm:
             result = result[:cm.start(2)] + ' ' + new_text + result[cm.end(2):]
 
-    # I2: FIELD XX-N DELETE WORDING AS "text to delete"
-    # Deletes the quoted text from the field.
     for m in re.finditer(
         r'FIELD\s+\d{2}[A-Z]?-?(\d*)\s+DELETE\s+WORDING\s+AS\s*\n?\s*' + Q + r'(.+?)' + Q,
         amd, re.IGNORECASE | re.DOTALL,
@@ -1104,62 +2176,84 @@ def _apply_text_amendment(base_text: str, amendment_text: str) -> str:
             result = re.sub(r'  +', ' ', result)
             result = re.sub(r'\n\s*\n\s*\n', '\n\n', result)
 
-    # I2b: [UNDER] FIELD XX-N WORD TO READ AS "new" I/O "old"
     for m in re.finditer(
         r'(?:UNDER\s+)?FIELD\s+\d{2}[A-Z]?-?(\d*)\s+WORD\s+TO\s+READ\s+AS\s*\n?\s*'
-        + Q + r'(.+?)' + Q + r'\s+I/O\s+' + Q + r'(.+?)' + Q,
-        amd, re.IGNORECASE | re.DOTALL,
+        + Q + r'([^\n]+?)' + Q + r'\s+I/O\s+'
+        + Q + r'([^\n]+?)' + Q + r'\s*(?=$|\n|\Z)',
+        amd, re.IGNORECASE | re.MULTILINE,
     ):
-        new_text = m.group(2).strip()
-        old_text = m.group(3).strip()
-        if old_text in result:
-            result = result.replace(old_text, new_text)
+        _clause_n_str = m.group(1)
+        new_text = m.group(2).strip().strip("'\"").strip()
+        old_text = m.group(3).strip().strip("'\"").strip()
+        if not (old_text and new_text and old_text != new_text):
+            continue
 
-    # I3: UNDER FIELD XX ADD CLAUSE AS "new clause text"
-    # or  UNDER FIELD XX ADD LOI CLAUSE AS "text"
-    # Appends new clause(s) to the field.
+        _parts = []
+        _last_q = False
+        for _ch in old_text:
+            if _ch in "'\"":
+                if not _last_q:
+                    _parts.append(r"['\"]+")
+                    _last_q = True
+            else:
+                _parts.append(re.escape(_ch))
+                _last_q = False
+        _tolerant_pat = r"['\"]*" + ''.join(_parts) + r"['\"]*"
+
+        _applied = False
+        if re.search(_tolerant_pat, result):
+            result = re.sub(_tolerant_pat, new_text, result, count=1)
+            _applied = True
+        elif old_text in result:
+            result = result.replace(old_text, new_text, 1)
+            _applied = True
+
+        if (_applied and _clause_n_str and _clause_n_str.isdigit()
+                and _clauses_changed_out is not None):
+            _n = int(_clause_n_str)
+            if _n not in _clauses_changed_out:
+                _clauses_changed_out.append(_n)
+
     for m in re.finditer(
         r'UNDER\s+FIELD\s+\d{2}[A-Z]?(?:-\d+)?\s+ADD\s+(?:LOI\s+)?(?:CLAUSE|WORDING)\s+AS\s*\n?\s*'
         + Q + r'?(.+?)(?=' + Q + r'?\s*$|\n\s*(?:FIELD|UNDER)\s+\d{2}[A-Z])',
         amd, re.IGNORECASE | re.DOTALL,
     ):
         add_text = m.group(1).strip()
-        # Strip trailing quotes
+
         add_text = re.sub(r'["\']$', '', add_text).strip()
         if add_text and add_text not in result:
             result = result.rstrip() + '\n' + add_text
 
-    # P102: UNDER FIELD XX ADD <anything> AS "value"
-    # e.g. "UNDER FIELD 45A ADD PROFORMA INVOICE NO. AS 'HN/2026/43 DATED 01-01-2026'"
-    # This appends the quoted value to the existing field text.
     for m in re.finditer(
         r'UNDER\s+FIELD\s+\d{2}[A-Z]?(?:-\d+)?\s+ADD\s+(.+?)\s+AS\s*\n?\s*'
         + Q + r'(.+?)' + Q,
         amd, re.IGNORECASE | re.DOTALL,
     ):
-        add_label = m.group(1).strip()  # e.g. "PROFORMA INVOICE NO."
-        add_value = m.group(2).strip()  # e.g. "HN/2026/43 DATED 01-01-2026"
+        add_label = m.group(1).strip()
+        add_value = m.group(2).strip()
         if add_value:
-            # Append as "AND ADD <label> <value>" to the existing field
+
             append_text = f"AND ADD {add_label} {add_value}"
             if add_value not in result:
                 result = result.rstrip() + '\n' + append_text
 
     return result
 
-
-# == Amendment application ====================================================
-
-# Label-strip patterns reused by both base extraction and amendment cleanup.
-# Each entry strips the leading label that the SWIFT regex captured along
-# with the actual value (e.g. "Latest Date of Shipment\n251030 Oct 30").
 _FIELD_LABEL_STRIP = {
     '20':  r'^(?:Documentary\s+Credit\s+Number|Sender\'?s?\s+Reference|Transaction\s+Reference\s+Number)\s*[\n\r]*',
-    '21':  r'^(?:Related\s+Reference|Receiver\'?s?\s+Reference|Reimbursing\s+Bank\'?s?\s+Reference)\s*[\n\r]*',
+
+    '21':  r'^(?:(?:[A-Z]\w*\'?s?\s+){0,3})?Reference\s*[\n\r]*',
+
+    '22A': r'^Purpose\s+of\s+Message\s*[\n\r]*',
+
+    '23':  r'^(?:(?:[A-Z]\w*\'?s?\s+){0,3})?Reference(?:\s+to\s+Pre-?Advice)?\s*[\n\r]*',
     '27':  r'^Sequence\s+of\s+Total\s*[\n\r]*',
     '31C': r'^Date\s+of\s+Issue\s*[\n\r]*',
     '31D': r'^Date\s+and\s+Place\s+of\s+Expiry\s*[\n\r]*',
     '32B': r'^(?:Currency\s+Code,?\s*Amount|Increase\s+of\s+Documentary\s+Credit\s+Amount)\s*[\n\r]*',
+
+    '33B': r'^(?:Additional\s+Amount\s+Covered|Decrease\s+of\s+Documentary\s+Credit\s+Amount|Currency,?\s+Original\s+Ordering\s+Amount)\s*[\n\r]*',
     '39A': r'^Percentage\s+Credit\s+Amount\s+Tolerance\s*[\n\r]*',
     '40A': r'^Form\s+of\s+Documentary\s+Credit\s*[\n\r]*',
     '40E': r'^Applicable\s+Rules\s*[\n\r]*',
@@ -1186,11 +2280,45 @@ _FIELD_LABEL_STRIP = {
     '52A': r'^(?:Issuing\s+Bank|Applicant\s+Bank).*?(?:Identifier\s+Code)?\s*[\n\r]*',
     '53A': r'^Reimbursing\s+Bank.*?(?:Identifier\s+Code)?\s*[\n\r]*',
     '57A': r'^[\'"]?Advise\s+Through[\'"]?\s+Bank.*?(?:Identifier\s+Code\s*:?\s*)?\s*[\n\r]*',
+
+    '58A': r'^Requested\s+Confirmation\s+Party.*?(?:Identifier\s+Code)?\s*[\n\r]*',
     '59':  r'^Beneficiary\s*[\n\r]*(?:Name\s+and\s+Address:?\s*[\n\r]*)?',
-    '71D': r'^Charges\s*[\n\r]*',
+
+    '71D': r'^(?:(?:OUR|BEN|SHA|Other)\s+)?Charges\s*[\n\r]*',
     '78':  r'^Instructions\s+to\s+the\s+Paying.*?Bank\s*[\n\r]*',
 }
 
+_SUB_BULLET_INLINE_RE = re.compile(
+    r'(?<=[\s.:;!?,])'
+    r'\(?'
+    r'(?:[A-Za-z]|[IVXivx]{1,5})'
+    r'\)'
+    r'(?=\s+[A-Z\(])'
+)
+
+def _restore_inline_sub_bullets(text: str) -> str:
+    """When 2+ sub-bullet markers appear inline on a single line within a
+    clause-bearing field's text, split the line at each marker so the
+    sub-items render as separate lines and the verifier sees them as
+    separate conditions. See P210 docstring above for the full background."""
+    if not text or '\n' in text and text.count('\n') >= text.count(' ') / 2:
+
+        pass
+    new_lines = []
+    for line in text.split('\n'):
+        matches = list(_SUB_BULLET_INLINE_RE.finditer(line))
+        if len(matches) < 2:
+            new_lines.append(line)
+            continue
+        prev_end = 0
+        chunks = []
+        for m in matches:
+            if m.start() > prev_end:
+                chunks.append(line[prev_end:m.start()].rstrip())
+            prev_end = m.start()
+        chunks.append(line[prev_end:].rstrip())
+        new_lines.extend(c for c in chunks if c.strip())
+    return '\n'.join(new_lines)
 
 def _clean_consolidated_field_value(tag: str, value: str) -> str:
     """
@@ -1226,46 +2354,41 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
         return value
     v = value
 
-    # 1. Strip leading SWIFT label per tag
     _strip_pat = _FIELD_LABEL_STRIP.get(tag, '')
     if _strip_pat:
         v = re.sub(_strip_pat, '', v, flags=re.IGNORECASE).strip()
 
-    # 1b. Strip "Days:" and "Narrative:" sub-labels (common in F48, F47A)
+    if tag in ('46A', '46B', '47A', '47B', '45A', '45B', '78', '72', '79'):
+        v = _restore_inline_sub_bullets(v)
+
     if tag in ('48', '47A', '46A', '45A', '78', '72'):
         v = re.sub(r'(?:^|\n)\s*Days:?\s*', '\n', v).strip()
         v = re.sub(r'(?:^|\n)\s*Narrative:?\s*/?\s*', '\n', v).strip()
 
-    # 2. Sub-label chains: "- Party Identifier - Identifier Code\nIdentifier Code:\n..."
     v = re.sub(r'-?\s*Party\s+Identifier\s*-?\s*Identifier\s*(?:Code)?\s*\n?', '', v, flags=re.IGNORECASE).strip()
+
+    v = re.sub(r'(?:^|\n)\s*Party\s+Identifier:?\s*\n', '\n', v, flags=re.IGNORECASE).strip()
     v = re.sub(r'^-\s+', '', v).strip()
     v = re.sub(r'Identifier\s+Code:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
     v = re.sub(r'^Identifier:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
     v = re.sub(r'^Name\s+and\s+Address:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
 
-    # 3. Fusion availability prefix
     v = re.sub(r'\.{2,}\s*By\s*\.{2,}\s*-?\s*(?:Name\s+and\s+Address\s*-?\s*)*:?\s*[\n\r]*',
                '', v, flags=re.IGNORECASE).strip()
     v = re.sub(r'-\s*Name\s+and\s+Address\s*-?\s*(?:Name\s+and\s+Address)?:?\s*[\n\r]*',
                '', v, flags=re.IGNORECASE).strip()
 
-    # 3b. Strip amendment instruction wrappers from field values
-    # After _apply_text_amendment, 45A may still contain:
-    #   "UNDER FIELD 45A, NOW TO BE READ AS, '..." and "...'' I/O EXISTING"
-    # Strip these instruction wrappers to get the actual content.
     v = re.sub(
         r'^(?:UNDER\s+)?FIELD\s+\d{2}[A-Z]?\s*,?\s*(?:NOW\s+)?TO\s+(?:BE\s+)?READ\s+AS\s*,?\s*[\'"]?\s*',
         '', v, flags=re.IGNORECASE).strip()
-    # Strip trailing "I/O EXISTING" or "I/O <old text>" (may appear mid-line or at end)
+
     v = re.sub(r'[\'"]?\s*I\s*/?\s*O\s+EXISTING\s*', '', v, flags=re.IGNORECASE).strip()
     v = re.sub(r'[\'"]?\s*I/O\s+[\'"].*?[\'"]', '', v, flags=re.IGNORECASE).strip()
 
-    # 4. Currency-name strip (32B)
     if tag == '32B':
         v = re.sub(r'\b(?:US\s+DOLLAR|EURO|POUND\s+STERLING|JAPANESE\s+YEN)\s*[\n\r]*',
                    '', v, flags=re.IGNORECASE).strip()
 
-    # 5. Other prefix headers
     v = re.sub(r'^Applicable\s+Rules:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
     v = re.sub(r'^Available\s+With.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
     v = re.sub(r'^Drawee\s*-?\s*Party.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
@@ -1275,24 +2398,19 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
     v = re.sub(r'^[\'"]?Advise\s+Through[\'"]?\s+Bank\s*-?\s*Party.*?Code\s*\n?',
                '', v, flags=re.IGNORECASE).strip()
 
-    # 6. SWIFT message footer — strip aggressively.
-    # "Other\nDelivery overdue..." appears at end of last field on a page.
-    # Also catches: "OtherDelivery..." (no newline), "Confirmed Confirmed...",
-    # "Page X of Y", "Report Footer", "Message Details #N", etc.
     v = re.sub(r'\s*Other\s*\n?\s*Delivery\s+overdue.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
     v = re.sub(r'\s*Delivery\s+overdue\s+warning.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
     v = re.sub(r'\s*Network\s+delivery\s+notif.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
     v = re.sub(r'\s*Payment\s+Confirmation\s+Status.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
     v = re.sub(r'\s*Confirmed\s+(?:Currency|Amount|Date)\s*:?\s*\n?.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
-    # "Confirmed Confirmed Confirmed" (repeated word without label)
-    v = re.sub(r'\s*(?:Confirmed\s+){2,}.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
-    # Page pagination: "Page N of M"
-    v = re.sub(r'\s*Page\s+\d+\s+of\s+\d+\s*', ' ', v).strip()
 
-    # 7. PDF / report footer that follows the SWIFT footer ("Report Footer
-    # / Number of Entities / End of Report"). Sometimes the SWIFT footer
-    # was already stripped at message-export time, so the PDF footer is
-    # the only remaining trailing garbage.
+    v = re.sub(r'\s*(?:Confirmed\s+){2,}.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
+
+    v = re.sub(
+        r'(?m)^[ \t]*Page\s+\d+\s+of\s+\d+[ \t]*\n?', '', v,
+    )
+    v = re.sub(r'[ \t]*Page\s+\d+\s+of\s+\d+[ \t]*', '', v).strip()
+
     v = re.sub(
         r'\n\s*Report\s+Footer\b.*$',
         '', v, flags=re.IGNORECASE | re.DOTALL).strip()
@@ -1303,7 +2421,6 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
         r'\n\s*End\s+of\s+Report\b.*$',
         '', v, flags=re.IGNORECASE | re.DOTALL).strip()
 
-    # 7b. Report structure headers that leak into field values
     v = re.sub(r'\s*Report\s+Content\b.*?(?=\n[A-Z]|\Z)', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
     v = re.sub(r'\s*Message\s+Details\s+#\s*\d+\b.*?(?=\n[A-Z]|\Z)', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
     v = re.sub(r'\s*Message\s+Text\s*\n?', '', v, flags=re.IGNORECASE).strip()
@@ -1315,9 +2432,6 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
     v = re.sub(r'\s*SWIFT\s+Interface\b.*$', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
     v = re.sub(r'\{CHK:[A-F0-9]+\}', '', v).strip()
 
-    # 7c. For 47A: strip F48 presentation period text at the end.
-    # Even if the LLM removed the "(CONT FROM FIELD 48)" marker, the
-    # continuation text may remain. Strip known patterns.
     if tag == '47A':
         v = re.sub(
             r'\n\s*DOCUMENTS\s+PRESENTED\s+\d+\s+DAYS\s+AFTER\s+BILL\s+OF\s+LADING.*$',
@@ -1326,42 +2440,33 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
             r'\n\s*\d+\s+DAYS\s+FROM\s+SHIPMENT\s+DATE\s+BUT\s+WITHIN.*$',
             '', v, flags=re.IGNORECASE | re.DOTALL).strip()
 
-    # 8. (CONT FROM/IN FIELD ...) cross-references — P87: also match "IN"
-    # P101: Strip the marker AND any trailing continuation text that belongs
-    # to the referenced field, not to the current field.
-    # e.g. "...\n(CONT. FROM FIELD 48)\nDAYS FROM SHIPMENT DATE..." →
-    # the "DAYS FROM..." belongs to F48, not to this field.
     v = re.sub(r'\s*/?\(CONT\.?\s*(?:FROM|IN)\s+FIELD\s+\w+\).*', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
     v = re.sub(r'/\(CONT\.?\s*(?:FROM|IN)\s+FIELD\s+\w+\).*', '', v, flags=re.IGNORECASE | re.DOTALL).strip()
 
-    # 9. Truncate at next F-tag if it merged in
     _ftag_merge = re.search(r'F\d{2}[A-Z]?\s*:', v)
     if _ftag_merge:
         v = v[:_ftag_merge.start()].strip()
 
-    # 10. "Page X of Y" page numbering
     v = re.sub(r'\bPage\s+\d+\s+of\s+\d+\b', '', v, flags=re.IGNORECASE).strip()
 
-    # 11. OCR garbage
     v = re.sub(r'There is no visible text.*?(?:clearly visible|another version)[.\s]*',
                '', v, flags=re.IGNORECASE | re.DOTALL).strip()
     v = re.sub(r'The image appears to be blank[.\s]*',
                '', v, flags=re.IGNORECASE).strip()
 
-    # 11a. Common SWIFT/OCR abbreviation corrections
+    v = re.sub(
+        r'\s*The (?:provided )?image is (?:entirely |completely )?blank[^.]*\.\s*'
+        r'(?:Therefore,?[^.]*\.\s*)?',
+        ' ', v, flags=re.IGNORECASE,
+    ).strip()
+
     v = re.sub(r'\bFRM\b', 'FROM', v)
     v = re.sub(r'\bWTHN\b', 'WITHIN', v)
     v = re.sub(r'\bSHPMNT\b', 'SHIPMENT', v)
     v = re.sub(r'\bDOCS?\b(?=\s+(?:PRESENTED|REQUIRED|MUST))', 'DOCUMENTS', v)
 
-    # 11b. P88: Line-ending hyphen continuation join.
-    # SWIFT/OCR text sometimes breaks a word or reference number across
-    # lines with a hyphen: "PL-0725-\n201501-M05-002828". Join these
-    # so the full reference stays on one line. Only join when the hyphen
-    # is at the very end of a line (not mid-line hyphens like "MAI-KOLACHI").
     v = re.sub(r'-\s*\n\s*', '-', v)
 
-    # 12. Inline sub-labels: "Date:", "Place:", "Currency:", "Amount:", etc.
     v = re.sub(r'\bDate:?\s*', '', v).strip()
     v = re.sub(r'\bPlace:?\s*', '', v).strip()
     v = re.sub(r'\bCurrency:?\s*', '', v).strip()
@@ -1373,20 +2478,23 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
     v = re.sub(r'\bTolerance\s+\d:?\s*', '', v).strip()
     v = re.sub(r'\bCode:?\s*', '', v).strip()
 
-    # 13. SWIFT date conversion (31C, 31D, 44C)
+    v = re.sub(r'^-\s+', '', v).strip()
+
     if tag in ('31C', '31D', '44C'):
-        # Format 1: "250103 2025 Jan 03" (Fusion long format) → "2025-01-03"
+
+        if len(v) >= 7 and v[:6].isdigit() and v[6].isalpha():
+            v = v[:6] + ' ' + v[6:]
+
         _dm = re.search(r'(\d{6})\s+(\d{4})\s+(\w{3})\s+(\d{1,2})', v)
         if _dm:
             _months = {'Jan':'01','Feb':'02','Mar':'03','Apr':'04','May':'05','Jun':'06',
                        'Jul':'07','Aug':'08','Sep':'09','Oct':'10','Nov':'11','Dec':'12'}
             _date_str = f"{_dm.group(2)}-{_months.get(_dm.group(3),'01')}-{int(_dm.group(4)):02d}"
             v = (v[:_dm.start()] + _date_str + v[_dm.end():]).strip()
-            # Only strip leftover 6-digit codes AFTER successful conversion
-            # (the converted date is now YYYY-MM-DD, remove any duplicate raw code)
+
             v = re.sub(r'\b\d{6}\b\s*', '', v).strip()
         else:
-            # Format 2: "250103" alone (Alliance raw date) → convert to "2025-01-03"
+
             _raw_date = re.search(r'\b(\d{2})(\d{2})(\d{2})\b', v)
             if _raw_date:
                 _yy, _mm, _dd = _raw_date.group(1), _raw_date.group(2), _raw_date.group(3)
@@ -1395,50 +2503,50 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
                 v = v[:_raw_date.start()] + _date_str + v[_raw_date.end():]
                 v = v.strip()
 
-    # 14a. Strip a leading punctuation-only line (e.g. '.\nALLOWED' →
-    # 'ALLOWED'). This catches the residue when the SWIFT label was
-    # followed by a stray '.' / ',' / ';' / ':' before the newline that
-    # the label-strip regex couldn't consume because punctuation isn't
-    # whitespace. Safe because no LC field value legitimately STARTS
-    # with a punctuation-only line.
     v = re.sub(r'^[\.,;:]\s*[\n\r]+', '', v).strip()
     v = re.sub(r'^[\.,;:]+\s*(?=[A-Za-z0-9])', '', v).strip()
 
-    # 14b. F32B amount cleanup
-    if tag == '32B':
+    if tag in ('32B', '33B'):
         _ccy = re.search(r'([A-Z]{3})(?=\s|\d|$)', v)
         _ccy_str = _ccy.group(1) if _ccy else 'USD'
-        # Format 1: #123,456.78# (hash-wrapped)
+
         _am = re.search(r'#([\d,]+\.\d+)#?', v)
         if _am:
             v = f"{_ccy_str} {_am.group(1)}"
         else:
-            # Format 2: European 123.456,78
-            _am2 = re.search(r'(\d[\d.]*,\d{2})\b', v)
-            if _am2:
-                _amt = _am2.group(1).replace('.', '').replace(',', '.')
+
+            _am_bare = re.search(r'#([\d,]+)\.?#', v)
+            if _am_bare:
+                _raw = _am_bare.group(1).replace(',', '')
                 try:
-                    v = f"{_ccy_str} {float(_amt):,.2f}"
+                    v = f"{_ccy_str} {float(_raw):,.2f}"
                 except ValueError:
                     pass
             else:
-                # Format 3: USD59415, or USD 59415 (no decimals, trailing comma/period)
-                # Also handles: USD1,234,567 or USD 1234567.00
-                _am3 = re.search(r'([A-Z]{3})\s*([\d,]+(?:\.\d{0,2})?)[,.\s]*$', v)
-                if _am3:
-                    _raw = _am3.group(2).rstrip(',.')
+
+                _am2 = re.search(r'(\d[\d.]*,\d{2})\b', v)
+                if _am2:
+                    _amt = _am2.group(1).replace('.', '').replace(',', '.')
                     try:
-                        # If it has dots as decimal (USD59415.00)
-                        if '.' in _raw:
-                            _val = float(_raw.replace(',', ''))
-                        else:
-                            _val = float(_raw.replace(',', ''))
-                        v = f"{_am3.group(1)} {_val:,.2f}"
+                        v = f"{_ccy_str} {float(_amt):,.2f}"
                     except ValueError:
                         pass
+                else:
+
+                    _am3 = re.search(r'([A-Z]{3})\s*([\d,]+(?:\.\d{0,2})?)[,.\s]*$', v)
+                    if _am3:
+                        _raw = _am3.group(2).rstrip(',.')
+                        try:
+
+                            if '.' in _raw:
+                                _val = float(_raw.replace(',', ''))
+                            else:
+                                _val = float(_raw.replace(',', ''))
+                            v = f"{_am3.group(1)} {_val:,.2f}"
+                        except ValueError:
+                            pass
 
     return v.strip()
-
 
 def _strip_field_sub_labels(tag: str, value: str) -> str:
     """
@@ -1459,34 +2567,36 @@ def _strip_field_sub_labels(tag: str, value: str) -> str:
     if not value:
         return value
     v = value
-    # "- Party Identifier - Identifier Code"
+
     v = re.sub(r'-?\s*Party\s+Identifier\s*-?\s*Identifier\s*(?:Code)?\s*\n?',
                '', v, flags=re.IGNORECASE).strip()
-    # leading "- "
+
+    v = re.sub(r'(?:^|\n)\s*Party\s+Identifier:?\s*\n',
+               '\n', v, flags=re.IGNORECASE).strip()
+
     v = re.sub(r'^-\s+', '', v).strip()
-    # "Identifier Code:" / "Identifier:"
+
     v = re.sub(r'Identifier\s+Code:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
     v = re.sub(r'^Identifier:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
-    # "Name and Address:" header rows
+
     v = re.sub(r'^Name\s+and\s+Address:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
     v = re.sub(r'-\s*Name\s+and\s+Address\s*-?\s*(?:Name\s+and\s+Address)?:?\s*[\n\r]*',
                '', v, flags=re.IGNORECASE).strip()
-    # Fusion "... By ..." availability prefix
+
     v = re.sub(r'\.{2,}\s*By\s*\.{2,}\s*-?\s*(?:Name\s+and\s+Address\s*-?\s*)*:?\s*[\n\r]*',
                '', v, flags=re.IGNORECASE).strip()
-    # Drawee / Applicant Bank "- Party ... Code" sub-headers
+
     v = re.sub(r'^Drawee\s*-?\s*Party.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
     v = re.sub(r'^Applicant\s+Bank\s*-?\s*Party.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
     v = re.sub(r'^Issuing\s+Bank\s*-?\s*Party.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
     v = re.sub(r'^Reimbursing\s+Bank\s*-?\s*Party.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
     v = re.sub(r'^[\'"]?Advise\s+Through[\'"]?\s+Bank\s*-?\s*Party.*?Code\s*\n?',
                '', v, flags=re.IGNORECASE).strip()
-    # "Available With ... By ... Code" prefix (used by 41A/41D)
+
     v = re.sub(r'^Available\s+With.*?Code\s*\n?', '', v, flags=re.IGNORECASE).strip()
-    # "Applicable Rules" prefix (40E)
+
     v = re.sub(r'^Applicable\s+Rules:?\s*\n?', '', v, flags=re.IGNORECASE).strip()
     return v
-
 
 def _apply_amendment(
     base_fields: Dict[str, str],
@@ -1513,62 +2623,47 @@ def _apply_amendment(
     for sf in amendment_fields:
         tag = sf.tag
 
-        # Skip metadata tags
-        if tag in ('26E', '27', '23'):
+        if tag in ('21', '23', '26E', '27'):
             if tag == '26E':
                 record.amendment_number = _parse_amendment_number(sf.value) or amendment_number
             continue
 
-        # Amendment date
         if tag == '30':
             record.amendment_date = sf.value
             continue
 
-        # New amount — may be replacement or increment
-        # P101: In Alliance MT707, the increase amount comes as F32B with
-        # "Increase of Documentary Credit Amount" label, not F34B.
-        # Handle both tag 34B and tag 32B with "increase" in the value.
         _is_amount_field = (tag == '34B' or
                             (tag == '32B' and re.search(r'increase', sf.value, re.IGNORECASE)))
         if _is_amount_field:
             old_val = base_fields.get('32B', '')
             new_val = sf.value
-            # Strip "Increase of Documentary Credit Amount" label
+
             _is_increase = bool(re.search(r'increase', new_val, re.IGNORECASE))
             new_val = re.sub(r'(?i)^(?:Increase\s+of\s+Documentary\s+Credit\s+Amount|'
                              r'Currency\s+Code,?\s*Amount)\s*[\n\r]*', '', new_val).strip()
             if _is_increase and old_val:
-                # P87: Robust amount parsing for increase calculation.
-                # Alliance exports amounts in multiple formats:
-                #   "761452,56"  (European, comma decimal)
-                #   "#761,452.56#"  (US format with # delimiters)
-                #   "761,452.56"  (plain US)
-                # We need to extract a float from each, using a priority:
-                # 1. #-delimited US format: #761,452.56#
-                # 2. US format with commas: 761,452.56
-                # 3. European format: 761452,56
-                # 4. Plain number: 761452.56
+
                 def _parse_amt_str(s):
                     if not s:
                         return None
                     s = s.replace(' ', '')
-                    # Try #-delimited first
+
                     m = re.search(r'#([\d,]+\.\d+)#?', s)
                     if m:
                         return float(m.group(1).replace(',', ''))
-                    # US format with thousands
+
                     m = re.search(r'(\d{1,3}(?:,\d{3})+\.\d+)', s)
                     if m:
                         return float(m.group(1).replace(',', ''))
-                    # European format with comma decimal
+
                     m = re.search(r'(\d+,\d{2})\b', s)
                     if m:
                         return float(m.group(1).replace(',', '.'))
-                    # Plain decimal
+
                     m = re.search(r'(\d+\.\d+)', s)
                     if m:
                         return float(m.group(1))
-                    # Bare integer
+
                     m = re.search(r'(\d{3,})', s)
                     if m:
                         return float(m.group(1))
@@ -1586,7 +2681,53 @@ def _apply_amendment(
                                             'operation': 'increase' if _is_increase else 'replace'}
             continue
 
-        # B-suffix -> A-suffix replacement
+        _is_decrease_field = (tag == '33B' and
+                              re.search(r'decrease', sf.value, re.IGNORECASE))
+        if _is_decrease_field:
+            old_val = base_fields.get('32B', '')
+            new_val = sf.value
+            new_val = re.sub(
+                r'(?i)^(?:Decrease\s+of\s+Documentary\s+Credit\s+Amount|'
+                r'Additional\s+Amount\s+Covered)\s*[\n\r]*',
+                '', new_val).strip()
+
+            def _parse_amt_str_p280(s):
+                if not s:
+                    return None
+                s = s.replace(' ', '')
+                m = re.search(r'#([\d,]+\.\d+)#?', s)
+                if m:
+                    return float(m.group(1).replace(',', ''))
+                m = re.search(r'(\d{1,3}(?:,\d{3})+\.\d+)', s)
+                if m:
+                    return float(m.group(1).replace(',', ''))
+                m = re.search(r'(\d+,\d{2})\b', s)
+                if m:
+                    return float(m.group(1).replace(',', '.'))
+                m = re.search(r'(\d+\.\d+)', s)
+                if m:
+                    return float(m.group(1))
+                m = re.search(r'(\d{3,})', s)
+                if m:
+                    return float(m.group(1))
+                return None
+
+            _ccy = (re.search(r'\b([A-Z]{3})\b', old_val)
+                    or re.search(r'\b([A-Z]{3})\b', new_val))
+            _o = _parse_amt_str_p280(old_val)
+            _n = _parse_amt_str_p280(new_val)
+            if _o is not None and _n is not None and _ccy:
+                _total = _o - _n
+                _new_amt = f"{_ccy.group(1)} {_total:,.2f}"
+                base_fields['32B'] = _new_amt
+                record.fields_changed.append('32B')
+                record.change_details['32B'] = {
+                    'old': old_val, 'new': _new_amt,
+                    'via': '33B', 'operation': 'decrease',
+                }
+
+            continue
+
         actual_tag = tag
         if tag.endswith('B') and tag[:-1] + 'A' in SWIFT_FIELD_LABELS:
             base_tag = tag[:-1] + 'A'
@@ -1595,37 +2736,28 @@ def _apply_amendment(
 
         old_val = base_fields.get(actual_tag, '')
 
-        # Check if amendment value contains /ADD/ or /DEL/ instructions
-        # These are amendment OPERATIONS, not replacement values
         amd_val = sf.value.strip()
 
-        # P101: Clean Alliance MT707 formatting artifacts.
-        # Alliance wraps amendment text in structured prefixes:
-        #   "Description of Goods and/or Services\nLine 1\nCode: /REPALL/\n
-        #    Narrative: UNDER FIELD 45A,\nLines 2-100\nNarrative: text..."
-        # Strip these so the amendment parser sees clean content.
-        # 1. Strip leading field label (Description of Goods, Documents Required, etc.)
         _label_strip = _FIELD_LABEL_STRIP.get(actual_tag, _FIELD_LABEL_STRIP.get(tag))
         if _label_strip:
             amd_val = re.sub(_label_strip, '', amd_val, flags=re.IGNORECASE).strip()
-        # 2. Strip "Line N" and "Lines N-M" markers
+
         amd_val = re.sub(r'(?:^|\n)\s*Lines?\s+\d+(?:\s*[-–]\s*\d+)?\s*(?:\n|$)', '\n', amd_val).strip()
-        # 3. Strip "Code:" prefix (e.g. "Code: /REPALL/")
+
         amd_val = re.sub(r'(?:^|\n)\s*Code\s*:\s*', '\n', amd_val).strip()
-        # 4. Strip "Narrative:" prefixes from each line
+
         amd_val = re.sub(r'(?:^|\n)\s*Narrative\s*:\s*', '\n', amd_val).strip()
 
-        # Normalize double slashes around SWIFT keywords: //REPALL// -> /REPALL/
-        # P102: Only normalize slashes around known operation keywords, NOT ''
-        # (two single quotes used as SWIFT double-quote delimiter).
         amd_val = re.sub(r'//(REPALL|ADD|DEL|DELETE)//', r'/\1/', amd_val, flags=re.IGNORECASE)
         amd_val = re.sub(r'//(REPALL|ADD|DEL|DELETE)/', r'/\1/', amd_val, flags=re.IGNORECASE)
         amd_val = re.sub(r'/(REPALL|ADD|DEL|DELETE)//', r'/\1/', amd_val, flags=re.IGNORECASE)
-        # ALSO trigger the operation path for the bare "TO READ AS 'X' INSTEAD
-        # OF 'Y'" form that the MT799 free-format parser produces. Without
-        # this, an MT799 amendment would fall into the wholesale-replace
-        # branch below and clobber the entire base field with the literal
-        # instruction string.
+
+        amd_val = re.sub(
+            r'((?:^|\n)\s*)/(REPALL|DELETE|DEL(?!ETE)|ADD)[ \t]*(?=[A-Za-z])',
+            r'\1/\2/\n',
+            amd_val, flags=re.IGNORECASE,
+        )
+
         _is_to_read_as = bool(re.search(
             r'TO\s+READ\s+AS\b.*?\bINSTEAD\s+OF\b',
             amd_val, re.IGNORECASE | re.DOTALL,
@@ -1634,19 +2766,48 @@ def _apply_amendment(
                 or re.search(r'(?:^|\n)\+?\s*\)', amd_val)
                 or _is_to_read_as
                 or re.search(r'UNDER\s+FIELD\s+\d{2}[A-Z]?\s+ADD\b', amd_val, re.IGNORECASE)):
-            # This is an amendment instruction — apply operations to base value
-            new_val = _apply_text_amendment(old_val, amd_val)
+
+            _clauses_changed: List[int] = []
+            _clauses_deleted: List[int] = []
+            new_val = _apply_text_amendment(
+                old_val, amd_val,
+                _clauses_changed_out=_clauses_changed,
+                _clauses_deleted_out=_clauses_deleted,
+            )
             base_fields[actual_tag] = new_val
             if old_val != new_val:
                 record.fields_changed.append(actual_tag)
-                record.change_details[actual_tag] = {
+                _details = {
                     'old': old_val,
                     'new': new_val,
                     'operation': 'text_amendment',
                     'ops': _extract_swift_ops(amd_val),
                 }
+
+                if _clauses_changed:
+                    _details['clauses_changed'] = list(_clauses_changed)
+                if _clauses_deleted:
+                    _details['clauses_deleted'] = list(_clauses_deleted)
+
+                if (
+                    'clauses_changed' not in _details
+                    and 'clauses_deleted' not in _details
+                    and old_val != new_val
+                ):
+                    try:
+                        _cc_diff, _cd_diff = _p247_diff_clauses(
+                            actual_tag, old_val, new_val,
+                        )
+                    except Exception:
+                        _cc_diff, _cd_diff = [], []
+                    if _cc_diff:
+                        _details['clauses_changed'] = _cc_diff
+                    if _cd_diff:
+                        _details['clauses_deleted'] = _cd_diff
+
+                record.change_details[actual_tag] = _details
         else:
-            # Strip common field labels that bleed into values
+
             clean_val = re.sub(
                 r'^(?:Sender\'?s?\s+Reference|Documentary\s+Credit\s+Number|'
                 r'Date\s+of\s+Issue|Date\s+of\s+Amendment|Date\s+and\s+Place\s+of\s+Expiry|'
@@ -1662,10 +2823,6 @@ def _apply_amendment(
                 r'Beneficiary|Applicant|Charges)\s*[\n\r]*',
                 '', amd_val, flags=re.IGNORECASE).strip()
 
-            # Run the same sub-label cleanup the base-field loop uses,
-            # so amendment values for fields like F52A (Issuing Bank) end
-            # up as just "UNILPKKA / UNITED BANK LIMITED / KARACHI PK"
-            # instead of the full label chain.
             clean_val = _strip_field_sub_labels(actual_tag, clean_val)
 
             base_fields[actual_tag] = clean_val if clean_val else amd_val
@@ -1675,8 +2832,107 @@ def _apply_amendment(
 
     return record
 
+_P245_PROMPT_ADDENDUM = (
+    "- \"<TAG>(N):- Read as 'X'\" (UBL form, no INSTEAD OF) = Apply X to clause N. "
+    "If X is much shorter than current clause N AND its words overlap with a "
+    "sub-phrase inside clause N (e.g. clause has \"WITHIN (05) DAYS AFTER SHIPMENT\" "
+    "and X is \"WITHIN (07) WORKING DAYS AFTER SHIPMENT\"), patch ONLY that matching "
+    "sub-phrase and preserve the rest of the clause (FAX numbers, emails, addresses, "
+    "references). If X is similar in length to clause N or shares no overlapping "
+    "sub-phrase, replace clause N wholesale.\n"
+)
 
-# == VLM-based amendment application ===========================================
+_P246_UBL_CLAUSE_READAS_RE = re.compile(
+    r'(?:^|\n)\s*\d{2}[A-Z]?\s*\(\s*\d{1,3}\s*\)\s*:?\s*-?\s*Read\s+as',
+    re.IGNORECASE,
+)
+
+def _p247_diff_clauses(tag: str, old_val: str, new_val: str):
+    """P247 — Compute (clauses_changed, clauses_deleted) lists by
+    diff-comparing the OLD and NEW value of a clause-bearing field.
+
+    LLM-path amendments populate `change_details[tag]['new']` with the
+    full updated field text but never tell us WHICH specific clauses
+    changed. The renderer needs that info to mark only the actually-
+    changed clauses as AMENDED instead of the entire field.
+
+    Strategy:
+      1. Split both old + new into clauses (`_split_into_clauses`).
+      2. Build a list of normalized clause-text strings for each side.
+      3. Match: every NEW clause that doesn't appear in old → CHANGED.
+         Every OLD clause that doesn't appear in new → DELETED.
+      4. Return 1-based clause numbers using the NEW field's positions
+         for `clauses_changed` (so renderer marks the post-renumber
+         positions where new content actually sits).
+
+    Returns ([], []) when the diff isn't meaningful (non-clause field,
+    REPALL-style wholesale rewrite where every clause differs slightly,
+    etc.) — caller falls back to whole-field AMENDED.
+
+    P247 is universal: every LLM-path amendment on a clause field gets
+    accurate per-clause AMENDED tracking, regardless of bank or op type.
+    """
+    if tag not in ('45A', '45B', '46A', '46B', '47A', '47B', '78', '72', '79'):
+        return [], []
+    if not old_val or not new_val:
+        return [], []
+
+    def _norm(s):
+        return re.sub(r'\s+', ' ', (s or '')).strip().upper()
+
+    def _extract_numbered(text):
+        """Pull (number, normalized_text) pairs straight from raw text.
+        `_split_into_clauses` renumbers positionally; for diffing we
+        need the ORIGINAL clause numbers as written in the text so a
+        post-deletion gap (e.g. ..., 4, 6, 7, ...) keeps clause 6 = 6,
+        not renumbered to 5."""
+        if not text:
+            return []
+        items = []
+        cur_num = None
+        cur_lines: List[str] = []
+        for line in text.split('\n'):
+            m = re.match(r'^\s*(\d{1,3})\s*[.\)]\s*(.*)', line)
+            if m:
+                if cur_num is not None:
+                    items.append((cur_num, _norm('\n'.join(cur_lines))))
+                cur_num = int(m.group(1))
+                cur_lines = [m.group(2)] if m.group(2) else []
+            elif cur_num is not None:
+                cur_lines.append(line)
+        if cur_num is not None:
+            items.append((cur_num, _norm('\n'.join(cur_lines))))
+        return items
+
+    old_pairs = _extract_numbered(old_val)
+    new_pairs = _extract_numbered(new_val)
+    if not new_pairs:
+        return [], []
+
+    old_by_num = dict(old_pairs)
+    new_by_num = dict(new_pairs)
+
+    changed: List[int] = []
+    for cn, new_t in new_by_num.items():
+        if not new_t:
+            continue
+        old_t = old_by_num.get(cn)
+        if old_t is None:
+
+            changed.append(cn)
+        elif old_t != new_t:
+
+            changed.append(cn)
+
+    deleted: List[int] = []
+    for cn in old_by_num:
+        if cn not in new_by_num:
+            deleted.append(cn)
+
+    if changed and len(changed) == len(new_pairs):
+        return [], []
+
+    return sorted(changed), sorted(deleted)
 
 _VLM_AMENDMENT_PROMPT = """You are an expert SWIFT MT707 amendment processor for Letters of Credit.
 
@@ -1692,10 +2948,13 @@ YOUR TASK: Apply the amendment instructions to produce the UPDATED field values.
 
 AMENDMENT INSTRUCTION TYPES:
 - "/REPALL/" followed by "UNDER FIELD XXA, NOW TO BE READ AS 'new text'" = Replace the ENTIRE field with the new quoted text
+- "/REPALL/" followed directly by field content under F45B/F46B/F47B = Replace the matching A-field entirely with that content; do not include "/REPALL/", "Line N", "Lines N-M", "Code:", or "Narrative:" in the returned value
+- "/DELETE/" followed by "CLAUSE 2,3,5,7" = Delete those numbered clauses from the matching A-field
+- "/ADD/" followed by "CLAUSE N) text" = Add or replace that numbered clause in the matching A-field; return clean clause text without the word "CLAUSE" or line markers
 - "FIELD XXA-N TO READ AS 'new text'" = Replace clause N of field XXA with the new text
 - "FIELD XXA-N WORD TO READ AS 'X' I/O 'Y'" = In clause N, replace word Y with word X
 - "FIELD XXA-N DELETE WORDING AS 'text'" = Delete that text from clause N
-- "UNDER FIELD XXA ADD CLAUSE AS 'text1' 'text2'" = Add new clauses to the end of field XXA
+{p245_addendum}- "UNDER FIELD XXA ADD CLAUSE AS 'text1' 'text2'" = Add new clauses to the end of field XXA
 - "UNDER FIELD XXA ADD <something> AS 'value'" = Add the value to the field
 - F32B with "Increase of Documentary Credit Amount" = ADD the new amount to the existing 32B amount
 - F34B = New total amount (replaces 32B)
@@ -1720,6 +2979,10 @@ IMPORTANT RULES:
 9. For quoted text ('text' or ''text''), extract the content between quotes.
 10. CROSS-FIELD CONTINUATION: "(CONT FROM FIELD XX)" means the text after belongs to field XX. Remove it from the current field and output field XX with the continuation appended.
 11. F48: If it has "/(CONT IN FIELD 47A)", combine the continuation text into F48.
+12. PRESERVE UNNAMED CLAUSES VERBATIM. A clause-bearing field (45A/46A/47A) usually contains many numbered clauses. The amendment narrative ALWAYS names which clause(s) it touches via "FIELD XXA-N ..." (clause N of field XXA) or "UNDER FIELD XXA ADD ..." (append at end). For EVERY OTHER clause in the field — clauses NOT named in any narrative instruction — copy the text byte-for-byte from the BASE LC FIELDS into your output. Do NOT paraphrase, fix typos, normalise spelling, alter wording, change punctuation, or "improve" any clause that the amendment did not explicitly target.
+13. NO CLAUSE LOSS. The number of clauses in your output for a field must equal (base count) + (clauses ADDed by the amendment) - (clauses explicitly DELETED). Never silently drop, merge, or substitute one clause with another. If the amendment did not say "DELETE" or "TO READ AS" for clause N, clause N must appear in the output exactly as it was in the base.
+14. NO CONTENT FABRICATION. Do not invent clause text. Every clause in your output must either (a) be present verbatim in the BASE LC FIELDS, or (b) be the verbatim quoted value from the amendment narrative. Do not paraphrase amendment text, do not "blend" clauses, and do not duplicate text from one clause into another.
+15. NEVER DEDUPLICATE NUMBERED ITEMS. When a /REPALL/ or amendment payload contains multiple numbered items like "1) X" and "2) X" whose body text is identical, this is INTENTIONAL — banks use it for multi-tranche shipments where two parallel quantities of the same goods are shipped under separate proforma invoices. Preserve every numbered item with its full body, even if items 1 and 2 look like exact duplicates. Repetition is a signal, not a typo. Loss of a numbered item changes the total goods quantity and breaks F32B amount reconciliation downstream.
 
 Example for ADD: If amendment says "UNDER FIELD 47A ADD CLAUSE AS 'CHARTER PARTY B/L ACCEPTABLE'",
 return: {{"47A_ADD": "CHARTER PARTY B/L ACCEPTABLE"}}
@@ -1727,10 +2990,11 @@ return: {{"47A_ADD": "CHARTER PARTY B/L ACCEPTABLE"}}
 Example for word change: If amendment says "FIELD 46A-2 WORD TO READ AS 'CLEAN ON BOARD' I/O 'CLEAN ON BOARD'",
 return the full 46A with the word changed in clause 2.
 
+Example for preservation (rule 12): If amendment says "FIELD 47A-1 TO READ AS 'NEW TEXT'" and the base has 7 clauses, your output 47A must have 7 clauses where ONLY clause 1's text is the new value; clauses 2-7 are byte-for-byte the base values.
+
 Return ONLY valid JSON with the changed field tags as keys and their new values.
 Example: {{"45A": "MOGAS 92 RON\\nQUANTITY: 10,347...", "32B": "USD 777,059.70"}}
 """
-
 
 def _apply_amendment_vlm(
     base_fields: dict,
@@ -1749,7 +3013,6 @@ def _apply_amendment_vlm(
         amendment_date='',
     )
 
-    # Extract amendment metadata before sending to VLM
     _amd_num_m = re.search(r'(?:F?26E|Number\s+of\s+Amendment)\s*:?\s*(\d+)', amendment_text, re.IGNORECASE)
     if _amd_num_m:
         record.amendment_number = int(_amd_num_m.group(1))
@@ -1757,49 +3020,42 @@ def _apply_amendment_vlm(
     if _date_m:
         record.amendment_date = _date_m.group(0).strip()
 
-    # Build base fields text for prompt — only send fields that the amendment
-    # is likely to touch, plus a few key reference fields. This keeps the
-    # prompt small enough for 16K context models.
-    # Detect which fields the amendment mentions
     _amd_upper = amendment_text.upper()
     _touched_tags = set()
     for _t in ['45A', '45B', '46A', '46B', '47A', '47B', '32B', '34B',
                '31D', '44C', '44E', '44F', '48', '50', '59', '71D', '78']:
         if _t in _amd_upper or f'F{_t}' in _amd_upper or f'FIELD {_t}' in _amd_upper:
-            # Map B-suffix to A-suffix
+
             actual = _t[:-1] + 'A' if _t.endswith('B') and _t not in ('32B', '34B', '71B') else _t
             if actual == '34B':
                 actual = '32B'
             _touched_tags.add(actual)
-    # Always include a few reference fields
+
     _touched_tags.update(['20', '32B'])
 
     base_text_parts = []
     for tag in sorted(_touched_tags):
         val = base_fields.get(tag, '')
         if val:
-            # Full text for clause fields, truncate others
+
             max_len = 2500 if tag in ('46A', '47A', '45A', '78') else 300
             val_preview = str(val)[:max_len]
             base_text_parts.append(f"F{tag}: {val_preview}")
     base_fields_text = '\n\n'.join(base_text_parts)
 
-    # Detect ADD-heavy amendments (LOI clauses etc.) and use a focused
-    # LLM call that only extracts the ADD text, not the full field.
     _amd_upper_check = amendment_text.upper()
-    # Only trigger focused ADD extraction if the amendment has "ADD ... CLAUSE AS"
-    # or "ADD LOI CLAUSE AS" — NOT just any mention of "ADD" (which could be
-    # in other contexts like field names or addresses)
+
     _has_add_clause = bool(re.search(
         r'ADD\s+(?:LOI\s+)?CLAUSE\s+AS\b', _amd_upper_check
     ))
+
     _has_other_ops = any(kw in _amd_upper_check for kw in [
         'WORD TO READ AS', 'DELETE WORDING', 'I/O', 'INCREASE OF DOCUMENTARY',
-        'TO READ AS', 'REPALL',
+        'TO READ AS',
     ])
 
     if _has_add_clause and not _has_other_ops:
-        # Use focused LLM call for ADD extraction
+
         _add_prompt = """Extract the text being ADDED to the LC from this MT707 amendment message.
 
 AMENDMENT TEXT:
@@ -1843,8 +3099,7 @@ If there are also other changes (word changes, amount increases, field replaceme
                     try:
                         _add_result = json.loads(_raw_json)
                     except json.JSONDecodeError:
-                        # Try fixing common issues: trailing comma, extra text
-                        # Find matching braces manually
+
                         _depth = 0
                         _end = 0
                         for _ci, _ch in enumerate(_raw_json):
@@ -1872,13 +3127,15 @@ If there are also other changes (word changes, amount increases, field replaceme
                         new_val = old_val.rstrip() + f'\n{_next_num}. ' + _add_text
                         base_fields[_add_tag] = new_val
                         record.fields_changed.append(_add_tag)
+
                         record.change_details[_add_tag] = {
                             'old': old_val, 'new': new_val,
                             'operation': 'llm_add_clause',
+                            'clauses_changed': [_next_num],
                         }
                         if _progress:
                             _progress(f"      ADD clause to {_add_tag}: {len(_add_text)} chars via LLM")
-                    # Also check for other field changes in the response
+
                     for _k, _v in _add_result.items():
                         if _k in ('field_tag', 'add_text'):
                             continue
@@ -1902,7 +3159,6 @@ If there are also other changes (word changes, amount increases, field replaceme
             if _progress:
                 _progress(f"      LLM ADD extraction failed: {e}")
 
-    # Clean amendment text
     clean_amd = amendment_text
     clean_amd = re.sub(r'(?:^|\n)\s*Narrative\s*:\s*', '\n', clean_amd).strip()
     clean_amd = re.sub(r'(?:^|\n)\s*Lines?\s+\d+(?:\s*[-–]\s*\d+)?\s*(?:\n|$)', '\n', clean_amd).strip()
@@ -1911,15 +3167,24 @@ If there are also other changes (word changes, amount increases, field replaceme
     clean_amd = re.sub(r'\s*Page\s+\d+\s+of\s+\d+\s*', ' ', clean_amd).strip()
     clean_amd = re.sub(r'\{CHK:[A-F0-9]+\}', '', clean_amd).strip()
     clean_amd = re.sub(r'Block\s+5\s*', '', clean_amd).strip()
-    # Remove report headers/footers
+
     clean_amd = re.sub(r'Report\s+(?:Header|Footer|Content).*?(?=\n[A-Z]|\Z)', '', clean_amd, flags=re.IGNORECASE | re.DOTALL).strip()
     clean_amd = re.sub(r'Message\s+(?:Header|Identifier|Details).*?(?=\n[A-Z]|\Z)', '', clean_amd, flags=re.IGNORECASE | re.DOTALL).strip()
     clean_amd = re.sub(r'(?:Delivery\s+overdue|Network\s+delivery|Payment\s+Confirmation|Confirmed\s+(?:Currency|Amount|Date)).*$', '', clean_amd, flags=re.IGNORECASE | re.DOTALL).strip()
 
-    # Use string concatenation instead of .format() to avoid {CHK:...} issues
-    prompt = _VLM_AMENDMENT_PROMPT.replace('{base_fields_text}', base_fields_text).replace('{amendment_text}', clean_amd[:12000])
+    _p245_addendum = (
+        _P245_PROMPT_ADDENDUM
+        if _P246_UBL_CLAUSE_READAS_RE.search(amendment_text or '')
+        else ''
+    )
 
-    # Prefer text-only LLM for amendments (faster, no image overhead)
+    prompt = (
+        _VLM_AMENDMENT_PROMPT
+        .replace('{base_fields_text}', base_fields_text)
+        .replace('{amendment_text}', clean_amd[:12000])
+        .replace('{p245_addendum}', _p245_addendum)
+    )
+
     _llm_url = QWEN_TEXT_LLM_URL or QWEN_VLM_URL
     _llm_model = QWEN_TEXT_LLM_MODEL or QWEN_VLM_MODEL
 
@@ -1937,36 +3202,87 @@ If there are also other changes (word changes, amount increases, field replaceme
             content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
             if _progress:
                 _progress(f"      LLM response: {len(content)} chars")
-            # Extract JSON from response
+
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
                 changes = json.loads(json_match.group(0))
                 if isinstance(changes, dict) and changes:
                     for raw_tag, new_val in changes.items():
-                        # Normalize tag: strip F-prefix (VLM may return "F32B" vs "32B")
+
                         tag = re.sub(r'^F', '', raw_tag)
-                        # Handle _ADD suffix: append to existing field
+
                         is_add = tag.endswith('_ADD')
                         if is_add:
-                            tag = tag[:-4]  # "46A_ADD" -> "46A"
-                        # Skip amendment metadata
+                            tag = tag[:-4]
+
                         if tag in ('26E', '27', '30', '22A', '23', '21'):
+                            continue
+
+                        if tag not in EXTRACTION_TAGS:
+                            if _progress:
+                                _progress(f"      LLM returned non-LC tag {tag!r} — dropping (not in EXTRACTION_TAGS)")
                             continue
                         new_val = str(new_val).strip()
                         if not new_val:
                             continue
                         old_val = base_fields.get(tag, '')
                         if is_add and old_val:
-                            # Append: add new text after existing
+
                             new_val = old_val.rstrip() + '\n' + new_val
                         base_fields[tag] = new_val
                         if old_val != new_val:
                             record.fields_changed.append(tag)
-                            record.change_details[tag] = {
+                            _det = {
                                 'old': old_val,
                                 'new': new_val,
                                 'operation': 'vlm_amendment',
                             }
+
+                            _cc, _cd = _p247_diff_clauses(tag, old_val, new_val)
+                            if _cc:
+                                _det['clauses_changed'] = _cc
+                            if _cd:
+                                _det['clauses_deleted'] = _cd
+                            record.change_details[tag] = _det
+
+                    _p249_dw_re = re.compile(
+                        r'FIELD\s+(\d{2}[A-Z]?)-?\d*\s+DELETE\s+WORDING\s+AS\s*\n?\s*'
+                        r'[\'"]+\s*([^\'"\n\r]+?)\s*[\'"]+',
+                        re.IGNORECASE,
+                    )
+
+                    for _m in _p249_dw_re.finditer(clean_amd or ''):
+                        _dw_raw_tag = _m.group(1).upper()
+                        _dw_text = _m.group(2).strip()
+                        if not _dw_text:
+                            continue
+
+                        _dw_tag = _dw_raw_tag
+                        if _dw_tag.endswith('B') and _dw_tag[:-1] + 'A' in SWIFT_FIELD_LABELS:
+                            _dw_tag = _dw_tag[:-1] + 'A'
+                        _cur = base_fields.get(_dw_tag, '')
+                        if not _cur or _dw_text not in _cur:
+                            continue
+                        _new = _cur.replace(_dw_text, '').rstrip()
+
+                        _new = re.sub(r'  +', ' ', _new)
+                        _new = re.sub(r'\n\s*\n\s*\n+', '\n\n', _new)
+                        if _new != _cur:
+                            base_fields[_dw_tag] = _new
+                            if _dw_tag not in record.fields_changed:
+                                record.fields_changed.append(_dw_tag)
+                            _existing_det = record.change_details.get(_dw_tag, {}) or {}
+                            _existing_det['new'] = _new
+                            _existing_det.setdefault('old', _cur)
+                            _existing_det['operation'] = 'vlm_amendment+p249_delete_wording'
+                            record.change_details[_dw_tag] = _existing_det
+                            if _progress:
+                                _progress(
+                                    f"      P249: removed missed DELETE WORDING "
+                                    f"'{_dw_text[:40]}' from F{_dw_tag}"
+                                )
+
+                    _p251_addclause_augment(base_fields, clean_amd, record, _progress)
                     if _progress:
                         _progress(f"      VLM amendment applied: {record.fields_changed}")
                     return record
@@ -1977,41 +3293,190 @@ If there are also other changes (word changes, amount increases, field replaceme
         if _progress:
             _progress(f"      VLM amendment error: {e}, falling back to regex")
 
-    # Fallback: return empty record (regex will be tried by caller)
     return None
-
 
 def _parse_amendment_number(value: str) -> Optional[int]:
     """Extract amendment number from F26E value."""
     m = re.search(r'(\d+)', value)
     return int(m.group(1)) if m else None
 
-
 def _sort_amendments(amendment_packets: list) -> list:
-    """Sort amendment packets by F26E number or F30 date."""
+    """Sort amendment packets by F26E number or F30 date.
+
+    P267 — tolerance for the SWIFT-export "labelled" form many banks
+    (notably BAHL) emit, where the F-tag prefix is followed by the
+    spec label name on one line and the actual value on the next:
+
+        F26E: Number of Amendment
+         13
+        F30: Date of Amendment
+         260427 2026 Apr 27
+
+    The pre-P267 regex `(?:F?26E\\s*:?\\s*|:26E:|amendment\\s*(?:no\\.?|
+    number)\\s*:?\\s*)(\\d+)` required the digit to follow `F26E:`
+    immediately (with only whitespace between). Whitespace `\\s*` is
+    GREEDY but will only consume whitespace — it stops at "Number"
+    (the label letter), and `(\\d+)` then fails because the next char
+    is a letter. Result: every BAHL amendment returned the 9999
+    fallback key, Python's stable sort preserved the SWIFT-export's
+    newest-first packet order, and amendments were applied in REVERSE
+    chronological order (amd 13 first, amd 1 last). amd 1's REPALL of
+    F45B then ran LAST and wiped every later /ADD/ append's effect on
+    F45A; amd 2's F31D / F44C overwrote amds 4/6/7's later values.
+
+    Fix: insert a lazy `[^\\d]{0,80}?` segment between the F-tag prefix
+    and the captured digits, so the regex tolerates an optional label
+    name + newline between the tag and the value. The 80-char cap
+    prevents pathological matches across unrelated text. Existing
+    compact forms (`F26E: 13`, `:26E:13`, `Amendment Number 13`) keep
+    working because the lazy segment matches zero chars when the digit
+    is already adjacent.
+    """
     def _get_sort_key(pkt):
+
         text = _get_packet_refined_text(pkt)
-        # Try amendment number
-        m = re.search(r'(?:F?26E\s*:?\s*|:26E:|amendment\s*(?:no\.?|number)\s*:?\s*)(\d+)', text, re.IGNORECASE)
-        if m:
-            return int(m.group(1))
-        # Try date
-        m = re.search(r'(?:F?30\s*:?\s*|:30:)(\d{6})', text)
-        if m:
-            return int(m.group(1))
-        return 9999
+        date_key = 99999999
+        m_f30 = re.search(
+            r'(?:F?30\s*:?|:30:)\s*[^\d]{0,80}?(\d{6})\b',
+            text, re.IGNORECASE,
+        )
+        if m_f30:
+            yymmdd = m_f30.group(1)
+            yy = int(yymmdd[:2])
+            century = 2000 if yy < 80 else 1900
+            date_key = (century + yy) * 10000 + int(yymmdd[2:])
+        else:
+            m_ack = re.search(
+                r'(?:ACK[/\\]?NAK\s+Reception\s+)?Date\s*[/\-]?\s*Time'
+                r'[^\n]*?(\d{4})[/\-](\d{2})[/\-](\d{2})',
+                text, re.IGNORECASE,
+            )
+            if m_ack:
+                date_key = (int(m_ack.group(1)) * 10000
+                            + int(m_ack.group(2)) * 100
+                            + int(m_ack.group(3)))
+        sub_key = 9999
+        m_f26e = re.search(
+            r'(?:F?26E\s*:?|:26E:|amendment\s*(?:no\.?|number)\s*:?)'
+            r'\s*[^\d]{0,80}?(\d+)',
+            text, re.IGNORECASE,
+        )
+        if m_f26e:
+            sub_key = int(m_f26e.group(1))
+        return (date_key, sub_key)
 
     return sorted(amendment_packets, key=_get_sort_key)
 
-
-# == Helpers ==================================================================
-
-# Module-level page text lookup (set by run() before extraction)
 _PAGE_TEXT_LOOKUP = {}
+
+_STEP01_RAW_PAGE_LOOKUP = {}
+_STEP02_PAGE_CORRECTIONS = {}
+
+def _recover_f45a_layout_from_step01(consolidated_f45a: str, candidate_pages=None) -> str:
+    """P217 — restore F45A multi-paragraph line breaks from step01 raw OCR.
+
+    When step02's VLM-primary path replaces GLM raw text (rule
+    'vlm_primary' or 'vlm_full_extraction' in the page's corrections),
+    Qwen2.5-VL collapses the natural line breaks inside multi-paragraph
+    F45A goods descriptions. step01's GLM raw text preserves them.
+
+    Detection (all must hold for fallback to fire):
+      • F45A consolidated value has ≤ 1 newline (clearly inline)
+      • F45A consolidated value is substantial (≥ 80 chars)
+      • Some candidate page in step01 raw OCR contains an F45A region
+        whose content matches the collapsed value (whitespace-normalised
+        character compare)
+      • That same page's step02 corrections include a VLM replacement
+        rule ('vlm_primary' / 'vlm_full_extraction')
+
+    Why we iterate ALL candidate pages: SwiftField.source_page in step06
+    is set to the MT700 packet's first page, not the page that actually
+    held the F45A value (the MT700 packet may span pages 4–7 with F45A
+    on page 5). Iterating the candidate pages and matching by content
+    finds the right one regardless.
+
+    If a match is found, return the multi-line region from that step01
+    page. Otherwise return the input unchanged. The whitespace-normalised
+    match guards against substituting different content (page mismatch /
+    OCR drift) — that branch silently keeps the input.
+
+    Verified by inspection across the dataset:
+      • LC 5001LC60733 (job c7d454be): step02 page corrections empty —
+        VLM did not replace GLM, F45A already multi-line. Gates fail
+        (multi-line check + no vlm_primary) → no substitution.
+      • LC 0005LC90854 (job d28518f5): step02 page 5 has vlm_primary,
+        step01 page 5 contains the matching F45A region. Gates pass →
+        multi-line value restored.
+    """
+    if not consolidated_f45a:
+        return consolidated_f45a
+    if consolidated_f45a.count('\n') >= 2:
+        return consolidated_f45a
+    if len(consolidated_f45a) < 80:
+        return consolidated_f45a
+
+    def _norm(s: str) -> str:
+
+        s = re.sub(r'\s+', ' ', s).strip().lower()
+        s = re.sub(
+            r'^description\s+of\s+goods(?:\s+and\s*/?\s*or\s+services)?\s*',
+            '', s,
+        )
+        return s
+
+    target_norm = _norm(consolidated_f45a)
+
+    if candidate_pages:
+        pages_to_try = list(candidate_pages)
+    else:
+        pages_to_try = list(_STEP01_RAW_PAGE_LOOKUP.keys())
+
+    _STEP01_LABEL_RE = re.compile(
+        r'(?:^|\n)\s*Description\s+of\s+Goods(?:\s+and/or\s+Services)?\s*\n',
+        re.IGNORECASE,
+    )
+    _F45A_END_RE = re.compile(
+        r'(?:^|\n)\s*(?:'
+        r'Documents\s+Required'
+        r'|Additional\s+Conditions'
+        r'|Period\s+for\s+Presentation'
+        r'|Confirmation\s+Instructions'
+        r'|Applicant\b'
+        r'|Beneficiary\b'
+        r'|Charges\b'
+        r'|Instructions\s+to'
+        r'|F\d{2}[A-Z]?\s*:'
+        r')',
+        re.IGNORECASE,
+    )
+
+    for pn in pages_to_try:
+        s1_text = _STEP01_RAW_PAGE_LOOKUP.get(pn, '') or ''
+        if not s1_text:
+            continue
+        start_m = _STEP01_LABEL_RE.search(s1_text)
+        if not start_m:
+            continue
+        rest = s1_text[start_m.end():]
+        end_m = _F45A_END_RE.search(rest)
+        if not end_m:
+            continue
+        extracted = rest[:end_m.start()].strip()
+        if not extracted:
+            continue
+        if _norm(extracted) != target_norm:
+            continue
+
+        page_corr = _STEP02_PAGE_CORRECTIONS.get(pn, []) or []
+        if not any(rule in page_corr for rule in ('vlm_primary', 'vlm_full_extraction')):
+            continue
+        return extracted
+
+    return consolidated_f45a
 
 def _get_packet_refined_text(pkt) -> str:
     """Get concatenated text from a packet using page_numbers -> page_texts lookup."""
-    # First try page_numbers + global lookup (set by run())
+
     page_nums = pkt.get('page_numbers', []) if isinstance(pkt, dict) else getattr(pkt, 'page_numbers', [])
     if page_nums and _PAGE_TEXT_LOOKUP:
         texts = []
@@ -2022,7 +3487,6 @@ def _get_packet_refined_text(pkt) -> str:
         if texts:
             return '\n'.join(texts)
 
-    # Fallback: try pages list with text fields
     pages = pkt.pages if hasattr(pkt, 'pages') else pkt.get('pages', [])
     texts = []
     for p in pages:
@@ -2031,14 +3495,13 @@ def _get_packet_refined_text(pkt) -> str:
         elif isinstance(p, dict):
             t = p.get('refined_text', p.get('cleaned_text', p.get('raw_text', '')))
         elif isinstance(p, int):
-            # Page number — look up in global lookup
+
             t = _PAGE_TEXT_LOOKUP.get(p, '')
         else:
             t = getattr(p, 'refined_text', getattr(p, 'cleaned_text', ''))
         if t:
             texts.append(t)
     return '\n'.join(texts)
-
 
 def _get_packet_first_page(pkt) -> int:
     """Get first page number from packet."""
@@ -2048,15 +3511,11 @@ def _get_packet_first_page(pkt) -> int:
         return p.page_number if hasattr(p, 'page_number') else p.get('page_number', 0)
     return 0
 
-
 def _get_packet_field(pkt, field_name: str, default=''):
     """Get a field from packet (handles both dataclass and dict)."""
     if hasattr(pkt, field_name):
         return getattr(pkt, field_name)
     return pkt.get(field_name, default)
-
-
-# == VLM-based field extraction ===============================================
 
 _VLM_EXTRACT_PROMPT = """You are a SWIFT message parser. Extract ALL SWIFT fields from this Letter of Credit page.
 
@@ -2085,9 +3544,21 @@ RULES:
 - For multi-line values (like 46A, 47A, 45A), include the COMPLETE text with newlines
 - Preserve clause numbering (1., 2., 3...) in 46A/47A
 - If a field spans multiple pages, extract what's on THIS page
+- P238 — Preserve cross-field continuation markers verbatim inside the field
+  value: "(CONT FROM FIELD XX)", "(CONT. FROM FIELD XX)", "(CONT FORM FIELD
+  XX)" (OCR typo of FROM), "/(CONT FROM FIELD XX)", "Narrative: /(CONT FROM
+  FIELD XX)". Do NOT drop or summarise these markers — downstream
+  cross-reference resolution uses them to route content between fields.
 - Return empty object {{}} if no SWIFT fields found
-"""
 
+DO NOT EXTRACT (these are NOT LC fields — they belong to other SWIFT messages, not MT700/MT707):
+- 71A: Reimbursing Bank's Charges (belongs to MT740/MT747 reimbursement authorisation)
+- Any tag from narrative text of MT799 tracers, MT754 payment advices, MT730 acknowledgements,
+  MT740 reimbursement authorisations, MT747 reimb amendments, MT940 statements.
+- If the page is clearly a reimbursement claim, tracer, or acknowledgement message
+  (contains phrases like "A.REIM CLAIM", "TRACER", "TOTAL DUE", "HANDLING COMMISSION",
+  "REIMBURSEMENT CLAIM"), return empty object {{}}.
+"""
 
 def _extract_fields_vlm_page(page_num: int, image_path: str, text: str) -> dict:
     """Send one LC page to VLM for field extraction."""
@@ -2122,15 +3593,13 @@ def _extract_fields_vlm_page(page_num: int, image_path: str, text: str) -> dict:
         pass
     return {}
 
-
 def _extract_fields_vlm(base_pkt, base_text: str, base_page: int, _progress) -> list:
     """Use VLM to extract SWIFT fields from LC pages."""
     page_nums = base_pkt.get('page_numbers', []) if isinstance(base_pkt, dict) else getattr(base_pkt, 'page_numbers', [])
 
-    # Get image paths for each page
     results_dir = None
     for pn in page_nums:
-        # Try to find image path from packet pages data
+
         pages_data = base_pkt.get('pages', []) if isinstance(base_pkt, dict) else getattr(base_pkt, 'pages', [])
         for pd in pages_data:
             img = pd.get('page_image_path', '') if isinstance(pd, dict) else getattr(pd, 'page_image_path', '')
@@ -2140,7 +3609,6 @@ def _extract_fields_vlm(base_pkt, base_text: str, base_page: int, _progress) -> 
         if results_dir:
             break
 
-    # Send each LC page to VLM concurrently
     page_items = []
     for pn in page_nums:
         txt = _PAGE_TEXT_LOOKUP.get(pn, '')
@@ -2153,6 +3621,8 @@ def _extract_fields_vlm(base_pkt, base_text: str, base_page: int, _progress) -> 
 
     _progress(f"  VLM extracting from {len(page_items)} LC pages concurrently...")
     merged_fields = {}
+
+    _ALLOWED_LC_TAGS = frozenset(EXTRACTION_TAGS)
     with ThreadPoolExecutor(max_workers=min(MAX_CONCURRENT_VLM, len(page_items))) as executor:
         futures = {executor.submit(_extract_fields_vlm_page, pn, img, txt): pn
                    for pn, img, txt in page_items}
@@ -2161,16 +3631,19 @@ def _extract_fields_vlm(base_pkt, base_text: str, base_page: int, _progress) -> 
             try:
                 page_fields = fut.result()
                 for tag, val in page_fields.items():
-                    if val and tag not in merged_fields:
-                        merged_fields[tag] = val
-                    elif val and tag in merged_fields and tag in ('46A', '47A', '45A', '78'):
-                        # Append continuation text for clause fields
-                        merged_fields[tag] = merged_fields[tag] + '\n' + val
+
+                    canon = tag.lstrip('F').strip()
+                    if canon not in _ALLOWED_LC_TAGS:
+                        continue
+                    if val and canon not in merged_fields:
+                        merged_fields[canon] = val
+                    elif val and canon in merged_fields and canon in ('46A', '47A', '45A', '78'):
+
+                        merged_fields[canon] = merged_fields[canon] + '\n' + val
                 _progress(f"    Page {pn}: {len(page_fields)} fields")
             except Exception as e:
                 _progress(f"    Page {pn}: VLM error: {e}")
 
-    # Convert to SwiftField list
     fields = []
     for tag, val in merged_fields.items():
         fields.append(SwiftField(
@@ -2182,8 +3655,217 @@ def _extract_fields_vlm(base_pkt, base_text: str, base_page: int, _progress) -> 
         ))
     return fields
 
+_P240_MARKER_RE = re.compile(
+    r'[/\\]?\s*'
+    r'\(\s*CONT\.?\s*(?:INUED|INUATION)?\s+(?:FROM|FORM|IN)\s+FIELD\s+(?P<src>\d{2}[A-Z]?)\s*\)[ \t]*'
+    r'(?P<chunk>(?:'
+    r'(?!\n\s*F?\d{2}[A-Z]?\s*:)'
+    r'(?!\s*[/\\]?\s*\(\s*CONT\.?\s*(?:INUED|INUATION)?\s+(?:FROM|FORM|IN)\s+FIELD)'
+    r'.)*)',
+    re.IGNORECASE | re.DOTALL,
+)
 
-# == Main run function ========================================================
+def _p240_norm(s: str) -> str:
+    return re.sub(r'\s+', ' ', s).strip().upper()
+
+def _p240_strip_pattern(chunk_text: str):
+    words = re.findall(r'\S+', chunk_text)
+    if not words:
+        return None
+
+    return r'\n\s*[\.,;:]?\s*' + r'\s+'.join(re.escape(w) for w in words) + r'\s*'
+
+def _apply_p240_cross_ref_rescue(_cf: dict, _progress, _phase: str = '') -> None:
+    """P240 — rescue orphan continuation chunks across SWIFT fields.
+
+    Reads raw step02 page text from the global `_PAGE_TEXT_LOOKUP`, finds
+    `(CONT FROM FIELD XX)` markers, and routes the chunk that follows
+    to the correct target field. Idempotent — when the target already
+    contains the chunk, it skips silently, so this can be called both
+    before and after the MT707 amendment loop without double-appending.
+    """
+    if not _PAGE_TEXT_LOOKUP:
+        return
+    _phase_tag = f' [{_phase}]' if _phase else ''
+    for _pn, _ptext in _PAGE_TEXT_LOOKUP.items():
+        if not isinstance(_ptext, str) or 'CONT' not in _ptext.upper():
+            continue
+        for _m in _P240_MARKER_RE.finditer(_ptext):
+            _src_tag = _m.group('src').upper()
+            _chunk = (_m.group('chunk') or '').strip()
+            if not _chunk or len(_chunk) < 5:
+                continue
+            _norm_chunk = _p240_norm(_chunk)
+            if not _norm_chunk:
+                continue
+
+            if _norm_chunk in _p240_norm(str(_cf.get(_src_tag, '') or '')):
+                continue
+
+            _leak_tag = None
+            for _other_tag, _other_val in list(_cf.items()):
+                if _other_tag.startswith('_') or _other_tag == _src_tag:
+                    continue
+                if not isinstance(_other_val, str) or not _other_val:
+                    continue
+                if _norm_chunk in _p240_norm(_other_val):
+                    _leak_tag = _other_tag
+                    break
+            if _leak_tag is None:
+
+                if len(_chunk) < 20:
+                    continue
+                _existing_tgt = str(_cf.get(_src_tag, '') or '').rstrip()
+                _cf[_src_tag] = (
+                    f"{_existing_tgt}\n{_chunk}".strip()
+                    if _existing_tgt else _chunk
+                )
+                _progress(
+                    f"  P240b{_phase_tag}: appended '{_chunk[:60]}{'...' if len(_chunk) > 60 else ''}' "
+                    f"to F{_src_tag} (no leak source — chunk dropped or overwritten)"
+                )
+                continue
+            _strip_pat = _p240_strip_pattern(_chunk)
+            if not _strip_pat:
+                continue
+            _new_leak_val = re.sub(
+                _strip_pat, '\n', _cf[_leak_tag],
+                count=1, flags=re.IGNORECASE,
+            ).rstrip()
+            _cf[_leak_tag] = _new_leak_val
+            _existing_tgt = str(_cf.get(_src_tag, '') or '').rstrip()
+            _cf[_src_tag] = (
+                f"{_existing_tgt}\n{_chunk}".strip()
+                if _existing_tgt else _chunk
+            )
+            _progress(
+                f"  P240{_phase_tag}: rescued '{_chunk[:60]}{'...' if len(_chunk) > 60 else ''}' "
+                f"from F{_leak_tag} → F{_src_tag} (raw page-text marker)"
+            )
+
+_P251_ADDCLAUSE_BLOCK_RE = re.compile(
+    r'UNDER\s+FIELD\s+(?P<tag>\d{2}[A-Z]?)\s+ADD\s+(?:LOI\s+)?CLAUSE\s+AS\s*\n'
+    r"(?P<body>(?:.|\n)*?)"
+    r'(?=\n\s*(?:'
+    r'UNDER\s+FIELD\s+\d{2}[A-Z]?\s+ADD\s+'
+    r'|FIELD\s+\d{2}[A-Z]?-?\d*\s+(?:TO\s+READ\s+AS|WORD\s+TO\s+READ\s+AS|DELETE\s+WORDING)'
+    r"|/(?:DELETE|DEL|ADD|REPALL)/"
+    r')|\Z)',
+    re.IGNORECASE,
+)
+
+def _p251_extract_quoted_items(body: str):
+    """Split SWIFT `''item1''\\n''item2''...` narrative into a list of
+    individual quoted items. The boundary between items is `''<newline>''`.
+    Inner SWIFT-escaped quotes (e.g. nested `''X''` for a single quote)
+    are left as-is in the item text — the renderer / clause splitter
+    handles them downstream."""
+    body = (body or '').strip()
+    if not body:
+        return []
+    raw_items = re.split(r"''\s*\n\s*''", body)
+    out = []
+    for it in raw_items:
+        it = it.strip()
+        if it.startswith("''"):
+            it = it[2:]
+        if it.endswith("''"):
+            it = it[:-2]
+        it = it.strip()
+        if it:
+            out.append(it)
+    return out
+
+def _p251_addclause_augment(base_fields: dict, clean_amd: str, record, _progress) -> None:
+    """Re-number ADD CLAUSE AS items the LLM appended without numbering.
+
+    See module-level P251 docstring above for context."""
+    if not clean_amd:
+        return
+    norm = lambda s: re.sub(r'\s+', ' ', s or '').strip().upper()
+
+    for m in _P251_ADDCLAUSE_BLOCK_RE.finditer(clean_amd):
+        raw_tag = m.group('tag').upper()
+        body = m.group('body').strip()
+
+        tag = raw_tag
+        if tag.endswith('B') and tag[:-1] + 'A' in SWIFT_FIELD_LABELS:
+            tag = tag[:-1] + 'A'
+        items = _p251_extract_quoted_items(body)
+        if not items:
+            continue
+        cur = base_fields.get(tag, '') or ''
+        if not cur:
+            continue
+
+        clause_blocks = list(re.finditer(
+            r'(?:^|\n)\s*(\d+)[\.\)]\s+(.+?)(?=\n\s*\d+[\.\)]\s+|\Z)',
+            cur, re.DOTALL,
+        ))
+        if len(clause_blocks) >= len(items):
+            last_n = clause_blocks[-len(items):]
+            ok = True
+            for it, blk in zip(items, last_n):
+                anchor = norm(it)[:80]
+                if anchor and anchor not in norm(blk.group(2)):
+                    ok = False
+                    break
+            if ok:
+                continue
+
+        earliest_pos = len(cur)
+        for it in items:
+            words = re.findall(r'\S+', it)[:8]
+            if not words:
+                continue
+            try:
+                pat = re.compile(
+                    r'\b' + r'\s+'.join(re.escape(w) for w in words) + r'\b',
+                    re.IGNORECASE,
+                )
+            except re.error:
+                continue
+            mp = pat.search(cur)
+            if mp and mp.start() < earliest_pos:
+                earliest_pos = mp.start()
+
+        if earliest_pos >= len(cur):
+
+            base = cur.rstrip()
+        else:
+
+            line_start = cur.rfind('\n', 0, earliest_pos)
+            line_start = line_start + 1 if line_start >= 0 else 0
+            base = cur[:line_start].rstrip()
+
+        existing_nums = re.findall(r'(?:^|\n)\s*(\d+)[\.\)]\s+', base)
+        next_n = max([int(n) for n in existing_nums] + [0]) + 1
+        appended = '\n'.join(f'{next_n + i}. {it}' for i, it in enumerate(items))
+        new_val = (base + '\n' + appended).strip() if base else appended
+
+        if new_val == cur:
+            continue
+        base_fields[tag] = new_val
+        if tag not in record.fields_changed:
+            record.fields_changed.append(tag)
+        _det = record.change_details.get(tag, {}) or {}
+        _det.setdefault('old', cur)
+        _det['new'] = new_val
+        _det['operation'] = (
+            _det.get('operation', 'vlm_amendment') + '+p251_addclause_renumber'
+        )
+
+        _cc, _cd = _p247_diff_clauses(tag, _det['old'], new_val)
+        if _cc:
+            _det['clauses_changed'] = _cc
+        if _cd:
+            _det['clauses_deleted'] = _cd
+        record.change_details[tag] = _det
+        if _progress:
+            _progress(
+                f"      P251: numbered {len(items)} ADD CLAUSE AS item(s) "
+                f"in F{tag} (clauses {next_n}-{next_n + len(items) - 1})"
+            )
 
 def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> dict:
     """
@@ -2207,17 +3889,26 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
 
     start_time = time.time()
 
-    # Set up page text lookup from Step 2 cleaned text
-    global _PAGE_TEXT_LOOKUP
+    global _PAGE_TEXT_LOOKUP, _STEP01_RAW_PAGE_LOOKUP, _STEP02_PAGE_CORRECTIONS
     _page_texts = step5_result.get('page_texts', {})
     if _page_texts:
         _PAGE_TEXT_LOOKUP = {int(k): v for k, v in _page_texts.items() if v}
         _progress(f"Page text lookup: {len(_PAGE_TEXT_LOOKUP)} pages with text")
 
+    _step01_raw = step5_result.get('step01_page_texts', {}) or {}
+    if _step01_raw:
+        _STEP01_RAW_PAGE_LOOKUP = {int(k): v for k, v in _step01_raw.items() if v}
+    else:
+        _STEP01_RAW_PAGE_LOOKUP = {}
+    _step02_corr = step5_result.get('step02_corrections', {}) or {}
+    if _step02_corr:
+        _STEP02_PAGE_CORRECTIONS = {int(k): v for k, v in _step02_corr.items() if v}
+    else:
+        _STEP02_PAGE_CORRECTIONS = {}
+
     packets_in = step5_result.get('packets', [])
     _progress(f"Consolidating Final LC from {len(packets_in)} packets...")
 
-    # -- Separate packet types --
     mt700_packets = []
     mt707_packets = []
     mt799_packets = []
@@ -2227,36 +3918,17 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
 
     for pkt in packets_in:
         mt = _get_packet_field(pkt, 'mt_type', '')
-        # ── LC issuance family ──
-        # MT700  = Issue of Documentary Credit
-        # MT701  = Issue (continuation)
-        # MT705  = Pre-Advice of Documentary Credit
-        # MT710  = Advice of Third Bank's LC
-        # MT711  = Advice (continuation)
-        # MT720  = Transfer of Documentary Credit
-        # MT721  = Transfer (continuation)
-        # MT760  = Issue of Demand Guarantee / Standby LC
+
         if mt in ('MT700', 'MT701', 'MT705', 'MT710', 'MT711',
                   'MT720', 'MT721', 'MT760'):
             mt700_packets.append(pkt)
-        # ── Amendment family ──
-        # MT707 = Amendment to Documentary Credit
-        # MT708 = Amendment (continuation)
-        # MT747 = Amendment to Authorisation to Reimburse
-        # MT767 = Amendment to Demand Guarantee / Standby
-        # MT775 = Further Amendment to Documentary Credit
-        elif mt in ('MT707', 'MT708', 'MT747', 'MT767', 'MT775'):
+
+        elif mt in ('MT707', 'MT708', 'MT767', 'MT775'):
             mt707_packets.append(pkt)
-        # ── Free format ──
+
         elif mt in ('MT799', 'MT999'):
             mt799_packets.append(pkt)
-        # ── Bank-to-bank acknowledgements / advices / claims ──
-        # MT730 acknowledgement, MT732 discharge, MT734 refusal,
-        # MT735 full refusal under reserve, MT740 reimb auth,
-        # MT742 reimb claim, MT744 non-conforming claim, MT750 discrepancy,
-        # MT752 authorisation, MT754 advice of payment/acceptance/negotiation,
-        # MT756 reimbursement advice, MT768 guarantee ack, MT769 release,
-        # MT785/MT786/MT787 guarantee notices.
+
         elif mt.startswith('MT'):
             other_mt_packets.append(pkt)
         elif mt == 'shipping':
@@ -2271,7 +3943,6 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
     final_lc = FinalLC()
     warnings = []
 
-    # -- Extract fields from original LC (MT700) --
     if not mt700_packets:
         warnings.append("No MT700 (original LC) packet found")
         _progress("  WARNING: No MT700 found")
@@ -2291,15 +3962,12 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
         base_text = _get_packet_refined_text(base_pkt)
         base_page = _get_packet_first_page(base_pkt)
 
-        # Detect format from GLM text
         final_lc.swift_format = _detect_format_from_text(base_text)
         _progress(f"  Base LC format: {final_lc.swift_format}")
 
-        # Extract fields using regex on GLM text
         base_fields = _extract_swift_fields(base_text, source_page=base_page, source_mt='MT700')
         _progress(f"  Extracted {len(base_fields)} fields from MT700")
 
-        # VLM fallback: if regex extracted fewer than 5 fields, use VLM to extract
         if len(base_fields) < 5:
             _progress(f"  Regex extracted only {len(base_fields)} fields — trying VLM extraction...")
             try:
@@ -2312,12 +3980,12 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             except Exception as e:
                 _progress(f"  VLM extraction failed: {e}")
 
-        # Clean field values: strip SWIFT label text from values
-        # GLM text has: "F20: Documentary Credit Number\n05251LC082463"
-        # Regex captures: "Documentary Credit Number\n05251LC082463"
-        # We need just: "05251LC082463"
         _LABEL_STRIP = {
             '20': r'^(?:Documentary\s+Credit\s+Number|Sender\'?s?\s+Reference|Transaction\s+Reference)\s*[\n\r]*',
+
+            '22A': r'^Purpose\s+of\s+Message\s*[\n\r]*',
+
+            '23': r'^(?:(?:[A-Z]\w*\'?s?\s+){0,3})?Reference(?:\s+to\s+Pre-?Advice)?\s*[\n\r]*',
             '27': r'^Sequence\s+of\s+Total\s*[\n\r]*',
             '31C': r'^Date\s+of\s+Issue\s*[\n\r]*',
             '31D': r'^Date\s+and\s+Place\s+of\s+Expiry\s*[\n\r]*',
@@ -2328,6 +3996,7 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             '41A': r'^(?:Available\s+With.*?(?:By\.{0,3})?|\.{2,}\s*By\s*\.{2,}.*?(?:Name\s+and\s+Address)?:?)\s*[\n\r]*',
             '41D': r'^(?:Available\s+With.*?(?:Code|By\.{0,3})?|\.{2,}\s*By\s*\.{2,}.*?(?:Name\s+and\s+Address)?:?)\s*[\n\r]*',
             '42A': r'^(?:Drawee|Issuing\s+Bank).*?(?:Identifier\s+Code)?\s*[\n\r]*',
+            '42D': r'^Drawee(?:\s*-?\s*Party\s+Identifier)?(?:\s*-?\s*Name\s+and\s+Address)?\s*[\n\r]*',
             '42C': r'^Drafts\s+at\s*\.{0,3}\s*[\n\r]*',
             '42P': r'^(?:Negotiation/)?Deferred\s+Payment\s+Details\s*[\n\r]*',
             '43P': r'^Partial\s+Shipments?[\.,;:]?\s*[\n\r]*',
@@ -2347,52 +4016,52 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             '52A': r'^(?:Issuing\s+Bank|Applicant\s+Bank).*?(?:Identifier\s+Code)?\s*[\n\r]*',
             '53A': r'^Reimbursing\s+Bank.*?(?:Identifier\s+Code)?\s*[\n\r]*',
             '57A': r'^[\'"]?Advise\s+Through[\'"]?\s+Bank.*?(?:Identifier\s+Code\s*:?\s*)?\s*[\n\r]*',
+
+            '58A': r'^Requested\s+Confirmation\s+Party.*?(?:Identifier\s+Code)?\s*[\n\r]*',
             '59': r'^Beneficiary\s*[\n\r]*(?:Name\s+and\s+Address:?\s*[\n\r]*)?',
-            '71D': r'^Charges\s*[\n\r]*',
+
+            '71D': r'^(?:(?:OUR|BEN|SHA|Other)\s+)?Charges\s*[\n\r]*',
             '78': r'^Instructions\s+to\s+the\s+Paying.*?Bank\s*[\n\r]*',
         }
         for sf in base_fields:
-            # Strip label prefix from value
+
+            sf.value = re.sub(r'```(?:plaintext|text|swift|json)?\s*', '', sf.value, flags=re.IGNORECASE)
+            sf.value = re.sub(r'\s*```\s*$', '', sf.value).strip()
+
             _strip_pat = _LABEL_STRIP.get(sf.tag, '')
             if _strip_pat:
                 sf.value = re.sub(_strip_pat, '', sf.value, flags=re.IGNORECASE).strip()
-            # Also clean sub-labels that appear inside field values
-            # Handle "- Party Identifier - Identifier Code\nIdentifier Code:\nUNILPKKA"
+
             sf.value = re.sub(r'-?\s*Party\s+Identifier\s*-?\s*Identifier\s*(?:Code)?\s*\n?', '', sf.value, flags=re.IGNORECASE).strip()
-            sf.value = re.sub(r'^-\s+', '', sf.value).strip()  # Strip leading "- "
+            sf.value = re.sub(r'^-\s+', '', sf.value).strip()
             sf.value = re.sub(r'Identifier\s+Code:?\s*\n?', '', sf.value, flags=re.IGNORECASE).strip()
             sf.value = re.sub(r'Identifier:?\s*\n?', '', sf.value, flags=re.IGNORECASE).strip()
             sf.value = re.sub(r'^Name\s+and\s+Address:?\s*\n?', '', sf.value, flags=re.IGNORECASE).strip()
-            # Fusion format cleanup: "... By ... - Name and Address - Name and Address:"
+
             sf.value = re.sub(r'\.{2,}\s*By\s*\.{2,}\s*-?\s*(?:Name\s+and\s+Address\s*-?\s*)*:?\s*[\n\r]*', '', sf.value, flags=re.IGNORECASE).strip()
             sf.value = re.sub(r'-\s*Name\s+and\s+Address\s*-?\s*(?:Name\s+and\s+Address)?:?\s*[\n\r]*', '', sf.value, flags=re.IGNORECASE).strip()
-            # Remove "US DOLLAR" currency name (keep just currency code)
+
             if sf.tag == '32B':
                 sf.value = re.sub(r'\b(?:US\s+DOLLAR|EURO|POUND\s+STERLING|JAPANESE\s+YEN)\s*[\n\r]*', '', sf.value, flags=re.IGNORECASE).strip()
             sf.value = re.sub(r'^Applicable\s+Rules:?\s*\n?', '', sf.value, flags=re.IGNORECASE).strip()
-            # Clean "Available With ... By ... - Name and Address - Code" prefix
+
             sf.value = re.sub(r'^Available\s+With.*?Code\s*\n?', '', sf.value, flags=re.IGNORECASE).strip()
             sf.value = re.sub(r'^Drawee\s*-?\s*Party.*?Code\s*\n?', '', sf.value, flags=re.IGNORECASE).strip()
             sf.value = re.sub(r'^Applicant\s+Bank\s*-?\s*Party.*?Code\s*\n?', '', sf.value, flags=re.IGNORECASE).strip()
 
-            # Strip SWIFT message footer ("Other\nDelivery overdue..." section)
             sf.value = re.sub(
                 r'\n\s*Other\s*\n\s*(?:Delivery\s+overdue|Network\s+delivery|Payment\s+Confirmation).*$',
                 '', sf.value, flags=re.IGNORECASE | re.DOTALL).strip()
 
-            # Strip "(CONT FROM/IN FIELD ...)" cross-references — P87
             sf.value = re.sub(r'\(CONT\.?\s*(?:FROM|IN)\s+FIELD\s+\w+\)', '', sf.value, flags=re.IGNORECASE).strip()
             sf.value = re.sub(r'/\(CONT\.?\s*(?:FROM|IN)\s+FIELD\s+\w+\)', '', sf.value, flags=re.IGNORECASE).strip()
 
-            # Truncate if another F-tag got merged in (e.g. "...F41D: Available With...")
             _ftag_merge = re.search(r'F\d{2}[A-Z]?\s*:', sf.value)
             if _ftag_merge:
                 sf.value = sf.value[:_ftag_merge.start()].strip()
 
-            # Strip "Page X of Y" page numbering from PDF
             sf.value = re.sub(r'\bPage\s+\d+\s+of\s+\d+\b', '', sf.value, flags=re.IGNORECASE).strip()
 
-            # Strip OCR garbage from blank/unreadable pages
             sf.value = re.sub(
                 r'There is no visible text.*?(?:clearly visible|another version)[.\s]*',
                 '', sf.value, flags=re.IGNORECASE | re.DOTALL).strip()
@@ -2400,11 +4069,9 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 r'The image appears to be blank[.\s]*',
                 '', sf.value, flags=re.IGNORECASE).strip()
 
-            # Skip Sequence of Total (tag 27) — not useful in Final LC
             if sf.tag == '27':
                 continue
 
-            # Strip inline sub-labels: "Date: 260131\nPlace: NETHERLANDS" -> "260131 NETHERLANDS"
             sf.value = re.sub(r'\bDate:?\s*', '', sf.value).strip()
             sf.value = re.sub(r'\bPlace:?\s*', '', sf.value).strip()
             sf.value = re.sub(r'\bCurrency:?\s*', '', sf.value).strip()
@@ -2415,7 +4082,7 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             sf.value = re.sub(r'\bTotal:?\s*', '', sf.value).strip()
             sf.value = re.sub(r'\bTolerance\s+\d:?\s*', '', sf.value).strip()
             sf.value = re.sub(r'\bCode:?\s*', '', sf.value).strip()
-            # Clean SWIFT date format: "260131 2026 Jan 31" -> "2026-01-31"
+
             _dm = re.search(r'(\d{6})\s+(\d{4})\s+(\w{3})\s+(\d{1,2})', sf.value)
             if _dm and sf.tag in ('31C', '31D', '44C'):
                 _months = {'Jan':'01','Feb':'02','Mar':'03','Apr':'04','May':'05','Jun':'06',
@@ -2423,25 +4090,25 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 _date_str = f"{_dm.group(2)}-{_months.get(_dm.group(3),'01')}-{int(_dm.group(4)):02d}"
                 sf.value = sf.value[:_dm.start()] + _date_str + sf.value[_dm.end():]
                 sf.value = sf.value.strip()
-            # Clean amount format for F32B:
-            # Fusion: "USD\nUS DOLLAR\n516000,00\n#516,000.00" or "USD 516000,00 #516,000.00#"
+
             if sf.tag == '32B':
                 _ccy = re.search(r'\b([A-Z]{3})\b', sf.value)
                 _ccy_str = _ccy.group(1) if _ccy else 'USD'
-                # Try formatted amount: #516,000.00# or #516,000.00
+
                 _am = re.search(r'#([\d,]+\.\d+)#?', sf.value)
                 if _am:
                     sf.value = f"{_ccy_str} {_am.group(1)}"
                 else:
-                    # Try European format: 516000,00
+
                     _am2 = re.search(r'(\d[\d.]*,\d{2})\b', sf.value)
                     if _am2:
                         _amt = _am2.group(1).replace('.', '').replace(',', '.')
                         sf.value = f"{_ccy_str} {float(_amt):,.2f}"
-            # Convert raw SWIFT date codes: "250103" → "2025-01-03"
-            # Only strip AFTER converting — the old code stripped unconditionally
-            # which wiped Alliance dates that are just 6 digits with no long form.
+
             if sf.tag in ('31C', '31D', '44C'):
+
+                if len(sf.value) >= 7 and sf.value[:6].isdigit() and sf.value[6].isalpha():
+                    sf.value = sf.value[:6] + ' ' + sf.value[6:]
                 _raw_dm = re.search(r'\b(\d{2})(\d{2})(\d{2})\b', sf.value)
                 if _raw_dm and not re.search(r'\d{4}-\d{2}-\d{2}', sf.value):
                     _yy, _mm, _dd = _raw_dm.group(1), _raw_dm.group(2), _raw_dm.group(3)
@@ -2449,11 +4116,6 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                     sf.value = sf.value[:_raw_dm.start()] + f"{_year}-{_mm}-{_dd}" + sf.value[_raw_dm.end():]
                     sf.value = sf.value.strip()
 
-            # Strip a leading punctuation-only line (e.g. ".\nALLOWED" →
-            # "ALLOWED"). The label-strip regex doesn't consume a stray
-            # "." or "," that the SWIFT export sometimes leaves between
-            # the field label and the value (typically on F43P / F43T
-            # short enums like "Transhipment.\n  ALLOWED").
             sf.value = re.sub(r'^[\.,;:]\s*[\n\r]+', '', sf.value).strip()
             sf.value = re.sub(r'^[\.,;:]+\s*(?=[A-Za-z0-9])', '', sf.value).strip()
 
@@ -2461,21 +4123,15 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             final_lc.original_fields[sf.tag] = sf.value
             _progress(f"    F{sf.tag}: {sf.value[:80]}{'...' if len(sf.value) > 80 else ''}")
 
-        # Set DC number — strip any remaining label text
         _raw_dc = final_lc.consolidated_fields.get('20', '')
         _raw_dc = re.sub(r"(?i)^(?:Sender'?s?\s+Reference|Documentary\s+Credit\s+Number|Transaction\s+Reference\s+Number)\s*[\n\r]*", '', _raw_dc).strip()
         final_lc.dc_number = _raw_dc
         final_lc.consolidated_fields['20'] = _raw_dc
 
-        # BAHL fallback: If F20 is an internal reference (no LC pattern) but F21
-        # (Related Reference) contains an LC number, use F21 as the DC number.
-        # BAHL uses Transaction Reference in F20 and LC number in F21.
         _raw_f21 = final_lc.consolidated_fields.get('21', '')
         if _raw_f21:
             _raw_f21 = re.sub(r"(?i)^(?:Related\s+Reference|Receiver'?s?\s+Reference)\s*[\n\r]*", '', _raw_f21).strip()
-            # Check if F20 looks like a bank internal ref (no LC pattern)
-            # and F21 looks like an LC number. Use word boundary \b to avoid
-            # matching "LC" inside words like "ELCT183292".
+
             _f20_has_lc = bool(re.search(r'(?<![A-Z])(?:LC|ILC|ALS|DLC)\d', final_lc.dc_number, re.IGNORECASE))
             _f21_has_lc = bool(re.search(r'(?<![A-Z])(?:LC|ILC|ALS|DLC)\d', _raw_f21, re.IGNORECASE))
             if _raw_f21 and not _f20_has_lc and _f21_has_lc:
@@ -2484,15 +4140,6 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 final_lc.consolidated_fields['20'] = _raw_f21
         final_lc.source_packets.append(_get_packet_field(base_pkt, 'packet_id', 0))
 
-        # If multiple MT700 packets, extract from subsequent ones too
-        # (multi-page LCs where each page was a separate packet)
-        #
-        # Page-break continuation: when a field value spans pages, e.g.:
-        #   Page 7: "F43T: Transhipment\nPage 7 of 10"
-        #   Page 8: "ALLOWED\nF44E: Port of Loading..."
-        # The value "ALLOWED" at the start of page 8 belongs to F43T.
-        # Check if the next page starts with a short value (like ALLOWED,
-        # PROHIBITED, WITHOUT) before the first F-tag.
         _SHORT_ENUM_VALUES = {
             'ALLOWED', 'PROHIBITED', 'NOT ALLOWED', 'PERMITTED',
             'WITHOUT', 'CONFIRM', 'MAY ADD', 'IRREVOCABLE',
@@ -2501,12 +4148,9 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             extra_text = _get_packet_refined_text(extra_pkt)
             extra_page = _get_packet_first_page(extra_pkt)
 
-            # Check for page-break continuation: if page starts with a
-            # short enum value before any F-tag, it belongs to the LAST
-            # field from the previous page.
             _first_line = extra_text.strip().split('\n')[0].strip().upper() if extra_text else ''
             if _first_line in _SHORT_ENUM_VALUES:
-                # Find the last field that has an empty/label-only value
+
                 _label_only_fields = {'43T', '43P', '49', '40A'}
                 for _lof_tag in _label_only_fields:
                     _existing_val = final_lc.consolidated_fields.get(_lof_tag, '')
@@ -2517,15 +4161,71 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                         _progress(f"    F{_lof_tag}: page-break continuation → '{_first_line}'")
                         break
 
+            _first_ftag_in_extra = re.search(
+                r'(?:^|\n)\s*F(\d{2}[A-Z]?)\s*:', extra_text
+            )
+            if _first_ftag_in_extra:
+                _pre_tag = extra_text[:_first_ftag_in_extra.start()].strip()
+
+                _pre_tag = re.sub(
+                    r'(?:^|\n)\s*Page\s+\d+\s+of\s+\d+\s*', '\n',
+                    _pre_tag, flags=re.IGNORECASE,
+                ).strip()
+                _pre_tag = re.sub(
+                    r'^\s*ORIGINAL\s+COPY\s+NON-NEGOTIABLE\s*', '',
+                    _pre_tag, flags=re.IGNORECASE,
+                ).strip()
+
+                _looks_like_metadata = bool(re.search(
+                    r'(?:Message\s+Details|Message\s+Identifier|Message\s+Preparation|'
+                    r'Block\s+\d|Identifier\s*:\s*fin\.|Applic\.?\s+Interface|'
+                    r'Sender\s*:|Receiver\s*:|Transaction\s+Reference)',
+                    _pre_tag, re.IGNORECASE,
+                ))
+                if _pre_tag and len(_pre_tag) >= 30 and not _looks_like_metadata:
+                    _new_tag_in_extra = _first_ftag_in_extra.group(1).upper()
+                    _CLAUSE_BEARING_TAGS = (
+                        '45A', '45B', '46A', '46B', '47A', '47B',
+                        '78', '72', '79',
+                    )
+                    try:
+                        _new_idx = EXTRACTION_TAGS.index(_new_tag_in_extra)
+                    except ValueError:
+                        _new_idx = -1
+                    _target_tag = None
+                    if _new_idx >= 0:
+                        for _candidate in reversed(EXTRACTION_TAGS[:_new_idx]):
+                            if (_candidate in _CLAUSE_BEARING_TAGS
+                                    and _candidate in final_lc.consolidated_fields
+                                    and final_lc.consolidated_fields.get(_candidate, '').strip()):
+                                _target_tag = _candidate
+                                break
+                    if _target_tag:
+                        _existing = final_lc.consolidated_fields[_target_tag]
+                        if _pre_tag not in _existing:
+                            final_lc.consolidated_fields[_target_tag] = (
+                                _existing.rstrip() + '\n' + _pre_tag
+                            )
+                            final_lc.original_fields[_target_tag] = (
+                                final_lc.consolidated_fields[_target_tag]
+                            )
+                            _progress(
+                                f"    P212: F{_target_tag} continuation rescued from "
+                                f"extra MT700 packet (+{len(_pre_tag)} chars before F{_new_tag_in_extra})"
+                            )
+
             extra_fields = _extract_swift_fields(extra_text, source_page=extra_page, source_mt='MT700')
             _clause_tags = {'46A', '47A', '45A', '78', '72', '79'}
             for sf in extra_fields:
+
+                if sf.tag == '27':
+                    continue
                 if sf.tag not in final_lc.consolidated_fields:
                     final_lc.consolidated_fields[sf.tag] = sf.value
                     final_lc.original_fields[sf.tag] = sf.value
                     _progress(f"    F{sf.tag} (from extra MT700): {sf.value[:60]}...")
                 elif sf.tag in _clause_tags and sf.value:
-                    # Append continuation text for multi-page clause fields
+
                     existing = final_lc.consolidated_fields[sf.tag]
                     if sf.value not in existing:
                         final_lc.consolidated_fields[sf.tag] = existing.rstrip() + '\n' + sf.value
@@ -2533,10 +4233,51 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                         _progress(f"    F{sf.tag} (appended from extra MT700 page): +{len(sf.value)} chars")
             final_lc.source_packets.append(_get_packet_field(extra_pkt, 'packet_id', 0))
 
-    # -- Apply amendments (MT707) in sequence --
+        if '45A' in final_lc.consolidated_fields:
+            _f45a_value = final_lc.consolidated_fields['45A']
+
+            _candidate_pages = []
+            for _pkt in mt700_packets:
+                _candidate_pages.extend(
+                    _pkt.get('page_numbers', []) if isinstance(_pkt, dict)
+                    else (getattr(_pkt, 'page_numbers', []) or [])
+                )
+            _recovered = _recover_f45a_layout_from_step01(_f45a_value, _candidate_pages)
+            if _recovered != _f45a_value:
+                final_lc.consolidated_fields['45A'] = _recovered
+                final_lc.original_fields['45A'] = _recovered
+                _progress(
+                    f"  P217: F45A multi-line layout restored from step01 raw OCR "
+                    f"(was inline {len(_f45a_value)} chars; now {_recovered.count(chr(10)) + 1} lines)"
+                )
+
+    if mt707_packets and final_lc.consolidated_fields:
+        _pre_keys = list(final_lc.consolidated_fields.keys())
+        _pre_snapshot = {k: final_lc.consolidated_fields.get(k, '') for k in _pre_keys}
+        _apply_p240_cross_ref_rescue(
+            final_lc.consolidated_fields, _progress, _phase='pre-amendment'
+        )
+
+        for _k, _v in final_lc.consolidated_fields.items():
+            if _pre_snapshot.get(_k) != _v:
+                final_lc.original_fields[_k] = _v
+
     if mt707_packets:
         sorted_amendments = _sort_amendments(mt707_packets)
         _progress(f"  Applying {len(sorted_amendments)} amendments...")
+
+        _MT707_STRONG_SIGNAL_RE = re.compile(
+            r'(?:'
+            r'(?:^|\n)\s*F?26E\s*:'
+            r'|Number\s+of\s+Amendment'
+            r'|(?:^|\n)\s*F?30\s*:'
+            r'|Date\s+of\s+Amendment'
+            r'|/REPALL/|/ADD/|/DELETE/|/DEL/'
+            r'|Identifier\s*:\s*fin\.\s*7(?:0[78]|67|75)'
+            r'|fin\.\s*7(?:0[78]|67|75)'
+            r')',
+            re.IGNORECASE,
+        )
 
         for i, amd_pkt in enumerate(sorted_amendments):
             amd_text = _get_packet_refined_text(amd_pkt)
@@ -2545,22 +4286,26 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             is_799 = bool(_get_packet_field(amd_pkt, 'is_799_amendment', False))
             src_mt_label = _get_packet_field(amd_pkt, 'source_mt', '') or 'MT707'
 
+            if not is_799 and not _MT707_STRONG_SIGNAL_RE.search(amd_text):
+                _progress(
+                    f"    Amendment {i + 1}: P216 rejected packet {pkt_id} "
+                    f"(no F26E / F30 / op-code / fin.707 signal — likely a "
+                    f"step03 misclassification of a shipping/transmittal "
+                    f"document; base MT700 preserved)"
+                )
+                warnings.append(
+                    f"Packet {pkt_id} labelled as MT707 amendment but lacks "
+                    f"any genuine MT707 signal (F26E / F30 / op-code / fin.707); "
+                    f"skipped to avoid corrupting the base LC fields."
+                )
+                continue
+
             if is_799:
-                # MT799 free-format amendment: use the free-format parser ONLY.
-                # We must NOT fall back to _extract_swift_fields() on a 799 page
-                # because that would extract F20/F79 (the narrative tag) and
-                # apply them as regular consolidated fields, polluting the LC.
-                # If the parser can't recognise the amendment instructions, we
-                # leave amd_fields empty and skip the amendment — better to
-                # under-apply than to corrupt the consolidated LC.
+
                 amd_fields = _extract_mt799_amendment_fields(
                     amd_text, source_page=amd_page, source_mt=src_mt_label or 'MT799',
                 )
-                # Defensive filter: drop any tag that should NEVER come from a
-                # 799 amendment regardless of source. F79 (narrative), F20
-                # (transaction reference), F21 (related reference), F23
-                # (issuing bank reference) are 799-specific routing fields,
-                # not LC fields.
+
                 amd_fields = [f for f in amd_fields if f.tag not in ('79', '20', '21', '23')]
                 if not amd_fields:
                     _progress(
@@ -2573,10 +4318,26 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                         f"{len(amd_fields)} amendment field(s) from packet {pkt_id}: "
                         f"{[f.tag for f in amd_fields]}"
                     )
+
+                    for _sf in amd_fields:
+                        if not _sf.mt799_replace_anchor:
+                            continue
+                        _cur = final_lc.consolidated_fields.get(_sf.tag, '') or ''
+                        if not _cur:
+                            continue
+                        _stripped = _strip_mt799_anchor_block(
+                            _cur, _sf.mt799_replace_anchor,
+                        )
+                        if _stripped != _cur:
+                            final_lc.consolidated_fields[_sf.tag] = _stripped
+                            _progress(
+                                f"      P273: stripped existing block for "
+                                f"{_sf.mt799_replace_anchor!r} from F{_sf.tag} "
+                                f"before MT799 /ADD/ append"
+                            )
             else:
                 amd_fields = _extract_swift_fields(amd_text, source_page=amd_page, source_mt='MT707')
-                # VLM fallback for STRUCTURED amendments only — never for 799
-                # (the VLM has no notion of "should read as / I/O" semantics).
+
                 if len(amd_fields) < 2:
                     try:
                         vlm_amd = _extract_fields_vlm(amd_pkt, amd_text, amd_page, _progress)
@@ -2586,45 +4347,272 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                         pass
                 _progress(f"    Amendment {i + 1}: {len(amd_fields)} fields from packet {pkt_id}")
 
-            # Try VLM-based amendment first (more accurate for complex instructions)
-            vlm_record = _apply_amendment_vlm(
-                final_lc.consolidated_fields,
-                amd_text,
-                amendment_number=i + 1,
-                source_packet_id=pkt_id,
-                _progress=_progress,
+            _NESTED_FIELD_INSTR_RE = re.compile(
+                r'(?:'
+                r'FIELD\s+\d{2}[A-Z]?-?\d*\s+'
+                r'(?:(?:NOW\s+)?TO\s+READ\s+AS|WORD\s+TO\s+READ\s+AS'
+                r'|DELETE\s+WORDING|ADD\s+(?:LOI\s+)?(?:CLAUSE|WORDING))'
+                r'|UNDER\s+FIELD\s+\d{2}[A-Z]?(?:-\d+)?\s+ADD\s+'
+                r'(?:LOI\s+)?(?:CLAUSE|WORDING)\s+AS'
+                r')',
+                re.IGNORECASE,
             )
-            if vlm_record and vlm_record.fields_changed:
-                record = vlm_record
-                _progress(f"      Applied via VLM: {record.fields_changed}")
-            else:
-                # Fallback to regex-based amendment
-                record = _apply_amendment(
+            _has_structured_clause_ops = any(
+                sf.tag in ('45A', '45B', '46A', '46B', '47A', '47B')
+                and (
+                    any(opcode in (sf.value or '').upper()
+                        for opcode in ('/DELETE/', '/DEL/', '/ADD/'))
+
+                    or '/REPALL/' in (sf.value or '').upper()
+                )
+                for sf in amd_fields
+            )
+
+            record = None
+            if _has_structured_clause_ops:
+                _det_snapshot = dict(final_lc.consolidated_fields)
+                det_record = _apply_amendment(
                     final_lc.consolidated_fields,
                     amd_fields,
                     amendment_number=i + 1,
                     source_packet_id=pkt_id,
                 )
-                _progress(f"      Applied via regex: {record.fields_changed}")
+                if det_record and det_record.fields_changed:
+                    record = det_record
+                    _progress(
+                        f"      Applied via deterministic rules (structured MT707): "
+                        f"{record.fields_changed}"
+                    )
+
+                    if (
+                        'ADD CLAUSE AS' in amd_text.upper()
+                        or 'ADD LOI CLAUSE AS' in amd_text.upper()
+                    ):
+                        _p263_clean_amd = amd_text
+                        _p263_clean_amd = re.sub(
+                            r'(?:^|\n)\s*Narrative\s*:\s*', '\n',
+                            _p263_clean_amd,
+                        ).strip()
+                        _p263_clean_amd = re.sub(
+                            r'(?:^|\n)\s*Lines?\s+\d+(?:\s*[-–]\s*\d+)?\s*(?:\n|$)',
+                            '\n', _p263_clean_amd,
+                        ).strip()
+                        _p263_clean_amd = re.sub(
+                            r'(?:^|\n)\s*Code\s*:\s*', '\n',
+                            _p263_clean_amd,
+                        ).strip()
+                        _p263_clean_amd = re.sub(
+                            r'\s*Other\s*\n?\s*Delivery\s+overdue.*$',
+                            '', _p263_clean_amd,
+                            flags=re.IGNORECASE | re.DOTALL,
+                        ).strip()
+                        _p263_clean_amd = re.sub(
+                            r'\s*Page\s+\d+\s+of\s+\d+\s*', ' ',
+                            _p263_clean_amd,
+                        ).strip()
+                        _p263_clean_amd = re.sub(
+                            r'\{CHK:[A-F0-9]+\}', '', _p263_clean_amd,
+                        ).strip()
+                        _p263_clean_amd = re.sub(
+                            r'Block\s+5\s*', '', _p263_clean_amd,
+                        ).strip()
+                        _p263_clean_amd = re.sub(
+                            r'Report\s+(?:Header|Footer|Content).*?(?=\n[A-Z]|\Z)',
+                            '', _p263_clean_amd,
+                            flags=re.IGNORECASE | re.DOTALL,
+                        ).strip()
+                        _p263_clean_amd = re.sub(
+                            r'Message\s+(?:Header|Identifier|Details).*?(?=\n[A-Z]|\Z)',
+                            '', _p263_clean_amd,
+                            flags=re.IGNORECASE | re.DOTALL,
+                        ).strip()
+                        _p263_clean_amd = re.sub(
+                            r'(?:Delivery\s+overdue|Network\s+delivery'
+                            r'|Payment\s+Confirmation'
+                            r'|Confirmed\s+(?:Currency|Amount|Date)).*$',
+                            '', _p263_clean_amd,
+                            flags=re.IGNORECASE | re.DOTALL,
+                        ).strip()
+                        try:
+                            _p251_addclause_augment(
+                                final_lc.consolidated_fields,
+                                _p263_clean_amd,
+                                record,
+                                _progress,
+                            )
+                        except Exception as _e_p263:
+                            _progress(
+                                f"      P263 ADD-CLAUSE augment failed: "
+                                f"{_e_p263} (deterministic result kept)"
+                            )
+                else:
+
+                    final_lc.consolidated_fields = _det_snapshot
+
+            if record is not None:
+
+                _read_as_targets: List[tuple] = []
+                for _m in re.finditer(
+                    r'(?:^|\n)\s*(\d{2}[A-Z]?)\s*\(\s*(\d{1,3})\s*\)\s*:?\s*-?\s*'
+                    r'Read\s+as\b',
+                    amd_text, re.IGNORECASE,
+                ):
+                    _raw_tag = _m.group(1).upper()
+                    _read_as_targets.append((
+                        _MT799_TAG_TO_FIELD.get(_raw_tag, _raw_tag),
+                        int(_m.group(2)),
+                    ))
+                if _read_as_targets:
+
+                    _cleaned_amd = re.sub(
+                        r'(?:^|\n)\s*\d{2}[A-Z]?\s*'
+                        r'(?:\(\s*\d{1,3}\s*\)|\s+\d{1,3})\s*:?\s*-?\s*'
+                        r'PLEASE\s+DELETE\s+COMPLETELY[^\n]*',
+                        '', amd_text, flags=re.IGNORECASE,
+                    )
+                    _cleaned_amd = re.sub(
+                        r'(?:^|\n)\s*\d{2}[A-Z]?\s*:-\s*[^\n]{0,80}?'
+                        r'\bRead\s+as\b[^\n]*(?:\n[^\n]*?(?:instead\s+of\s+existing'
+                        r'|i\s*/\s*[oe])[^\n]*)?',
+                        '', _cleaned_amd, flags=re.IGNORECASE,
+                    )
+                    try:
+                        aug_record = _apply_amendment_vlm(
+                            final_lc.consolidated_fields,
+                            _cleaned_amd,
+                            amendment_number=i + 1,
+                            source_packet_id=pkt_id,
+                            _progress=_progress,
+                        )
+                    except Exception as _e:
+                        aug_record = None
+                        _progress(f"      P245 VLM augment failed: {_e}")
+                    if aug_record and aug_record.fields_changed:
+
+                        for _tag in aug_record.fields_changed:
+                            if _tag not in record.fields_changed:
+                                record.fields_changed.append(_tag)
+                            _aug_det = aug_record.change_details.get(_tag, {})
+                            if _tag in record.change_details:
+                                _existing = record.change_details[_tag]
+                                if 'new' in _aug_det:
+                                    _existing['new'] = _aug_det['new']
+                            else:
+                                record.change_details[_tag] = _aug_det
+
+                        for _tag, _cn in _read_as_targets:
+                            if _tag not in record.change_details:
+                                continue
+                            _det_for_tag = record.change_details[_tag]
+                            _existing_changed = _det_for_tag.get('clauses_changed') or []
+                            if _cn not in _existing_changed:
+                                _existing_changed.append(_cn)
+                            _det_for_tag['clauses_changed'] = _existing_changed
+                        _progress(
+                            f"      P245 VLM augment patched clause-level Read-as: "
+                            f"{aug_record.fields_changed} (clauses {_read_as_targets})"
+                        )
+
+            if record is None:
+
+                vlm_record = _apply_amendment_vlm(
+                    final_lc.consolidated_fields,
+                    amd_text,
+                    amendment_number=i + 1,
+                    source_packet_id=pkt_id,
+                    _progress=_progress,
+                )
+                if vlm_record and vlm_record.fields_changed:
+                    record = vlm_record
+                    _progress(f"      Applied via VLM: {record.fields_changed}")
+
+                    _vlm_handled = set(record.fields_changed)
+                    _OP_MARKER_RE = re.compile(
+                        r'/(?:ADD|DEL|DELETE|REPALL)/|TO\s+READ\s+AS|'
+                        r'PLEASE\s+READ|UNDER\s+FIELD',
+                        re.IGNORECASE,
+                    )
+
+                    _aug_fields_input = []
+                    for _sf in amd_fields:
+
+                        _candidate = _sf.tag
+                        if (_sf.tag.endswith('B')
+                                and _sf.tag[:-1] + 'A' in SWIFT_FIELD_LABELS):
+                            _base_candidate = _sf.tag[:-1] + 'A'
+                            if (_base_candidate in final_lc.consolidated_fields
+                                    or _sf.tag in ('45B', '46B', '47B')):
+                                _candidate = _base_candidate
+                        if _candidate in _vlm_handled:
+                            continue
+
+                        if _OP_MARKER_RE.search(_sf.value or ''):
+                            continue
+                        _aug_fields_input.append(_sf)
+
+                    if _aug_fields_input:
+                        _aug_record = _apply_amendment(
+                            final_lc.consolidated_fields,
+                            _aug_fields_input,
+                            amendment_number=i + 1,
+                            source_packet_id=pkt_id,
+                        )
+
+                        _augmented_tags = []
+                        for _aug_tag in (_aug_record.fields_changed or []):
+                            if _aug_tag in _vlm_handled:
+                                continue
+                            record.fields_changed.append(_aug_tag)
+                            _aug_detail = _aug_record.change_details.get(
+                                _aug_tag, {}) or {}
+                            _aug_detail['operation'] = 'regex_augment'
+                            record.change_details[_aug_tag] = _aug_detail
+                            _augmented_tags.append(_aug_tag)
+                        if _augmented_tags:
+                            _progress(
+                                f"      P225 regex augment: added "
+                                f"{_augmented_tags} (VLM had "
+                                f"{list(_vlm_handled)})"
+                            )
+                else:
+
+                    record = _apply_amendment(
+                        final_lc.consolidated_fields,
+                        amd_fields,
+                        amendment_number=i + 1,
+                        source_packet_id=pkt_id,
+                    )
+                    _progress(f"      Applied via deterministic rules: {record.fields_changed}")
             final_lc.amendment_log.append(record)
             final_lc.source_packets.append(pkt_id)
 
-            # Re-run the FULL base-field cleanup pipeline on every field
-            # this amendment changed. _apply_amendment writes raw amendment
-            # values directly to consolidated_fields, so without this pass
-            # an amendment to F44C / F47A / F78 brings the SWIFT message
-            # footer ("Other / Delivery overdue / Network delivery / Payment
-            # Confirmation / Report Footer") and unconverted SWIFT date
-            # codes ("251030 2025 Oct 30") into the Final LC.
             for _ch_tag in record.fields_changed:
                 _raw = final_lc.consolidated_fields.get(_ch_tag, '')
                 _cleaned = _clean_consolidated_field_value(_ch_tag, _raw)
                 if _cleaned != _raw:
                     final_lc.consolidated_fields[_ch_tag] = _cleaned
-                    # Keep the change_details in-sync so the audit log
-                    # reflects the final visible value, not the raw one.
+
                     if _ch_tag in record.change_details:
                         record.change_details[_ch_tag]['new'] = _cleaned
+
+            _phantom = []
+            for _ch_tag in list(record.fields_changed):
+                _det = record.change_details.get(_ch_tag, {}) or {}
+                _old_raw = _det.get('old', '')
+                _new_raw = _det.get('new', '')
+                if not _old_raw or not _new_raw:
+                    continue
+                _old_clean = _clean_consolidated_field_value(_ch_tag, _old_raw)
+                _new_clean = _clean_consolidated_field_value(_ch_tag, _new_raw)
+                if (_old_clean.strip()
+                        and _old_clean.strip() == _new_clean.strip()):
+                    _phantom.append(_ch_tag)
+            for _ph in _phantom:
+                while _ph in record.fields_changed:
+                    record.fields_changed.remove(_ph)
+                record.change_details.pop(_ph, None)
+            if _phantom:
+                _progress(f"      P227: dropped phantom-change tags: {_phantom}")
 
             if record.fields_changed:
                 _progress(f"      Changed: {', '.join(record.fields_changed)}")
@@ -2632,21 +4620,34 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 _progress(f"      Date: {record.amendment_date}")
 
         final_lc.amendment_count = len(final_lc.amendment_log)
-        # Update DC number if changed by amendment
+
         if '20' in final_lc.consolidated_fields:
             final_lc.dc_number = final_lc.consolidated_fields['20']
 
-    # -- Post-processing: clean and resolve cross-references --
     _cf = final_lc.consolidated_fields
 
-    # Track which fields were amended (for UI annotation)
     _amended_fields = set()
     for rec in final_lc.amendment_log:
         _amended_fields.update(rec.fields_changed)
+
+    _ever_had_old: Dict[str, bool] = {}
+    for rec in final_lc.amendment_log:
+        for _t, _det in (rec.change_details or {}).items():
+            if isinstance(_det, dict) and (_det.get('old') or '').strip():
+                _ever_had_old[_t] = True
+    _added_only = {
+        _t for _t in list(_amended_fields)
+        if not _ever_had_old.get(_t, False)
+    }
+    if _added_only:
+        _amended_fields -= _added_only
+        _progress(
+            f"      P274: suppressed AMENDED highlight for empty->non-empty "
+            f"add-only tags: {sorted(_added_only)}"
+        )
     if _amended_fields:
         _cf['_amended_fields'] = list(_amended_fields)
 
-    # 1. Format SWIFT dates: "230509" → "2023-05-09", "260131" → "2026-01-31"
     for _dt_tag in ('31C', '31D', '44C'):
         _dv = _cf.get(_dt_tag, '')
         if _dv:
@@ -2662,35 +4663,14 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 _cf[_dt_tag] = f"{_formatted}\n{_rest}".strip() if _rest else _formatted
                 _progress(f"  F{_dt_tag}: formatted date {_raw} → {_formatted}")
 
-    # 1b. P73: SWIFT continuation marker resolution.
-    #
-    # Some Fusion / Alliance exports break a long field across two physical
-    # SWIFT fields and stitch them with "(CONT FROM FIELD XX)" markers.
-    # Example seen in the wild:
-    #   F48: "Period for Presentation in Days
-    #         Days: 21
-    #         Narrative: /(CONT FROM FIELD 47A)"
-    #   F47A: "(CONT FROM FIELD 48)
-    #          DAYS FROM DATE OF SHIPMENT BUT WITHIN THE VALIDITY OF LC
-    #          ...real F47A clauses..."
-    #
-    # The continuation chunk in F47A actually belongs to F48, not F47A.
-    # This pre-pass walks every field, finds "(CONT FROM FIELD XX)" markers,
-    # extracts the chunk that belongs to field XX, appends it to XX, and
-    # removes it from the current field. After this pass the regular
-    # cross-reference resolver and the per-field cleanup see clean values.
-    #
-    # The chunk boundary is one of:
-    #   • a blank line followed by an UPPERCASE label like "F47A:" / "47A:"
-    #   • a blank line followed by a tag-like prefix
-    #   • a numbered clause start ("1.", "2)" etc.) at column 0
-    #   • end of value
-    # P87: Match both "(CONT FROM FIELD XX)" and "(CONT. IN FIELD XX)"
-    # and "(CONT IN FIELD XX)" — Alliance uses "IN" while Fusion uses "FROM"
     _cont_marker_re = re.compile(
         r'[/\\]?\s*'
-        r'\(\s*CONT\.?\s*(?:INUED|INUATION)?\s+(?:FROM|IN)\s+FIELD\s+(?P<src>\d{2}[A-Z]?)\s*\)\s*'
-        r'(?P<rest>(?:(?!\n\s*\d+\s*[.\-\)]\s)(?!\n\s*F?\d{2}[A-Z]?\s*:).)*)',
+        r'\(\s*CONT\.?\s*(?:INUED|INUATION)?\s+(?:FROM|FORM|IN)\s+FIELD\s+(?P<src>\d{2}[A-Z]?)\s*\)\s*'
+        r'(?P<rest>(?:'
+        r'(?!\n\s*\d+\s*[.\-\)]\s)'
+        r'(?!\n\s*F?\d{2}[A-Z]?\s*:)'
+        r'(?!\s*[/\\]?\s*\(\s*CONT\.?\s*(?:INUED|INUATION)?\s+(?:FROM|FORM|IN)\s+FIELD)'
+        r'.)*)',
         re.IGNORECASE | re.DOTALL,
     )
     _cont_pulled: Dict[str, list] = {}
@@ -2702,20 +4682,17 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             continue
         _new_val = _val
         _had_match = False
-        # Iterate matches from end to start so the indexes stay valid as
-        # we slice them out.
+
         _matches = list(_cont_marker_re.finditer(_val))
         for _m in reversed(_matches):
             _src_tag = _m.group('src').upper()
             _chunk = (_m.group('rest') or '').strip()
-            # Skip the empty self-reference seen in F48 ("Narrative: /(CONT
-            # FROM FIELD 47A)") — there's no payload to move, the payload
-            # lives in F47A and will be handled when we process F47A.
+
             if not _chunk:
                 _new_val = (_new_val[:_m.start()] + _new_val[_m.end():])
                 _had_match = True
                 continue
-            # Don't move content into itself.
+
             if _src_tag == _tag.upper():
                 continue
             _cont_pulled.setdefault(_src_tag, []).append(_chunk)
@@ -2723,14 +4700,12 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             _had_match = True
         if _had_match:
             _cf[_tag] = re.sub(r'\n{3,}', '\n\n', _new_val).strip()
-    # Append the pulled continuation chunks into their target fields.
+
     for _src_tag, _chunks in _cont_pulled.items():
         _existing = _cf.get(_src_tag, '') or ''
-        # Strip a stray "(CONT FROM FIELD XX)" / "/(CONT FROM FIELD XX)"
-        # back-reference left in the target so we don't have a marker
-        # next to the merged content.
+
         _existing = re.sub(
-            r'(?:^|\n)\s*[/\\]?\s*\(\s*CONT\.?\s*(?:INUED|INUATION)?\s+(?:FROM|IN)\s+FIELD\s+\d{2}[A-Z]?\s*\)\s*',
+            r'(?:^|\n)\s*[/\\]?\s*\(\s*CONT\.?\s*(?:INUED|INUATION)?\s+(?:FROM|FORM|IN)\s+FIELD\s+\d{2}[A-Z]?\s*\)\s*',
             '\n', _existing, flags=re.IGNORECASE,
         ).strip()
         _merged_chunks = '\n'.join(_chunks).strip()
@@ -2742,21 +4717,34 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                   f"({sum(len(c) for c in _chunks)} chars from "
                   f"{len(_chunks)} marker(s))")
 
-    # 2. Resolve cross-references
-    # Pattern A: "++++SEE FIELD 47A++++" → look up value from 47A (marker-based)
-    # Pattern B: "REFER CLAUSE NO.10 OF FIELD 47A" → look up clause 10 from 47A
-    # Pattern C: "PLS REFER CLAUSE NO.5 OF FIELD 47A" → look up clause 5 from 47A
+    _apply_p240_cross_ref_rescue(_cf, _progress, _phase='post-amendment')
+
+    _f48_pre = _cf.get('48', '')
+    if _f48_pre and isinstance(_f48_pre, str):
+
+        _pre_days_m = re.search(
+            r'(?<!\d)(\d{1,3})\s*[/\\\n\r]?\s*'
+            r'(?:Narrative\s*:?\s*)?[/\\]?\s*'
+            r'(?:PLS\s+)?REFER\b',
+            _f48_pre, re.IGNORECASE,
+        )
+        if _pre_days_m:
+            _cf['48'] = _pre_days_m.group(1)
+            _progress(
+                f"  P211: F48 pre-normalised to day count '{_pre_days_m.group(1)}' "
+                f"(stripped trailing 'REFER FIELD ...' to prevent cross-ref overwrite)"
+            )
+
     for _tag, _val in list(_cf.items()):
         if not isinstance(_val, str):
             continue
 
-        # Pattern A: ++++SEE FIELD XX++++
         _ref_m = re.search(r'\+{3,}SEE\s+FIELD\s+(\d{2}[A-Z]?)\+{3,}', _val, re.IGNORECASE)
         if _ref_m:
             _ref_tag = _ref_m.group(1)
             _ref_val = _cf.get(_ref_tag, '')
             if _ref_val:
-                # Look for +++FIELD XX+++ marker in the referenced field
+
                 _marker_pat = r'\+{3,}FIELD\s+' + re.escape(_tag) + r'\+{3,}\s*\n?(.*?)(?=\n\+{3,}FIELD|\Z)'
                 _marker_m = re.search(_marker_pat, _ref_val, re.IGNORECASE | re.DOTALL)
                 if _marker_m:
@@ -2765,10 +4753,6 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                     _progress(f"  F{_tag}: resolved cross-ref (marker) from F{_ref_tag} → {_resolved[:60]}")
                     continue
 
-        # Pattern B: "REFER CLAUSE NO.X OF FIELD YY" / "PLS REFER CLAUSE NO.X OF FIELD YY"
-        # P198fr — make 'NO.' optional so 'REFER CLAUSE 10 OF FIELD 47A'
-        # (no 'NO.') also resolves correctly. Same regex handles
-        # "CLAUSE NO. 10", "CLAUSE NO.10", "CLAUSE 10".
         _clause_ref_m = re.search(
             r'(?:PLS\s+)?REFER\s+(?:TO\s+)?CLAUSE\s+(?:NO\.?\s*)?(\d+)\s+OF\s+FIELD\s+(\d{2}[A-Z]?)',
             _val, re.IGNORECASE)
@@ -2781,12 +4765,14 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 for _rc in _ref_clauses:
                     if _rc.clause_number == _clause_num:
                         _resolved = _rc.text.strip()
+
+                        if _tag in ('50', '59'):
+                            _resolved = _trim_resolved_for_name_address_field(_resolved)
                         _cf[_tag] = _resolved
                         _progress(f"  F{_tag}: resolved clause #{_clause_num} from F{_ref_tag} → {_resolved[:60]}")
                         break
             continue
 
-        # Pattern C1: "REFER TO FIELD 47A(10)" — clause number in parentheses
         _paren_ref_m = re.search(
             r'(?:SEE|REFER\s+(?:TO)?|AS\s+PER)\s+FIELD\s+(\d{2}[A-Z]?)\s*\(\s*(\d+)\s*\)',
             _val, re.IGNORECASE)
@@ -2799,23 +4785,17 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 for _rc in _ref_clauses:
                     if _rc.clause_number == _clause_num:
                         _resolved = _rc.text.strip()
+
+                        if _tag in ('50', '59'):
+                            _resolved = _trim_resolved_for_name_address_field(_resolved)
                         _cf[_tag] = _resolved
                         _progress(f"  F{_tag}: resolved ref from F{_ref_tag} clause ({_clause_num}) → {_resolved[:60]}")
                         break
                 else:
-                    # Clause number not found — try matching by content keyword
-                    # e.g., clause 10 might be labelled differently
+
                     _progress(f"  F{_tag}: clause ({_clause_num}) not found in F{_ref_tag} ({len(_ref_clauses)} clauses)")
             continue
 
-        # P198fr — "REFER FIELD YY CLAUSE N" / "REFER FIELD YY CLAUSE NO. N"
-        # MUST be tried BEFORE the bare "REFER FIELD YY" pattern below,
-        # otherwise C2's whole-field-replacement fires first and wipes
-        # out F48's content (replacing it with the entire F47A body
-        # instead of only clause N). Real example: F48 contains
-        # "Narrative: /REFER FIELD 47A CLAUSE 10" — this used to
-        # collapse F48 to all of F47A. Now it correctly extracts
-        # clause 10 only.
         _rev_clause_m = re.search(
             r'REFER\s+FIELD\s+(\d{2}[A-Z]?)\s+CLAUSE\s+(?:NO\.?\s*)?(\d+)',
             _val, re.IGNORECASE)
@@ -2831,10 +4811,7 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                         _resolved_clause = _rc.text.strip()
                         break
                 if _resolved_clause:
-                    # Replace the reference marker with the resolved
-                    # clause text — keep the surrounding F48 wording
-                    # ("Period for Presentation ...", "Days: 21",
-                    # "Narrative: ") intact.
+
                     _new_val = (
                         _val[:_rev_clause_m.start()]
                         + _resolved_clause
@@ -2848,40 +4825,24 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                     )
                     continue
 
-        # Pattern C2: "SEE FIELD YY" / "AS PER FIELD YY" / "REFER TO FIELD YY"
-        # (no clause number)
-        #
-        # P198di — Only apply this whole-field replacement when the
-        # current field's content is ESSENTIALLY just a reference
-        # ("PLS REFER FIELD 47A", "AS PER FIELD 47A.") — typical of
-        # short fields like F48 that say nothing but "see X". When
-        # the reference is just one phrase inside a longer clause
-        # field (e.g. F47A clause 10: "ALL DOCUMENTS SHOWING
-        # DESCRIPTION OF GOODS AS SOYBEANS ACCEPTABLE ONLY INVOICE
-        # TO SHOW FULL DESCRIPTION AS PER FIELD 45A"), we MUST NOT
-        # replace the entire F47A with F45A's content — doing so
-        # wipes out the other 16 conditions.
-        # P198di — fixed pre-existing regex: 'REFER\\s+(?:TO)?' required
-        # double whitespace when TO was absent, so 'REFER FIELD' (single
-        # space, no 'TO') never matched. Now 'REFER(?:\\s+TO)?'.
+        if _tag in ('50', '59'):
+            _simple_ref_pattern = (
+                r'(?:SEE|REFER(?:\s+TO)?|AS\s+PER)\s+'
+                r'(?:FIELD\s+)?(\d{2}[A-Z]?)\b'
+            )
+        else:
+            _simple_ref_pattern = (
+                r'(?:SEE|REFER(?:\s+TO)?|AS\s+PER)\s+FIELD\s+(\d{2}[A-Z]?)'
+            )
         _simple_ref_m = re.search(
-            r'(?:SEE|REFER(?:\s+TO)?|AS\s+PER)\s+FIELD\s+(\d{2}[A-Z]?)',
-            _val, re.IGNORECASE)
+            _simple_ref_pattern, _val, re.IGNORECASE)
         if _simple_ref_m:
-            # Heuristic: only treat as a whole-field replacement if
-            # stripping the reference leaves essentially no other
-            # content (≤ 30 chars after removing the marker and
-            # surrounding label words). Long multi-clause fields
-            # (≥ 200 chars or with numbered list items "1)" / "2)")
-            # are NEVER replaced — the reference is just text inside
-            # one of their clauses.
+
             _val_after = (
                 _val[:_simple_ref_m.start()]
                 + _val[_simple_ref_m.end():]
             )
-            # Strip common label / connective words that surround a
-            # bare-reference shape ("Period for Presentation in
-            # Days", "Days:", "Narrative:", whitespace, slashes)
+
             _val_residual = re.sub(
                 r'(?:Period\s+for\s+Presentation(?:\s+in\s+Days)?|'
                 r'Additional\s+Conditions|Documents\s+Required|'
@@ -2893,35 +4854,52 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 re.search(r'(?m)^\s*\d+\s*[\)\.]\s', _val)
                 or len(_val) > 200
             )
-            # P198fr — Additional guard: if the value mentions
-            # "CLAUSE <num>" anywhere, the reference is to a SPECIFIC
-            # clause within FYY, not the whole field. Don't replace
-            # the entire current field with all of FYY's content.
+
             _has_clause_ref = bool(re.search(
                 r'CLAUSE\s+(?:NO\.?\s*)?\d+', _val, re.IGNORECASE))
-            if (not _is_multi_clause) and len(_val_residual) <= 30 \
+            if (not _is_multi_clause) and len(_val_residual) <= 30\
                     and not _has_clause_ref:
                 _ref_tag = _simple_ref_m.group(1)
                 _ref_val = _cf.get(_ref_tag, '')
                 if _ref_val:
-                    # Replace the reference with the actual value
+
                     _cf[_tag] = _ref_val
                     _progress(
                         f"  F{_tag}: resolved simple ref from F{_ref_tag} "
                         f"→ {_ref_val[:60]}"
                     )
             else:
-                # Skip — reference is just one phrase inside a
-                # larger clause field; do NOT replace the whole
-                # field with the referenced field's content.
-                _progress(
-                    f"  F{_tag}: skipped simple-ref replacement "
-                    f"(field has multi-clause content; reference "
-                    f"is in-clause text only)"
-                )
+
+                _resolved_via_label = False
+                if _tag in ('50', '59'):
+                    _ref_tag = _simple_ref_m.group(1)
+                    _ref_val = _cf.get(_ref_tag, '')
+                    if _ref_val:
+                        _ref_clauses = _split_into_clauses(_ref_tag, _ref_val)
+                        _party_kw = 'APPLICANT' if _tag == '50' else 'BENEFICIARY'
+
+                        _matched = _find_name_address_clause(
+                            _ref_clauses, _party_kw, _tag)
+                        if _matched:
+                            _resolved = _trim_resolved_for_name_address_field(
+                                _matched.text.strip())
+                            if _resolved:
+                                _cf[_tag] = _resolved
+                                _resolved_via_label = True
+                                _progress(
+                                    f"  F{_tag}: P277 resolved label-matched "
+                                    f"clause #{_matched.clause_number} from "
+                                    f"F{_ref_tag} → {_resolved[:60]}"
+                                )
+                if not _resolved_via_label:
+
+                    _progress(
+                        f"  F{_tag}: skipped simple-ref replacement "
+                        f"(field has multi-clause content; reference "
+                        f"is in-clause text only)"
+                    )
             continue
 
-        # Pattern D: "REFER FIELD YY CLAUSE NO.X" (reversed order)
         _rev_ref_m = re.search(
             r'REFER\s+FIELD\s+(\d{2}[A-Z]?)\s+CLAUSE\s+NO\.?\s*(\d+)',
             _val, re.IGNORECASE)
@@ -2934,28 +4912,40 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                 for _rc in _ref_clauses:
                     if _rc.clause_number == _clause_num:
                         _resolved = _rc.text.strip()
+
+                        if _tag in ('50', '59'):
+                            _resolved = _trim_resolved_for_name_address_field(_resolved)
                         _cf[_tag] = _resolved
                         _progress(f"  F{_tag}: resolved ref from F{_ref_tag} clause #{_clause_num} → {_resolved[:60]}")
                         break
 
-    # 2a-bis. Remove junk fields that shouldn't be in the consolidated LC
-    # F21 "NONREF" is a filler value — remove it
     if _cf.get('21', '').strip().upper() in ('NONREF', 'NON-REF', 'NONE', 'N/A', ''):
         _cf.pop('21', None)
-    # F23 often captures report structure text — remove if it's garbage
+
     _f23 = _cf.get('23', '')
     if _f23 and (re.search(r'Message\s+Text|Block\s+\d|Report\s+Content', _f23, re.IGNORECASE)
                  or len(_f23) > 100):
         _cf.pop('23', None)
-    # F30 is amendment date — only valid in amendment context, not in consolidated LC
-    # If it contains garbage (report headers), remove
+
+    _f23_clean = _cf.get('23', '').strip()
+    _f20_clean = _cf.get('20', '').strip()
+    if _f23_clean and _f20_clean and _f23_clean == _f20_clean:
+        _cf.pop('23', None)
+        _progress(f"  P223: F23 dropped (redundant — equals F20 LC number)")
+
     _f30 = _cf.get('30', '')
     if _f30 and re.search(r'Report\s+Content|Message\s+Details|Applic', _f30, re.IGNORECASE):
         _cf.pop('30', None)
-    # F30 should not be in the final LC (it's amendment metadata)
+
     _cf.pop('30', None)
 
-    # 2b. Special handling for F48 (Presentation Period) — extract days + resolve reference
+    _cf.pop('26E', None)
+
+    for _b_tag in ('45B', '46B', '47B'):
+        _a_tag = _b_tag[:-1] + 'A'
+        if _b_tag in _cf and _cf.get(_a_tag):
+            _cf.pop(_b_tag, None)
+
     _f48 = _cf.get('48', '')
     if _f48:
         _days_m = re.match(r'(\d+)\s*/?\s*(?:PLS\s+)?REFER', _f48, re.IGNORECASE)
@@ -2963,10 +4953,6 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             _cf['48'] = _days_m.group(1)
             _progress(f"  F48: extracted {_days_m.group(1)} days from presentation period")
 
-    # P126 — Rescue "DAYS FROM SHIPMENT DATE BUT WITHIN VALIDITY" from any
-    # field it leaked into (typically F47A), fold it back into F48. This
-    # handles Alliance/Fusion SWIFT exports where the F48 presentation
-    # period straddles fields without a proper (CONT FROM FIELD 48) marker.
     _days_pat = re.compile(
         r'(?:^|\n)\s*(?P<num>\d{1,3})?\s*DAYS?\s+FROM\s+(?:DATE\s+OF\s+)?SHIPMENT(?:\s+DATE)?\s+BUT\s+WITHIN\s+(?:THE\s+)?(?:VALIDITY|EXPIRY)(?:\s+OF\s+(?:THIS\s+)?(?:LC|L/C|CREDIT))?[.\s]*',
         re.IGNORECASE,
@@ -2999,55 +4985,6 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             else:
                 _cf['48'] = f"{_existing_f48}\n{_rescued_days}".strip() if _existing_f48 else _rescued_days
 
-    # P198df — Display normalisation for F48. SWIFT BAHL notation
-    # writes the period as "15/FRM SHIPMENT DATE BUT WITH IN EXPIRY"
-    # — a slash form with "FRM" / "WITH IN" abbreviations that
-    # reads awkwardly in the final LC report. Rewrite it to a
-    # clean English form ("15 days from shipment date but within
-    # expiry") so the consolidated final LC is readable, while
-    # keeping the original numeric value and intent intact. Skips
-    # already-clean wording (e.g. "21 DAYS FROM SHIPMENT DATE").
-    try:
-        _f48_v = str(_cf.get('48', '') or '').strip()
-        if _f48_v:
-            _norm = _f48_v
-            # Slash form: "15/FROM SHIPMENT DATE BUT WITHIN EXPIRY"
-            #         or "21/FRM SHIPMENT DATE BUT WITH IN EXPIRY"
-            _slash_m = re.match(
-                r'^\s*(\d{1,3})\s*/\s*(FROM|FRM)\s+(.+)$',
-                _norm,
-                flags=re.IGNORECASE,
-            )
-            if _slash_m:
-                _norm = (
-                    f"{_slash_m.group(1)} days from "
-                    f"{_slash_m.group(3).strip()}"
-                )
-            # Abbreviation cleanup that applies regardless of form:
-            #   FRM    → from
-            #   WITH IN → within
-            #   B/L DATE / SHIPMENT DATE: leave date words intact
-            _norm = re.sub(r'\bFRM\b', 'from', _norm, flags=re.IGNORECASE)
-            _norm = re.sub(r'\bWITH\s+IN\b', 'within', _norm, flags=re.IGNORECASE)
-            # Drop the ALL-CAPS look so it reads naturally. Only
-            # rewrite when the source was the BAHL slash/abbrev form
-            # (i.e. we actually changed something) to avoid touching
-            # already-clean wording.
-            if _norm != _f48_v:
-                # Title-cased English with a leading number form.
-                _final_lower = _norm.lower()
-                _cf['48'] = _final_lower
-                _progress(
-                    f"  P198df: F48 reformatted "
-                    f"{_f48_v!r} -> {_final_lower!r}"
-                )
-    except Exception as _e:
-        try:
-            _progress(f"  P198df F48 reformat exception: {_e}")
-        except Exception:
-            pass
-
-    # 2c. Run full cleanup on ALL consolidated fields (not just amended ones)
     for _tag in list(_cf.keys()):
         if _tag.startswith('_'):
             continue
@@ -3057,70 +4994,90 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
             if _cleaned != _val:
                 _cf[_tag] = _cleaned
 
-    # 3. Clean junk: URLs, pagination, "Select 'Print' to output..."
+    try:
+        _f48_v = str(_cf.get('48', '') or '').strip()
+        if _f48_v:
+            _norm = _f48_v
+
+            _slash_m = re.match(
+                r'^\s*(\d{1,3})\s*/\s*(FROM|FRM)\s+(.+)$',
+                _norm,
+                flags=re.IGNORECASE,
+            )
+            if _slash_m:
+
+                _norm = (
+                    f"{_slash_m.group(1)} FROM "
+                    f"{_slash_m.group(3).strip()}"
+                )
+
+            _norm = re.sub(r'\bFRM\b', 'FROM', _norm, flags=re.IGNORECASE)
+            _norm = re.sub(r'\bWITH\s+IN\b', 'WITHIN', _norm, flags=re.IGNORECASE)
+            if _norm != _f48_v:
+                _cf['48'] = _norm
+                _progress(
+                    f"  P198df: F48 reformatted "
+                    f"{_f48_v!r} -> {_norm!r}"
+                )
+    except Exception as _e:
+        try:
+            _progress(f"  P198df F48 reformat exception: {_e}")
+        except Exception:
+            pass
+
     for _tag in list(_cf.keys()):
         if _tag.startswith('_'):
             continue
         _val = _cf[_tag]
         if isinstance(_val, str):
-            # Remove URLs
+
             _val = re.sub(r'https?://\S+', '', _val)
-            # Remove "Select 'Print' to output..."
+
             _val = re.sub(r"Select\s+'Print'\s+to\s+output.*", '', _val, flags=re.IGNORECASE)
-            # Remove pagination: "1/1", "2/2", "Page X of Y", "SWIFT_MT7012/2"
+
             _val = re.sub(r'\bSWIFT_MT\d+/?\d*', '', _val)
             _val = re.sub(r'\n\s*\d+/\d+\s*$', '', _val)
-            # Remove IP addresses
+
             _val = re.sub(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+\S*', '', _val)
-            # Collapse multiple blank lines
+
             _val = re.sub(r'\n{3,}', '\n\n', _val)
             _cf[_tag] = _val.strip()
 
-    # 4. Reformat amount if "Increase" label is present
     _amt = _cf.get('32B', '')
     if 'increase' in _amt.lower():
         _amt = re.sub(r'(?i)^Increase\s+of\s+Documentary\s+Credit\s+Amount\s*[\n\r]*', '', _amt).strip()
         _cf['32B'] = _amt
 
-    # 4b. P66: Final 32B hardening pass.
-    # Some extraction paths (Alliance OCR fallback, VLM fallback, multi-page
-    # SWIFT continuation) write 32B without going through the inline cleanup
-    # at extraction time. This catches any residual bleeding such as:
-    #   "USD US DOLLAR 97216,00 #97,216.00F41D: Available With..."
-    #   "USD\nUS DOLLAR\n516000,00\n#516,000.00\nF41D ..."
-    #   "F32B: USD 97,216.00"
-    # The output is always normalised to "{CCY} {amount with US thousands
-    # format}" — e.g. "USD 97,216.00".
     _amt = _cf.get('32B', '')
     if _amt and isinstance(_amt, str):
         _v = _amt
-        # Strip a leading "F32B:" / "32B:" label
+
         _v = re.sub(r'^\s*F?32B\s*[:\-]\s*', '', _v, flags=re.IGNORECASE)
-        # Truncate at any downstream F-tag header glued in (F41D, F39A, etc.)
+
         _next = re.search(r'\bF?\d{2}[A-Z]?\s*:', _v)
         if _next and _next.start() > 0:
             _v = _v[:_next.start()]
-        # Strip the spelt-out currency word(s) — keep just the ISO code
+
         _v = re.sub(
             r'\b(?:US\s*DOLLAR|US\s*DOLLARS|DOLLAR|DOLLARS|EURO|EUROS|POUND\s*STERLING|'
             r'POUNDS|JAPANESE\s*YEN|YEN|FRANC|FRANCS|RUPEE|RUPEES|YUAN|RIYAL|DIRHAM)\b',
             '', _v, flags=re.IGNORECASE,
         )
-        # Strip "#" separators
+
         _v = _v.replace('#', ' ')
-        # Find ISO currency code (3 uppercase letters, default USD)
+
         _ccy_m = re.search(r'\b([A-Z]{3})\b', _v)
         _ccy_str = _ccy_m.group(1) if _ccy_m else 'USD'
-        # Try to find the amount in any common format
+
         _amt_value = None
-        # 1. US format: 97,216.00 / 1,234,567.89
+
         _us = re.search(r'(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?)', _v)
         if _us:
             try:
                 _amt_value = float(_us.group(1).replace(',', ''))
             except ValueError:
                 pass
-        # 2. European format: 97216,00 / 1.234.567,89
+
         if _amt_value is None:
             _eu = re.search(r'(\d{1,3}(?:\.\d{3})+,\d{1,2})', _v)
             if _eu:
@@ -3128,7 +5085,7 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                     _amt_value = float(_eu.group(1).replace('.', '').replace(',', '.'))
                 except ValueError:
                     pass
-        # 3. Plain digits with European decimal comma: 97216,00
+
         if _amt_value is None:
             _eu2 = re.search(r'(\d+,\d{2})\b', _v)
             if _eu2:
@@ -3136,7 +5093,7 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                     _amt_value = float(_eu2.group(1).replace(',', '.'))
                 except ValueError:
                     pass
-        # 4. Plain digits with US decimal point: 97216.00
+
         if _amt_value is None:
             _us2 = re.search(r'(\d+\.\d{2})\b', _v)
             if _us2:
@@ -3144,7 +5101,7 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
                     _amt_value = float(_us2.group(1))
                 except ValueError:
                     pass
-        # 5. Bare integer: 97216
+
         if _amt_value is None:
             _int = re.search(r'\b(\d{3,})\b', _v)
             if _int:
@@ -3155,20 +5112,18 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
         if _amt_value is not None and _amt_value > 0:
             _cf['32B'] = f"{_ccy_str} {_amt_value:,.2f}"
 
-    # -- Split clause fields --
     for tag in CLAUSE_TAGS:
         value = final_lc.consolidated_fields.get(tag, '')
         if value:
-            clause_list = _split_into_clauses(tag, value)
+            clause_list = _split_into_clauses(tag, value, _progress=_progress)
             if clause_list:
                 final_lc.clauses[tag] = clause_list
                 _progress(f"  F{tag} ({SWIFT_FIELD_LABELS.get(tag, '')}): {len(clause_list)} clauses")
 
-    # -- Extract MT799 narrative (only if it contains amendment instructions) --
     for pkt in mt799_packets:
         text = _get_packet_refined_text(pkt)
         pkt_id = _get_packet_field(pkt, 'packet_id', 0)
-        # Only store MT799s that reference LC fields or contain amendment instructions
+
         _has_amendment_content = bool(re.search(
             r'FIELD\s+\d{2}[A-Z]|UNDER\s+FIELD|TO\s+READ\s+AS|I/O\s+EXISTING|PLEASE\s+AMEND',
             text, re.IGNORECASE
@@ -3190,7 +5145,6 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
               f"{sum(len(v) for v in final_lc.clauses.values())} total clauses, "
               f"{elapsed:.1f}s")
 
-    # -- Save results --
     result_file = None
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
@@ -3231,7 +5185,6 @@ def run(step5_result: dict, output_dir: str = None, progress_callback=None) -> d
         'warnings': warnings,
         'result_file': result_file,
     }
-
 
 if __name__ == '__main__':
     import sys as _sys
