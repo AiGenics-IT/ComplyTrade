@@ -50,6 +50,37 @@ _SWIFT_DOCTYPE_TO_MT = {
 }
 
 
+def _legacy_document_type(doc_type_8083: str, mt_type: str) -> str:
+    """Convert 8083's canonical doc_type ('LC', 'Amendment 3', 'Bill of
+    Lading', 'MT799') into the legacy step03 `document_type` strings
+    that downstream regenerate / rerun endpoints check via substring
+    match (`'lc' in dt`, `'amend' in dt`, `'mt7' in dt`).
+
+    Mapping:
+      LC / MT700 family       -> 'LC'
+      Amendment N             -> 'Amendment'  (so `'amend' in dt` is True)
+      MT799 / MT999           -> 'MT799' / 'MT999'
+      Acknowledgment Advice   -> 'MT730'
+      Refusal Notice          -> 'MT734'
+      Authorisation Reimburse -> 'MT740'
+      Bank Guarantee          -> 'MT760'
+      Bank Guarantee Amend    -> 'MT767'
+      shipping                -> the original 8083 doc_type (so the UI
+                                 can show 'Bill of Lading' / 'Commercial
+                                 Invoice' / etc. unchanged).
+    """
+    if not doc_type_8083:
+        return ''
+    dt_lower = doc_type_8083.lower()
+    if dt_lower.startswith('amendment'):
+        return 'Amendment'
+    if mt_type in ('MT700', 'MT701'):
+        return 'LC'
+    if mt_type.startswith('MT') and mt_type not in ('MT700', 'MT701'):
+        return mt_type
+    return doc_type_8083
+
+
 def _doc_type_to_mt(doc_type: str, kind: str = '') -> str:
     """Map an 8083 `document_type` (e.g. 'Amendment 3', 'LC', 'MT799') and
     `kind` (swift/lc_required/extra) to 8082's `mt_type` string.
@@ -294,18 +325,47 @@ def adapt_8083_to_step_results(c8083: Dict,
     }
 
     # ── step03: page sequencing → packets formed ───────────────────
-    # The classifier already grouped pages into packets; expose that
-    # mapping so any downstream UI showing "packet boundaries" works.
+    # Downstream code (server.py:302, 377, 413, 457, 1155, 1213, 1629,
+    # 1638, 1746, 1771, 2222-2242, etc.) reads packets via:
+    #   pkt.get('document_type') → routes to MT700/MT707/shipping
+    #   pkt.get('page_numbers')
+    #   pkt.get('stamps')   / pkt.get('signatures')  → verification
+    #   pkt.get('cleaned_text') / pkt.get('text')    → context display
+    # We surface all of these from 8083's logical doc + page data so the
+    # /api/regenerate-final-lc + /api/rerun-classification endpoints
+    # work against the adapter output exactly like they would against
+    # the legacy step03 output.
+    step03_packets = []
+    for pkt in packets:
+        full_text = '\n'.join(
+            (page_texts.get(pn, '') for pn in pkt['page_numbers'])
+        )
+        step03_packets.append({
+            'packet_id':       pkt['packet_id'],
+            'page_numbers':    pkt['page_numbers'],
+            'page_count':      pkt['page_count'],
+            'pages':           pkt['pages'],
+            # Lowercase form so the existing `dt in ('lc','amendment',...)`
+            # checks match. Use 'amendment' for any "Amendment N" so
+            # `'amend' in dt` resolves true (step03 legacy convention).
+            'document_type':   _legacy_document_type(pkt.get('document_type', ''),
+                                                      pkt.get('mt_type', '')),
+            'mt_type':         pkt['mt_type'],
+            'boundary_confidence': 0.95,
+            'stamps':          pkt['stamps'],
+            'signatures':      pkt['signatures'],
+            'text':            full_text,
+            'cleaned_text':    full_text,
+            'refined_text':    full_text,
+            'source_mt':       pkt.get('source_mt', ''),
+            'is_799_amendment': pkt.get('is_799_amendment', False),
+            'extracted_fields': pkt.get('extracted_fields', {}),
+            'bl_subtype':      pkt.get('bl_subtype', ''),
+            'bl_status_flags': pkt.get('bl_status_flags', []),
+            'awb_subtype':     pkt.get('awb_subtype', ''),
+        })
     step03 = {
-        'packets': [
-            {
-                'packet_id':    pkt['packet_id'],
-                'page_numbers': pkt['page_numbers'],
-                'page_count':   pkt['page_count'],
-                'doc_type_hint': pkt.get('document_type', ''),
-            }
-            for pkt in packets
-        ],
+        'packets': step03_packets,
         'classifications': [
             {
                 'page_number':  p.get('page_number'),

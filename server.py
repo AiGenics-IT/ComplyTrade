@@ -1120,18 +1120,38 @@ def _rerun_classification_pipeline(job_id: str):
         msgs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
         print(f"[rerun-classification {job_id}] {msg}")
 
-    # Load step02 result from disk
-    s2_path = os.path.join(results_dir, 'step02', 'step02_result.json')
-    if not os.path.isfile(s2_path):
-        raise FileNotFoundError("step02_result.json not found — cannot rerun")
-    with open(s2_path, 'r', encoding='utf-8') as f:
-        s2 = _json.load(f)
-
-    # Step 3: Page Sequencing & Classification
-    job['current_step'] = 3
-    _p("Step 3: Re-running page sequencing & classification...")
-    s3 = _to_dict(step03_sequencing.run(s2, os.path.join(results_dir, 'step03'), _p))
-    job.setdefault('step_results', {})['step03'] = s3
+    # Check if 8083 path was used originally — re-running classification
+    # without re-OCRing is FREE because 8083 already wrote
+    # classification_8083.json. Re-run the adapter to refresh step03
+    # (and step08/09 below).
+    _c8083_path = os.path.join(results_dir, 'classification_8083.json')
+    _used_8083 = os.path.isfile(_c8083_path)
+    _adapter_out = None
+    if _used_8083:
+        _p("[8083] Re-running classification from cached 8083 result "
+           "(no OCR / VLM calls)")
+        with open(_c8083_path, 'r', encoding='utf-8') as f:
+            _c8083 = _json.load(f)
+        from bridge import adapt_8083_to_step_results
+        _adapter_out = adapt_8083_to_step_results(_c8083, results_dir)
+        s2 = _adapter_out['step02']
+        s3 = _adapter_out['step03']
+        job.setdefault('step_results', {})['step02'] = s2
+        job.setdefault('step_results', {})['step03'] = s3
+    else:
+        # Legacy path: load step02 + re-run step03 sequencing
+        s2_path = os.path.join(results_dir, 'step02', 'step02_result.json')
+        if not os.path.isfile(s2_path):
+            raise FileNotFoundError(
+                "step02_result.json not found — cannot rerun. "
+                "Re-upload the PDF instead."
+            )
+        with open(s2_path, 'r', encoding='utf-8') as f:
+            s2 = _json.load(f)
+        job['current_step'] = 3
+        _p("Step 3: Re-running page sequencing & classification...")
+        s3 = _to_dict(step03_sequencing.run(s2, os.path.join(results_dir, 'step03'), _p))
+        job.setdefault('step_results', {})['step03'] = s3
 
     # P198gn — Continue through Steps 6-9 (Final LC + Shipping
     # Classification chain) so the dashboard / extracted-text /
@@ -1234,18 +1254,26 @@ def _rerun_classification_pipeline(job_id: str):
         _s6_with_shipping = dict(s6)
         _s6_with_shipping['shipping_packets'] = _shipping_from_s3
 
-        job['current_step'] = 8
-        _p("Step 8: Shipping Document Classification...")
-        s8 = _to_dict(step08_shipping_classification.run(
-            _s6_with_shipping, s7,
-            os.path.join(results_dir, 'step08'), _p))
-        job['step_results']['step08'] = s8
+        if _adapter_out is not None:
+            s8 = _adapter_out['step08']
+            s9 = _adapter_out['step09']
+            job['step_results']['step08'] = s8
+            job['step_results']['step09'] = s9
+            _p(f"[8083] Step 8/9 from cached classification: "
+               f"{len(s8.get('classified_packets', []))} shipping packets")
+        else:
+            job['current_step'] = 8
+            _p("Step 8: Shipping Document Classification...")
+            s8 = _to_dict(step08_shipping_classification.run(
+                _s6_with_shipping, s7,
+                os.path.join(results_dir, 'step08'), _p))
+            job['step_results']['step08'] = s8
 
-        job['current_step'] = 9
-        _p("Step 9: Shipping OCR Reconciliation...")
-        s9 = _to_dict(step09_shipping_reconciliation.run(
-            s8, s7, os.path.join(results_dir, 'step09'), _p))
-        job['step_results']['step09'] = s9
+            job['current_step'] = 9
+            _p("Step 9: Shipping OCR Reconciliation...")
+            s9 = _to_dict(step09_shipping_reconciliation.run(
+                s8, s7, os.path.join(results_dir, 'step09'), _p))
+            job['step_results']['step09'] = s9
     except Exception as _e:
         import traceback
         _p(f"Steps 6-9 failed: {_e}")
@@ -2208,45 +2236,58 @@ def get_regenerate_result(job_id: str):
 def _do_regenerate(job_id: str):
     """Background thread for FLC regeneration."""
     results_dir = os.path.join(RESULTS_DIR, job_id)
-    s2_path = os.path.join(results_dir, 'step02', 'step02_result.json')
-    s3_path = os.path.join(results_dir, 'step03', 'step03_result.json')
 
-    with open(s2_path, 'r', encoding='utf-8') as f:
-        s2 = json.load(f)
-    with open(s3_path, 'r', encoding='utf-8') as f:
-        s3 = json.load(f)
+    # 8083 cache fast-path: if 8083 produced this job originally, re-load
+    # its classification.json and re-run the adapter (no OCR / VLM cost).
+    _c8083_path = os.path.join(results_dir, 'classification_8083.json')
+    _adapter_out = None
+    if os.path.isfile(_c8083_path):
+        with open(_c8083_path, 'r', encoding='utf-8') as f:
+            _c8083 = json.load(f)
+        from bridge import adapt_8083_to_step_results
+        _adapter_out = adapt_8083_to_step_results(_c8083, results_dir)
+        s2 = _adapter_out['step02']
+        s3 = _adapter_out['step03']
+        s5_input = _adapter_out['step05']
+    else:
+        s2_path = os.path.join(results_dir, 'step02', 'step02_result.json')
+        s3_path = os.path.join(results_dir, 'step03', 'step03_result.json')
+        with open(s2_path, 'r', encoding='utf-8') as f:
+            s2 = json.load(f)
+        with open(s3_path, 'r', encoding='utf-8') as f:
+            s3 = json.load(f)
 
-    # Build Step 4/5 input (same logic as pipeline)
-    mt_packets = []
-    shipping_packets = []
-    for pkt in s3.get('packets', []):
-        pkt_copy = dict(pkt)
-        dt = (pkt.get('document_type', '') or '').lower()
-        if any(x in dt for x in ['lc', 'letter of credit', 'amendment', 'mt7']):
-            pkt_copy['mt_type'] = 'MT707' if 'amend' in dt else 'MT700'
-            mt_packets.append(pkt_copy)
-            # P198db — Also keep a shipping-side copy of MT799 /
-            # MT999 free-format messages so step 14's F47A-9
-            # SWIFT-advice check (P198da) can find them on the
-            # shipping side. LC-amendment routing is unaffected.
-            if ('mt799' in dt or 'mt 799' in dt or 'fin.799' in dt
-                    or 'mt999' in dt or 'mt 999' in dt or 'fin.999' in dt
-                    or 'free format' in dt or 'free-format' in dt):
-                _ship_copy = dict(pkt)
-                _ship_copy['mt_type'] = 'shipping'
-                _ship_copy['source_mt'] = 'MT799'
-                _ship_copy['is_swift_advice_copy'] = True
-                shipping_packets.append(_ship_copy)
-        else:
-            pkt_copy['mt_type'] = 'shipping'
-            shipping_packets.append(pkt_copy)
+        # Build Step 4/5 input (same logic as pipeline)
+        mt_packets = []
+        shipping_packets = []
+        for pkt in s3.get('packets', []):
+            pkt_copy = dict(pkt)
+            dt = (pkt.get('document_type', '') or '').lower()
+            if any(x in dt for x in ['lc', 'letter of credit', 'amendment', 'mt7']):
+                pkt_copy['mt_type'] = 'MT707' if 'amend' in dt else 'MT700'
+                mt_packets.append(pkt_copy)
+                # P198db — Also keep a shipping-side copy of MT799 /
+                # MT999 free-format messages so step 14's F47A-9
+                # SWIFT-advice check (P198da) can find them on the
+                # shipping side. LC-amendment routing is unaffected.
+                if ('mt799' in dt or 'mt 799' in dt or 'fin.799' in dt
+                        or 'mt999' in dt or 'mt 999' in dt or 'fin.999' in dt
+                        or 'free format' in dt or 'free-format' in dt):
+                    _ship_copy = dict(pkt)
+                    _ship_copy['mt_type'] = 'shipping'
+                    _ship_copy['source_mt'] = 'MT799'
+                    _ship_copy['is_swift_advice_copy'] = True
+                    shipping_packets.append(_ship_copy)
+            else:
+                pkt_copy['mt_type'] = 'shipping'
+                shipping_packets.append(pkt_copy)
 
-    s5_input = {'packets': mt_packets + shipping_packets, 'page_texts': {}}
-    for p in s2.get('pages', []):
-        pn = p.get('page_number', 0)
-        text = p.get('cleaned_text', p.get('raw_text', ''))
-        if pn and text:
-            s5_input['page_texts'][pn] = text
+        s5_input = {'packets': mt_packets + shipping_packets, 'page_texts': {}}
+        for p in s2.get('pages', []):
+            pn = p.get('page_number', 0)
+            text = p.get('cleaned_text', p.get('raw_text', ''))
+            if pn and text:
+                s5_input['page_texts'][pn] = text
 
     # Delete old step06 result
     s6_dir = os.path.join(results_dir, 'step06')
