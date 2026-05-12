@@ -126,6 +126,48 @@ def _build_page_texts(c8083: Dict) -> Dict[int, str]:
     return out
 
 
+def _build_page_doctypes(c8083: Dict) -> Dict[int, str]:
+    """Page-number → 8083-assigned doc_type (lowercase). Used to filter
+    out T&C / overleaf / Conditions-of-Carriage pages from the body we
+    feed to step14 verification — those add nothing to clause checks
+    but blow up prompt size + LLM latency."""
+    out: Dict[int, str] = {}
+    for p in c8083.get('pages', []) or []:
+        pn = p.get('page_number')
+        dt = (p.get('doc_type') or '').strip().lower()
+        if isinstance(pn, int) and pn > 0:
+            out[pn] = dt
+    return out
+
+
+# Page doc_types whose body is pure boilerplate for verification
+# purposes — strip them from packet text. The boolean status flags
+# (bl_terms_on_back / has_overleaf / blank_back) still travel on
+# the packet so the verifier knows T&C was attached.
+_VERIF_SKIP_DOCTYPE_SUBSTRINGS = (
+    't&c',
+    'terms and conditions',
+    'terms & conditions',
+    'conditions of carriage',
+    'conditions of contract',
+    'overleaf',
+    'blank back',
+    'blank page',
+    'rear of bill of lading',
+    'back of bill of lading',
+)
+
+
+def _is_skippable_verification_page(doc_type: str) -> bool:
+    if not doc_type:
+        return False
+    dt = doc_type.lower()
+    for needle in _VERIF_SKIP_DOCTYPE_SUBSTRINGS:
+        if needle in dt:
+            return True
+    return False
+
+
 def _compute_sections(ld: Dict, pages_by_num: Dict[int, Dict]) -> List[Dict]:
     """Compute the sub-sections inside a logical document by walking
     its all_pages list and grouping consecutive same-doc-type runs.
@@ -717,6 +759,7 @@ def adapt_8083_to_step_results(c8083: Dict,
       'step09': shipping reconciliation stub
     """
     page_texts = _build_page_texts(c8083)
+    page_doctypes = _build_page_doctypes(c8083)
     packets = _build_packets(c8083, page_texts)
 
     # Augment each packet with flattened stamps/signatures so the
@@ -857,9 +900,34 @@ def adapt_8083_to_step_results(c8083: Dict,
         # Concatenate the per-page cleaned text into a single body for
         # the packet, in page order. This mirrors what _build_packets
         # does for step03_packets at lines 580-582 above.
+        #
+        # IMPORTANT — filter out T&C / overleaf / blank-back / Conditions-
+        # of-Carriage pages. Those carry boilerplate that step14
+        # verification doesn't need but that costs us thousands of
+        # tokens per LLM call (e.g. a BL packet of 22K chars where 18K
+        # is reverse-side terms). The presence of T&C/overleaf is
+        # still flagged on the packet (bl_terms_on_back, bl_blank_back,
+        # bl_status_flags has_overleaf/blank_back) so the verifier
+        # knows it was attached, just without re-sending the boilerplate.
+        _kept_pages: List[int] = []
+        _skipped_tc_pages: List[int] = []
+        for pn in pkt['page_numbers']:
+            _dt = page_doctypes.get(pn, '')
+            if _is_skippable_verification_page(_dt):
+                _skipped_tc_pages.append(pn)
+            else:
+                _kept_pages.append(pn)
         _doc_body = '\n'.join(
-            (page_texts.get(pn, '') for pn in pkt['page_numbers'])
+            (page_texts.get(pn, '') for pn in _kept_pages)
         )
+        if _skipped_tc_pages:
+            _doc_body += (
+                f"\n\n[Note: {len(_skipped_tc_pages)} terms-and-conditions / "
+                f"overleaf page(s) attached on pages "
+                f"{', '.join(str(p) for p in _skipped_tc_pages)} — "
+                f"boilerplate not included in body. Status flags still "
+                f"apply: see audit header above.]"
+            )
         # ── Audit header injection ───────────────────────────────
         # step14 reads the packet body as the entire evidence for
         # each verification clause. The new 8083 fields (status

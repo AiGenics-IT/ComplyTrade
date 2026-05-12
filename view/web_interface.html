@@ -35,8 +35,45 @@
         .status-processing{background:#cce5ff;color:#004085}
         .status-completed{background:#d4edda;color:#155724}
         .status-failed{background:#f8d7da;color:#721c24}
-        .progress-bar{width:100%;height:26px;background:#e0e0e0;border-radius:13px;overflow:hidden;margin:16px 0}
-        .progress-fill{height:100%;background:linear-gradient(90deg,#1554ca,#4facfe);transition:width .3s;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;font-size:.85em}
+        /* Progress bar — redesigned for responsive UX:
+           - Stage label sits ABOVE the bar (always readable, never
+             cramped inside a 5% sliver)
+           - Percentage chip on the right
+           - Animated diagonal stripes inside the fill so users see
+             motion even while a single OCR call is running
+           - Soft glow + smooth width transition */
+        .progress-wrap{margin:18px 0}
+        .progress-meta{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:.92em}
+        .progress-stage{display:inline-flex;align-items:center;gap:8px;font-weight:700;color:#1554ca}
+        .progress-stage .ps-dot{width:9px;height:9px;border-radius:50%;background:#1554ca;animation:psPulse 1.4s ease-out infinite;box-shadow:0 0 0 0 rgba(21,84,202,.45)}
+        @keyframes psPulse{0%{box-shadow:0 0 0 0 rgba(21,84,202,.45)}70%{box-shadow:0 0 0 8px rgba(21,84,202,0)}100%{box-shadow:0 0 0 0 rgba(21,84,202,0)}}
+        .progress-pct{font-family:'JetBrains Mono','Consolas',monospace;font-weight:700;color:#0f3a8e;background:#dbeafe;padding:2px 10px;border-radius:10px;font-size:.86em}
+        .progress-bar{width:100%;height:14px;background:#e5edf7;border-radius:8px;overflow:hidden;box-shadow:inset 0 1px 3px rgba(15,23,42,.08)}
+        .progress-fill{
+            height:100%;
+            background:linear-gradient(90deg,#1554ca 0%,#3b82f6 50%,#4facfe 100%),
+                       repeating-linear-gradient(45deg,
+                           rgba(255,255,255,.18) 0,
+                           rgba(255,255,255,.18) 8px,
+                           rgba(255,255,255,0) 8px,
+                           rgba(255,255,255,0) 16px);
+            background-blend-mode:overlay;
+            background-size:200% 100%, 32px 32px;
+            border-radius:8px;
+            position:relative;
+            transition:width .45s cubic-bezier(.2,.7,.3,1);
+            box-shadow:0 0 12px rgba(21,84,202,.25);
+            animation:pgStripes 1.4s linear infinite, pgShine 2.6s ease-in-out infinite;
+        }
+        .progress-fill.complete{
+            background:linear-gradient(90deg,#16a34a,#22c55e);
+            animation:none;
+        }
+        @keyframes pgStripes{from{background-position:0 0, 0 0}to{background-position:0 0, 32px 0}}
+        @keyframes pgShine{0%,100%{background-position:0 0, 0 0}50%{background-position:200% 0, 16px 0}}
+        /* Backward-compat fallback styles for places that read the
+           old class names directly — none of the JS writes text
+           into .progress-fill any more. */
         .spinner{border:4px solid #f3f3f3;border-top:4px solid #1554ca;border-radius:50%;width:36px;height:36px;animation:spin 1s linear infinite;margin:16px auto}
         @keyframes spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}
         .result-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px}
@@ -263,7 +300,13 @@
     <div class="card status-card" id="statusCard">
         <h2>Processing Status</h2>
         <div style="margin:16px 0"><span class="status-badge" id="statusBadge">Pending</span> <span id="elapsedTimer" style="margin-left:12px;font-size:.95em;font-weight:600;color:white;display:none;user-select:text"></span></div>
-        <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%">0%</div></div>
+        <div class="progress-wrap">
+            <div class="progress-meta">
+                <span class="progress-stage" id="pgStage"><span class="ps-dot"></span><span id="pgStageLabel">Waiting…</span></span>
+                <span class="progress-pct" id="pgPct">0%</span>
+            </div>
+            <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+        </div>
         <p id="statusMessage" style="margin:12px 0;color:#666"></p>
         <div class="spinner" id="spinner"></div>
         <!-- Cancel button moved next to Clear All -->
@@ -652,28 +695,129 @@ function updateStatusDisplay(status) {
                 });
             }
         }
-        const stages = {
-            'upload': 5, 'extraction': 15, 'ocr': 30, 'classification': 45,
-            'stamps': 55, 'extraction_fields': 65, 'checklist': 75,
-            'vessel': 80, 'validation': 85, 'saving': 90, 'summary': 95
+        // Progress bar — drive it from the LIVE LOG'S active stage
+        // (not from server.current_step which stays at 0 during the
+        // entire 8083 classification phase). The live log fires
+        // STARTED/READING/IDENTIFYING/MATCHING/EXTRACTING/etc. as
+        // 8083 progresses, so we map those to a percentage. Once
+        // 8082 takes over (step06+), we use current_step for
+        // finer granularity.
+        //
+        // Stage % is a FLOOR — within OCR we can show finer
+        // progress by counting "[k/total]" page completions.
+        const stageBasePct = {
+            'upload':           5,
+            'ocr':              10,
+            'extraction':       10,
+            'cleaning':         28,
+            'classification':   35,
+            'classify':         35,
+            'stamps':           55,
+            'swift':            42,
+            'match':            58,
+            'extract':          62,
+            'extraction_fields':62,
+            'flc':              75,
+            'reqs':             85,
+            'review':           95,
+            'done':             95,
+            'saving':           97,
+            'summary':          98,
+            'validation':       96,
+            'verify':           80,
+        };
+        // Width of each stage band — how much of the bar this stage
+        // "occupies" when it's in progress. OCR is wide because it's
+        // the longest phase; everything else is narrower.
+        const stageWidthPct = {
+            'ocr': 18, 'extraction': 18,
+            'cleaning': 6,
+            'classification': 7, 'classify': 7,
+            'stamps': 3,
+            'swift': 3,
+            'match': 4,
+            'extract': 13, 'extraction_fields': 13,
+            'flc': 10,
+            'reqs': 10,
         };
         const stageLabels = {
-            'upload': 'Uploading', 'extraction': 'Extracting Text', 'ocr': 'OCR Processing',
-            'classification': 'Classifying Pages', 'stamps': 'Detecting Stamps',
-            'extraction_fields': 'Extracting Fields', 'checklist': 'Generating Checklist',
-            'vessel': 'Vessel Tracking', 'validation': 'Validating', 'saving': 'Saving',
-            'summary': 'Finalizing'
+            'upload':           'Uploading',
+            'ocr':              'Reading documents',
+            'extraction':       'Reading documents',
+            'cleaning':         'Cleaning text',
+            'classification':   'Identifying documents',
+            'classify':         'Identifying documents',
+            'swift':            'Grouping SWIFT messages',
+            'match':            'Matching documents',
+            'stamps':           'Detecting stamps',
+            'extract':          'Extracting fields',
+            'extraction_fields':'Extracting fields',
+            'flc':              'Building Final LC',
+            'reqs':             'Parsing LC clauses',
+            'verify':           'Verifying',
+            'review':           'Ready for review',
+            'done':             'Ready for review',
+            'info':             'Working',
+            'saving':           'Saving',
+            'summary':          'Finalizing',
+            'validation':       'Validating',
         };
-        const currentStage = status.current_stage || 'upload';
-        const p = stages[currentStage] || 10;
-        pf.style.width = p + '%'; pf.textContent = stageLabels[currentStage] || currentStage.replace('_', ' ');
+
+        // ── Fine-grained OCR progress from the latest log line ──
+        // Lines look like: "pgN: 1234 chars in 5.6s [k/total]". When
+        // we're in the OCR stage, parse k/total to fill in the OCR
+        // band proportionally.
+        let ocrFinePct = null;
+        const lastLines = (status.progress_log || []).slice(-15);
+        for (let i = lastLines.length - 1; i >= 0; i--) {
+            const m = (lastLines[i].message || '').match(/\[(\d+)\/(\d+)\]/);
+            if (m) {
+                const done = parseInt(m[1], 10), total = parseInt(m[2], 10);
+                if (total > 0 && done <= total) {
+                    ocrFinePct = done / total;
+                    break;
+                }
+            }
+        }
+
+        const stepInt = parseInt(status.current_step, 10);
+        const activeStage = window._activeStage || status.current_stage || 'upload';
+        let pct = stageBasePct[activeStage];
+        if (pct == null) pct = 8;
+        // Add fine-grained OCR progress within the OCR band
+        if ((activeStage === 'ocr' || activeStage === 'extraction')
+                && ocrFinePct != null) {
+            pct = stageBasePct.ocr + Math.round((stageWidthPct.ocr - 1) * ocrFinePct);
+        }
+        // If 8082 has taken over (step >= 6), use step-based floor
+        if (Number.isFinite(stepInt) && stepInt >= 6) {
+            const stepFloor = {6: 75, 7: 85, 8: 88, 9: 90, 10: 93, 11: 95}[stepInt] || pct;
+            pct = Math.max(pct, stepFloor);
+        }
+        // Cap and snap to 95 when Phase 1 done; 100 on completion
+        if (status.status === 'completed' || stepInt >= 11) pct = Math.max(pct, 95);
+        pct = Math.min(Math.max(pct, 2), 99);
+
+        // Update the new wrapper (label + chip), not the old in-bar text.
+        const stageLabelEl = document.getElementById('pgStageLabel');
+        const pctEl = document.getElementById('pgPct');
+        if (stageLabelEl) stageLabelEl.textContent = stageLabels[activeStage] || activeStage.replace(/_/g, ' ');
+        if (pctEl) pctEl.textContent = pct + '%';
+        pf.style.width = pct + '%';
+        pf.textContent = ''; // no text inside the slim bar
+        pf.classList.remove('complete');
     }
 }
 
 async function loadResults() {
     stopTimer();
     document.getElementById('spinner').style.display = 'none';
-    const pf = document.getElementById('progressFill'); pf.style.width = '100%'; pf.textContent = '✅ Complete';
+    const pf = document.getElementById('progressFill');
+    pf.style.width = '100%';
+    pf.textContent = '';
+    pf.classList.add('complete');
+    const _slbl = document.getElementById('pgStageLabel'); if (_slbl) _slbl.textContent = '✅ Complete';
+    const _spct = document.getElementById('pgPct'); if (_spct) { _spct.textContent = '100%'; _spct.style.background = '#dcfce7'; _spct.style.color = '#166534'; }
     try {
         const resp = await fetch(`${API_BASE}/api/result/${currentJobId}`);
         currentResults = await resp.json();

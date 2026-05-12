@@ -4083,56 +4083,77 @@ def get_prompts():
       Step 19 — Verification                           (backend step14)
     """
     def _safe_import(module_path: str, attr: str) -> str:
+        """Try to import a single prompt constant. Returns '' on
+        ANY failure — including the case where the whole module
+        was deleted (e.g. step01-05 + step08-09 were removed in
+        the 8083 migration). Without this guard, one missing
+        module would 500 the entire /api/prompts endpoint and
+        the settings page would show nothing."""
         try:
             mod = __import__(module_path, fromlist=[attr])
-            return getattr(mod, attr, '') or ''
+            v = getattr(mod, attr, '')
+            return v if isinstance(v, str) else (str(v) if v else '')
         except Exception:
             return ''
 
-    from config.settings import GLM_OCR_PROMPT
-    from steps.step03_sequencing import (
-        CLASSIFY_PROMPT,
-        CLASSIFY_DOCTYPE_PROMPT,
-        EXTRACT_MARKINGS_PROMPT,
-        COPY_STATUS_PROMPT,
-        BL_SUBTYPE_PROMPT,
-        PACKET_SUMMARY_PROMPT,
-        _PACKET_VALIDATOR_PROMPT,
-        _RECHECK_PROMPT,
-    )
-    from steps.step12_decomposition import DECOMPOSITION_SYSTEM_PROMPT
-    from steps.step14_verification import _VLM_PROMPT_TEMPLATE
+    # ── Pull prompts owned by 8083 ───────────────────────────────
+    # The classifier (8083) now owns steps 1-5 + 8-9 — the prompts
+    # that used to live in 8082's deleted step03_sequencing /
+    # step04_mt_identification / step05_mt_reconciliation /
+    # step08_shipping_classification / step09_shipping_reconciliation
+    # are now in classifier_server/pipeline/*. Fetch them from
+    # 8083's own /api/prompts endpoint over HTTP.
+    _p8083 = {}
+    try:
+        from bridge import EightThreeClient
+        _classifier_url = EightThreeClient().base_url
+        import requests as _req_p
+        _r = _req_p.get(f"{_classifier_url}/api/prompts", timeout=10)
+        if _r.status_code == 200:
+            _p8083 = _r.json() or {}
+    except Exception:
+        _p8083 = {}
 
-    # Step 2 combines main + fallback OCR cleaning prompts
-    _s02_main = _safe_import('steps.step02_ocr_cleaning', '_VLM_EXTRACT_PROMPT')
-    _s02_fb = _safe_import('steps.step02_ocr_cleaning', '_VLM_FALLBACK_PROMPT')
-    _s02_combined = (
-        "=== MAIN EXTRACTION PROMPT (used for every page) ===\n"
-        f"{_s02_main}\n\n"
-        "=== FALLBACK PROMPT (used when GLM returns garbage) ===\n"
-        f"{_s02_fb}"
-    ) if (_s02_main or _s02_fb) else ''
+    # 8082-owned prompts (Final LC, decomposition, verification)
+    _flc_extract = _safe_import('steps.step06_final_lc', '_VLM_EXTRACT_PROMPT')
+    _flc_amendment = _safe_import('steps.step06_final_lc', '_VLM_AMENDMENT_PROMPT')
+    _decomp_sys = _safe_import('steps.step12_decomposition', 'DECOMPOSITION_SYSTEM_PROMPT')
+    _decomp_user = _safe_import('steps.step12_decomposition', 'DECOMPOSITION_USER_TEMPLATE')
+    _verify_tmpl = _safe_import('steps.step14_verification', '_VLM_PROMPT_TEMPLATE')
 
     return {
-        "step1":  GLM_OCR_PROMPT,
-        "step2":  _s02_combined,
-        "step3":  CLASSIFY_PROMPT,
-        "step4":  CLASSIFY_DOCTYPE_PROMPT,
-        "step5":  EXTRACT_MARKINGS_PROMPT,
-        "step6":  COPY_STATUS_PROMPT,
-        "step7":  BL_SUBTYPE_PROMPT,
-        "step8":  PACKET_SUMMARY_PROMPT,
-        "step9":  _PACKET_VALIDATOR_PROMPT,
-        "step10": _RECHECK_PROMPT,
-        "step11": _safe_import('steps.step04_mt_identification', '_VLM_CLASSIFY_PROMPT'),
-        "step12": _safe_import('steps.step05_mt_reconciliation', '_VLM_RECONCILE_PROMPT'),
-        "step13": _safe_import('steps.step06_final_lc', '_VLM_EXTRACT_PROMPT'),
-        "step14": _safe_import('steps.step06_final_lc', '_VLM_AMENDMENT_PROMPT'),
-        "step15": _safe_import('steps.step08_shipping_classification', '_CLASSIFICATION_PROMPT'),
-        "step16": _safe_import('steps.step09_shipping_reconciliation', '_RECONCILIATION_PROMPT'),
-        "step17": DECOMPOSITION_SYSTEM_PROMPT,
-        "step18": _safe_import('steps.step12_decomposition', 'DECOMPOSITION_USER_TEMPLATE'),
-        "step19": _VLM_PROMPT_TEMPLATE,
+        # ── Phase 1 — Extraction (8083 owns these) ──
+        "step1":  _p8083.get('ocr_glm', ''),
+        "step2":  (
+            "=== Step 1 GLM OCR (raw extraction) ===\n"
+            f"{_p8083.get('ocr_glm', '(unavailable — 8083 unreachable)')}\n\n"
+            "=== Step 2 — VLM rescue (re-OCRs faint pages from image) ===\n"
+            f"{_p8083.get('ocr_vlm_rescue', '')}"
+        ),
+        "step3":  _p8083.get('page_classify', ''),
+        "step4":  _p8083.get('page_classify', ''),
+        "step5":  _p8083.get('deep_extract', ''),
+        "step6":  _p8083.get('deep_extract', ''),
+        "step7":  _p8083.get('deep_extract', ''),
+        "step8":  _p8083.get('deep_extract', ''),
+        "step9":  _p8083.get('lc_requirements', ''),
+        "step10": _p8083.get('positioned_text', ''),
+        "step11": _p8083.get('page_classify', ''),       # MT identification = page classification on SWIFT pages
+        "step12": _p8083.get('swift_extract', ''),       # MT reconciliation = SWIFT field extraction
+        # ── Phase 1.5 / Phase 2 — 8082 owns these ──
+        "step13": _flc_extract,
+        "step14": _flc_amendment,
+        "step15": _p8083.get('page_classify', ''),       # shipping classification (8083)
+        "step16": _p8083.get('deep_extract', ''),        # shipping field extraction (8083)
+        "step17": _decomp_sys,
+        "step18": _decomp_user,
+        "step19": _verify_tmpl,
+        # Diagnostics — let the UI show which side a prompt came from
+        "_meta": {
+            "classifier_reachable": bool(_p8083),
+            "phase1_source": "8083 classifier_server/pipeline/*",
+            "phase2_source": "8082 steps/step06,12,14",
+        },
     }
 
 

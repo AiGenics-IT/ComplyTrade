@@ -3459,6 +3459,199 @@ def _find_structured(unified_summary: dict, array_name: str, role_keywords):
     return None
 
 
+def _date_search_forms(date_str: str) -> List[str]:
+    """Return plausible string forms of a date for grep-style search
+    inside document text. E.g. '2025-01-02' → ['2025-01-02',
+    '02/01/2025', '02-Jan-2025', '20250102', '250102', 'Jan 2, 2025',
+    …]. Used by the deterministic LC-date verification fast-path.
+    """
+    out: set = set()
+    if not date_str:
+        return []
+    s0 = str(date_str).strip()
+    out.add(s0)
+    # SWIFT-style "251212 2025 Dec 12" — split off the trailing
+    # human-readable parts (we'll parse them via %d %b %Y below).
+    m_swift = re.match(r'(\d{6})\s+(\d{4})\s+(\w{3})\s+(\d{1,2})', s0)
+    if m_swift:
+        out.add(m_swift.group(1))                                          # 251212
+        out.add(f"{m_swift.group(4).zfill(2)} {m_swift.group(3)} {m_swift.group(2)}")
+        out.add(f"{m_swift.group(4).zfill(2)}-{m_swift.group(3)}-{m_swift.group(2)}")
+    import datetime as _dt
+    parsed = None
+    _candidate = s0.split(' ')[0].strip()
+    for fmt in ('%Y-%m-%d', '%Y/%m/%d', '%d-%m-%Y', '%d/%m/%Y',
+                '%d.%m.%Y', '%y%m%d', '%d%m%y', '%Y%m%d',
+                '%m/%d/%Y', '%d-%b-%Y', '%d %b %Y'):
+        try:
+            parsed = _dt.datetime.strptime(_candidate, fmt)
+            break
+        except (ValueError, TypeError):
+            continue
+    if parsed is None and m_swift:
+        # use the human-readable suffix
+        months = {'JAN':1,'FEB':2,'MAR':3,'APR':4,'MAY':5,'JUN':6,
+                  'JUL':7,'AUG':8,'SEP':9,'OCT':10,'NOV':11,'DEC':12}
+        mn = months.get(m_swift.group(3).upper()[:3])
+        if mn:
+            try:
+                parsed = _dt.datetime(int(m_swift.group(2)), mn,
+                                      int(m_swift.group(4)))
+            except ValueError:
+                pass
+    if parsed:
+        for fmt in ('%Y-%m-%d', '%Y/%m/%d',
+                    '%d-%m-%Y', '%d/%m/%Y', '%d.%m.%Y',
+                    '%d-%b-%Y', '%d %b %Y', '%d-%B-%Y', '%d %B %Y',
+                    '%b %d, %Y', '%B %d, %Y', '%b %d %Y',
+                    '%Y%m%d', '%y%m%d', '%d%m%y',
+                    '%d.%m.%y', '%d/%m/%y'):
+            try:
+                out.add(parsed.strftime(fmt))
+            except ValueError:
+                pass
+    # Drop empties and any too-short forms (< 5 chars would false-match)
+    return [s for s in out if s and len(s) >= 5]
+
+
+def _det_textsearch_fastpath(
+    condition_text: str,
+    document_text: str,
+    final_lc: dict,
+    document_type: str,
+) -> Optional[dict]:
+    """Deterministic verdict by plain text search in the document.
+    Covers the most common "X must appear in document" clauses
+    without an LLM call. Returns verdict dict or None.
+
+    Patterns handled (all conservative — only deterministic PASS,
+    never deterministic FAIL except for an unambiguous non-English
+    document):
+      • "LC number" / "L/C No." / "documentary credit number"
+      • "LC date" / "date of issue" / "date of the credit"
+      • "in English" / "English language"
+      • "name of issuing bank" / "name of L/C issuing bank"
+    """
+    if not condition_text or not document_text:
+        return None
+    cond = condition_text.lower()
+
+    # ── LC Number text-search ────────────────────────────────
+    if any(p in cond for p in (
+        'lc number', 'l/c number', 'lc no.', 'l/c no.',
+        'lc no ', 'l/c no ', 'lc no:', 'l/c no:',
+        'credit number', 'documentary credit number',
+        'lc reference', 'l/c reference', 'credit reference',
+        'reference to the credit', 'documentary credit no',
+        'no. of the credit', 'number of the credit',
+    )):
+        lc_no = ''
+        if final_lc:
+            lc_no = final_lc.get('20', '') if not isinstance(
+                final_lc.get('20', ''), dict) else final_lc.get(
+                    '20', {}).get('value', '')
+            lc_no = str(lc_no or '').strip().split('\n')[0].strip()
+        # Strip leading "F20:" or label text the regex may have caught
+        lc_no = re.sub(r'^F?20:?\s*', '', lc_no, flags=re.IGNORECASE).strip()
+        if lc_no and len(lc_no) >= 6:
+            lc_norm = re.sub(r'[\s/\-\.]', '', lc_no.upper())
+            doc_norm = re.sub(r'[\s/\-\.]', '', document_text.upper())
+            if lc_norm in doc_norm:
+                return {
+                    'verdict': 'PASS',
+                    'quote': lc_no,
+                    'findings': f"Document shows the LC number '{lc_no}'.",
+                    'confidence': 0.98,
+                    'structured_source': 'doc_text:lc_number',
+                }
+
+    # ── LC Date text-search ──────────────────────────────────
+    if any(p in cond for p in (
+        'lc date', 'l/c date', 'date of issue', 'issue date of the lc',
+        'date of the credit', 'date of the l/c',
+        'credit issue date', 'lc issue date', 'l/c issue date',
+        'date of the documentary credit',
+    )):
+        lc_date = ''
+        if final_lc:
+            raw = final_lc.get('31C', '')
+            if isinstance(raw, dict):
+                raw = raw.get('value', '')
+            lc_date = str(raw or '').strip()
+        if lc_date:
+            doc_up = document_text.upper()
+            for fm in _date_search_forms(lc_date):
+                if fm.upper() in doc_up:
+                    return {
+                        'verdict': 'PASS',
+                        'quote': fm,
+                        'findings': f"Document shows the LC issue date '{lc_date}' (as '{fm}').",
+                        'confidence': 0.95,
+                        'structured_source': 'doc_text:lc_date',
+                    }
+
+    # ── English language ─────────────────────────────────────
+    if any(p in cond for p in (
+        'in english', 'english language', 'language: english',
+        'issued in english', 'language is english',
+        'all documents must be in english',
+    )):
+        letters = [c for c in document_text if c.isalpha()]
+        if len(letters) >= 50:
+            ascii_letters = [c for c in letters if c.isascii()]
+            ratio = len(ascii_letters) / len(letters)
+            if ratio >= 0.97:
+                return {
+                    'verdict': 'PASS',
+                    'quote': '',
+                    'findings': 'Document text is in English (Latin script throughout).',
+                    'confidence': 0.95,
+                    'structured_source': 'doc_text:english_ratio',
+                }
+            if ratio < 0.50:
+                return {
+                    'verdict': 'FAIL',
+                    'quote': '',
+                    'findings': f'Document text is not in English '
+                                f'(Latin-letter ratio only {ratio:.0%}).',
+                    'confidence': 0.85,
+                    'structured_source': 'doc_text:english_ratio',
+                }
+
+    # ── Issuing bank name presence ───────────────────────────
+    if 'name' in cond and (
+        'issuing bank' in cond or 'l/c issuing bank' in cond
+        or 'lc issuing bank' in cond
+    ):
+        bank_name = ''
+        if final_lc:
+            for k in ('52A', '52D', '52'):
+                v = final_lc.get(k, '')
+                if isinstance(v, dict):
+                    v = v.get('value', '')
+                if v:
+                    bank_name = str(v).strip()
+                    break
+        if bank_name:
+            # Distinguish-ing words only (drop "BANK"/"LIMITED" etc.)
+            tokens = re.findall(r'\b[A-Z][A-Z]+\b', bank_name.upper())
+            _noise = {'BANK', 'LIMITED', 'LTD', 'INC', 'CORP', 'CO',
+                      'PVT', 'PRIVATE', 'COMPANY', 'PLC', 'LLC',
+                      'AND', 'OF', 'THE', 'A', 'AN'}
+            distinct = [t for t in tokens if t not in _noise]
+            if len(distinct) >= 2:
+                phrase = ' '.join(distinct[:3])
+                if phrase in document_text.upper():
+                    return {
+                        'verdict': 'PASS',
+                        'quote': phrase,
+                        'findings': f"Document mentions the issuing bank ('{phrase}').",
+                        'confidence': 0.95,
+                        'structured_source': 'doc_text:issuing_bank',
+                    }
+    return None
+
+
 def _deterministic_verify(
     condition_text: str,
     clause_ref: str,
@@ -3472,6 +3665,19 @@ def _deterministic_verify(
     """Return a verdict dict (PASS/FAIL/REVIEW) when the condition can be
     answered deterministically from structured facts. Else None (→ LLM path).
     Conservative by design — when in doubt, return None."""
+    # FAST-PATH 0 — plain text search for common "must contain X" checks.
+    # Runs BEFORE the structured-facts gate because these checks only
+    # need the doc text and the Final LC fields. Catches the bulk of
+    # "all documents must show LC number / LC date / be in English /
+    # name the issuing bank" type clauses without an LLM call.
+    _ts = _det_textsearch_fastpath(
+        condition_text=condition_text,
+        document_text=document_text,
+        final_lc=final_lc or {},
+        document_type=document_type or '',
+    )
+    if _ts is not None:
+        return _ts
     if not unified_summary and not bl_subtype:
         return None
 
@@ -5592,7 +5798,10 @@ def _call_vlm(
 
     # ── FAST PATH: try deterministic verification first ──
     # Conservative — only returns a verdict when confidence is very high.
-    if USE_SPLIT_PROMPTS and (unified_summary or bl_subtype):
+    # Drop the (unified_summary or bl_subtype) gate so the text-search
+    # fast-paths (LC number / LC date / English / issuing bank) can run
+    # on ANY packet, not just those with structured 8083 summaries.
+    if USE_SPLIT_PROMPTS:
         _det = _deterministic_verify(
             condition_text=condition_text,
             clause_ref=clause_ref,

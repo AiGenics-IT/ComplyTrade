@@ -47,12 +47,13 @@ SERVER_PORT = int(_os.environ.get("SERVER_PORT", "8082"))
 BUILD_TAG = "2026-04-29-P198dx"
 
 # ── Processing ──
-MAX_CONCURRENT_OCR = 5
-# Was 8 — bumped to 24 so verification (step14 fan-out) finishes
-# fast. The Qwen-text endpoint handles this comfortably; the
-# connection pool is sized to MAX_CONCURRENT_VLM * 2 so it grows
-# in step (see step14_verification:_pool_size).
-MAX_CONCURRENT_VLM = 24
+MAX_CONCURRENT_OCR = 10
+# Was 24 — that saturated the Qwen 72B vLLM batch scheduler so
+# requests just queued behind each other. 20 lets the batcher
+# actually parallelize. Drives both the VLM (step12/step14 fan-
+# out) AND the LLM connection pool sizing in step14.
+MAX_CONCURRENT_VLM = 20
+MAX_CONCURRENT_LLM = 20
 # Timeouts disabled per user request — rely on the LLM/VLM to complete
 # however long it needs. Setting to a very high value (7 days) rather
 # than None so all call sites that pass this into requests.post(timeout=)
