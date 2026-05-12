@@ -6977,16 +6977,32 @@ def _build_tasks(
                         _clauses_45a = [c.strip() for c in _full_45a.split('\n\n') if c.strip()]
                     else:
                         _clauses_45a = [_full_45a]
-                    # Try to match the clause by quoted text in the condition
-                    _quoted = re.findall(r"['\"]([^'\"]{5,})['\"]", condition_text)
                     _matched_clause = None
-                    for _q in _quoted:
+                    # P198gz56 — Multi-item LC: when clause_ref is "45A-N",
+                    # look up the Nth numbered sub-item directly. This fixes
+                    # generic "Quantity must be 1 EA" / "Unit price must be
+                    # USD X" conditions that don't quote the item code, so
+                    # the verifier doesn't compare them against PL totals or
+                    # the wrong invoice line on multi-item LCs.
+                    _sub_match = re.search(r'45A-(\d+)', clause_ref)
+                    if _sub_match:
+                        _target_num = int(_sub_match.group(1))
                         for _cl in _clauses_45a:
-                            if _q.upper() in _cl.upper():
+                            _first = _cl.split('\n', 1)[0].strip()
+                            # Item starts with "N)" / "N." / "N-" matching target
+                            if re.match(rf'^{_target_num}\s*[.\-)]', _first):
                                 _matched_clause = _cl.strip()
                                 break
-                        if _matched_clause:
-                            break
+                    # Fall back: match by quoted text in the condition
+                    if not _matched_clause:
+                        _quoted = re.findall(r"['\"]([^'\"]{5,})['\"]", condition_text)
+                        for _q in _quoted:
+                            for _cl in _clauses_45a:
+                                if _q.upper() in _cl.upper():
+                                    _matched_clause = _cl.strip()
+                                    break
+                            if _matched_clause:
+                                break
                     if not _matched_clause and len(_clauses_45a) > 1:
                         # No quoted match — try matching by condition keywords
                         for _cl in _clauses_45a:
@@ -6996,8 +7012,18 @@ def _build_tasks(
                                 _matched_clause = _cl.strip()
                                 break
                     if _matched_clause:
+                        # P198gz56 — Add explicit guidance so the verifier
+                        # checks ONLY the matched line item (not the doc
+                        # totals or other items' values) for quantity/price.
                         condition_text = (
-                            f"[LC GOODS CLAUSE: {_matched_clause}]\n"
+                            f"[LC GOODS CLAUSE for {clause_ref}: {_matched_clause}]\n"
+                            f"[MULTI-ITEM RULE: Find the specific line/row in "
+                            f"the document matching the item code shown above. "
+                            f"Compare ONLY that line's quantity / unit price / "
+                            f"description against the LC condition. Do NOT use "
+                            f"the document's TOTAL QUANTITY, GRAND TOTAL, or any "
+                            f"other item's values — those belong to other 45A "
+                            f"sub-clauses.]\n"
                             f"{condition_text}"
                         )
 

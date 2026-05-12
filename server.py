@@ -279,6 +279,62 @@ def get_page_image(job_id: str, page_num: int, w: int = 0):
     raise HTTPException(404, "Page image not found")
 
 
+@app.get("/api/page-positions/{job_id}/{page_num}")
+def get_page_positions(job_id: str, page_num: int):
+    """Return per-page text positions (word + line bboxes) so the UI can
+    render text overlaid on the page image at original coordinates.
+
+    Proxies to the 8083 classifier (which owns the source.pdf + the
+    Qwen-VL bbox extractor). First call may be slow (VLM bbox
+    extraction on scanned pages) — 8083 caches the result on disk so
+    subsequent calls are instant.
+    """
+    try:
+        from bridge import EightThreeClient
+        import requests as _req
+        client = EightThreeClient()
+        url = client.page_positions_url(job_id, page_num)
+        # No timeout — the data is known to be there; the first call may
+        # trigger a VLM bbox extraction (Qwen-VL) on scanned pages which
+        # can take a while. 8083 caches the result on disk, so the user
+        # only waits once. We wait as long as it takes.
+        r = _req.get(url, timeout=None)
+        if r.status_code == 200:
+            return r.json()
+        if r.status_code == 404:
+            # Graceful response so the UI shows "no positions" instead
+            # of a hard 502 alert. The viewer renders an empty state.
+            return {
+                'page_number': page_num,
+                'page_width': 595,
+                'page_height': 842,
+                'source': 'no_positions',
+                'word_count': 0,
+                'line_count': 0,
+                'words': [],
+                'lines': [],
+            }
+        # Other codes → also return a graceful empty payload + error tag
+        return {
+            'page_number': page_num,
+            'page_width': 595, 'page_height': 842,
+            'source': 'no_positions',
+            'word_count': 0, 'line_count': 0,
+            'words': [], 'lines': [],
+            '_error': f'classifier returned {r.status_code}',
+        }
+    except Exception as e:
+        # Network / timeout — return graceful empty
+        return {
+            'page_number': page_num,
+            'page_width': 595, 'page_height': 842,
+            'source': 'no_positions',
+            'word_count': 0, 'line_count': 0,
+            'words': [], 'lines': [],
+            '_error': str(e)[:200],
+        }
+
+
 @app.get("/api/extracted-text/{job_id}")
 def get_extracted_text(job_id: str):
     """Return all extracted text for every page — GLM raw, cleaned, VLM additions, final."""
@@ -324,6 +380,9 @@ def get_extracted_text(job_id: str):
     _page_summary = {}
     _page_vlm_summary = {}
     _page_stamps = {}  # page_number -> {stamps, signatures, seals, logos}
+    # 8083-extracted full structured fields, surfaced per page so the
+    # extracted-text Summary panel can render scalar + array/table fields.
+    _page_extracted_fields = {}
     for _cpkt in _s8.get('classified_packets', []):
         if not isinstance(_cpkt, dict):
             continue
@@ -369,6 +428,7 @@ def get_extracted_text(job_id: str):
                 _signatures.extend(_op.get('signatures', []))
                 _seals.extend(_op.get('seals', []))
 
+        _pkt_extracted = _cpkt.get('extracted_fields', {}) or {}
         for _pn in _pkt_pages:
             _summary_text = f"{_doc_type}"
             if _doc_summary:
@@ -376,6 +436,8 @@ def get_extracted_text(job_id: str):
             _page_summary[_pn] = _summary_text
             if _vlm_sum:
                 _page_vlm_summary[_pn] = _vlm_sum
+            if _pkt_extracted:
+                _page_extracted_fields[_pn] = _pkt_extracted
             if _stamps or _signatures or _seals or _logos:
                 _page_stamps[_pn] = {
                     'stamps': _stamps,
@@ -547,6 +609,9 @@ def get_extracted_text(job_id: str):
                 'final_chars': len(str(final)),
                 'document_summary': _page_summary.get(pn, ''),
                 'vlm_summary': _page_vlm_summary.get(pn, {}),
+                # Full structured fields from deep extract — scalar +
+                # array/table data the Summary panel renders.
+                'extracted_fields': _page_extracted_fields.get(pn, {}),
                 'stamps_info': _page_stamps.get(pn, {}),
                 # NEW: Step 3 sub-call outputs (bl_subtype for BL packets, unified_summary for all)
                 'bl_subtype': _page_bl_subtype.get(pn),
@@ -1235,13 +1300,13 @@ def _rerun_classification_pipeline(job_id: str):
            f"{_mt_count} MT/LC, {_ship_count} shipping")
 
         job['current_step'] = 6
-        _p("Step 6: Final LC Consolidation...")
+        _p("[flc][Building Final LC] Consolidating LC and amendments...")
         s6 = _to_dict(step06_final_lc.run(
             _s6_input, os.path.join(results_dir, 'step06'), _p))
         job['step_results']['step06'] = s6
 
         job['current_step'] = 7
-        _p("Step 7: Final LC Clause & Requirement Extraction...")
+        _p("[reqs][Parsing LC clauses] Extracting required documents and conditions...")
         s7 = _to_dict(step07_clause_extraction.run(
             s6, os.path.join(results_dir, 'step07'), _p))
         job['step_results']['step07'] = s7
@@ -1517,12 +1582,44 @@ def get_status(job_id: str):
         15: 'validation', 16: 'validation', 17: 'validation', 18: 'validation',
         19: 'summary', 20: 'saving',
     }
-    # Build progress_log in format the old UI expects: [{message, stage}]
+    # Build progress_log in format the old UI expects: [{message, stage}].
+    # Two message formats are supported:
+    #   1) Legacy: '[HH:MM:SS] Step N: ...' — stage derived from N
+    #   2) New (8083 relay): '[HH:MM:SS] [color_class][Label] msg' —
+    #      stage is the color_class, leading `[color_class]` stripped
+    #      from the display.
+    _COLOR_TO_STAGE = {
+        'info':      'upload',
+        'ocr':       'ocr',
+        'classify':  'classification',
+        'swift':     'classification',
+        'flc':       'extraction_fields',
+        'reqs':      'extraction_fields',
+        'match':     'extraction',
+        'extract':   'extraction_fields',
+        'warn':      'upload',
+        'done':      'summary',
+        'error':     'stamps',
+    }
     progress_log = []
     for p in job['progress'][-200:]:
+        # New format: '[HH:MM:SS] [color_tag][Label] msg'
+        _m = _re.match(r'^\s*(\[\d{2}:\d{2}:\d{2}\])\s*\[(\w+)\]\s*(.*)$', p)
+        if _m:
+            _ts, _color, _rest = _m.group(1), _m.group(2), _m.group(3)
+            stage = _COLOR_TO_STAGE.get(_color, 'processing')
+            progress_log.append({
+                'message': f'{_ts} {_rest}',
+                'stage': stage,
+            })
+            continue
+        # Legacy "Step N" format
         _sm = _re.search(r'Step (\d+)', p)
         _step = int(_sm.group(1)) if _sm else job['current_step']
-        progress_log.append({'message': p, 'stage': _step_stages.get(_step, 'processing')})
+        progress_log.append({
+            'message': p,
+            'stage': _step_stages.get(_step, 'processing'),
+        })
 
     return {
         'status': job['status'],
@@ -2116,8 +2213,18 @@ def get_result(job_id: str):
         key = ot.lower().strip()
         type_summary[key] = type_summary.get(key, 0) + 1
 
-    # Count pages from Step 1
-    total_pages = s1.get('total_pages', 0)
+    # Count pages from Step 1 — fall back to other sources if step01
+    # didn't record it (e.g. older adapter shape that only set
+    # `page_count`, or step01 was loaded without that field).
+    total_pages = (
+        s1.get('total_pages')
+        or s1.get('page_count')
+        or len(s1.get('pages') or [])
+        or len(s2.get('pages') or [])
+        or len(s3.get('pages') or [])
+        or job.get('total_pages', 0)
+        or 0
+    )
 
     return {
         'status': 'completed',
@@ -2353,7 +2460,7 @@ def _do_regenerate(job_id: str):
         if job_id in _jobs:
             _jobs[job_id]['step_results']['step07'] = s7
     except Exception as e:
-        _log(f"Step 7 failed: {e}")
+        _log(f"[error][Parsing LC clauses] failed: {e}")
         s7 = {}
 
     # Step 8/9: use 8083 adapter output (no legacy fallback — the
@@ -2373,10 +2480,10 @@ def _do_regenerate(job_id: str):
                       'w', encoding='utf-8') as _f:
                 json.dump(_payload, _f, ensure_ascii=False, indent=2,
                           default=str)
-        _log(f"Step 8/9 from 8083 cache: "
+        _log(f"[match][Matched documents] "
              f"{len(s8.get('classified_packets', []))} shipping packets")
     else:
-        _log("Step 8/9 SKIPPED — no 8083 classification cache; "
+        _log("[warn][Matching documents] SKIPPED — no cached classification; "
              "this job needs to be re-uploaded with USE_8083=true.")
         s8 = {}
         s9 = {}
@@ -2472,6 +2579,7 @@ async def save_final_lc(job_id: str, request: Request):
                     clauses[tag][idx]['text'] = new_value
                     applied.append({'tag': tag, 'clause': idx, 'old': old_val[:80], 'new': new_value[:80]})
         else:
+            pass
             # Standalone field edit
             old_val = cf.get(tag, '')
             cf[tag] = new_value
@@ -3378,20 +3486,92 @@ def _process_pipeline(job_id: str):
         _adapter_out = None
         if USE_8083:
             from bridge import EightThreeClient, adapt_8083_to_step_results, EightThreeError
-            _p("[8083] Offloading classification to standalone classifier...")
+            _p("Classifying documents...")
             try:
                 _client = EightThreeClient()
                 _8083_health = _client.health()
-                _p(f"[8083] Reachable: build={_8083_health.get('build')}, "
-                   f"glm_ocr={_8083_health.get('glm_ocr')}")
+                # Internal-only health log (kept in stdout, NOT in
+                # job['progress']); the user-facing job log starts with
+                # 'Classifying documents...' so we don't leak the build
+                # tag or internal infra URL.
+                print(f"[8083 health] build={_8083_health.get('build')}, "
+                      f"glm_ocr={_8083_health.get('glm_ocr')}")
             except EightThreeError as _e:
-                raise Exception(f"8083 classifier not available: {_e}")
+                raise Exception(f"Classifier unavailable: {_e}")
+
+            # User-facing log relay. Rewrite 8083's internal stage tags
+            # (STEP1, STEP2-VLM, STEP3-SWIFT, ...) into plain-English
+            # phases so the end user sees "Classifying / Extracting /
+            # Verifying" instead of internal step numbers. Color tags
+            # are HTML <span> with class names the UI's renderer maps
+            # to CSS colors (see the dashboard template).
+            _STAGE_LABEL = {
+                'INFO':            'Started',
+                'STEP1':           'Reading the documents',
+                'STEP2':           'Identifying documents',
+                'STEP2-VLM':       'Identifying documents',
+                'STEP3-SWIFT':     'Grouping SWIFT messages',
+                'STEP4-FLC':       'Building Final LC',
+                'STEP5-REQ':       'Parsing LC requirements',
+                'STEP6-MATCH':     'Matching documents to LC',
+                'STEP7-FIELDS':    'Extracting document fields',
+                'CANCEL':          'Cancelled',
+                'DONE':            'Classification complete',
+                'ERROR':           'Error',
+            }
+            _STAGE_COLOR = {
+                'Started':                          'info',
+                'Reading pages':                    'ocr',
+                'Identifying documents':            'classify',
+                'Grouping SWIFT messages':          'swift',
+                'Building Final LC':                'flc',
+                'Parsing LC requirements':          'reqs',
+                'Matching documents to LC':         'match',
+                'Extracting document fields':       'extract',
+                'Cancelled':                        'warn',
+                'Classification complete':          'done',
+                'Error':                            'error',
+            }
+            # Strip ALL internal tech / vendor identifiers from messages
+            # before they hit the user-facing log. We don't want to leak
+            # model names, vendors, or internal step numbers — end users
+            # see clean trade-finance language.
+            import re as _re_scrub
+            _SCRUB_PATTERNS = [
+                # OCR engine names → just "OCR"
+                (_re_scrub.compile(r'^GLM[-_]?OCR\s*[:\-]?\s*', _re_scrub.IGNORECASE), ''),
+                (_re_scrub.compile(r'\bGLM[-_]?OCR\b', _re_scrub.IGNORECASE), 'OCR'),
+                # Vision-language model → "trade expert"
+                (_re_scrub.compile(r'^VLM\s*[:\-]?\s*', _re_scrub.IGNORECASE), ''),
+                (_re_scrub.compile(r'\bVLM\s+classification\b', _re_scrub.IGNORECASE), 'expert review'),
+                (_re_scrub.compile(r'\bVLM\b', _re_scrub.IGNORECASE), 'trade expert'),
+                # Large language model → "trade expert" (unified)
+                (_re_scrub.compile(r'\bvia\s+LLM\b', _re_scrub.IGNORECASE), 'with trade expert'),
+                (_re_scrub.compile(r'\(LLM\)', _re_scrub.IGNORECASE), ''),
+                (_re_scrub.compile(r'\bLLM\s+fallback\b', _re_scrub.IGNORECASE), 'expert fallback'),
+                (_re_scrub.compile(r'\bLLM\b', _re_scrub.IGNORECASE), 'trade expert'),
+                # Vendor / model family identifiers
+                (_re_scrub.compile(r'\bQwen[\w\-\.]*\b', _re_scrub.IGNORECASE), 'trade expert'),
+                (_re_scrub.compile(r'\bGPTQ[\w\-]*\b', _re_scrub.IGNORECASE), ''),
+                (_re_scrub.compile(r'\bAWQ[\w\-]*\b', _re_scrub.IGNORECASE), ''),
+                (_re_scrub.compile(r'\bFP16\b', _re_scrub.IGNORECASE), ''),
+                # SWIFT pre-classify → human phrasing
+                (_re_scrub.compile(r'\bSWIFT pre-classified\b'), 'SWIFT messages found'),
+                # Internal step numbers
+                (_re_scrub.compile(r'^STEP\d+[A-Z\-]*\s*[:\-]\s*', _re_scrub.IGNORECASE), ''),
+                # Collapse extra whitespace from substitutions
+                (_re_scrub.compile(r'\s{2,}'), ' '),
+            ]
 
             def _8083_progress(_ev):
-                _ts = _ev.get('ts', '')
                 _lvl = _ev.get('level', '')
                 _msg = _ev.get('msg', '').strip()
-                _p(f"  [8083 {_ts} {_lvl}] {_msg}")
+                for _pat, _rep in _SCRUB_PATTERNS:
+                    _msg = _pat.sub(_rep, _msg)
+                _msg = _msg.strip()
+                _label = _STAGE_LABEL.get(_lvl, _lvl or 'Working')
+                _color = _STAGE_COLOR.get(_label, 'info')
+                _p(f"[{_color}][{_label}] {_msg}")
 
             _t0_8083 = time.time()
             try:
@@ -3403,9 +3583,8 @@ def _process_pipeline(job_id: str):
                     pdf_path, job_id=job_id, progress_cb=_8083_progress
                 )
             except EightThreeError as _e:
-                raise Exception(f"8083 classification failed: {_e}")
-            _p(f"[8083] Classification done in {time.time() - _t0_8083:.1f}s "
-               f"(job_id={_8083_job_id})")
+                raise Exception(f"Classification failed: {_e}")
+            _p(f"Classification complete in {time.time() - _t0_8083:.1f}s")
 
             _adapter_out = adapt_8083_to_step_results(_c8083, results_dir)
             s1 = _adapter_out['step01']
@@ -3430,15 +3609,12 @@ def _process_pipeline(job_id: str):
                 f"http://localhost:8083 (currently USE_8083={USE_8083!r})."
             )
 
-        # ── Step 6: Final LC Consolidation ──
-        # Build Final LC from MT packets using GLM text extracted by Step 1
+        # ── Final LC Consolidation ──
         job['current_step'] = 6
-        _p("Step 6: Final LC Consolidation...")
-        # Build page text lookup from Step 2 (cleaned GLM text)
+        _p("[flc][Building Final LC] Consolidating LC and amendments...")
         _s6_input = dict(s5)
         _s6_input['page_texts'] = {}
         _s2_pages = s2.get('pages', [])
-        _p(f"  Building page_texts from Step 2: {len(_s2_pages)} pages")
         for _pg in _s2_pages:
             if isinstance(_pg, dict):
                 _pgn = _pg.get('page_number', 0)
@@ -3451,73 +3627,59 @@ def _process_pipeline(job_id: str):
                 _txt = ''
             if _pgn and _txt:
                 _s6_input['page_texts'][_pgn] = _txt
-        _p(f"  page_texts populated: {len(_s6_input['page_texts'])} pages with text")
-        # Show first 100 chars of LC pages for debugging
-        for _lpkt in _mt_packets:
-            for _lpn in _lpkt.get('page_numbers', [])[:2]:
-                _ltxt = _s6_input['page_texts'].get(_lpn, '')
-                _p(f"  LC page {_lpn}: {len(_ltxt)} chars, starts with: {_ltxt[:80]}")
         s6 = _to_dict(step06_final_lc.run(_s6_input, os.path.join(results_dir, 'step06'), _p))
         job['step_results']['step06'] = s6
 
-        # ── Step 7: Clause & Requirement Extraction ──
-        # Parse F46A into required documents list, F47A into additional conditions.
-        # This defines what the beneficiary must present to get paid.
+        # ── Clause & Requirement Extraction ──
         job['current_step'] = 7
-        _p("Step 7: Final LC Clause & Requirement Extraction...")
+        _p("[reqs][Parsing LC clauses] Extracting required documents and conditions...")
         s7 = _to_dict(step07_clause_extraction.run(s6, os.path.join(results_dir, 'step07'), _p))
-        job['step_results']['step07'] = s7  # Store full data — Step 12 needs the clause list
+        job['step_results']['step07'] = s7
 
-        # ── Step 8: Shipping Document Classification ──
-        # Classify each non-LC packet: Bill of Lading, Commercial Invoice,
-        # Insurance Policy, Certificate of Origin, Packing List, etc.
+        # ── Shipping classification + reconciliation come from the adapter
+        # (the 8083 classifier owns this step). When the offload didn't
+        # run, error out — there's no legacy fallback.
         if _adapter_out is not None:
-            # 8083 already classified shipping docs in step 8/9 — use those
             s8 = _adapter_out['step08']
             s9 = _adapter_out['step09']
             job['step_results']['step08'] = s8
             job['step_results']['step09'] = s9
-            _p(f"[8083] Using 8083 shipping classification: "
-               f"{len(s8.get('classified_packets', []))} shipping packets")
+            _p(f"[match][Matched documents] "
+               f"{len(s8.get('classified_packets', []))} shipping documents identified")
         else:
             raise NotImplementedError(
-                "Legacy step08/step09 path was removed in the 8083 "
-                "integration. The 8083 adapter should have populated "
-                "_adapter_out['step08'] and ['step09'] — got None."
+                "Classification offload required (USE_8083_CLASSIFIER=true). "
+                "Adapter output was None — set the flag and ensure the "
+                "classifier service is reachable."
             )
 
-        # ── Step 10: Traceability ──
+        # ── Traceability ──
         s10 = {}
         if _is_step_enabled(10):
             job['current_step'] = 10
-            _p("Step 10: Traceability & Confidence Preservation...")
+            _p("[info][Tracing data sources] Building provenance trail...")
             s10 = _to_dict(step10_traceability.run(
                 {'step01': s1, 'step02': s2, 'step03': s3, 'step04': s4,
                  'step05': s5, 'step06': s6, 'step07': s7, 'step08': s8, 'step09': s9},
                 os.path.join(results_dir, 'step10'), _p
             ))
             job['step_results']['step10'] = {'flags': s10.get('total_flags', 0)}
-        else:
-            _p("Step 10: SKIPPED (disabled in settings)")
 
-        # ── Step 11: Human Review Gate ──
+        # ── Human Review Gate ──
         s11 = {}
         if _is_step_enabled(11):
             job['current_step'] = 11
-            _p("Step 11: Ready for Human Review...")
+            _p("[info][Preparing review] Compiling checklist for human review...")
             s11 = _to_dict(step11_human_review.run(
                 step7_result=s7, step9_result=s9, step10_result=s10,
                 job_id=job_id, output_dir=os.path.join(results_dir, 'step11'),
                 progress_callback=_p
             ))
             job['step_results']['step11'] = s11
-        else:
-            _p("Step 11: SKIPPED (disabled in settings)")
 
-        # Phase 1 complete — wait for user to review and start verification
         job['status'] = 'completed'
-        _p("Phase 1 complete: Documents extracted, classified, and ready for review.")
-        _p("Click 'Verify' on the checklist to start compliance verification (Steps 12-20).")
+        _p("[done][Ready for review] Documents extracted, classified, and ready.")
+        _p("[info][Verification] Click 'Verify' to run compliance checks.")
 
     except Exception as e:
         job['status'] = 'failed'
@@ -3552,7 +3714,7 @@ def _continue_verification(job_id: str):
         # Send each LC clause to the Qwen VLM to break it into individual
         # checkable conditions (e.g., "signed" + "HS Code" + "3 copies").
         job['current_step'] = 12
-        _p("Step 12: Clause-by-Clause Condition Decomposition...")
+        _p("[reqs][Decomposing clauses] Splitting LC conditions into checks...")
         s12 = _to_dict(step12_decomposition.run(sr.get('step07', {}), os.path.join(results_dir, 'step12'), _p))
         sr['step12'] = {'conditions': sum(len(c.get('conditions', [])) for c in s12.get('decomposed_clauses', []))}
 
@@ -3560,7 +3722,7 @@ def _continue_verification(job_id: str):
         # Build the 5-column verification table (blank worksheet).
         # Each condition becomes one row to be filled by Step 14.
         job['current_step'] = 13
-        _p("Step 13: Verification Row Construction...")
+        _p("[reqs][Building verification rows] Mapping clauses to docs...")
         s13 = _to_dict(step13_row_construction.run(s12, os.path.join(results_dir, 'step13'), _p))
         sr['step13'] = {'rows': len(s13.get('rows', []))}
 
@@ -3568,7 +3730,7 @@ def _continue_verification(job_id: str):
         # Check each condition against the actual shipping documents.
         # Uses VLM for natural language conditions, Python code for dates/amounts.
         job['current_step'] = 14
-        _p("Step 14: VLM Clause Verification...")
+        _p("[match][Verifying compliance] Checking clauses against documents...")
         # Pass Step 9 documents + Step 6 LC data + Step 2 page texts + Step 1 image paths
         _s14_docs = sr.get('step09', {})
         _s14_lc = sr.get('step06', {})
@@ -3597,7 +3759,7 @@ def _continue_verification(job_id: str):
         # ── Step 14b: Implicit LC Key Term Checks (VLM-based) ──
         # Verify LC key term fields (dates, amounts, ports, shipment) using
         # specialized VLM prompts with exact trade finance rules.
-        _p("Step 14b: Implicit LC Key Term Verification...")
+        _p("[match][Verifying compliance] Implicit key-term checks...")
         try:
             # Get LC consolidated fields
             _s06 = sr.get('step06', {})
@@ -3634,39 +3796,37 @@ def _continue_verification(job_id: str):
                     'is_implicit': True,
                     'source_step': '14b',
                 })
-            _p(f"Step 14b: {s14b.get('summary', {}).get('total', 0)} checks merged into pipeline")
+            _p(f"[match][Verifying compliance] {s14b.get('summary', {}).get('total', 0)} implicit checks merged")
         except Exception as _e14b:
-            _p(f"Step 14b WARNING: {_e14b}")
+            _p(f"[warn][Verifying compliance] implicit check warning: {_e14b}")
             print(f"[WARN] Step 14b: {_e14b}\n{traceback.format_exc()}", flush=True)
 
         # ── Step 15: Non-Compliance Handling ──
         s15 = {}
         if _is_step_enabled(15):
             job['current_step'] = 15
-            _p("Step 15: Non-Compliance & Non-Checkable Clauses...")
+            _p("[match][Verifying compliance] Reviewing non-compliance flags...")
             s15 = _to_dict(step15_non_compliance.run(sr.get('step07', {}), os.path.join(results_dir, 'step15'), _p))
             sr['step15'] = s15
         else:
-            _p("Step 15: SKIPPED (disabled in settings)")
-
+            pass
         # ── Step 16: Confidence Review ──
         s16 = {}
         if _is_step_enabled(16):
             job['current_step'] = 16
-            _p("Step 16: Confidence-Based Review Escalation...")
+            _p("[info][Confidence review] Escalating low-confidence items...")
             s16 = _to_dict(step16_confidence_review.run(
                 s14.get('rows', []), s15.get('clause_status_map', {}),
                 os.path.join(results_dir, 'step16'), _p
             ))
             sr['step16'] = {'escalated': s16.get('escalated_count', 0)}
         else:
-            _p("Step 16: SKIPPED (disabled in settings)")
-
+            pass
         # ── Step 17: Cross-Clause Dependencies ──
         s17 = {}
         if _is_step_enabled(17):
             job['current_step'] = 17
-            _p("Step 17: Cross-Clause Dependency Handling...")
+            _p("[info][Cross-clause checks] Resolving dependencies...")
             try:
                 _s17_input = s16.get('rows', []) if s16 else s14.get('rows', [])
                 s17 = _to_dict(step17_cross_clause.run(
@@ -3675,23 +3835,20 @@ def _continue_verification(job_id: str):
                 ))
                 sr['step17'] = {'overrides': s17.get('overrides_applied', 0)}
             except Exception as _e17:
-                _p(f"Step 17 FAILED: {_e17}")
+                _p(f"[error][Cross-clause checks] failed: {_e17}")
                 print(f"[ERROR] Step 17: {_e17}\n{traceback.format_exc()}", flush=True)
                 raise
         else:
-            _p("Step 17: SKIPPED (disabled in settings)")
-
+            pass
         # ── Step 18: Threading ──
         if _is_step_enabled(18):
             job['current_step'] = 18
-            _p("Step 18: Multi-threaded processing complete (inline)")
             sr['step18'] = {'status': 'complete'}
         else:
-            _p("Step 18: SKIPPED (disabled in settings)")
-
+            pass
         # ── Step 19: Consolidation ──
         job['current_step'] = 19
-        _p("Step 19: Consolidating Verification Output...")
+        _p("[info][Consolidating results] Building verification summary...")
         try:
             # Use the latest available rows — from step17, step16, or step14
             _s19_rows = (s17.get('reconciled_rows', s17.get('rows', []))
@@ -3708,13 +3865,13 @@ def _continue_verification(job_id: str):
                 'review': s19.get('total_review', 0),
             }
         except Exception as _e19:
-            _p(f"Step 19 FAILED: {_e19}")
+            _p(f"[error][Consolidating results] failed: {_e19}")
             print(f"[ERROR] Step 19: {_e19}\n{traceback.format_exc()}", flush=True)
             raise
 
         # ── Step 20: Report Generation ──
         job['current_step'] = 20
-        _p("Step 20: Generating Final Compliance Report...")
+        _p("[done][Generating report] Building the final compliance report...")
         try:
             s20 = step20_report.run(
                 s19, sr.get('step06', {}),
@@ -3722,7 +3879,7 @@ def _continue_verification(job_id: str):
             )
             sr['step20'] = {'report_path': s20.get('report_path', s20.get('pdf_path', ''))}
         except Exception as _e20:
-            _p(f"Step 20 FAILED: {_e20}")
+            _p(f"[error][Generating report] failed: {_e20}")
             print(f"[ERROR] Step 20: {_e20}\n{traceback.format_exc()}", flush=True)
             raise
 

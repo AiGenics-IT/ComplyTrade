@@ -115,13 +115,96 @@
         .fg{margin-bottom:12px}.fg label{display:block;font-weight:700;margin-bottom:4px;font-size:.85em}
         .fg input,.fg textarea{width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;font-family:inherit}
 
-        /* Progress Toast */
-        .ptl{position:fixed;bottom:20px;right:20px;width:380px;max-height:300px;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.15);z-index:5000;overflow:hidden;display:none}
-        .ptl.active{display:block}
-        .ptl-h{padding:10px 14px;background:#f8f9ff;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-size:.85em;font-weight:700;color:var(--secondary)}
-        .ptl-b{padding:8px 10px;max-height:230px;overflow-y:auto;font-size:.78em;font-family:'Courier New',monospace;color:#666}
-        .ptl-b div{padding:3px 6px;border-radius:3px;margin-bottom:2px}
-        .ptl-b div:last-child{color:var(--primary);background:#f0f4ff;font-weight:600}
+        /* ── Verification Live Log ───────────────────────────────────
+           Matches the upload "Live Processing" log style: dark gradient
+           shell, animated doodle, stage stepper chips, colored log
+           lines with category chips, custom scrollbar. */
+        .ptl{
+            position:fixed;bottom:20px;right:20px;width:460px;max-height:560px;
+            background:linear-gradient(180deg,#0b1224 0%,#0f172a 100%);
+            color:#e2e8f0;border:none;border-radius:14px;
+            box-shadow:0 18px 48px rgba(15,23,42,.32),inset 0 0 0 1px rgba(255,255,255,.05);
+            z-index:5000;overflow:hidden;display:none;flex-direction:column;
+        }
+        .ptl.active{display:flex;animation:ptlIn .25s ease-out both}
+        @keyframes ptlIn{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+        .ptl-h{
+            padding:13px 16px;
+            background:linear-gradient(135deg,rgba(255,255,255,.04),rgba(255,255,255,.01));
+            border-bottom:1px solid rgba(255,255,255,.06);
+            display:flex;justify-content:space-between;align-items:center;
+            font-size:.78em;font-weight:700;color:#e2e8f0;text-transform:uppercase;letter-spacing:.10em;
+        }
+        .ptl-h .ptl-title{display:flex;align-items:center;gap:10px}
+        .ptl-h .ptl-elapsed{color:#94a3b8;font-size:.78em;font-family:'JetBrains Mono','Fira Code',Consolas,monospace;text-transform:none;letter-spacing:0}
+        .ptl-h .ptl-close{cursor:pointer;color:rgba(255,255,255,.55);font-size:1.1em;line-height:1;padding:2px 6px;border-radius:4px;transition:all .15s;font-weight:400}
+        .ptl-h .ptl-close:hover{color:#fff;background:rgba(255,255,255,.06)}
+        .ptl-h .ptl-live{width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 0 rgba(34,197,94,.5);animation:vlivePulse 1.6s ease-out infinite}
+        @keyframes vlivePulse{0%{box-shadow:0 0 0 0 rgba(34,197,94,.55)}70%{box-shadow:0 0 0 9px rgba(34,197,94,0)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}}
+
+        /* Doodle: magnifying glass over a document with an animated tick */
+        .verify-doodle{width:22px;height:22px;flex:0 0 auto}
+        .verify-doodle .vd-doc{fill:#1e293b;stroke:#94a3b8;stroke-width:1.4}
+        .verify-doodle .vd-fold{fill:#334155;stroke:#94a3b8;stroke-width:1.4}
+        .verify-doodle .vd-line{stroke:#64748b;stroke-width:1.2;stroke-linecap:round}
+        .verify-doodle .vd-ring{fill:none;stroke:#38bdf8;stroke-width:1.6}
+        .verify-doodle .vd-handle{stroke:#38bdf8;stroke-width:1.8;stroke-linecap:round}
+        .verify-doodle .vd-tick{fill:none;stroke:#22c55e;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:14;stroke-dashoffset:14;animation:vdTickDraw 3.2s ease-in-out infinite}
+        .verify-doodle .vd-glass{transform-origin:14px 14px;animation:vdGlassSweep 3.2s ease-in-out infinite}
+        @keyframes vdGlassSweep{0%,100%{transform:translate(-3px,-2px)}50%{transform:translate(2px,2px)}}
+        @keyframes vdTickDraw{0%,40%{stroke-dashoffset:14}55%,80%{stroke-dashoffset:0}95%,100%{stroke-dashoffset:14}}
+
+        /* Stage stepper */
+        .ptl .ptl-stages{display:flex;align-items:center;gap:0;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.06);overflow-x:auto;flex-wrap:nowrap}
+        .ptl .ptl-stages::-webkit-scrollbar{height:0}
+        .ptl .vstage{display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:.66em;font-weight:700;letter-spacing:.04em;background:rgba(255,255,255,.04);color:#64748b;flex:0 0 auto;transition:all .25s;white-space:nowrap;border:1px solid transparent;text-transform:uppercase}
+        .ptl .vstage.done{background:rgba(52,211,153,.10);color:#86efac;border-color:rgba(52,211,153,.25)}
+        .ptl .vstage.done::before{content:'✓';font-weight:900;color:#34d399}
+        .ptl .vstage.active{background:rgba(56,189,248,.12);color:#bae6fd;border-color:rgba(56,189,248,.35);animation:vstagePulse 1.8s ease-out infinite}
+        @keyframes vstagePulse{0%{box-shadow:0 0 0 0 rgba(56,189,248,.45)}70%{box-shadow:0 0 0 6px rgba(56,189,248,0)}100%{box-shadow:0 0 0 0 rgba(56,189,248,0)}}
+        .ptl .vstage.active::before{content:'';width:6px;height:6px;border-radius:50%;background:#38bdf8;box-shadow:0 0 6px rgba(56,189,248,.7)}
+        .ptl .vstage-arrow{color:#475569;margin:0 5px;font-size:.85em;flex:0 0 auto;user-select:none}
+
+        /* Log body */
+        .ptl-b{
+            flex:1;overflow-y:auto;padding:10px 14px 14px;
+            font-family:'JetBrains Mono','Fira Code',Consolas,monospace;
+            font-size:.76em;line-height:1.65;color:#cbd5e1;
+            background:transparent;
+        }
+        .ptl-b > div{
+            padding:4px 9px;margin:1px 0;border-radius:6px;
+            white-space:pre-wrap;word-break:break-word;
+            transition:background .15s;
+            animation:vlineIn .26s ease-out both;
+        }
+        @keyframes vlineIn{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:translateY(0)}}
+        .ptl-b > div:hover{background:rgba(255,255,255,.04)}
+        .ptl-b > div:last-child{background:rgba(255,255,255,.04);color:#f1f5f9;font-weight:600}
+
+        /* Stage-coloured lines (parser injects class names) */
+        .ptl-b .vline.stage-decompose{color:#c4b5fd}
+        .ptl-b .vline.stage-verify   {color:#7dd3fc}
+        .ptl-b .vline.stage-review   {color:#fcd34d}
+        .ptl-b .vline.stage-finalize {color:#6ee7b7}
+        .ptl-b .vline.stage-system   {color:#cbd5e1}
+        .ptl-b .vline.stage-error    {color:#fca5a5}
+        .ptl-b .vline.stage-success  {color:#86efac;font-weight:700}
+
+        /* Stage chip prefix on log lines */
+        .ptl-b .vchip{display:inline-flex;align-items:center;font-size:.78em;font-weight:700;padding:1px 7px;border-radius:5px;margin-right:8px;letter-spacing:.05em;text-transform:uppercase;background:rgba(255,255,255,.08);color:#cbd5e1;vertical-align:1px}
+        .ptl-b .vline.stage-decompose .vchip{background:rgba(167,139,250,.18);color:#ddd6fe;box-shadow:inset 0 0 0 1px rgba(167,139,250,.28)}
+        .ptl-b .vline.stage-verify    .vchip{background:rgba(56,189,248,.16);color:#bae6fd;box-shadow:inset 0 0 0 1px rgba(56,189,248,.25)}
+        .ptl-b .vline.stage-review    .vchip{background:rgba(251,191,36,.16);color:#fde68a;box-shadow:inset 0 0 0 1px rgba(251,191,36,.25)}
+        .ptl-b .vline.stage-finalize  .vchip{background:rgba(52,211,153,.16);color:#a7f3d0;box-shadow:inset 0 0 0 1px rgba(52,211,153,.25)}
+        .ptl-b .vline.stage-error     .vchip{background:rgba(248,113,113,.18);color:#fecaca;box-shadow:inset 0 0 0 1px rgba(248,113,113,.30)}
+        .ptl-b .vline.stage-success   .vchip{background:rgba(34,197,94,.20);color:#86efac;box-shadow:inset 0 0 0 1px rgba(34,197,94,.30)}
+
+        /* Custom scrollbar (Webkit) */
+        .ptl-b::-webkit-scrollbar{width:8px}
+        .ptl-b::-webkit-scrollbar-track{background:transparent}
+        .ptl-b::-webkit-scrollbar-thumb{background:rgba(255,255,255,.10);border-radius:6px}
+        .ptl-b::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.20)}
 
         /* Ruleset Selection Panel */
         .rsp{padding:10px 24px;background:#f0f4ff;border-bottom:1px solid var(--border);display:none}
@@ -364,7 +447,39 @@
 </div>
 
 <div id="ptl" class="ptl">
-    <div class="ptl-h"><span>⚡ Verification Progress</span><span style="cursor:pointer;color:#999" onclick="document.getElementById('ptl').classList.remove('active')">✕</span></div>
+    <div class="ptl-h">
+        <div class="ptl-title">
+            <span class="ptl-live"></span>
+            Live Verification
+            <svg class="verify-doodle" viewBox="0 0 24 24" aria-hidden="true">
+                <!-- Document behind the magnifier -->
+                <path class="vd-doc"  d="M4 3 H13 L17 7 V20 A1 1 0 0 1 16 21 H4 A1 1 0 0 1 3 20 V4 A1 1 0 0 1 4 3 Z"/>
+                <path class="vd-fold" d="M13 3 V7 H17 Z"/>
+                <line class="vd-line" x1="6"  y1="10" x2="13" y2="10"/>
+                <line class="vd-line" x1="6"  y1="13" x2="13" y2="13"/>
+                <line class="vd-line" x1="6"  y1="16" x2="10" y2="16"/>
+                <!-- Sweeping magnifier with animated tick -->
+                <g class="vd-glass">
+                    <circle class="vd-ring" cx="14" cy="14" r="4.2"/>
+                    <line class="vd-handle" x1="17.2" y1="17.2" x2="20.5" y2="20.5"/>
+                    <polyline class="vd-tick" points="12,14 13.7,15.6 16,12.6"/>
+                </g>
+            </svg>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+            <span class="ptl-elapsed" id="ptlElapsed">00:00</span>
+            <span class="ptl-close" onclick="document.getElementById('ptl').classList.remove('active')">&times;</span>
+        </div>
+    </div>
+    <div class="ptl-stages" id="ptlStages">
+        <span class="vstage" data-stage="decompose">Decompose</span>
+        <span class="vstage-arrow">›</span>
+        <span class="vstage" data-stage="verify">Verify</span>
+        <span class="vstage-arrow">›</span>
+        <span class="vstage" data-stage="review">Review</span>
+        <span class="vstage-arrow">›</span>
+        <span class="vstage" data-stage="finalize">Finalize</span>
+    </div>
     <div class="ptl-b" id="ptlb"></div>
 </div>
 
@@ -1577,21 +1692,96 @@ function updProg(){const t=D.pts.length,c=D.pts.filter(p=>p.checked).length;docu
 
 // ─── Verification Timer ───
 let _vTimerStart=null,_vTimerInterval=null;
+function _fmtVT(el){const m=Math.floor(el/60),s=el%60;return (m<10?'0':'')+m+':'+(s<10?'0':'')+s}
 function _startVTimer(){
     _vTimerStart=Date.now();
     const te=document.getElementById('v-timer');
     if(te){te.style.display='inline-flex';te.style.color='white';te.style.background='white'}
+    const pe=document.getElementById('ptlElapsed');if(pe)pe.textContent='00:00';
     _vTimerInterval=setInterval(()=>{
         const el=Math.floor((Date.now()-_vTimerStart)/1000);
         const m=Math.floor(el/60),s=el%60;
         const te=document.getElementById('v-timer');
         if(te)te.textContent=`⏱ ${m>0?m+'m ':''}${s}s`;
+        const pe2=document.getElementById('ptlElapsed');
+        if(pe2)pe2.textContent=_fmtVT(el);
     },1000);
 }
 function _stopVTimer(){
     if(_vTimerInterval){clearInterval(_vTimerInterval);_vTimerInterval=null}
     const te=document.getElementById('v-timer');
     if(te){te.style.display='none'}
+}
+
+// ─── Verification log classifier ───
+// Map raw progress messages to (stage, chip-label, css-class) so the
+// log lines render as colored chips like the upload "Live Processing"
+// log. Stage order also drives the top stage stepper.
+const _V_STAGE_ORDER = ['decompose','verify','review','finalize'];
+const _V_STAGE_LABEL = {
+    decompose: 'Decompose',
+    verify   : 'Verify',
+    review   : 'Review',
+    finalize : 'Finalize',
+};
+function _vClassify(msg){
+    const m = String(msg||'');
+    const low = m.toLowerCase();
+    // Step number → stage
+    const sm = m.match(/Step\s+(\d+)/i);
+    if (sm) {
+        const n = parseInt(sm[1], 10);
+        if (n === 12 || n === 13) return {stage:'decompose', label:'DECOMPOSE'};
+        if (n === 14)              return {stage:'verify',    label:'VERIFY'};
+        if (n >= 15 && n <= 18)    return {stage:'review',    label:'REVIEW'};
+        if (n === 19 || n === 20)  return {stage:'finalize',  label:'FINALIZE'};
+    }
+    // Keyword fallbacks
+    if (/error|failed|fail\b|exception|✗/i.test(m)) return {stage:'error',   label:'ERROR'};
+    if (/complete|✓\s*✓|✅/.test(m))                  return {stage:'success', label:'DONE'};
+    if (/decompos|breaking.*clause|condition.*build/i.test(m)) return {stage:'decompose', label:'DECOMPOSE'};
+    if (/verify|verif|checking|compliance check/i.test(m))     return {stage:'verify',    label:'VERIFY'};
+    if (/confidence|review|escalat|cross.?clause|non.?compli/i.test(m)) return {stage:'review', label:'REVIEW'};
+    if (/consolidat|report|generating|finaliz|saving/i.test(m))         return {stage:'finalize', label:'FINALIZE'};
+    if (/starting|ruleset|id:/i.test(m)) return {stage:'system', label:'SYSTEM'};
+    return {stage:'system', label:'INFO'};
+}
+function _vEsc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function _vRenderLogs(logs){
+    const el=document.getElementById('ptlb'); if(!el) return;
+    const seen=new Set();
+    el.innerHTML = logs.map(l => {
+        const m=l.message||'';
+        const c=_vClassify(m);
+        seen.add(c.stage);
+        return `<div class="vline stage-${c.stage}"><span class="vchip">${c.label}</span>${_vEsc(m)}</div>`;
+    }).join('');
+    el.scrollTop=el.scrollHeight;
+    // Update stage chips
+    const reached = new Set();
+    for (const s of _V_STAGE_ORDER) {
+        if (seen.has(s)) reached.add(s);
+    }
+    let activeStage = null;
+    // Active stage = the latest stage we've seen
+    for (let i = _V_STAGE_ORDER.length - 1; i >= 0; i--) {
+        if (reached.has(_V_STAGE_ORDER[i])) { activeStage = _V_STAGE_ORDER[i]; break; }
+    }
+    document.querySelectorAll('#ptlStages .vstage').forEach(node => {
+        const st = node.getAttribute('data-stage');
+        node.classList.remove('done','active');
+        if (!activeStage) return;
+        const idx = _V_STAGE_ORDER.indexOf(st);
+        const aIdx = _V_STAGE_ORDER.indexOf(activeStage);
+        if (idx < aIdx) node.classList.add('done');
+        else if (idx === aIdx) node.classList.add('active');
+    });
+}
+function _vAppendLine(stage, msg){
+    const el=document.getElementById('ptlb'); if(!el) return;
+    el.insertAdjacentHTML('beforeend',
+        `<div class="vline stage-${stage}"><span class="vchip">${_V_STAGE_LABEL[stage]||stage.toUpperCase()}</span>${_vEsc(msg)}</div>`);
+    el.scrollTop=el.scrollHeight;
 }
 
 // ─── Verification ───
@@ -1602,7 +1792,7 @@ function cancelV(){
     _stopVTimer();
     const b=document.getElementById('rbtn');if(b){b.disabled=false;b.classList.remove('run');b.textContent='▶ Run Verification'}
     const cb=document.getElementById('cbtn');if(cb)cb.style.display='none';
-    const lg=document.getElementById('ptl');if(lg){lg.querySelector('#ptlb').innerHTML+='<div style="color:var(--warning);font-weight:700">Verification cancelled.</div>';setTimeout(()=>lg.classList.remove('active'),2000)}
+    const lg=document.getElementById('ptl');if(lg){_vAppendLine('error','Verification cancelled.');setTimeout(()=>lg.classList.remove('active'),2000)}
 }
 async function runV(){
     _pollCancelled=false;
@@ -1610,11 +1800,15 @@ async function runV(){
     const cb=document.getElementById('cbtn');if(cb)cb.style.display='inline-block';
     _startVTimer();
     const lg=document.getElementById('ptl'),lb=document.getElementById('ptlb');
-    lg.classList.add('active');lb.innerHTML='<div>Starting verification...</div>';
+    lg.classList.add('active');
+    // Reset stage chips
+    document.querySelectorAll('#ptlStages .vstage').forEach(n=>n.classList.remove('done','active'));
+    lb.innerHTML='';
+    _vAppendLine('system','Starting verification…');
     // Collect selected rulesets from panel
     const selRs=getSelectedRulesets();
     const body=selRs.length>0?JSON.stringify({rulesets:selRs}):JSON.stringify({});
-    lb.innerHTML+=`<div>Rulesets: ${selRs.length>0?selRs.join(', '):'auto-detect from 40E'}</div>`;
+    _vAppendLine('system',`Rulesets: ${selRs.length>0?selRs.join(', '):'auto-detect from 40E'}`);
     try{
         const r=await fetch(`${API}/api/verify/${D.jid}/${D.lc}`,{
             method:'POST',
@@ -1623,11 +1817,11 @@ async function runV(){
         });
         if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||`Server ${r.status}`)}
         const d=await r.json();vid=d.verification_id;
-        lb.innerHTML+=`<div>ID: ${d.verification_id.substring(0,8)}...</div>`;
+        _vAppendLine('system',`ID: ${d.verification_id.substring(0,8)}…`);
         await poll(d.verification_id,lb);
     }catch(e){
         _stopVTimer();
-        lb.innerHTML+=`<div style="color:var(--danger);font-weight:700">Error: ${e.message}</div>`;
+        _vAppendLine('error',`Error: ${e.message}`);
         if(b){b.disabled=false;b.classList.remove('run');b.textContent='▶ Run Verification'}
     }
 }
@@ -1642,21 +1836,22 @@ async function poll(id,el){
             const d=await r.json();
             const logs=d.progress_log||[];
             if(logs.length){
-                el.innerHTML=logs.map(l=>`<div>${l.message}</div>`).join('');
+                _vRenderLogs(logs);
                 if(logs.length>lastLogCount){stalledTicks=0;lastLogCount=logs.length}
-                else{stalledTicks++;if(stalledTicks%15===0)el.innerHTML+=`<div style="color:#888;font-style:italic">Still processing...</div>`}
-                el.scrollTop=el.scrollHeight;
+                else{stalledTicks++;if(stalledTicks%15===0)_vAppendLine('system','Still processing…')}
             }
             if(d.status==='completed'){
                 _stopVTimer();const _cb=document.getElementById('cbtn');if(_cb)_cb.style.display='none';
-                el.innerHTML+=`<div style="color:var(--success);font-weight:700">✓ ✓ Verification complete! Fetching results...</div>`;el.scrollTop=el.scrollHeight;
+                _vAppendLine('success','Verification complete — fetching results…');
+                // Mark all stages done
+                document.querySelectorAll('#ptlStages .vstage').forEach(n=>{n.classList.remove('active');n.classList.add('done')});
                 const rr=await fetch(`${API}/api/verify/result/${id}`);
                 if(rr.ok){const vd=await rr.json();vres=vd.results||[];vsum=_normalizeVSum(vd);vElapsed=vd.elapsed_seconds||a;mt700comp=vd.mt700_compliance||null;urr725comp=vd.urr725_compliance||null;isbp821comp=vd.isbp821_compliance||null;isp98comp=vd.isp98_compliance||null;fecomp=vd.fe_manual_compliance||null;vesselcomp=vd.vessel_compliance||null;amtdatecomp=vd.amount_date_compliance||null;crossDocConsistency=vd.cross_document_consistency||null;installmentCompliance=vd.installment_compliance||null;mapV();injectVesselChecks();injectPartialShipmentChecks();autoPopulateVessel();renderAll()}
                 setTimeout(()=>document.getElementById('ptl').classList.remove('active'),3000);return;
             }
             if(d.status==='failed'){
                 _stopVTimer();const _cb2=document.getElementById('cbtn');if(_cb2)_cb2.style.display='none';
-                el.innerHTML+=`<div style="color:var(--danger);font-weight:700">✗ ${d.message}</div>`;
+                _vAppendLine('error',`${d.message||'Verification failed'}`);
                 const b=document.getElementById('rbtn');if(b){b.disabled=false;b.classList.remove('run');b.textContent='▶ Retry'}return;
             }
         }catch(_){}

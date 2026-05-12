@@ -25,6 +25,18 @@
         .pb { font-size: 0.65em; color: #fff; background: #16a34a; padding: 1px 5px; border-radius: 6px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 90px; }
         .pb.lc { background: #2563eb; } .pb.amd { background: #7c3aed; } .pb.vlm { background: #d97706; font-size: 0.6em; }
         .pc { font-size: 0.68em; color: #94a3b8; }
+        /* Merge chip on sidebar items: tells the user this page is grouped
+           with others into the same logical document (e.g. "📎 24,25" on
+           both page 24 and page 25). */
+        .pmerge { display:inline-flex; align-items:center; gap:2px; background:#ccfbf1; color:#0f766e;
+            padding:1px 5px; border-radius:5px; font-size:0.6em; font-weight:700; line-height:1.4;
+            border:1px solid #5eead4; white-space:nowrap; }
+        .pmerge .pm-ico { font-size:0.9em; }
+        /* Toolbar merge banner shown on the active page */
+        .merge-info { display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:5px;
+            background:linear-gradient(135deg,#ccfbf1,#a7f3d0); color:#065f46;
+            border:1px solid #5eead4; font-size:0.7em; font-weight:700; cursor:default; }
+        .merge-info .mi-others { background:#fff; color:#0f766e; padding:0 5px; border-radius:3px; font-weight:800; }
 
         /* Main */
         .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -89,6 +101,126 @@
         .txt-tabs .tb.active { border-bottom: 2px solid #1554ca; color: #1554ca; background: #fff; }
         .txt-tabs .tb.vt.active { border-bottom-color: #d97706; color: #d97706; }
         .txt-pane pre { font-family: 'Consolas', 'Courier New', monospace; font-size: 0.8em; line-height: 1.7; white-space: pre-wrap; word-break: break-word; color: #334155; flex: 1; overflow-y: auto; padding: 14px 18px; margin: 0; }
+        /* ── Positioned text view ─────────────────────────────────
+           Words rendered at their original page coordinates.
+           Goals:
+             • Each "page" looks like a real document — white card on a
+               soft gradient background with a subtle border + shadow.
+             • Gradient background fills the WHOLE viewable area, even
+               when the page card is smaller than the viewport.
+             • Words sit on their bbox with a faint white pill, so even
+               when bboxes overlap slightly the text stays readable.
+             • Hover highlights the word (yellow pill, slight lift) so
+               you can read text underneath without anything jumping.
+             • No horizontal scrollbar — the stage always fits the
+               available width; vertical scroll only when needed. */
+        .pos-canvas {
+            position: relative; flex: 1;
+            overflow-x: hidden;        /* never horizontal scroll */
+            overflow-y: auto;          /* vertical scroll only when needed */
+            background:
+              linear-gradient(135deg, #eef2f8 0%, #dde6f3 50%, #e6ecf5 100%);
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+        }
+        /* Pad-wrap so the stage is centered with consistent gradient
+           around it on all sides — without this the stage's auto margins
+           don't visually feel padded enough. */
+        .pos-canvas .pos-stage-wrap {
+            flex: 1 0 auto;
+            padding: 18px 18px 24px;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            box-sizing: border-box;
+            width: 100%;
+            background:
+              linear-gradient(135deg, #eef2f8 0%, #dde6f3 50%, #e6ecf5 100%);
+        }
+        .pos-canvas .pos-stage {
+            position: relative;
+            transform-origin: 0 0;
+            background: #fff;
+            box-shadow:
+              0 1px 2px rgba(15,23,42,.06),
+              0 8px 28px rgba(15,23,42,.15);
+            border: 1px solid #d6dbe4;
+            border-radius: 4px;
+            margin: 0;
+            max-width: 100%;
+            flex-shrink: 0;
+        }
+        /* Subtle ruled-paper feel so empty space has texture */
+        .pos-canvas .pos-stage::before {
+            content: ''; position: absolute; inset: 0; pointer-events: none;
+            background-image:
+              linear-gradient(to bottom, rgba(21,84,202,0.03) 0, rgba(21,84,202,0.03) 1px, transparent 1px, transparent 24px);
+            border-radius: inherit;
+        }
+        .pos-canvas .pos-word {
+            position: absolute;
+            color: #0f172a;
+            line-height: 1.05;
+            white-space: nowrap;
+            padding: 0 2px;
+            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+            background: rgba(255,255,255,0.92);
+            border-radius: 2px;
+            box-shadow: 0 0 0 0.5px rgba(255,255,255,0.6);
+            transition: background .12s ease, box-shadow .12s ease, transform .12s ease;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            cursor: text;
+        }
+        .pos-canvas .pos-word:hover {
+            background: linear-gradient(180deg, #fde68a 0%, #fbbf24 100%);
+            color: #422006;
+            box-shadow:
+              0 0 0 1.5px #f59e0b,
+              0 3px 10px rgba(245,158,11,.45);
+            z-index: 1000;
+            overflow: visible;
+            transform: scale(1.04);
+            font-weight: 600;
+        }
+        .pos-canvas .pos-word.line {
+            color: #1e293b;
+            background: rgba(237,242,252,0.7);
+            border-left: 2px solid rgba(21,84,202,0.25);
+        }
+        .pos-canvas .pos-word.line:hover {
+            background: linear-gradient(180deg, #fde68a 0%, #fbbf24 100%);
+            color: #422006;
+            border-left-color: #f59e0b;
+        }
+        .pos-canvas .pos-empty { color: #94a3b8; font-size: 0.85em; padding: 36px; text-align: center; }
+        .pos-toolbar {
+            display: flex; align-items: center; gap: 8px;
+            padding: 6px 14px;
+            background: linear-gradient(180deg,#eef3fb,#e3ecf9);
+            border-bottom: 1px solid #cfdaee;
+            font-size: 0.75em; color: #334155;
+            position: sticky; top: 0; z-index: 50;
+        }
+        .pos-toolbar .src-tag { font-weight: 700; padding: 2px 8px; border-radius: 4px; font-size: 0.92em; letter-spacing: .02em; }
+        .pos-toolbar .src-tag.pymupdf { background: #dcfce7; color: #166534; }
+        .pos-toolbar .src-tag.qwen_vl { background: #ede9fe; color: #5b21b6; }
+        .pos-toolbar .src-tag.no_positions { background: #fee2e2; color: #991b1b; }
+        .pos-toolbar .ptbtn {
+            margin-left:auto; background:#fff; border:1px solid #cfdaee; color:#1554ca;
+            padding:3px 9px; border-radius:4px; font-size:.95em; cursor:pointer; font-weight:700;
+        }
+        .pos-toolbar .ptbtn:hover { background:#1554ca; color:#fff; }
+        .pos-toolbar .pt-zoom { display:flex; align-items:center; gap:3px; }
+        .pos-toolbar .pt-zoom button {
+            background:#fff; border:1px solid #cfdaee; color:#1554ca;
+            padding:2px 8px; border-radius:4px; font-size:.95em; cursor:pointer; font-weight:700;
+            min-width:24px;
+        }
+        .pos-toolbar .pt-zoom button:hover { background:#1554ca; color:#fff; }
+        .pos-toolbar .pt-zoom .pt-zlabel { color:#64748b; font-size:.95em; min-width:42px; text-align:center; }
+        @keyframes posSpin { to { transform: rotate(360deg); } }
 
         mark { background: #fbbf24; padding: 0 1px; border-radius: 2px; }
         mark.cur { background: #f97316; color: #fff; }
@@ -99,7 +231,7 @@
         .summary-btn:hover { background: linear-gradient(135deg, #1a66e0, #0f4aa0); }
         .summary-btn svg { width: 13px; height: 13px; fill: currentColor; }
         .summary-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 999; }
-        .summary-panel { position: fixed; z-index: 1000; background: #fff; border-radius: 10px; box-shadow: 0 8px 32px rgba(21,84,202,0.18), 0 2px 8px rgba(0,0,0,0.10); max-width: 480px; min-width: 320px; max-height: 70vh; overflow-y: auto; border: 1.5px solid #c7d6f5; }
+        .summary-panel { position: fixed; z-index: 1000; background: #fff; border-radius: 10px; box-shadow: 0 12px 40px rgba(21,84,202,0.22), 0 2px 8px rgba(0,0,0,0.10); max-width: 760px; min-width: 360px; width: min(760px, 90vw); max-height: 78vh; overflow-y: auto; border: 1.5px solid #c7d6f5; }
         .summary-panel-hdr { background: linear-gradient(135deg, #1554ca 0%, #0d3b8a 100%); color: #fff; padding: 10px 16px; border-radius: 8px 8px 0 0; display: flex; align-items: center; justify-content: space-between; }
         .summary-panel-hdr h3 { font-size: 0.88em; margin: 0; font-weight: 700; }
         .summary-panel-close { background: none; border: none; color: rgba(255,255,255,0.8); font-size: 1.1em; cursor: pointer; padding: 0 4px; line-height: 1; }
@@ -110,6 +242,9 @@
         .summary-key { font-size: 0.76em; font-weight: 700; color: #1554ca; min-width: 100px; flex-shrink: 0; }
         .summary-val { font-size: 0.76em; color: #334155; word-break: break-word; white-space: pre-wrap; }
         .summary-empty { font-size: 0.82em; color: #94a3b8; padding: 16px; text-align: center; }
+        @keyframes editFadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes editScaleIn { from { opacity: 0; transform: translate(-50%, -50%) scale(0.96); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+        #ec-toast { animation: editFadeIn .2s ease-out; }
     </style>
 </head>
 <body>
@@ -132,6 +267,12 @@
                     <div class="txt-pane" id="tp">
                         <div class="txt-tabs" id="ttabs"></div>
                         <pre id="tc"></pre>
+                        <div id="tcPos" class="pos-canvas" style="display:none">
+                            <div class="pos-toolbar" id="tcPosBar"></div>
+                            <div class="pos-stage-wrap" id="tcPosWrap">
+                                <div class="pos-stage" id="tcPosStage"></div>
+                            </div>
+                        </div>
                     </div>
                     <div class="rhandle" id="rh"></div>
                     <div class="img-pane" id="ip">
@@ -166,10 +307,44 @@ async function init(){
     }catch(ex){document.getElementById('ns').innerHTML=`<div style="color:#dc2626">Error: ${ex.message}</div>`;}
 }
 
+// Compact format for a list of packet pages on a sidebar chip:
+//   [24,25]          → "24,25"
+//   [24,25,26,27]    → "24-27"
+//   [24,25,28]       → "24,25,28"
+// Always omits the current page so users see what other pages are
+// merged in: e.g. on page 24 → "+25", on page 25 → "24,+" (or just
+// the full list when it's tidy).
+function _fmtPacketPages(arr){
+    if(!Array.isArray(arr)||arr.length<2)return '';
+    const a=arr.slice().sort((x,y)=>x-y);
+    // continuous range?
+    let cont=true;
+    for(let i=1;i<a.length;i++){if(a[i]!==a[i-1]+1){cont=false;break}}
+    if(cont)return `${a[0]}-${a[a.length-1]}`;
+    return a.join(',');
+}
+
 function rList(){
     let h='';pages.forEach((p,i)=>{
         const dt=p.document_type||'Unknown',cls=ct(dt),vb=p.vlm_added?'<span class="pb vlm">VLM</span>':'';
-        h+=`<div class="pi" id="p${i}" onclick="sel(${i})"><div style="display:flex;align-items:center;gap:5px"><span class="pn">${p.page_number}</span><span class="pb ${cls}">${e(dt)}</span>${vb}</div><span class="pc">${p.final_chars.toLocaleString()}</span></div>`;
+        // Merge chip: show when this page is part of a multi-page packet.
+        // The format ("24,25" or "24-27") matches the 8083 server style so
+        // the user sees the same grouping on every member page of the packet.
+        let mc='';
+        if(Array.isArray(p.packet_pages)&&p.packet_pages.length>1){
+            const label=_fmtPacketPages(p.packet_pages);
+            mc=`<span class="pmerge" title="This page is merged with the others as one logical document">
+                <span class="pm-ico">&#128206;</span>${label}
+              </span>`;
+        }
+        h+=`<div class="pi" id="p${i}" onclick="sel(${i})">
+            <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
+                <span class="pn">${p.page_number}</span>
+                <span class="pb ${cls}">${e(dt)}</span>
+                ${vb}${mc}
+            </div>
+            <span class="pc">${p.final_chars.toLocaleString()}</span>
+          </div>`;
     });document.getElementById('pl').innerHTML=h;
 }
 
@@ -194,19 +369,31 @@ function sel(i){
     rImgBar();
     // Tabs above text pane
     const hc=p.cleaned_text&&p.cleaned_text!==p.raw_text,hv=p.vlm_additions&&p.vlm_additions.length>0;
-    let tabs=`<div class="tb active" onclick="sTab('final',this)">Final</div><div class="tb" onclick="sTab('raw',this)">GLM Raw</div>`;
+    let tabs=`<div class="tb active" onclick="sTab('final',this)">Flowing text</div><div class="tb" onclick="sTab('raw',this)">Raw OCR</div>`;
     if(hc)tabs+=`<div class="tb" onclick="sTab('cleaned',this)">Cleaned</div>`;
     if(hv)tabs+=`<div class="tb vt" onclick="sTab('vlm',this)">VLM Added</div>`;
+    tabs+=`<div class="tb" onclick="sTab('positioned',this)" title="Words rendered at their original page coordinates">Positioned text</div>`;
     document.getElementById('ttabs').innerHTML=tabs;
     // Toolbar — page info + search + copy
     const cs=p.copy_status?`<span class="badge-sm ${p.copy_status==='original'?'badge-orig':'badge-copy'}">${e((p.copy_status||'').toUpperCase())}</span>`:'';
     const vb=hv?'<span class="badge-sm badge-vlm">VLM ENHANCED</span>':'';
+    // Merge badge — tells the user this page is grouped with others as
+    // one logical document. Identical label appears on every member
+    // page so the merging is visible from any page in the packet.
+    let mb='';
+    if(Array.isArray(p.packet_pages)&&p.packet_pages.length>1){
+        const lbl=_fmtPacketPages(p.packet_pages);
+        mb=`<span class="merge-info" title="Merged as one document with pages: ${p.packet_pages.join(', ')}">
+            &#128206; Merged: <span class="mi-others">${lbl}</span>
+          </span>`;
+    }
     document.getElementById('tb').innerHTML=`
         <span class="pg-info">Page ${p.page_number}</span>
-        <span class="pg-type-lbl" id="pg-type-display">${e(p.document_type||'')}</span>${cs}${vb}
+        <span class="pg-type-lbl" id="pg-type-display">${e(p.document_type||'')}</span>${cs}${vb}${mb}
         <button class="btn" onclick="toggleEditClass()" style="padding:2px 8px;font-size:.72em;background:#fef3c7;color:#92400e;border:1px solid #fde68a" title="Change classification">Edit</button>
         <button class="summary-btn" onclick="toggleSummary(event)" title="Show document summary"><svg viewBox="0 0 20 20"><path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"/><path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"/></svg>Summary</button>
         <button class="summary-btn" onclick="toggleStamps(event)" title="Show stamps &amp; signatures" style="background:linear-gradient(135deg,#7c3aed,#5b21b6)"><svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14"><path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z"/><path fill-rule="evenodd" d="M2 6a2 2 0 012-2h4a1 1 0 010 2H4v10h10v-4a1 1 0 112 0v4a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd"/></svg>Stamps</button>
+        <button class="summary-btn" onclick="toggleSequence(event)" title="Show document merging sequence (how pages were grouped into documents)" style="background:linear-gradient(135deg,#0d9488,#0f766e)"><svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14"><path d="M3 4a1 1 0 011-1h3a1 1 0 011 1v3a1 1 0 01-1 1H4a1 1 0 01-1-1V4zm0 9a1 1 0 011-1h3a1 1 0 011 1v3a1 1 0 01-1 1H4a1 1 0 01-1-1v-3zm9-9a1 1 0 011-1h3a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1V4zm0 9a1 1 0 011-1h3a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-3z"/><path d="M8 5.5h4M8 14.5h4M5.5 8v4M14.5 8v4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>Sequence</button>
         <span class="spacer"></span>
         <div class="srch"><input id="sin" placeholder="Search in text..." oninput="doS()" onkeydown="if(event.key==='Enter'){event.shiftKey?pH():nH()}"><span class="si" id="sif"></span><button class="btn" onclick="pH()" title="Prev">&#9650;</button><button class="btn" onclick="nH()" title="Next">&#9660;</button></div>
         <button class="btn" onclick="cpT(this)">Copy</button>
@@ -236,9 +423,139 @@ function sTab(t,btn){tab=t;hits=[];hi=-1;const sin=document.getElementById('sin'
 function showT(){
     const p=pages[si];if(!p)return;
     const tp=document.getElementById('tp');tp.className='txt-pane';
+    const tc=document.getElementById('tc');
+    const tcPos=document.getElementById('tcPos');
+    // Positioned-text tab uses a separate render path
+    if (tab === 'positioned') {
+        tc.style.display='none';
+        tcPos.style.display='flex';
+        tcPos.style.flexDirection='column';
+        renderPositioned(p);
+        return;
+    }
+    tc.style.display='';
+    tcPos.style.display='none';
     let t='';
     switch(tab){case 'raw':t=p.raw_text||'';break;case 'cleaned':t=p.cleaned_text||'';break;case 'vlm':t=p.vlm_additions||'';tp.className='txt-pane vlm-bg';break;default:t=p.final_text||'';}
-    document.getElementById('tc').innerHTML=e(t);
+    tc.innerHTML=e(t);
+}
+
+// ── Positioned-text renderer ─────────────────────────────────────
+const _posCache = {};
+const _posZoom  = { val: 1.0 };  // user zoom on top of fit-to-width
+let _posRenderToken = 0;  // so a late fetch can't overwrite a newer page
+
+function _posSetZoom(delta){
+    if (delta === 0) _posZoom.val = 1.0;
+    else _posZoom.val = Math.max(0.5, Math.min(2.5, _posZoom.val + delta));
+    if (si >= 0 && tab === 'positioned') renderPositioned(pages[si], true);
+}
+
+async function renderPositioned(p, fromZoom){
+    const stage = document.getElementById('tcPosStage');
+    const bar   = document.getElementById('tcPosBar');
+    const key = `${jobId}:${p.page_number}`;
+    const myToken = ++_posRenderToken;
+    if (!fromZoom) {
+        bar.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px;color:#1554ca;font-weight:600">
+            <span style="width:10px;height:10px;border:2px solid #1554ca;border-top-color:transparent;border-radius:50%;display:inline-block;animation:posSpin .8s linear infinite"></span>
+            Extracting word positions for page ${p.page_number}…
+          </span>
+          <span style="color:#64748b;font-size:.95em">First load on scanned pages may take ~20-90s while the trade expert extracts bounding boxes. Subsequent loads are instant.</span>`;
+        stage.innerHTML = '';
+    }
+    try {
+        let data = _posCache[key];
+        if (!data) {
+            const r = await fetch(`${API}/api/page-positions/${jobId}/${p.page_number}`);
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            data = await r.json();
+            _posCache[key] = data;
+        }
+        // A newer page was selected while we were waiting — bail out.
+        if (myToken !== _posRenderToken) return;
+        const W = data.page_width || 595, H = data.page_height || 842;
+        const words = (data.words && data.words.length ? data.words : (data.lines || []));
+        if (!words.length) {
+            bar.innerHTML = `<span class="src-tag no_positions">no positions</span>
+                <span>Source: ${e(data.source || 'n/a')}</span>${data._error ? ' <span style="color:#991b1b">· '+e(data._error)+'</span>' : ''}
+                <button class="ptbtn" onclick="(_posCache[\'${e(key)}\']=null,renderPositioned(pages[si]))">Retry</button>`;
+            stage.style.width = '';
+            stage.style.height = '';
+            stage.innerHTML = `<div class="pos-empty">
+                No text positions available for this page yet.<br>
+                <small>The OCR backend couldn't extract bounding boxes — try Retry, or use the <b>Flowing text</b> tab.</small>
+              </div>`;
+            return;
+        }
+        // Fit-to-width with user zoom on top. Use the wrap container's
+        // inner width (it already accounts for our 18px*2 padding); cap
+        // the auto-fit scale at 1.0 so a small page doesn't get blown
+        // up to giant size, but allow user zoom to push beyond that.
+        const wrap = document.getElementById('tcPosWrap');
+        const panelW = Math.max(200, (wrap ? wrap.clientWidth : stage.parentElement.clientWidth) - 4);
+        const fit = Math.max(0.5, Math.min(1.0, panelW / W));
+        const scale = fit * _posZoom.val;
+        // Final stage width is clamped to wrap width so we never get a
+        // horizontal scrollbar; the user can zoom in deliberately to
+        // overflow, in which case we allow it.
+        const finalW = (_posZoom.val > 1) ? (W * scale) : Math.min(W * scale, panelW);
+        const finalH = finalW * (H / W);  // preserve aspect ratio
+        const finalScale = finalW / W;
+        stage.style.width  = finalW + 'px';
+        stage.style.height = finalH + 'px';
+        // Build word spans
+        const frag = document.createDocumentFragment();
+        const isLineMode = data.source === 'qwen_vl';
+        for (const w of words) {
+            const x0 = (w.x0 || 0) * finalScale;
+            const y0 = (w.y0 || 0) * finalScale;
+            const x1 = (w.x1 != null ? w.x1 : (w.x0||0)+50) * finalScale;
+            const y1 = (w.y1 != null ? w.y1 : (w.y0||0)+12) * finalScale;
+            let ww = Math.max(8, x1 - x0);
+            let hh = Math.max(10, y1 - y0);
+            // VLM sometimes returns degenerate (zero-height) boxes — give
+            // them a reasonable default so the line doesn't collapse into
+            // the row above and overlap.
+            if (hh < 12) hh = 14 * finalScale;
+            const sp = document.createElement('span');
+            sp.className = 'pos-word' + (isLineMode ? ' line' : '');
+            sp.style.left = x0.toFixed(1) + 'px';
+            sp.style.top  = y0.toFixed(1) + 'px';
+            sp.style.width  = ww.toFixed(1) + 'px';
+            sp.style.height = hh.toFixed(1) + 'px';
+            // font-size proportional to bbox height; leave a little
+            // breathing room so neighboring rows don't collide.
+            const fs = Math.max(7, Math.min(hh * 0.72, 22));
+            sp.style.fontSize = fs.toFixed(1) + 'px';
+            sp.style.lineHeight = (hh - 1).toFixed(1) + 'px';
+            sp.style.display = 'inline-block';
+            sp.title = w.text || '';
+            sp.textContent = w.text || '';
+            frag.appendChild(sp);
+        }
+        stage.innerHTML = '';
+        stage.appendChild(frag);
+        const srcCls = (data.source || 'pymupdf').replace(/[^a-z_]/gi,'_');
+        const srcLabel = (data.source === 'pymupdf') ? 'embedded text'
+                        : (data.source === 'qwen_vl' ? 'trade expert' : (data.source || 'n/a'));
+        bar.innerHTML = `<span class="src-tag ${e(srcCls)}">${e(srcLabel)}</span>
+            <span>${data.word_count || words.length} ${isLineMode?'lines':'words'} · ${W}×${H} pt</span>
+            <div class="pt-zoom" style="margin-left:auto">
+                <button onclick="_posSetZoom(-0.15)" title="Zoom out">&minus;</button>
+                <span class="pt-zlabel">${Math.round(_posZoom.val*100)}%</span>
+                <button onclick="_posSetZoom(0.15)" title="Zoom in">+</button>
+                <button onclick="_posSetZoom(0)" title="Reset to 100%">Reset</button>
+            </div>`;
+    } catch (err) {
+        if (myToken !== _posRenderToken) return;
+        bar.innerHTML = `<span class="src-tag no_positions">error</span>
+            <span style="color:#991b1b">${e(String(err.message || err))}</span>
+            <button class="ptbtn" onclick="(_posCache[\'${e(key)}\']=null,renderPositioned(pages[si]))">Retry</button>`;
+        stage.style.width = '';
+        stage.style.height = '';
+        stage.innerHTML = `<div class="pos-empty">Could not load positions — click Retry.</div>`;
+    }
 }
 
 function gT(){const p=pages[si];if(!p)return '';switch(tab){case 'raw':return p.raw_text||'';case 'cleaned':return p.cleaned_text||'';case 'vlm':return p.vlm_additions||'';default:return p.final_text||'';}}
@@ -298,43 +615,126 @@ document.addEventListener('keydown',ev=>{if(ev.target.tagName==='INPUT')return;i
 init();
 
 // ── Classification Override ──
+const _COMMON_DOC_TYPES = [
+    'Bill of Lading','Commercial Invoice','Packing List',
+    'Certificate of Origin','Beneficiary Certificate','Insurance Certificate',
+    'Inspection Certificate','Quality Certificate','Weight Certificate',
+    'Draft / Bill of Exchange','Letter of Credit','Amendment',
+    'Covering Schedule','Documentary Remittance','Air Waybill',
+    'Sea Waybill','Truck Waybill','Forwarders Certificate of Receipt',
+];
+
+function _closeEditForm() {
+    const f = document.getElementById('edit-class-form');
+    const o = document.getElementById('edit-class-overlay');
+    if (f) f.remove();
+    if (o) o.remove();
+    if (window._ecEscHandler) {
+        document.removeEventListener('keydown', window._ecEscHandler);
+        window._ecEscHandler = null;
+    }
+}
+
 function toggleEditClass() {
     const p = pages[si];
-    const el = document.getElementById('pg-type-display');
-    if (document.getElementById('edit-class-form')) {
-        // Already open — close it
-        document.getElementById('edit-class-form').remove();
-        return;
-    }
+    if (document.getElementById('edit-class-form')) { _closeEditForm(); return; }
+
+    // Backdrop overlay — click outside to close
+    const overlay = document.createElement('div');
+    overlay.id = 'edit-class-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:999;animation:editFadeIn .15s ease-out';
+    overlay.onclick = _closeEditForm;
+    document.body.appendChild(overlay);
+
+    const isMultiPagePacket = Array.isArray(p.packet_pages) && p.packet_pages.length > 1;
+    const packetPagesStr = isMultiPagePacket
+        ? p.packet_pages.slice().sort((a,b)=>a-b).join(', ')
+        : String(p.page_number);
+
     const form = document.createElement('div');
     form.id = 'edit-class-form';
-    form.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border-radius:12px;padding:20px;box-shadow:0 12px 40px rgba(0,0,0,.3);z-index:1000;min-width:350px';
+    form.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border-radius:12px;padding:0;box-shadow:0 20px 60px rgba(15,23,42,.35);z-index:1000;width:min(560px,92vw);max-height:88vh;overflow:hidden;display:flex;flex-direction:column;animation:editScaleIn .18s ease-out';
+    // Quick-pick chips
+    const chips = _COMMON_DOC_TYPES.map(t =>
+        `<button type="button" onclick="document.getElementById('ec-type').value=this.dataset.v;document.getElementById('ec-type').focus()"
+          data-v="${t.replace(/"/g,'&quot;')}"
+          style="padding:4px 10px;border:1px solid #cbd5e1;border-radius:14px;background:#f8fafc;color:#334155;font-size:.74em;cursor:pointer;font-weight:600;transition:all .12s"
+          onmouseover="this.style.background='#dbeafe';this.style.borderColor='#1554ca';this.style.color='#1554ca'"
+          onmouseout="this.style.background='#f8fafc';this.style.borderColor='#cbd5e1';this.style.color='#334155'">${e(t)}</button>`
+    ).join(' ');
     form.innerHTML = `
-        <h3 style="margin-bottom:12px;font-size:1em;color:#1554ca">Edit Page ${p.page_number} Classification</h3>
-        <div style="margin-bottom:10px">
-            <label style="font-size:.82em;font-weight:600;display:block;margin-bottom:3px">Document Type</label>
-            <input type="text" id="ec-type" value="${(p.document_type||'').replace(/"/g,'&quot;')}" style="width:100%;padding:8px;border:2px solid #e0e5ff;border-radius:6px;font-size:.9em">
+        <div style="background:linear-gradient(135deg,#1554ca 0%,#0f3a8e 100%);color:#fff;padding:12px 18px;display:flex;align-items:center;justify-content:space-between">
+            <h3 style="font-size:.95em;font-weight:700;margin:0">Edit Page ${p.page_number} Classification</h3>
+            <button type="button" onclick="_closeEditForm()" style="background:none;border:none;color:rgba(255,255,255,.85);font-size:1.3em;cursor:pointer;line-height:1;padding:0 4px">&times;</button>
         </div>
-        <div style="margin-bottom:10px">
-            <label style="font-size:.82em;font-weight:600;display:block;margin-bottom:3px">Copy Status</label>
-            <select id="ec-copy" style="width:100%;padding:8px;border:2px solid #e0e5ff;border-radius:6px;font-size:.9em">
-                <option value="original" ${p.copy_status==='original'?'selected':''}>Original</option>
-                <option value="copy" ${p.copy_status==='copy'?'selected':''}>Copy</option>
-                <option value="non_negotiable" ${p.copy_status==='non_negotiable'?'selected':''}>Non-Negotiable</option>
-            </select>
+        <div style="padding:14px 18px;overflow-y:auto;flex:1">
+            <div style="margin-bottom:14px;padding:8px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:.78em;color:#1e3a8a">
+                <b>Current:</b> ${e(p.document_type || 'Unknown')}${p.copy_status?` <span style="opacity:.75">· ${e(p.copy_status)}</span>`:''}
+                ${isMultiPagePacket ? `<div style="margin-top:4px;font-size:.94em">This page is part of a packet (pages ${e(packetPagesStr)}). Changes apply to the whole packet.</div>` : ''}
+            </div>
+
+            <div style="margin-bottom:14px">
+                <label style="font-size:.78em;font-weight:700;color:#475569;display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em">Document Type</label>
+                <input type="text" id="ec-type" value="${(p.document_type||'').replace(/"/g,'&quot;')}" placeholder="e.g. Commercial Invoice"
+                  style="width:100%;padding:9px 11px;border:2px solid #cbd5e1;border-radius:8px;font-size:.92em;outline:none;transition:border-color .15s"
+                  onfocus="this.style.borderColor='#1554ca'" onblur="this.style.borderColor='#cbd5e1'">
+                <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:5px">${chips}</div>
+            </div>
+
+            <div style="display:flex;gap:12px;margin-bottom:14px">
+                <div style="flex:1">
+                    <label style="font-size:.78em;font-weight:700;color:#475569;display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em">Copy Status</label>
+                    <select id="ec-copy" style="width:100%;padding:9px 11px;border:2px solid #cbd5e1;border-radius:8px;font-size:.92em;outline:none;background:#fff">
+                        <option value="" ${!p.copy_status?'selected':''}>—</option>
+                        <option value="original" ${p.copy_status==='original'?'selected':''}>Original</option>
+                        <option value="copy" ${p.copy_status==='copy'?'selected':''}>Copy</option>
+                        <option value="non_negotiable" ${p.copy_status==='non_negotiable'?'selected':''}>Non-Negotiable</option>
+                    </select>
+                </div>
+                <div style="flex:1">
+                    <label style="font-size:.78em;font-weight:700;color:#475569;display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em">Notes (optional)</label>
+                    <input type="text" id="ec-notes" placeholder="Reason for change…"
+                      style="width:100%;padding:9px 11px;border:2px solid #cbd5e1;border-radius:8px;font-size:.92em;outline:none"
+                      onfocus="this.style.borderColor='#1554ca'" onblur="this.style.borderColor='#cbd5e1'">
+                </div>
+            </div>
+            <div id="ec-status" style="font-size:.78em;color:#94a3b8;min-height:18px"></div>
         </div>
-        <div style="margin-bottom:10px">
-            <label style="font-size:.82em;font-weight:600;display:block;margin-bottom:3px">Notes</label>
-            <input type="text" id="ec-notes" placeholder="Optional notes..." style="width:100%;padding:8px;border:2px solid #e0e5ff;border-radius:6px;font-size:.9em">
-        </div>
-        <div style="display:flex;gap:8px;justify-content:flex-end">
-            <button onclick="document.getElementById('edit-class-form').remove()" style="padding:8px 16px;border:1px solid #ccc;border-radius:6px;background:#f5f5f5;cursor:pointer;font-weight:600">Cancel</button>
-            <button onclick="saveClassOverride()" style="padding:8px 16px;border:none;border-radius:6px;background:#1554ca;color:#fff;cursor:pointer;font-weight:600">Save</button>
+        <div style="padding:12px 18px;background:#f8fafc;border-top:1px solid #e2e8f0;display:flex;gap:8px;justify-content:flex-end">
+            <button type="button" onclick="_closeEditForm()" style="padding:8px 18px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-weight:600;color:#475569;font-size:.86em">Cancel</button>
+            <button type="button" id="ec-save-btn" onclick="saveClassOverride()" style="padding:8px 20px;border:none;border-radius:8px;background:linear-gradient(135deg,#1554ca,#0f3a8e);color:#fff;cursor:pointer;font-weight:700;font-size:.86em;box-shadow:0 2px 8px rgba(21,84,202,.25)">Save & Apply</button>
         </div>
     `;
     document.body.appendChild(form);
-    document.getElementById('ec-type').focus();
-    document.getElementById('ec-type').select();
+    const inp = document.getElementById('ec-type');
+    inp.focus(); inp.select();
+
+    // Enter to save, Escape to close
+    window._ecEscHandler = (ev) => {
+        if (ev.key === 'Escape') { ev.preventDefault(); _closeEditForm(); }
+        else if (ev.key === 'Enter' && !ev.shiftKey
+                 && (ev.target.id === 'ec-type' || ev.target.id === 'ec-notes')) {
+            ev.preventDefault(); saveClassOverride();
+        }
+    };
+    document.addEventListener('keydown', window._ecEscHandler);
+}
+
+function _ecShowToast(msg, type) {
+    // Replace browser alert() with a non-blocking toast.
+    const old = document.getElementById('ec-toast');
+    if (old) old.remove();
+    const colors = type === 'error'
+        ? {bg:'#fef2f2', fg:'#991b1b', br:'#fca5a5'}
+        : type === 'warn'
+            ? {bg:'#fff7ed', fg:'#9a3412', br:'#fdba74'}
+            : {bg:'#f0fdf4', fg:'#166534', br:'#86efac'};
+    const t = document.createElement('div');
+    t.id = 'ec-toast';
+    t.style.cssText = `position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:${colors.bg};color:${colors.fg};border:1.5px solid ${colors.br};padding:10px 18px;border-radius:8px;font-weight:600;font-size:.88em;box-shadow:0 8px 24px rgba(15,23,42,.18);z-index:2000;animation:editScaleIn .2s ease-out`;
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(() => { if (t.parentNode) t.remove(); }, 3200);
 }
 
 // ── Summary Tooltip ──
@@ -604,8 +1004,106 @@ function toggleSummary(evt) {
         }
     }
 
+    // ── Full extracted-fields section (8083 deep-extract) ────────
+    // Render scalar / object / array fields as readable rows + tables.
+    // This is the "all detected fields" view the user asked for.
+    const fields = p.extracted_fields || {};
+    // Hide internal/metadata keys + vendor exposes
+    const SKIP_KEYS = new Set([
+        '_extract_source', 'Extract Source', 'extract_source',
+        '_deep_extract_error', '_doc_type_override_from_fields',
+        '_promoted_from_extras_after_reconcile',
+    ]);
+    const keys = Object.keys(fields || {}).filter(k =>
+        !k.startsWith('_') && !SKIP_KEYS.has(k)
+    );
+    if (keys.length > 0) {
+        const scalarKeys = [];
+        const objectKeys = [];
+        const arrayKeys  = [];
+        for (const k of keys) {
+            const v = fields[k];
+            if (Array.isArray(v)) {
+                if (v.length === 0) continue;
+                arrayKeys.push(k);
+            } else if (v && typeof v === 'object') {
+                if (Object.keys(v).length === 0) continue;
+                objectKeys.push(k);
+            } else if (v !== null && v !== undefined && String(v).trim() !== '') {
+                scalarKeys.push(k);
+            }
+        }
+
+        if (scalarKeys.length + objectKeys.length + arrayKeys.length > 0) {
+            html += `<div style="padding:9px 12px;font-size:.74em;font-weight:700;color:#0d3b8a;background:linear-gradient(90deg,#dbeafe,#eff6ff);border-bottom:1px solid #bfdbfe;letter-spacing:.04em;text-transform:uppercase">All detected fields</div>`;
+        }
+
+        // Scalar fields → label/value rows
+        for (const k of scalarKeys) {
+            const v = fields[k];
+            html += `<div class="summary-row"><span class="summary-key">${e(k)}</span><span class="summary-val">${e(String(v))}</span></div>`;
+            hasContent = true;
+        }
+
+        // Object fields → nested key/value mini-table
+        for (const k of objectKeys) {
+            const v = fields[k];
+            const rows = Object.entries(v)
+                .filter(([_kk, _vv]) => _vv !== null && _vv !== undefined && String(_vv).trim() !== '' && !String(_kk).startsWith('_'))
+                .map(([kk, vv]) => {
+                    const valStr = (typeof vv === 'object') ? JSON.stringify(vv) : String(vv);
+                    return `<tr><td style="padding:3px 8px;background:#f8fafc;font-weight:600;color:#1554ca;border:1px solid #e2e8f0;font-size:.92em">${e(kk)}</td>
+                            <td style="padding:3px 8px;border:1px solid #e2e8f0;font-size:.92em">${e(valStr)}</td></tr>`;
+                }).join('');
+            if (!rows) continue;
+            html += `<div class="summary-row" style="display:block;background:#fff;padding:4px 0">
+                <div class="summary-key" style="display:block;margin-bottom:4px">${e(k)}</div>
+                <table style="width:100%;border-collapse:collapse">${rows}</table>
+            </div>`;
+            hasContent = true;
+        }
+
+        // Array fields → table (auto-detect columns from first element)
+        for (const k of arrayKeys) {
+            const arr = fields[k];
+            const first = arr[0];
+            if (first && typeof first === 'object' && !Array.isArray(first)) {
+                // Array of objects → table
+                const cols = [];
+                for (const row of arr) {
+                    for (const cKey of Object.keys(row)) {
+                        if (!cols.includes(cKey) && !String(cKey).startsWith('_')) cols.push(cKey);
+                    }
+                }
+                const head = cols.map(c => `<th style="padding:5px 8px;background:#1e40af;color:#fff;text-align:left;font-weight:700;font-size:.78em;border:1px solid #1e3a8a">${e(c)}</th>`).join('');
+                const rows = arr.map((row, i) => {
+                    const bg = i % 2 ? '#f8fafc' : '#ffffff';
+                    return '<tr>' + cols.map(c => {
+                        const v = row[c];
+                        const txt = v === null || v === undefined ? ''
+                                  : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+                        return `<td style="padding:4px 8px;background:${bg};border:1px solid #e2e8f0;font-size:.85em;vertical-align:top;color:#1f2937">${e(txt)}</td>`;
+                    }).join('') + '</tr>';
+                }).join('');
+                html += `<div class="summary-row" style="display:block;background:#fff;padding:6px 0">
+                    <div class="summary-key" style="display:block;margin-bottom:5px">${e(k)} <span style="color:#94a3b8;font-weight:400;font-size:.9em">(${arr.length} ${arr.length===1?'row':'rows'})</span></div>
+                    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+                        <thead><tr>${head}</tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table></div>
+                </div>`;
+                hasContent = true;
+            } else {
+                // Array of strings → comma list
+                const txt = arr.map(x => typeof x === 'object' ? JSON.stringify(x) : String(x)).join(', ');
+                html += `<div class="summary-row"><span class="summary-key">${e(k)}</span><span class="summary-val">${e(txt)}</span></div>`;
+                hasContent = true;
+            }
+        }
+    }
+
     if (!hasContent) {
-        html += '<div class="summary-empty">No summary available for this page.<br>Summary is generated during classification (Step 8).</div>';
+        html += '<div class="summary-empty">No summary available for this page.</div>';
     }
     html += '</div>';
     panel.innerHTML = html;
@@ -718,12 +1216,176 @@ function closeStamps() {
     if (overlay) overlay.remove();
 }
 
+// ── Document Merging Sequence ──
+// Shows the user how the system grouped raw pages into logical
+// documents — colour-coded chips, packet headers, current page
+// highlighted. Built on the fly from the already-loaded `pages` array
+// so no extra fetch is needed.
+function toggleSequence(evt) {
+    const existing = document.getElementById('seq-panel');
+    if (existing) { closeSequence(); return; }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'summary-overlay';
+    overlay.id = 'seq-overlay';
+    overlay.onclick = closeSequence;
+    document.body.appendChild(overlay);
+
+    const panel = document.createElement('div');
+    panel.className = 'summary-panel';
+    panel.id = 'seq-panel';
+    panel.style.maxWidth = '820px';
+    panel.style.width = 'min(820px, 92vw)';
+
+    // Group pages by packet_id, keeping order of first appearance
+    const packets = [];
+    const pktIdx = {};
+    for (const p of pages) {
+        const pid = p.packet_id || ('pg_' + p.page_number);
+        if (!(pid in pktIdx)) {
+            pktIdx[pid] = packets.length;
+            packets.push({
+                packet_id: pid,
+                document_type: p.document_type || 'Unknown',
+                copy_status: p.copy_status || '',
+                packet_pages: Array.isArray(p.packet_pages) && p.packet_pages.length ? p.packet_pages : [p.page_number],
+                pages: [],
+            });
+        }
+        packets[pktIdx[pid]].pages.push(p);
+    }
+    // Sort packets by their lowest page number
+    packets.sort((a, b) => {
+        const aMin = Math.min(...(a.packet_pages || [9999]));
+        const bMin = Math.min(...(b.packet_pages || [9999]));
+        return aMin - bMin;
+    });
+
+    // Build palette for doc-type chips (stable across types)
+    const palette = [
+        ['#1554ca','#dbeafe'], ['#7c3aed','#ede9fe'], ['#0d9488','#ccfbf1'],
+        ['#d97706','#fef3c7'], ['#16a34a','#dcfce7'], ['#dc2626','#fee2e2'],
+        ['#0369a1','#e0f2fe'], ['#9333ea','#f3e8ff'], ['#0891b2','#cffafe'],
+        ['#65a30d','#ecfccb'], ['#ea580c','#ffedd5'], ['#be123c','#ffe4e6'],
+    ];
+    const typeColor = {};
+    const colorFor = (t) => {
+        const k = (t || 'unknown').toLowerCase().trim();
+        if (!(k in typeColor)) {
+            typeColor[k] = palette[Object.keys(typeColor).length % palette.length];
+        }
+        return typeColor[k];
+    };
+
+    // Header
+    const curPg = (si >= 0 && pages[si]) ? pages[si].page_number : -1;
+    const totalPages = pages.length;
+    let html = `<div class="summary-panel-hdr" style="background:linear-gradient(135deg,#0d9488 0%,#0f766e 100%)">
+        <h3>Document Merging Sequence — ${packets.length} document${packets.length===1?'':'s'} from ${totalPages} page${totalPages===1?'':'s'}</h3>
+        <button class="summary-panel-close" onclick="closeSequence()">&#10005;</button>
+      </div>`;
+    html += '<div class="summary-panel-body" style="padding:0">';
+    html += `<div style="padding:10px 16px;font-size:.74em;color:#475569;background:#f0fdfa;border-bottom:1px solid #ccfbf1;line-height:1.5">
+        <b>How to read this:</b> each card below is one <i>logical document</i> the system identified.
+        The page chips show which raw PDF pages were merged into that document.
+        Multi-page packets are pages the system grouped together (e.g. a Bill of Lading + Attached Sheet).
+        The currently-selected page is outlined in orange.
+      </div>`;
+
+    // Render each packet as a card
+    html += '<div style="padding:12px 14px;display:flex;flex-direction:column;gap:10px">';
+    packets.forEach((pk, i) => {
+        const [fg, bg] = colorFor(pk.document_type);
+        const pgList = (pk.packet_pages || []).slice().sort((a, b) => a - b);
+        const pgChips = pgList.map(pn => {
+            const isCur = pn === curPg;
+            return `<span onclick="(function(){const idx=pages.findIndex(x=>x.page_number===${pn});if(idx>=0){closeSequence();sel(idx);}})()"
+                style="display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:24px;padding:0 7px;
+                border-radius:6px;background:${isCur?'#fff7ed':'#f1f5f9'};color:${isCur?'#9a3412':'#1e293b'};
+                font-weight:700;font-size:.82em;border:1.5px solid ${isCur?'#f97316':'#cbd5e1'};
+                cursor:pointer;transition:all .15s" title="Jump to page ${pn}">${pn}</span>`;
+        }).join('');
+        // Build a sub-stamp for any per-page doc-type variation inside the packet
+        const subTypes = {};
+        for (const pg of pk.pages) {
+            const t = pg.original_document_type || pg.document_type || 'Unknown';
+            if (!(t in subTypes)) subTypes[t] = [];
+            subTypes[t].push(pg.page_number);
+        }
+        const isMixed = Object.keys(subTypes).length > 1;
+        const mixedNote = isMixed
+            ? `<div style="margin-top:8px;font-size:.72em;color:#475569;padding-top:8px;border-top:1px dashed #e2e8f0">
+                  <b style="color:#0f766e">Merged from:</b>
+                  ${Object.entries(subTypes).map(([t, pgs]) => {
+                      const [tfg, tbg] = colorFor(t);
+                      return `<span style="display:inline-block;background:${tbg};color:${tfg};padding:1px 7px;border-radius:4px;margin:2px 4px 0 0;font-weight:600">${e(t)} <span style="opacity:.7;font-weight:400">(p${pgs.join(',')})</span></span>`;
+                  }).join('')}
+              </div>`
+            : '';
+        const cs = pk.copy_status
+            ? `<span style="margin-left:8px;background:${pk.copy_status==='original'?'#dcfce7':'#fef3c7'};color:${pk.copy_status==='original'?'#166534':'#92400e'};padding:1px 7px;border-radius:4px;font-size:.7em;font-weight:700;text-transform:uppercase">${e(pk.copy_status)}</span>`
+            : '';
+        html += `<div style="border:1.5px solid #e2e8f0;border-left:4px solid ${fg};border-radius:8px;padding:10px 12px;background:#fff;transition:all .15s">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+                <span style="background:${fg};color:#fff;font-weight:700;font-size:.72em;width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center">${i+1}</span>
+                <span style="background:${bg};color:${fg};font-weight:700;padding:3px 10px;border-radius:5px;font-size:.82em">${e(pk.document_type)}</span>
+                <span style="color:#64748b;font-size:.72em">${pgList.length} page${pgList.length===1?'':'s'}</span>${cs}
+            </div>
+            <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
+                <span style="color:#94a3b8;font-size:.72em;margin-right:4px">Pages:</span>
+                ${pgChips}
+            </div>
+            ${mixedNote}
+        </div>`;
+        // Flow arrow between cards
+        if (i < packets.length - 1) {
+            html += `<div style="text-align:center;color:#cbd5e1;font-size:1.2em;line-height:.4;margin:-4px 0">&#x2193;</div>`;
+        }
+    });
+    html += '</div>';
+
+    // Footer legend
+    html += `<div style="padding:10px 16px;font-size:.72em;color:#64748b;background:#f8fafc;border-top:1px solid #e2e8f0;display:flex;gap:14px;flex-wrap:wrap">
+        <span><b style="color:#0f766e">Click any page chip</b> to jump to it</span>
+        <span><span style="display:inline-block;width:14px;height:14px;border:2px solid #f97316;background:#fff7ed;border-radius:3px;vertical-align:middle;margin-right:3px"></span>= current page</span>
+      </div>`;
+    html += '</div>';
+    panel.innerHTML = html;
+
+    document.body.appendChild(panel);
+    const rect = evt.target.closest('button').getBoundingClientRect();
+    let left = rect.left;
+    let top = rect.bottom + 6;
+    const pr = panel.getBoundingClientRect();
+    if (left + pr.width > window.innerWidth - 12) left = window.innerWidth - pr.width - 12;
+    if (left < 12) left = 12;
+    if (top + pr.height > window.innerHeight - 12) top = Math.max(12, window.innerHeight - pr.height - 12);
+    panel.style.left = left + 'px';
+    panel.style.top = top + 'px';
+}
+
+function closeSequence() {
+    const panel = document.getElementById('seq-panel');
+    const overlay = document.getElementById('seq-overlay');
+    if (panel) panel.remove();
+    if (overlay) overlay.remove();
+}
+
 async function saveClassOverride() {
     const p = pages[si];
     const newType = document.getElementById('ec-type').value.trim();
     const newCopy = document.getElementById('ec-copy').value;
     const notes = document.getElementById('ec-notes').value.trim();
-    if (!newType) return;
+    const status = document.getElementById('ec-status');
+    const btn    = document.getElementById('ec-save-btn');
+    if (!newType) {
+        if (status) { status.textContent = 'Document type cannot be empty.'; status.style.color = '#dc2626'; }
+        const inp = document.getElementById('ec-type');
+        if (inp) inp.focus();
+        return;
+    }
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; btn.style.opacity = '0.7'; }
+    if (status) { status.textContent = 'Applying classification…'; status.style.color = '#1554ca'; }
     const jobId = new URLSearchParams(location.search).get('job_id');
     try {
         const r = await fetch('/api/override/' + jobId + '/classification', {
@@ -738,7 +1400,7 @@ async function saveClassOverride() {
             })
         });
         if (r.ok) {
-            document.getElementById('edit-class-form').remove();
+            _closeEditForm();
             // P198eq — pull a fresh page payload from the server so EVERY
             // panel (sidebar, toolbar, document-summary, packet-pages
             // breakdown) reflects the new classification, not just the
@@ -770,12 +1432,18 @@ async function saveClassOverride() {
             if (_sp) _sp.remove();
             const _so = document.getElementById('summary-overlay');
             if (_so) _so.remove();
-            alert('Classification updated. Re-run verification to apply changes.');
+            _ecShowToast('Classification updated — re-run verification to apply changes.', 'ok');
         } else {
-            alert('Save failed: ' + r.status);
+            let detail = `${r.status}`;
+            try { const j = await r.json(); if (j && (j.detail || j.error)) detail = j.detail || j.error; } catch(_) {}
+            _ecShowToast('Save failed: ' + detail, 'error');
+            if (btn) { btn.disabled = false; btn.textContent = 'Save & Apply'; btn.style.opacity = '1'; }
+            if (status) { status.textContent = ''; }
         }
     } catch(err) {
-        alert('Error: ' + err.message);
+        _ecShowToast('Network error: ' + (err && err.message ? err.message : err), 'error');
+        if (btn) { btn.disabled = false; btn.textContent = 'Save & Apply'; btn.style.opacity = '1'; }
+        if (status) { status.textContent = ''; }
     }
 }
 </script>

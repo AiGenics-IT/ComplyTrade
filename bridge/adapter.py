@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import json
+import re as _re_adapter
 from typing import Dict, List, Optional, Tuple
 
 
@@ -162,6 +163,10 @@ def _build_packets(c8083: Dict, page_texts: Dict[int, str]) -> List[Dict]:
                 or 'mt799' in (ld.get('logical_doc_id') or '').lower()
             )
         )
+        # Promote a handful of flat keys so step14_verification's
+        # `pkt.get('document_number')`, `pkt.get('issued_by')` etc.
+        # have data to read.
+        _flat = _promote_flat_keys(doc_type, ld.get('fields') or {})
         packets.append({
             'packet_id':       next_id,
             'mt_type':         mt,
@@ -170,7 +175,7 @@ def _build_packets(c8083: Dict, page_texts: Dict[int, str]) -> List[Dict]:
             'page_count':      len(all_pages),
             'pages':           page_dicts,
             'amendment_number': amd_no,
-            'lc_reference':    ld.get('lc_reference') or '',
+            'lc_reference':    _flat.get('lc_reference') or ld.get('lc_reference') or '',
             'sender_reference': ld.get('sender_reference') or '',
             'related_reference': ld.get('related_reference') or '',
             'reconciliation_method': 'passthrough',
@@ -178,10 +183,21 @@ def _build_packets(c8083: Dict, page_texts: Dict[int, str]) -> List[Dict]:
             'text_was_corrected': False,
             'is_799_amendment': is_799_amd,
             'source_mt':       kf_mt or ('MT799' if is_799_amd else ''),
+            # Flat verification keys promoted from extracted_fields
+            'document_number': _flat.get('document_number', ''),
+            'document_date':   _flat.get('document_date', ''),
+            'document_amount': _flat.get('document_amount', ''),
+            'currency':        _flat.get('currency', ''),
+            'issued_by':       _flat.get('issued_by', ''),
             # Carry through 8083's extracted fields so downstream
             # verification can read stamps/signatures/endorsements
             # without re-extracting.
             'extracted_fields': ld.get('fields') or {},
+            # Human-readable one-line summary the 8082 UI displays in
+            # the identified-documents view + extracted-text page.
+            # Built from 8083's deep_extract structured fields — single
+            # source of truth, no second extraction needed.
+            'document_summary': _build_doc_summary(doc_type, ld.get('fields') or {}),
             'document_type':   doc_type,
             'kind_from_8083':  kind,
             'bl_subtype':      ld.get('bl_subtype', ''),
@@ -194,6 +210,225 @@ def _build_packets(c8083: Dict, page_texts: Dict[int, str]) -> List[Dict]:
         })
         next_id += 1
     return packets
+
+
+def _build_doc_summary(doc_type: str, fields: Dict) -> str:
+    """Build a one-line human-readable summary from 8083's deep_extract
+    structured fields. Used by the extracted-text page and the identified-
+    documents view (which both look for `document_summary` on each
+    packet).
+
+    Format: 'Label1: value1 | Label2: value2 | ...'
+    Each doc type has its own preferred field set so summaries are
+    consistent across docs.
+    """
+    if not isinstance(fields, dict) or not fields:
+        return ''
+    dt = (doc_type or '').lower()
+    # Per-doc-type field preference. First match wins. Multiple fields
+    # are joined with ' | '.
+    def _v(key: str) -> str:
+        v = fields.get(key)
+        if isinstance(v, dict):
+            # Pick the most meaningful value from a nested object
+            for k in ('name', 'value', 'date', 'amount', 'number'):
+                if v.get(k):
+                    return str(v[k])[:80]
+            return ''
+        if isinstance(v, list):
+            return ', '.join(str(x)[:40] for x in v[:3] if x)[:80]
+        if v is None:
+            return ''
+        s = str(v).strip()
+        return s.split('\n')[0][:120] if s else ''
+
+    pairs = []
+    def _add(label: str, *candidates: str) -> None:
+        for key in candidates:
+            val = _v(key)
+            if val:
+                pairs.append(f'{label}: {val}')
+                return
+
+    if 'bill of lading' in dt or 'sea waybill' in dt:
+        _add('BL No', 'BL Number', 'B/L Number', 'Document Number')
+        _add('Carrier', 'Carrier', 'Issuing Carrier')
+        _add('Vessel', 'Vessel', 'Vessel Name')
+        _add('From', 'Port of Loading', 'Place of Receipt')
+        _add('To', 'Port of Discharge', 'Place of Delivery')
+        _add('On Board', 'Shipped On Board Date', 'On Board Date')
+        _add('Issued', 'Date of Issue', 'Document Date')
+    elif 'airway' in dt or 'air waybill' in dt or 'courier' in dt:
+        _add('AWB No', 'AWB Number', 'Document Number')
+        _add('Carrier', 'Issuing Carrier', 'Carrier')
+        _add('From', 'Airport of Departure')
+        _add('To', 'Airport of Destination')
+        _add('Issued', 'Executed On Date', 'Document Date')
+    elif 'commercial invoice' in dt or 'proforma' in dt:
+        _add('Invoice No', 'Invoice Number', 'Document Number')
+        _add('Date', 'Invoice Date', 'Document Date')
+        _add('Total', 'Invoice Total', 'Total Amount')
+        _add('Currency', 'Currency')
+        _add('Incoterms', 'Incoterms', 'Incoterms with Named Place')
+    elif 'packing list' in dt or 'weight list' in dt:
+        _add('PL No', 'Packing List Number', 'Document Number')
+        _add('Date', 'Document Date', 'Issue Date')
+        _add('Packages', 'Total Number of Packages', 'Total Packages')
+        _add('Gross Wt', 'Total Gross Weight')
+        _add('Net Wt', 'Total Net Weight')
+    elif 'certificate of origin' in dt:
+        _add('Cert No', 'Certificate Number', 'Document Number')
+        _add('Date', 'Document Date')
+        _add('Country', 'Country of Origin')
+        _add('Issuer', 'Issuing Authority', 'Issuer')
+    elif 'beneficiary' in dt:
+        _add('Cert No', 'Certificate Number')
+        _add('Date', 'Document Date', 'Issue Date')
+        _add('Issuer', 'Issuer', 'Beneficiary Name')
+    elif 'shipping company' in dt:
+        _add('Cert No', 'Certificate Number')
+        _add('Date', 'Document Date')
+        _add('Vessel', 'Vessel Name', 'Vessel')
+        _add('Carrier', 'Carrier', 'Issuing Carrier')
+    elif 'draft' in dt or 'bill of exchange' in dt:
+        _add('Draft No', 'Draft Number', 'Document Number')
+        _add('Date', 'Date of Drawing', 'Document Date')
+        _add('Amount', 'Total Amount in Figures', 'Amount')
+        _add('Tenor', 'Tenor')
+    elif 'shipment advice' in dt or 'vessel advice' in dt:
+        _add('Advice No', 'Advice Number', 'Document Number')
+        _add('Date', 'Advice Date', 'Document Date')
+        _add('Vessel', 'Vessel Name', 'Vessel')
+        _add('BL No', 'BL Number')
+    elif 'documentary remittance' in dt or 'covering' in dt or 'bills schedule' in dt:
+        _add('Ref', 'Letter Reference', 'Our Reference', 'Document Number')
+        _add('Date', 'Date', 'Document Date')
+        _add('LC No', 'LC Reference', 'Letter of Credit Number')
+        _add('Amount', 'Total Amount', 'Documents Amount')
+        _add('From', 'From')
+        _add('To', 'To')
+    else:
+        # Generic fallback for other cert types
+        _add('No', 'Certificate Number', 'Document Number', 'Reference Number')
+        _add('Date', 'Document Date', 'Issue Date')
+        _add('Issuer', 'Issuer', 'Issuing Authority')
+
+    return ' | '.join(pairs)
+
+
+def _promote_flat_keys(doc_type: str, fields: Dict) -> Dict:
+    """Pick out a few flat keys (document_number, document_date,
+    document_amount, currency, lc_reference, issued_by) from the
+    structured extracted_fields. step14_verification + the UI both read
+    these directly off the packet (`pkt.get('document_number')`), so
+    they need to exist at the top level, not just nested under
+    `extracted_fields`.
+
+    Doc-type agnostic — works for any document the classifier emits,
+    including new types added later. Strategy: each flat key has a
+    priority list of CANDIDATE FIELD NAMES (specific → generic). We
+    try them in order and use the first scalar match. Then we add a
+    REGEX FALLBACK that scans every remaining field name (e.g. 'AWB
+    Number', 'B/L No.', 'Certificate Ref.') so an unknown doc type
+    with reasonable field naming still surfaces a number/date.
+    """
+    if not isinstance(fields, dict):
+        return {}
+
+    def _scalar(v) -> str:
+        if v is None or isinstance(v, (list, dict)):
+            return ''
+        s = str(v).strip()
+        return s.split('\n')[0][:200] if s else ''
+
+    def _pick_by_name(*names: str) -> str:
+        # Case-insensitive lookup against the field name AS IT APPEARS
+        # in extracted_fields (preserves the LLM's chosen label).
+        lower_map = {k.strip().lower(): k for k in fields.keys()}
+        for n in names:
+            k = lower_map.get(n.strip().lower())
+            if k is not None:
+                s = _scalar(fields[k])
+                if s:
+                    return s
+        return ''
+
+    def _pick_by_regex(*patterns: str) -> str:
+        # Scan every key looking for a match. First match wins.
+        compiled = [_re_adapter.compile(p, _re_adapter.IGNORECASE) for p in patterns]
+        for k, v in fields.items():
+            if isinstance(v, (list, dict)):
+                continue
+            for pat in compiled:
+                if pat.search(k):
+                    s = _scalar(v)
+                    if s:
+                        return s
+        return ''
+
+    out: Dict[str, str] = {}
+    # document_number — try canonical names, then a regex over any
+    # field name containing "number"/"no"/"ref"/"id" (but not "lc no"
+    # which we surface separately as lc_reference).
+    n = (_pick_by_name(
+            'BL Number', 'B/L Number', 'BL No', 'B/L No',
+            'AWB Number', 'AWB No',
+            'Invoice Number', 'Invoice No',
+            'Packing List Number',
+            'Certificate Number', 'Cert Number',
+            'Draft Number',
+            'Advice Number',
+            'Letter Reference', 'Our Reference', 'Sender Reference',
+            'Document Number', 'Reference Number',
+         )
+         or _pick_by_regex(
+            r'^(?!lc\s+).*\b(number|no\.?|reference|ref\.?|id)\b',
+         ))
+    if n:
+        out['document_number'] = n
+    # document_date — any field with 'date' / 'issued on' / 'drawn on'
+    d = (_pick_by_name(
+            'Document Date', 'Date of Issue', 'Issue Date', 'Issued Date',
+            'Invoice Date', 'Date', 'Executed On Date',
+            'Date of Drawing', 'Advice Date',
+         )
+         or _pick_by_regex(r'\b(date|issued|executed)\b'))
+    if d:
+        out['document_date'] = d
+    # document_amount
+    a = (_pick_by_name(
+            'Invoice Total', 'Total Amount', 'Total Amount in Figures',
+            'Amount', 'Documents Amount', 'Total',
+         )
+         or _pick_by_regex(r'^(total|amount|invoice\s+total)\b'))
+    if a:
+        out['document_amount'] = a
+    cur = _pick_by_name('Currency') or _pick_by_regex(r'\bcurrency\b')
+    if cur:
+        out['currency'] = cur
+    lc = (_pick_by_name(
+            'LC Reference', 'Letter of Credit Number', 'LC Number',
+            'Documentary Credit Number', 'LC No',
+         )
+         or _pick_by_regex(r'\b(letter\s+of\s+credit|documentary\s+credit|\blc\s+(no|number|ref))\b'))
+    if lc:
+        out['lc_reference'] = lc
+    # issued_by — try doc-aware canonical names, then anything that
+    # looks like an issuer/issuing authority/carrier/etc.
+    iss = (_pick_by_name(
+            'Carrier', 'Issuing Carrier',
+            'Issuing Authority', 'Certifying Authority',
+            'Insurance Company',
+            'Inspector / Surveyor / Lab Name', 'Inspection Company',
+            'Surveyor', 'Lab Name', 'Testing Laboratory',
+            'Pest-Control Operator Name & Address',
+            'Seller', 'Exporter', 'Shipper',
+            'Issuer', 'Issuing Bank', 'Beneficiary Name', 'Beneficiary',
+         )
+         or _pick_by_regex(r'\b(issuer|issuing|carrier|certifier|surveyor|inspector|laboratory)\b'))
+    if iss:
+        out['issued_by'] = iss
+    return out
 
 
 def _flatten_stamps_and_signatures(fields: Dict) -> Tuple[List[Dict], List[Dict]]:
@@ -308,6 +543,11 @@ def adapt_8083_to_step_results(c8083: Dict,
             for p in (c8083.get('pages') or [])
         ],
         'page_count': c8083.get('total_pages', 0),
+        # /api/result/{job_id} and several other consumers read
+        # `total_pages` from step01 to populate the result-screen stat
+        # box; keep both keys in sync so the legacy UI shows the real
+        # count instead of 0.
+        'total_pages': c8083.get('total_pages', 0) or len(c8083.get('pages') or []),
         'source':     '8083_classifier',
     }
 
@@ -360,6 +600,7 @@ def adapt_8083_to_step_results(c8083: Dict,
             'source_mt':       pkt.get('source_mt', ''),
             'is_799_amendment': pkt.get('is_799_amendment', False),
             'extracted_fields': pkt.get('extracted_fields', {}),
+            'document_summary': pkt.get('document_summary', ''),
             'bl_subtype':      pkt.get('bl_subtype', ''),
             'bl_status_flags': pkt.get('bl_status_flags', []),
             'awb_subtype':     pkt.get('awb_subtype', ''),
@@ -403,6 +644,8 @@ def adapt_8083_to_step_results(c8083: Dict,
     # ── step08: shipping classification ────────────────────────────
     # Carry extracted_fields so verification step14 + report step20
     # can render structured tables (Containers, Parties, etc.).
+    # `document_summary` powers the identified-documents view + the
+    # extracted-text page summary panel.
     step08 = {
         'classified_packets': [
             {
@@ -413,9 +656,17 @@ def adapt_8083_to_step_results(c8083: Dict,
                 'stamps':        pkt['stamps'],
                 'signatures':    pkt['signatures'],
                 'extracted_fields': pkt.get('extracted_fields', {}),
+                'document_summary': pkt.get('document_summary', ''),
                 'bl_subtype':    pkt.get('bl_subtype', ''),
                 'bl_status_flags': pkt.get('bl_status_flags', []),
                 'awb_subtype':   pkt.get('awb_subtype', ''),
+                # Flat verification keys (step14 reads these directly)
+                'document_number': pkt.get('document_number', ''),
+                'document_date':   pkt.get('document_date', ''),
+                'document_amount': pkt.get('document_amount', ''),
+                'currency':        pkt.get('currency', ''),
+                'issued_by':       pkt.get('issued_by', ''),
+                'lc_reference':    pkt.get('lc_reference', ''),
             }
             for pkt in packets
             if pkt['mt_type'] == 'shipping'
