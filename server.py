@@ -130,14 +130,22 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         # Check Authorization header
         auth = request.headers.get('Authorization', '')
+        _auth_ok = False
         if auth.startswith('Basic '):
             try:
                 decoded = _b64.b64decode(auth[6:]).decode('utf-8')
                 user, pwd = decoded.split(':', 1)
                 if user == AUTH_USERNAME and pwd == AUTH_PASSWORD:
-                    return await call_next(request)
+                    _auth_ok = True
             except Exception:
                 pass
+        # IMPORTANT: keep `await call_next(request)` OUTSIDE the try.
+        # An earlier shape of this code wrapped call_next in the same
+        # try block — when a downstream route raised, the bare
+        # `except Exception: pass` swallowed it and the middleware
+        # fell through to a 401 response, masking the real 500 error.
+        if _auth_ok:
+            return await call_next(request)
         # P198fv — Suppress browser auth-prompt for AJAX/JSON requests so
         # background polling (e.g. /api/status/{id}) doesn't pop the
         # sign-in dialog mid-session. Browser still gets 401 and the
@@ -1784,7 +1792,77 @@ def get_result(job_id: str):
     dc_number = _clean_field_value('20', flc.get('dc_number', cf.get('20', '')))
     if isinstance(dc_number, dict): dc_number = dc_number.get('value', str(dc_number))
     dc_number = str(dc_number).replace('\n', ' ').strip()
+    # ── Fallback when step06 didn't extract a DC number ─────────────
+    # Happens when the LC OCR is hallucinated/garbage (e.g. faint
+    # paper LC, GLM-OCR returns prompt-template filler). 8083's
+    # deep_extract usually pulls the LC number from the visible
+    # heading via the image VLM, so check the packet's
+    # extracted_fields / lc_reference before giving up — without
+    # this the result page shows no "Checklist" / "Final LC" /
+    # "View" buttons because consolidated_lcs ends up empty.
+    # Always look up the LC packet so we can fall back to image-VLM
+    # extracted fields when step06's regex parse of the OCR text
+    # fails (e.g. GLM-OCR hallucinated prompt-template loops on
+    # the LC pages → no :20:/:31C:/:46A: markers to parse).
+    _lc_pkt = None
+    for _src in (s3.get('packets', []),
+                 s8.get('classified_packets', []),
+                 s9.get('reconciled_packets', s9.get('packets', [])),
+                 sr.get('step05', {}).get('packets', [])):
+        for _pp in (_src or []):
+            if not isinstance(_pp, dict):
+                continue
+            _mt = (_pp.get('mt_type') or '').upper()
+            _dt = str(_pp.get('document_type') or '').lower()
+            if _mt in ('MT700','MT710','MT720') or 'lc' == _dt or 'letter of credit' in _dt:
+                _lc_pkt = _pp
+                break
+        if _lc_pkt:
+            break
+    if not dc_number and _lc_pkt:
+        _ef = _lc_pkt.get('extracted_fields') or {}
+        for _k in ('LC Number','lc_number','Documentary Credit Number',
+                   'DC Number','Document Number'):
+            _v = _ef.get(_k)
+            if _v:
+                dc_number = str(_v).strip()
+                break
+        if not dc_number:
+            dc_number = str(_lc_pkt.get('lc_reference') or
+                            _lc_pkt.get('document_number') or '').strip()
     _amendments = flc.get('amendment_count', 0)
+    # ── Issue Date / Issuer fallback from 8083 image-VLM extraction ──
+    # When step06 couldn't parse :31C: from the OCR text, 8083's
+    # deep_extract (image VLM) usually still got the Document Date
+    # from the LC heading. Use it so the UI's "Issue Date" field
+    # shows something instead of N/A.
+    if _lc_pkt:
+        _ef_lc = _lc_pkt.get('extracted_fields') or {}
+        _date_fb = ''
+        for _k in ('Document Date','Date of Issue','Issue Date','Issued Date'):
+            _v = _ef_lc.get(_k)
+            if _v:
+                _date_fb = str(_v).strip()
+                break
+        if not _date_fb:
+            _date_fb = str(_lc_pkt.get('document_date') or '').strip()
+        # Only use the fallback when step06's parsed value is empty
+        # or N/A so we don't override a real :31C: extraction.
+        _existing = str(_clean_cf.get('31C', _clean_cf.get('F31C', '')) or '').strip()
+        if _date_fb and (not _existing or _existing.lower() in ('n/a','na','none','')):
+            # Normalise 8083's "2026-01-14" / "2026/01/14" / "14 Jan 2026"
+            # to a tidy "2026-01-14".
+            _norm_dm = _re.match(r'^(\d{4})[-/](\d{1,2})[-/](\d{1,2})', _date_fb)
+            if _norm_dm:
+                _date_fb = f"{_norm_dm.group(1)}-{int(_norm_dm.group(2)):02d}-{int(_norm_dm.group(3)):02d}"
+            _clean_cf['31C'] = _date_fb
+        # Also surface Issuer + Beneficiary if missing.
+        for _ef_key, _tag in (('Issuer','52A'),('Issuing Bank','52A'),
+                              ('Beneficiary','59'),('Beneficiary Name','59'),
+                              ('Applicant','50'),('Applicant Name','50')):
+            _v = _ef_lc.get(_ef_key)
+            if _v and not _clean_cf.get(_tag):
+                _clean_cf[_tag] = str(_v).strip()
 
     # ── Build identified_objects ──
     # Helper: format page numbers smartly
@@ -3583,9 +3661,13 @@ def _process_pipeline(job_id: str):
             # see clean trade-finance language.
             import re as _re_scrub
             _SCRUB_PATTERNS = [
-                # OCR engine names → just "OCR"
+                # OCR engine names → "text reader" (user-facing name for
+                # the GLM-OCR model; matches "trade expert" used for the VLM)
                 (_re_scrub.compile(r'^GLM[-_]?OCR\s*[:\-]?\s*', _re_scrub.IGNORECASE), ''),
-                (_re_scrub.compile(r'\bGLM[-_]?OCR\b', _re_scrub.IGNORECASE), 'OCR'),
+                (_re_scrub.compile(r'\bGLM[-_]?OCR\b', _re_scrub.IGNORECASE), 'text reader'),
+                # Bare "GLM" (appears in log tags like "[GLM blank]" /
+                # "[GLM lines stripped]" / "[GLM+VLM blank]") → "text reader"
+                (_re_scrub.compile(r'\bGLM\b', _re_scrub.IGNORECASE), 'text reader'),
                 # Vision-language model → "trade expert"
                 (_re_scrub.compile(r'^VLM\s*[:\-]?\s*', _re_scrub.IGNORECASE), ''),
                 (_re_scrub.compile(r'\bVLM\s+classification\b', _re_scrub.IGNORECASE), 'expert review'),
