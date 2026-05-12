@@ -227,3 +227,30 @@ class EightThreeClient:
                 f'8083 /api/job/{job_id} returned {r.status_code}'
             )
         return r.json()
+
+    def page_positions_url(self, job_id: str, page_num: int) -> str:
+        """URL for the per-page text-position overlay 8083 hosts. The UI
+        fetches this to draw bbox-anchored text on the rendered image."""
+        return f'{self.base_url}/api/page-positions/{job_id}/{page_num}'
+
+    def cancel_job(self, job_id: str) -> bool:
+        """Tell 8083 to cancel an in-flight job. Idempotent — already-
+        completed jobs return ok. Returns True on 2xx, False otherwise."""
+        try:
+            r = requests.post(f'{self.base_url}/api/job/{job_id}/cancel',
+                              timeout=self.http_timeout)
+            return r.status_code < 300
+        except requests.RequestException:
+            return False
+
+    def delete_job(self, job_id: str) -> bool:
+        """Tell 8083 to delete a job's results (source.pdf, page cache,
+        classification.json). Used by the 8082 delete endpoint to keep
+        the two servers in sync. Returns True if 8083 deleted it (or it
+        wasn't there)."""
+        try:
+            r = requests.delete(f'{self.base_url}/api/job/{job_id}',
+                                timeout=self.http_timeout)
+            return r.status_code < 300 or r.status_code == 404
+        except requests.RequestException:
+            return False

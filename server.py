@@ -993,6 +993,15 @@ async def delete_job(job_id: str, request: Request):
     if os.path.isdir(upload_path):
         shutil.rmtree(upload_path, ignore_errors=True)
 
+    # Propagate delete to 8083 (separate-machine deployment) so its
+    # results dir is cleaned up too. Best-effort; we don't fail the 8082
+    # delete if 8083 is unreachable.
+    try:
+        from bridge import EightThreeClient
+        _ = EightThreeClient().delete_job(job_id)
+    except Exception:
+        pass
+
     return {"status": "deleted", "job_id": job_id, "reason": reason}
 
 
@@ -3195,13 +3204,22 @@ async def save_job_notes(job_id: str, request: Request):
 
 @app.post("/api/cancel/{job_id}")
 def cancel_job(job_id: str):
-    """Cancel a running job. Only works if the job is currently processing."""
+    """Cancel a running job. Only works if the job is currently processing.
+
+    Also propagates the cancel to 8083 (in case the in-flight work is
+    still on the classifier side — separate-machine deployments)."""
     if job_id not in _jobs:
         raise HTTPException(404, "Job not found")
     job = _jobs[job_id]
     if job['status'] == 'processing':
         job['status'] = 'cancelled'
         job['progress'].append(f"[{datetime.now().strftime('%H:%M:%S')}] Job cancelled by user")
+        # Best-effort cancel on 8083
+        try:
+            from bridge import EightThreeClient
+            EightThreeClient().cancel_job(job_id)
+        except Exception:
+            pass
         return {"status": "cancelled", "message": "Job cancelled"}
     return {"status": job['status'], "message": "Job not in cancellable state"}
 
@@ -3377,13 +3395,17 @@ def _process_pipeline(job_id: str):
 
             _t0_8083 = time.time()
             try:
+                # Pass 8082's job_id so 8083 stores its artifacts under
+                # the SAME id — keeps 8082 ↔ 8083 paired (page-image
+                # proxy, positions proxy, delete propagation all work
+                # because there's a single job identity end-to-end).
                 _8083_job_id, _c8083 = _client.classify(
-                    pdf_path, progress_cb=_8083_progress
+                    pdf_path, job_id=job_id, progress_cb=_8083_progress
                 )
             except EightThreeError as _e:
                 raise Exception(f"8083 classification failed: {_e}")
             _p(f"[8083] Classification done in {time.time() - _t0_8083:.1f}s "
-               f"(8083_job_id={_8083_job_id})")
+               f"(job_id={_8083_job_id})")
 
             _adapter_out = adapt_8083_to_step_results(_c8083, results_dir)
             s1 = _adapter_out['step01']
