@@ -1370,9 +1370,12 @@ def _detect_coal_quality_terms(step06_result: dict):
     if not isinstance(fields, dict):
         return None
 
-    # Pull F47A / F47B and F45A (some LCs put the spec table in F45A)
+    # Pull F47A / F47B, F45A and now also F46A/F46B — coal quality
+    # adjustment clauses occasionally land in the documents-required
+    # preamble (P198gz59).
     txt_parts = []
-    for tag in ('47A', 'F47A', '47B', 'F47B', '45A', 'F45A', '45B', 'F45B'):
+    for tag in ('47A', 'F47A', '47B', 'F47B', '45A', 'F45A', '45B', 'F45B',
+                '46A', 'F46A', '46B', 'F46B'):
         v = fields.get(tag, '')
         if isinstance(v, dict):
             v = v.get('value') or v.get('text') or ''
@@ -1634,8 +1637,14 @@ _HARD_CATEGORY_TOKENS = {
 
 def _detect_discrepancy_whitelist(step06_result: dict):
     """
-    Parse F47A for an "ALL DISCREPANCIES ACCEPTABLE EXCEPT X, Y, Z"
-    clause. Returns {hard_fail_categories: set, raw_clause: str} or None.
+    Parse F46A / F46B / F47A / F47B for an "ALL DISCREPANCIES ACCEPTABLE
+    EXCEPT X, Y, Z" clause. Returns {hard_fail_categories: set,
+    raw_clause: str} or None.
+
+    P198gz59 — Extended to also scan F46A/F46B. Some banks place
+    discrepancy-handling clauses in the Documents Required preamble
+    rather than Additional Conditions, so scanning only F47A misses
+    them and the downstream post-check fails to demote FAIL rows.
 
     Each token in the EXCEPT list maps to a canonical category bucket
     (goods_description / quantity / shipment_date / port_of_loading /
@@ -1652,7 +1661,7 @@ def _detect_discrepancy_whitelist(step06_result: dict):
     if not isinstance(fields, dict):
         return None
     txt_parts = []
-    for tag in ('47A', 'F47A', '47B', 'F47B'):
+    for tag in ('46A', 'F46A', '46B', 'F46B', '47A', 'F47A', '47B', 'F47B'):
         v = fields.get(tag, '')
         if isinstance(v, dict):
             v = v.get('value') or v.get('text') or ''
@@ -1756,6 +1765,10 @@ _LATE_SHIPMENT_PENALTY_RES = [
 
 
 def _detect_late_shipment_penalty(step06_result: dict):
+    """P198gz59 — Extended to also scan F46A/F46B. Banks sometimes
+    embed late-shipment penalty clauses in the document-requirements
+    preamble (e.g. "Late shipment discrepancy will attract X penalty"),
+    so a F47A-only scan misses those credits."""
     if not step06_result or not isinstance(step06_result, dict):
         return None
     final_lc = step06_result.get('final_lc', step06_result)
@@ -1765,7 +1778,7 @@ def _detect_late_shipment_penalty(step06_result: dict):
     if not isinstance(fields, dict):
         return None
     txt_parts = []
-    for tag in ('47A', 'F47A', '47B', 'F47B'):
+    for tag in ('46A', 'F46A', '46B', 'F46B', '47A', 'F47A', '47B', 'F47B'):
         v = fields.get(tag, '')
         if isinstance(v, dict):
             v = v.get('value') or v.get('text') or ''
@@ -6758,10 +6771,73 @@ def _deduplicate_packets(packets: list) -> tuple:
 
     deduped = []
     doc_counts = {}
+    # P198gz59 — Doc types where each instance carries DIFFERENT
+    # content (e.g. addressee, contact, statement, surveyor, batch)
+    # even when the core text is similar. LC clauses typically require
+    # ALL instances to be present + each addressed to the right party
+    # or covering its own scope, so we MUST NOT collapse them via
+    # overlap-based dedup.
+    _NEVER_DEDUPE_TYPES = {
+        # Multi-addressee notifications (one per recipient)
+        'shipment advice', 'vessel advice', 'shipping advice',
+        'shipment notice', 'shipping notice',
+        'advice of shipment', 'notice of shipment',
+        'short shipment notice',
+        # Beneficiary's various statements (one per certification scope)
+        'beneficiary certificate', "beneficiary's certificate",
+        "beneficiaries certificate", "beneficiaries' certificate",
+        'beneficiary declaration', "beneficiary's declaration",
+        'beneficiary statement', "beneficiary's statement",
+        'beneficiary undertaking', "beneficiary's undertaking",
+        # Per-purpose certifications from agents / shipping co
+        'agents certificate', "agent's certificate", "agents' certificate",
+        'agency certificate', 'shipping company certificate',
+        'shipping agent certificate',
+        # Insurance-related notifications (per risk / per shipment)
+        'insurance request', 'insurance notification',
+        'insurance advice', 'insurance cover note',
+        # Per-recipient delivery receipts
+        'courier receipt', 'mate receipt', "mate's receipt",
+        # Multi-stage / multi-inspector quality (loading + discharge,
+        # SGS + Bureau Veritas, etc.) — each one is its own report
+        'survey report', 'draft survey report',
+        'certificate of analysis', 'certificate of quality',
+        'certificate of inspection', 'inspection certificate',
+        'quality certificate', 'analysis certificate',
+        'mill test certificate', 'mill certificate',
+        'preshipment inspection certificate',
+        'pre-shipment inspection certificate',
+        # Per-shipment regulatory (often multiple per batch)
+        'health certificate', 'phytosanitary certificate',
+        'fumigation certificate', 'halal certificate',
+        'kosher certificate', 'sanitary certificate',
+        'free sale certificate', 'certificate of free sale',
+        'certificate of manufacture', 'manufacturer certificate',
+        # Specialty per-vessel / per-shipment
+        'vessel routing certificate', 'classification certificate',
+        'shelf life certificate', 'certificate of conformity',
+        # Combined certificates (rare but distinct per surveyor)
+        'certificate of weight and quality',
+        'certificate of weight',
+        'certificate of sampling',
+        # Cover/forwarding schedules — sometimes multiple (neg bank +
+        # advising bank cover letters) with different signatories
+        'documentary remittance', 'covering letter', 'covering schedule',
+        'bills schedule', 'forwarding schedule',
+    }
     for doc_type, group in type_groups.items():
         doc_counts[doc_type] = len(group)
         if len(group) == 1:
             deduped.append(group[0])
+            continue
+
+        # Never-dedupe types: each instance is a separate document
+        # the LC wants individually verified.
+        if doc_type in _NEVER_DEDUPE_TYPES:
+            for d in group:
+                if isinstance(d, dict):
+                    d['_copy_count'] = 1
+                deduped.append(d)
             continue
 
         # Check if documents in this group are ACTUAL copies (same content)
@@ -6834,18 +6910,46 @@ def _build_tasks(
     # has no content to verify against LC conditions, and running dozens
     # of "date not found" REVIEW rows against them just clutters the
     # report. Keep only packets that represent a real submitted document.
+    #
+    # P198gz — Expanded to cover the canonical sub-doc forms emitted by
+    # the classifier (matches _SUB_DOC_TYPES_LOWER in lc_match.py). The
+    # earlier set only listed 'endorsement page' (with the "page" suffix)
+    # so doc_type='Endorsement' (no suffix) slipped through and ran every
+    # "All documents must show ..." check against the Draft's back-side
+    # stamp. Same family for Attachment / Rider / Continuation Sheet.
     _NON_VERIFIABLE_PAGE_TYPES = {
+        # Original P139 entries
         'blank page', 'header page', 'endorsement page', 'back page',
         'bl conditions of carriage', 'conditions of carriage',
+        'condition of carriage',
         'terms and conditions', 'terms overleaf',
         'unknown', 'unidentified', 'cover page',
+        # P198gz — sub-doc canonical forms (back-side / continuation)
+        'endorsement', 'attachment', 'rider', 'addendum',
+        'attached rider', 'attached list', 'attached sheet',
+        'continuation sheet', 'continuation page',
+        'bl rider', 'b/l rider', 'b/l attached sheet',
+        'supplementary sheet',
     }
+
+    def _is_non_verifiable(p):
+        if not isinstance(p, dict):
+            return False
+        _dt = str(p.get('document_type', '') or p.get('doc_type', '') or '')
+        _dtl = _dt.lower().strip()
+        if not _dtl:
+            return False
+        if _dtl in _NON_VERIFIABLE_PAGE_TYPES:
+            return True
+        # Defensive: also match if it STARTS WITH a sub-doc form (e.g.
+        # 'Endorsement of Draft', 'Attachment to BL', 'Rider — BL', etc.)
+        for _nt in _NON_VERIFIABLE_PAGE_TYPES:
+            if _dtl.startswith(_nt + ' ') or _dtl.startswith(_nt + ' -'):
+                return True
+        return False
+
     _orig_count = len(packets)
-    packets = [
-        p for p in packets
-        if p and str((p.get('document_type', '') or p.get('doc_type', '')
-                      or '')).lower().strip() not in _NON_VERIFIABLE_PAGE_TYPES
-    ]
+    packets = [p for p in packets if p and not _is_non_verifiable(p)]
     _dropped = _orig_count - len(packets)
     if _dropped:
         # Can't call progress here (no fn in scope) — will log elsewhere.
@@ -10999,39 +11103,75 @@ def run(
                     _doc_text_up = (task.get("document_text") or "").upper()
                     if not _doc_text_up or not _bene_tokens:
                         continue
-                    # Does the BL text contain an agency marker AND
-                    # the beneficiary's distinctive tokens within a
-                    # reasonable window after the marker?
-                    _has_agency = any(m in _doc_text_up for m in _AGENCY_MARKERS)
-                    if not _has_agency:
+                    # P198gz59 — TIGHTEN: only flip when the beneficiary
+                    # actually appears in the SHIPPER field (or
+                    # immediately after a SHIPPER / EXPORTER / CONSIGNOR
+                    # label) along with the agency marker. The previous
+                    # version flipped whenever the beneficiary tokens
+                    # appeared anywhere in the BL body + any agency
+                    # marker existed anywhere — which trivially fires
+                    # on every BL that has an "Issuing Bank: ON BEHALF
+                    # OF ..." reference + the LC beneficiary printed in
+                    # any field. Real failure: BAHL-1188LC55127 BL has
+                    # PT. PINDO DELI as actual Shipper, with APEX only
+                    # appearing in the LC-reference area — the previous
+                    # rescue wrongly PASSed the F59-1 mismatch.
+                    _pkt_xf = task.get('pkt', {}) or {}
+                    if not isinstance(_pkt_xf, dict):
+                        _pkt_xf = {}
+                    _xf = _pkt_xf.get('extracted_fields') or {}
+                    # 1. Try extracted Parties table first.
+                    _shipper_name = ''
+                    _parties = _xf.get('Parties') if isinstance(_xf, dict) else None
+                    if isinstance(_parties, list):
+                        for _pr in _parties:
+                            if isinstance(_pr, dict):
+                                _role = (_pr.get('role') or '').strip().lower()
+                                if _role in ('shipper', 'exporter', 'consignor', 'sender'):
+                                    _shipper_name = (_pr.get('name') or '').strip()
+                                    break
+                    # 2. Fall back to scanning BL text for the SHIPPER
+                    # label and grabbing the next ~200 chars.
+                    _shipper_block = ''
+                    _m_lbl = re.search(
+                        r'\b(?:SHIPPER|EXPORTER|CONSIGNOR|SENDER)\s*[:\-]\s*',
+                        _doc_text_up,
+                    )
+                    if _m_lbl:
+                        _shipper_block = _doc_text_up[_m_lbl.end():_m_lbl.end() + 240]
+                    _shipper_zone = (_shipper_name.upper() + ' ' + _shipper_block).strip()
+                    if not _shipper_zone:
                         continue
-                    # Strict match: beneficiary tokens appear in a
-                    # contiguous phrase somewhere on the BL.
-                    _doc_norm = re.sub(r'[^A-Z0-9]+', ' ', _doc_text_up)
-                    _doc_norm = re.sub(r'\s+', ' ', _doc_norm)
+                    # Agency marker MUST be in the shipper zone (not anywhere)
+                    _has_agency_here = any(m in _shipper_zone for m in _AGENCY_MARKERS)
+                    if not _has_agency_here:
+                        continue
+                    # Beneficiary tokens MUST appear in the shipper zone
+                    _zone_norm = re.sub(r'[^A-Z0-9]+', ' ', _shipper_zone)
+                    _zone_norm = re.sub(r'\s+', ' ', _zone_norm)
                     _pattern = r'\b' + r'\s+'.join(
                         re.escape(t) for t in _bene_tokens
                     ) + r'\b'
-                    _bene_on_bl = bool(re.search(_pattern, _doc_norm))
-                    if not _bene_on_bl:
+                    _bene_in_zone = bool(re.search(_pattern, _zone_norm))
+                    if not _bene_in_zone:
                         continue
                     # Flip FAIL -> PASS
                     _set(row, "compliance", "PASS")
                     _findings = (
-                        f"Beneficiary '{_bene_for_rescue}' is named on the "
-                        f"BL shipper field via an agency construction "
-                        f"(e.g. 'on behalf of' / 'for account of'). "
-                        f"identifies the "
-                        f"beneficiary as principal — acceptable."
+                        f"Beneficiary '{_bene_for_rescue}' is named in the "
+                        f"BL Shipper field via an agency construction "
+                        f"(e.g. 'on behalf of' / 'for account of') — "
+                        f"identifies the beneficiary as principal, "
+                        f"acceptable under UCP 600 art. 14(k)."
                     )
                     _set(row, "findings", _findings)
                     _set(row, "result", _findings)
                     _set(row, "verification_notes",
                          "P198ae shipper-agency rescue: beneficiary "
-                         "named on BL via agency wording")
+                         "named in BL Shipper field via agency wording")
                     _progress(
                         f"  [P198ae shipper-agency] {_row_id}: "
-                        f"FAIL->PASS (beneficiary named via agency)"
+                        f"FAIL->PASS (beneficiary named in Shipper field via agency)"
                     )
                 except Exception as _e:
                     try:
@@ -11725,6 +11865,229 @@ def run(
             except Exception as _e:
                 try:
                     print(f"[P198ao BL master-agency] exception on row {_row_id}: {_e}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # P198gz59 — Incoterm ↔ Freight-Terms equivalence rescue.
+    # The 45A trade-term check fails when an Incoterm word from F45A
+    # (e.g. "FOB PERAWANG PORT") is not LITERALLY printed on the
+    # document, but trade-finance practice recognises the Incoterm as
+    # "reflected" when the doc carries the consistent freight payment
+    # term. Equivalences:
+    #   FOB / EXW / FAS / FCA          ↔ "Freight Collect"   (buyer pays)
+    #   CFR / CIF / CPT / CIP / DAP /
+    #   DDP / DAT / DPU                ↔ "Freight Prepaid"   (seller pays)
+    # When the LC's Incoterm is in the FOB-family (buyer pays freight)
+    # and the doc shows "Freight Collect" — or vice versa — the trade
+    # term IS reflected and the FAIL should be PASS.
+    try:
+        _F45A_RAW = ' '.join(
+            str(_final_lc_fields.get(k, '') or '')
+            for k in ('45A', 'F45A', '45B', 'F45B')
+        ).upper()
+        _BUYER_PAYS_INCO = ('FOB', 'EXW', 'FAS', 'FCA')
+        _SELLER_PAYS_INCO = ('CFR', 'CIF', 'CPT', 'CIP', 'DAP', 'DDP',
+                             'DAT', 'DPU')
+        _lc_inco = None
+        for inc in _BUYER_PAYS_INCO + _SELLER_PAYS_INCO:
+            if re.search(r'\b' + inc + r'\b', _F45A_RAW):
+                _lc_inco = inc
+                break
+        if _lc_inco:
+            _expected_freight = (
+                'COLLECT' if _lc_inco in _BUYER_PAYS_INCO else 'PREPAID'
+            )
+            for task in vlm_tasks:
+                row = task["row"]
+                _row_id = task.get("row_id", "?")
+                try:
+                    _comp_now = _get(row, "compliance", "").upper()
+                    if _comp_now != 'FAIL':
+                        continue
+                    _cref = (_get(row, 'clause_ref', '') or '').upper()
+                    if not _cref.startswith('45A'):
+                        continue
+                    _cond_u = (task.get("condition_text") or "").upper()
+                    # Match trade-term / Incoterm / FOB-not-on-doc check
+                    if not re.search(
+                        r'\b(INCOTERM|TRADE\s+TERM|FOB|CFR|CIF|EXW|CPT|CIP|FCA|FAS|DAP|DDP)\b',
+                        _cond_u,
+                    ):
+                        continue
+                    _doc_u = (task.get("document_text") or '').upper()
+                    if not _doc_u:
+                        continue
+                    # Check for the equivalent freight term
+                    if re.search(
+                        r'\bFREIGHT\s+' + _expected_freight + r'\b',
+                        _doc_u,
+                    ) or re.search(
+                        r'\b' + _expected_freight + r'\s+FREIGHT\b',
+                        _doc_u,
+                    ) or re.search(
+                        # Just "Freight Terms: Collect" or "Collect"
+                        # in a freight-terms field
+                        r'\bFREIGHT\s+TERMS?\s*[:\-]?\s*' + _expected_freight + r'\b',
+                        _doc_u,
+                    ):
+                        _msg = (
+                            f"LC Incoterm '{_lc_inco}' is reflected on the "
+                            f"document via the equivalent freight term "
+                            f"'Freight {_expected_freight.title()}'. Under "
+                            f"trade-finance practice, {_lc_inco} (where the "
+                            f"{'buyer' if _lc_inco in _BUYER_PAYS_INCO else 'seller'} "
+                            f"pays freight) is consistent with 'Freight "
+                            f"{_expected_freight.title()}' on the shipping "
+                            f"document. The Incoterm need not be printed "
+                            f"verbatim when the freight payment term "
+                            f"matches."
+                        )
+                        _set(row, "compliance", "PASS")
+                        _set(row, "result", _msg)
+                        _set(row, "findings", _msg)
+                        _set(row, "verification_notes",
+                             f"P198gz59 inco-freight equiv: "
+                             f"inco={_lc_inco} freight={_expected_freight}")
+                        _progress(
+                            f"  [P198gz59 inco-freight] {_row_id}: "
+                            f"FAIL->PASS (Incoterm '{_lc_inco}' reflected "
+                            f"via 'Freight {_expected_freight.title()}')"
+                        )
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # P198gz59 — Deterministic CARRIER-NAME forwarder/NVOCC detector.
+    # When a 47A-3 / 47A-11 BL row asks the LLM to verify that the BL
+    # is NOT a Freight Forwarder / NVOCC BL, the LLM sometimes accepts
+    # an obviously-forwarder signer ("M.Y LOGISTICS", "<X> FORWARDING")
+    # because the BL's `signing_capacity` field labels it "Carrier".
+    # Companies whose registered name carries certain industry markers
+    # are almost always forwarders / NVOCCs regardless of the label
+    # they print on the BL. This deterministic check demotes those
+    # PASSes to FAIL.
+    try:
+        _CARRIER_FF_MARKERS = (
+            'LOGISTICS',
+            'FORWARDING', 'FORWARDERS',
+            'FREIGHT SERVICES', 'FREIGHT LINE',
+            'EXPRESS LINES', 'EXPRESS CARGO',
+            'NVOCC',
+            'CARGO SERVICES', 'CARGO SOLUTIONS',
+            'TRANSPORTATION', 'TRANSPORT SERVICES',
+            'SHIPPING SERVICES', 'SHIPPING LINE',
+            'GLOBAL CARGO', 'INTERNATIONAL CARGO',
+            # Common FF brand suffixes — keep conservative
+            ' FCR ', 'FIATA',
+        )
+        # Markers that, if present in the company name, INDICATE the
+        # opposite (a real ocean carrier). Don't false-trigger on these.
+        _CARRIER_REAL_MARKERS = (
+            'STEAMSHIP', 'STEAM SHIP', 'OCEAN LINE',
+            'CONTAINER LINE', 'SHIPPING CO', 'SHIPPING LTD',
+            'NAVIGATION', 'MARINE LINES', 'SEALAND',
+            'EVERGREEN MARINE', 'MAERSK', 'MSC ', 'CMA CGM',
+            'COSCO ', 'OOCL', 'HAPAG', 'ZIM ', 'ONE NETWORK',
+            'YANG MING', 'WAN HAI', 'PIL ', 'HMM ',
+            'KOREA MARINE', 'PACIFIC INTERNATIONAL', 'MOL ',
+            'HYUNDAI MERCHANT',
+        )
+
+        def _carrier_looks_like_ff(name: str) -> str:
+            if not name: return ''
+            u = name.upper()
+            # Skip if it carries a known real-carrier marker
+            if any(m in u for m in _CARRIER_REAL_MARKERS):
+                return ''
+            for m in _CARRIER_FF_MARKERS:
+                if m in u:
+                    return m
+            return ''
+
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                _comp_now = _get(row, "compliance", "").upper()
+                if _comp_now != 'PASS':
+                    continue
+                _doc_type_lc = (task.get("document_type") or '').lower()
+                if 'bill of lading' not in _doc_type_lc:
+                    continue
+                _cref = (_get(row, 'clause_ref', '') or '').upper()
+                _cond_u = (task.get("condition_text") or "").upper()
+                # Trigger only on prohibitive FF / NVOCC / House / Forwarder
+                # conditions
+                _prohibits_ff = (
+                    bool(re.search(
+                        r'(?:NOT\s+(?:BE\s+)?(?:ACCEPT|ALLOW|PERMIT)|'
+                        r'MUST\s+NOT|SHALL\s+NOT|UNACCEPT|'
+                        r'PROHIBIT|NOT\s+OK)',
+                        _cond_u,
+                    ))
+                    and bool(re.search(
+                        r'\b(FREIGHT\s+FORWARDER|FORWARDER|NVOCC|'
+                        r'NON[\s-]VESSEL|HOUSE\s+(?:BILL|B[/.]L)|'
+                        r'HOUSE\s+OF\s+LADING|FIATA)\b',
+                        _cond_u,
+                    ))
+                )
+                if not _prohibits_ff:
+                    continue
+                # Pull carrier name from extracted_fields
+                _pkt = task.get('pkt', {}) or {}
+                if not isinstance(_pkt, dict):
+                    _pkt = {}
+                _xf = _pkt.get('extracted_fields') or {}
+                _carrier_name = ''
+                if isinstance(_xf, dict):
+                    for _k in ('Carrier', 'Issuing Carrier',
+                               'Carrier Name', 'Carrier Company'):
+                        v = _xf.get(_k)
+                        if isinstance(v, str) and v.strip():
+                            _carrier_name = v.strip()
+                            break
+                    if not _carrier_name:
+                        _sig = _xf.get('Signature')
+                        if isinstance(_sig, dict):
+                            _carrier_name = (_sig.get('signatory_company')
+                                             or '').strip()
+                if not _carrier_name:
+                    # Try the packet's flat field
+                    _carrier_name = (_pkt.get('carrier_name') or '').strip()
+                if not _carrier_name:
+                    continue
+                _ff_marker = _carrier_looks_like_ff(_carrier_name)
+                if not _ff_marker:
+                    continue
+                # Demote PASS -> FAIL
+                _msg = (
+                    f"The Bill of Lading is issued by '{_carrier_name}', whose "
+                    f"company name carries the freight-forwarder / NVOCC "
+                    f"marker '{_ff_marker.strip()}'. The LC condition "
+                    f"prohibits a Bill of Lading issued by a freight "
+                    f"forwarder / NVOCC. Even though the BL labels the "
+                    f"signer as 'Carrier', the registered company name "
+                    f"is a forwarder/NVOCC, so this presentation fails "
+                    f"the condition."
+                )
+                _set(row, "compliance", "FAIL")
+                _set(row, "result", _msg)
+                _set(row, "findings", _msg)
+                _set(row, "verification_notes",
+                     f"P198gz59 carrier-name FF detection: "
+                     f"name='{_carrier_name}' marker='{_ff_marker.strip()}'")
+                _progress(
+                    f"  [P198gz59 carrier-FF] {_row_id}: PASS->FAIL "
+                    f"(carrier '{_carrier_name}' carries FF marker "
+                    f"'{_ff_marker.strip()}')"
+                )
+            except Exception as _e:
+                try:
+                    print(f"[P198gz59 carrier-FF] exception on row {_row_id}: {_e}")
                 except Exception:
                     pass
     except Exception:
@@ -15908,7 +16271,29 @@ def run(
     try:
         from collections import defaultdict as _dd
         _prod_re = re.compile(r'\b([A-Z]{1,4}\d{3,6}[A-Z]{0,3})\b')
-        _groups = _dd(list)
+        # P198gz59 — rate / quantity extractors so rate-only and qty-only
+        # F45A rows (which have no product code in their condition text)
+        # can still be associated with the right alternate block.
+        _rate_re = re.compile(
+            r'\b(?:USD|EUR|GBP|JPY|CNY|PKR|AED|SAR|INR|BDT|LKR)\s*'
+            r'([\d,]+(?:\.\d{1,2})?)\s*'
+            r'(?:PER|/)\s*(?:M[\s.]*TON|MT|TON|KG|LB|PIECE|PC|UNIT)',
+            re.IGNORECASE,
+        )
+        _qty_re = re.compile(
+            r'\b([\d,]+(?:\.\d{1,2})?)\s*'
+            r'(?:M[\s.]*TONS?|MT|TONS?|KG|LB|PIECES?|PCS?|UNITS?)\b',
+            re.IGNORECASE,
+        )
+
+        def _norm_num(s):
+            try: return float(str(s).replace(',', ''))
+            except Exception: return None
+
+        _groups = _dd(list)               # frozenset(codes) -> rows
+        _rate_to_codes = _dd(set)         # rate float -> set(codes seen with that rate)
+        _qty_to_codes = _dd(set)          # qty float  -> set(codes seen with that qty)
+        _rateless_45a = []                # rows with only rate/qty, no product code
         _any_45a = False
         for task in vlm_tasks:
             row = task["row"]
@@ -15919,19 +16304,64 @@ def run(
             _any_45a = True
             cond_u = (task.get("condition_text") or "").upper()
             codes = _prod_re.findall(cond_u)
-            # Must look like a product code: has a digit and >=4 chars
             codes = [c for c in codes
                      if re.search(r'\d', c) and len(c) >= 4
                      and c not in ('ICC', 'USD', 'EUR', 'GBP', 'USA')]
-            if not codes:
+            # Extract rate / quantity for cross-block association
+            _rates = [_norm_num(m.group(1)) for m in _rate_re.finditer(cond_u)]
+            _rates = [r for r in _rates if r and r > 0]
+            _qtys  = [_norm_num(m.group(1)) for m in _qty_re.finditer(cond_u)]
+            _qtys  = [q for q in _qtys if q and q > 0]
+            if codes:
+                _groups[frozenset(codes)].append((task, row))
+                # Remember which rates / qtys appeared WITH which codes
+                for r in _rates: _rate_to_codes[r].update(codes)
+                for q in _qtys:  _qty_to_codes[q].update(codes)
+            elif _rates or _qtys:
+                # Rate-only / qty-only row — defer until we know the
+                # product↔rate / product↔qty associations.
+                _rateless_45a.append((task, row, _rates, _qtys))
+
+        # Second pass: attach rate-only / qty-only rows to the block
+        # whose product codes share that rate or quantity.
+        for _task, _row, _rates, _qtys in _rateless_45a:
+            _candidate_codes = set()
+            for r in _rates:
+                _candidate_codes |= _rate_to_codes.get(r, set())
+            for q in _qtys:
+                _candidate_codes |= _qty_to_codes.get(q, set())
+            if not _candidate_codes:
                 continue
-            _groups[frozenset(codes)].append((task, row))
+            # Find existing group whose codes are a SUBSET of candidates
+            # (i.e. the rate/qty belongs to that block).
+            for _gkey in list(_groups.keys()):
+                if _gkey & _candidate_codes:
+                    _groups[_gkey].append((_task, _row))
+                    break
+
         if _any_45a and len(_groups) >= 2:
             _shipped = set()
             for _key, _bucket in _groups.items():
                 if not _bucket:
                     continue
-                if all(
+                _passes = sum(
+                    1 for _, _r in _bucket
+                    if str(_get(_r, "compliance", "")).upper() == "PASS"
+                )
+                _fails = sum(
+                    1 for _, _r in _bucket
+                    if str(_get(_r, "compliance", "")).upper() == "FAIL"
+                )
+                # P198gz59 — relaxed: a block is "shipped" if ANY row in
+                # it passed (previously required ALL rows pass). Real
+                # F45A blocks routinely contain a few alternative
+                # product names where only one is presented — so the
+                # others naturally FAIL while the block as a whole is
+                # demonstrably shipped.
+                if _passes >= 1 and _passes >= _fails:
+                    _shipped.add(_key)
+                # Tight: also accept fully-PASS as shipped
+                elif all(
                     str(_get(_r, "compliance", "")).upper() == "PASS"
                     for _, _r in _bucket
                 ):
@@ -15967,6 +16397,76 @@ def run(
                             f"  [P198bh 45A alt-block] "
                             f"{_task.get('row_id','?')}: FAIL->PASS "
                             f"(alternate block '{_alt_name}' not shipped)"
+                        )
+
+            # P198gz59 — within-block AND/OR alternatives. Step 12 sometimes
+            # emits one row PER alternative product within the SAME block
+            # (e.g. HP4023WN/HP4024WN/HP4025ZN → 3 separate "must show X"
+            # rows). With F43P=ALLOWED the beneficiary can ship ANY ONE.
+            # So within each group, if ANY product-name row PASSed, flip
+            # the sibling product-name FAILs in the same group.
+            _f43p = _get_lc_field_value(step06_result, '43P')
+            _partial_allowed = bool(re.search(
+                r'ALLOWED|PERMITTED|PERMISSIBLE|YES',
+                (_f43p or '').upper(),
+            ))
+            if _partial_allowed:
+                for _key, _bucket in _groups.items():
+                    # Only act when this key is a SINGLE-product group
+                    # (typical "must show X" decomposition).
+                    if len(_key) != 1:
+                        continue
+                    # Sibling groups whose key is also a single product
+                    # AND fall under the same clause_ref form an "AND/OR
+                    # alternative family". Look at peer-group passes.
+                    _peer_pass_codes = set()
+                    for _kk, _bb in _groups.items():
+                        if len(_kk) != 1:
+                            continue
+                        if any(str(_get(_r, "compliance", "")).upper() == "PASS"
+                               for _, _r in _bb):
+                            _peer_pass_codes |= _kk
+                    if not _peer_pass_codes:
+                        continue
+                    # If this group's product is NOT among peer-pass
+                    # codes, and the group is fully FAIL on "product not
+                    # present" reason, flip to PASS as alternative.
+                    _grp_code = next(iter(_key))
+                    if _grp_code in _peer_pass_codes:
+                        continue
+                    for _task, _row in _bucket:
+                        if str(_get(_row, "compliance", "")).upper() != "FAIL":
+                            continue
+                        _cond_u = (_task.get("condition_text") or "").upper()
+                        # Only flip when condition is a product-presence /
+                        # rate / quantity check (not a more specific
+                        # endorsement / signature requirement).
+                        if not re.search(
+                            r'\b(MUST\s+SHOW|SHOULD\s+SHOW|GOODS\s+DESCRIPTION|'
+                            r'PRODUCT|UNIT\s+PRICE|RATE|QUANTITY|QTY)\b',
+                            _cond_u,
+                        ):
+                            continue
+                        _peer = ' / '.join(sorted(_peer_pass_codes))
+                        _msg = (
+                            f"F45A AND/OR alternative not presented: "
+                            f"{_grp_code} is one of multiple alternative "
+                            f"products in this F45A clause; the invoice "
+                            f"presented {_peer} instead, which is also "
+                            f"acceptable under the LC. F43P=ALLOWED so "
+                            f"partial presentation is permitted."
+                        )
+                        _set(_row, "compliance", "PASS")
+                        _set(_row, "findings", _msg)
+                        _set(_row, "result", _msg)
+                        _set(_row, "verification_notes",
+                             f"P198gz59 45A AND/OR alt: "
+                             f"missing={_grp_code} presented={_peer}")
+                        _progress(
+                            f"  [P198gz59 45A AND/OR alt] "
+                            f"{_task.get('row_id','?')}: FAIL->PASS "
+                            f"(alternative '{_grp_code}' not shipped, "
+                            f"'{_peer}' was)"
                         )
     except Exception as _e:
         try:

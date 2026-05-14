@@ -992,6 +992,93 @@ def adapt_8083_to_step_results(c8083: Dict,
         _doc_ref = pkt.get('doc_ref', '')
         if _doc_ref:
             _audit_lines.append(f"DOC REF: {_doc_ref}")
+
+        # P198gz — Surface structured extracted_fields (scalars, nested
+        # dicts, tables) into the audit header so the LLM verifier sees
+        # ALL data from EVERY merged page of the document — not just
+        # the flat OCR text. The extracted_fields are merged across all
+        # member pages by 8083's deep_extract, so this gives the
+        # verifier the full set of containers / parties / marks / etc.
+        try:
+            _xf = pkt.get('extracted_fields') or {}
+            if isinstance(_xf, dict) and _xf:
+                _XF_SKIP = {
+                    '_extract_source', 'Extract Source', 'extract_source',
+                    '_deep_extract_error',
+                    '_doc_type_override_from_fields',
+                    '_promoted_from_extras_after_reconcile',
+                }
+
+                def _scalar_str(v):
+                    if v is None:
+                        return ''
+                    s = str(v).strip()
+                    return s.split('\n')[0][:240] if s else ''
+
+                _scalars = []
+                _objects = []
+                _arrays  = []
+                for _k, _v in _xf.items():
+                    if not _k or _k.startswith('_') or _k in _XF_SKIP:
+                        continue
+                    if isinstance(_v, list):
+                        if _v:
+                            _arrays.append((_k, _v))
+                    elif isinstance(_v, dict):
+                        if _v:
+                            _objects.append((_k, _v))
+                    elif _v is not None and str(_v).strip() != '':
+                        _scalars.append((_k, _v))
+
+                if _scalars or _objects or _arrays:
+                    _audit_lines.append("EXTRACTED FIELDS (deep_extract — merged across ALL member pages):")
+                if _scalars:
+                    for _k, _v in _scalars:
+                        _audit_lines.append(f"  • {_k}: {_scalar_str(_v)}")
+                for _k, _v in _objects:
+                    _rows = []
+                    for _kk, _vv in _v.items():
+                        if not _kk or str(_kk).startswith('_'):
+                            continue
+                        _s = _scalar_str(_vv) if not isinstance(_vv, (list, dict)) else json.dumps(_vv, ensure_ascii=False)[:240]
+                        if _s:
+                            _rows.append(f"      - {_kk}: {_s}")
+                    if _rows:
+                        _audit_lines.append(f"  • {_k}:")
+                        _audit_lines.extend(_rows)
+                for _k, _arr in _arrays:
+                    _first = _arr[0]
+                    if isinstance(_first, dict):
+                        _cols = []
+                        for _row in _arr:
+                            for _ck in _row.keys():
+                                if _ck and not str(_ck).startswith('_') and _ck not in _cols:
+                                    _cols.append(_ck)
+                        _audit_lines.append(f"  • {_k} ({len(_arr)} rows; columns: {', '.join(_cols)}):")
+                        for _i, _row in enumerate(_arr, 1):
+                            _cells = []
+                            for _c in _cols:
+                                _val = _row.get(_c)
+                                if _val is None or (isinstance(_val, str) and not _val.strip()):
+                                    continue
+                                if isinstance(_val, (list, dict)):
+                                    _cells.append(f"{_c}={json.dumps(_val, ensure_ascii=False)[:120]}")
+                                else:
+                                    _cells.append(f"{_c}={_scalar_str(_val)}")
+                            if _cells:
+                                _audit_lines.append(f"      [{_i}] " + ' | '.join(_cells))
+                    else:
+                        _items = []
+                        for _v in _arr[:30]:
+                            if isinstance(_v, (list, dict)):
+                                _items.append(json.dumps(_v, ensure_ascii=False)[:120])
+                            else:
+                                _items.append(_scalar_str(_v))
+                        _audit_lines.append(f"  • {_k}: {', '.join(_x for _x in _items if _x)}")
+        except Exception:
+            # Never let structured-field formatting crash verification.
+            pass
+
         if _audit_lines:
             _full_text = (
                 "=== DOCUMENT AUDIT (from classifier) ===\n"
