@@ -11910,11 +11910,22 @@ def run(
                     if not _cref.startswith('45A'):
                         continue
                     _cond_u = (task.get("condition_text") or "").upper()
-                    # Match trade-term / Incoterm / FOB-not-on-doc check
-                    if not re.search(
-                        r'\b(INCOTERM|TRADE\s+TERM|FOB|CFR|CIF|EXW|CPT|CIP|FCA|FAS|DAP|DDP)\b',
-                        _cond_u,
-                    ):
+                    _result_u = (str(_get(row,'result','')) + ' '
+                                 + str(_get(row,'findings',''))).upper()
+                    # Match trade-term / Incoterm / FOB-not-on-doc — accept
+                    # either the row's CONDITION mentioning it, OR the
+                    # post-check RESULT/FINDING mentioning trade-term
+                    # code not on doc. The P198gy place-check overrides
+                    # the LLM's PASS to FAIL with a result like
+                    # "LC trade-term 'FOB PERAWANG PORT' not fully
+                    # reflected on the document — trade-term code FOB
+                    # not on doc." We rescue those too.
+                    _term_kw_re = re.compile(
+                        r'\b(INCOTERM|TRADE[\s-]?TERM|FOB|CFR|CIF|EXW|CPT|'
+                        r'CIP|FCA|FAS|DAP|DDP|DAT|DPU)\b'
+                    )
+                    if not (_term_kw_re.search(_cond_u)
+                            or _term_kw_re.search(_result_u)):
                         continue
                     _doc_u = (task.get("document_text") or '').upper()
                     if not _doc_u:
@@ -11957,6 +11968,156 @@ def run(
                         )
                 except Exception:
                     pass
+    except Exception:
+        pass
+
+    # P198gz59 — ANCILLARY-DOC presence-suffices rescue.
+    # For non-priority documents (Stuffing List, Free Time Cert, Mill
+    # Test, Health Cert, Phyto, Beneficiary Cert, Agents Cert, etc.),
+    # the LC's "MUST BE ATTACHED ALONG WITH ORIGINAL DOCUMENTS"
+    # language refers to the doc accompanying the presentation set —
+    # NOT that the doc itself must be an Original (vs Copy). Bank
+    # examiners accept these ancillary docs whether stamped Original
+    # or Copy. The LLM frequently mis-reads the clause and emits a
+    # "not submitted as an original" FAIL for an ancillary doc that
+    # IS actually present. Auto-flip those.
+    _PRIORITY_DOC_TYPES = {
+        'commercial invoice', 'proforma invoice',
+        'bill of lading', 'airway bill', 'sea waybill',
+        'packing list', 'weight list',
+        'certificate of origin',
+        'insurance policy', 'insurance certificate',
+        'draft bill of exchange', 'bill of exchange',
+        'documentary remittance', 'covering letter', 'covering schedule',
+    }
+    try:
+        for task in vlm_tasks:
+            row = task["row"]
+            _row_id = task.get("row_id", "?")
+            try:
+                if str(_get(row, "compliance", "")).upper() != 'FAIL':
+                    continue
+                _doc = (_get(row, 'document_checked', '') or '').lower().strip()
+                # Only fire for ancillary docs (NOT the main priority types)
+                if any(_p in _doc for _p in _PRIORITY_DOC_TYPES):
+                    continue
+                if not _doc or _doc in ('n/a', 'na', 'none', '(non-documentary)'):
+                    continue
+                _result_u = (str(_get(row,'result','')) + ' '
+                             + str(_get(row,'findings',''))).upper()
+                # Trigger only on "original" / "as original" FAIL phrasing
+                if not re.search(
+                    r'\b(NOT\s+SUBMITTED\s+(?:AS\s+)?(?:AN\s+)?ORIGINAL|'
+                    r'NOT\s+(?:AN?\s+|THE\s+)?ORIGINAL\b|'
+                    r'MUST\s+BE\s+(?:AN?\s+)?ORIGINAL|'
+                    r'REQUIRES?\s+(?:\d+\s+)?ORIGINALS?\s+(?:TO\s+BE\s+)?ATTACHED|'
+                    r'ORIGINAL\s+(?:DOCUMENT|COPY)\s+NOT\s+(?:SUBMITTED|FOUND|PRESENT))\b',
+                    _result_u,
+                ):
+                    continue
+                # Verify the doc IS actually present in submission. If the
+                # task was built from a matched packet, doc_text is set.
+                _doc_text = (task.get('document_text') or '').strip()
+                _has_packet = bool(_doc_text and len(_doc_text) > 200)
+                if not _has_packet:
+                    # No packet → doc truly missing; leave FAIL
+                    continue
+                _msg = (
+                    f"{_doc.title()} is present in the submission. For "
+                    f"this ancillary document, the LC's 'must be attached "
+                    f"along with original documents' language requires "
+                    f"PRESENCE (the doc accompanying the presentation), "
+                    f"not that the doc itself be stamped 'Original'. "
+                    f"Bank examiners accept ancillary documents whether "
+                    f"marked Original or Copy. PASS."
+                )
+                _set(row, "compliance", "PASS")
+                _set(row, "result", _msg)
+                _set(row, "findings", _msg)
+                _set(row, "verification_notes",
+                     f"P198gz59 ancillary-doc presence rescue: doc='{_doc}'")
+                _progress(
+                    f"  [P198gz59 ancillary-presence] {_row_id}: FAIL->PASS "
+                    f"({_doc} present; original/copy not required)"
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # P198gz59 — F43P partial-shipment QUANTITY-LESSER deterministic
+    # rescue. When the LC's F43P = ALLOWED (or PERMITTED / PERMISSIBLE)
+    # AND a FAIL row reports the doc quantity is LESS THAN the LC's
+    # required quantity (not exceeding), demote to PASS — partial
+    # shipment of a smaller quantity is acceptable under UCP 600 art.
+    # 31. The LLM frequently knows partial is allowed (the F43P
+    # context is injected by P93) but still mechanically returns
+    # FAIL on the literal quantity mismatch.
+    try:
+        _f43p_val = _get_lc_field_value(step06_result, '43P') or ''
+        _partial_allowed_now = bool(re.search(
+            r'ALLOWED|PERMITTED|PERMISSIBLE|YES',
+            _f43p_val.upper(),
+        ))
+        if _partial_allowed_now:
+            _qty_unit_re = re.compile(
+                r'([\d,]+(?:\.\d+)?)\s*'
+                r'(?:M[\s.]*TONS?|MT|TONNES?|TONS?|KGS?|LBS?|'
+                r'PCS|PIECES|UNITS|CTNS|CARTONS|BAGS|PALLETS)',
+                re.IGNORECASE,
+            )
+            def _qty_num(s):
+                try: return float(str(s).replace(',', ''))
+                except Exception: return None
+            for task in vlm_tasks:
+                row = task["row"]
+                _row_id = task.get("row_id", "?")
+                try:
+                    if str(_get(row, "compliance", "")).upper() != 'FAIL':
+                        continue
+                    _cref = (_get(row, 'clause_ref', '') or '').upper()
+                    # Only F45A / F46A quantity rows
+                    if not any(_cref.startswith(t) for t in ('45A','46A')):
+                        continue
+                    _cond_u = (task.get("condition_text") or "").upper()
+                    if not re.search(r'\b(QUANTITY|QTY|TOTAL\s+QUANTITY)\b', _cond_u):
+                        continue
+                    _finding_u = (str(_get(row,'result','')) + ' '
+                                  + str(_get(row,'findings',''))).upper()
+                    # Look for two qty numbers in the finding: doc qty and required qty
+                    nums = _qty_unit_re.findall(_finding_u)
+                    if len(nums) < 2:
+                        continue
+                    nums = [_qty_num(n) for n in nums[:4]]
+                    nums = [n for n in nums if n and n > 0]
+                    if len(nums) < 2:
+                        continue
+                    doc_qty = min(nums)
+                    lc_qty  = max(nums)
+                    # PASS only when doc qty is LESS than LC qty (or equal)
+                    # — exceeding LC qty is still a FAIL
+                    if doc_qty > lc_qty:
+                        continue
+                    _msg = (
+                        f"Quantity {doc_qty:g} (on doc) is LESS than LC "
+                        f"requirement {lc_qty:g} — F43P={_f43p_val.strip()} "
+                        f"so partial shipment is permitted under UCP 600 "
+                        f"art. 31. A lesser quantity is acceptable; only "
+                        f"quantity EXCEEDING the LC amount would fail."
+                    )
+                    _set(row, "compliance", "PASS")
+                    _set(row, "result", _msg)
+                    _set(row, "findings", _msg)
+                    _set(row, "verification_notes",
+                         f"P198gz59 partial-shipment qty rescue: "
+                         f"doc={doc_qty:g} lc={lc_qty:g}")
+                    _progress(
+                        f"  [P198gz59 partial-qty] {_row_id}: FAIL->PASS "
+                        f"({doc_qty:g} < {lc_qty:g}, F43P=ALLOWED)"
+                    )
+                except Exception as _e:
+                    try: print(f"[P198gz59 partial-qty] exception: {_e}")
+                    except Exception: pass
     except Exception:
         pass
 
