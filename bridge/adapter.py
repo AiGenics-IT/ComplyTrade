@@ -893,6 +893,26 @@ def adapt_8083_to_step_results(c8083: Dict,
     # verifier has no evidence and every clause comes back as
     # REVIEW or FAIL ("doc not found / cannot verify"). The old
     # legacy step08 path always emitted these — we must too.
+    # P198h7 — Pre-compute aggregate originals/copies counts per
+    # doc type so each packet's audit header shows the TOTAL across
+    # the whole presentation, not just that one packet's count.
+    # Real failure: LC required "1 original + 2 copies" of Cert of
+    # Weight; the submission had 3 separate Weight List packets
+    # (1 original + 2 copies — matches!) but each packet's audit
+    # header only showed its own count (e.g. "0 originals + 1 copy"),
+    # and the LLM concluded the requirement was not met.
+    _type_aggregate = {}
+    for pkt in packets:
+        if pkt.get('mt_type') != 'shipping':
+            continue
+        _dt_key = (pkt.get('document_type','') or '').lower().strip()
+        if not _dt_key:
+            continue
+        agg = _type_aggregate.setdefault(_dt_key, {'orig': 0, 'copy': 0, 'count': 0})
+        agg['orig'] += int(pkt.get('originals_count', 0) or 0)
+        agg['copy'] += int(pkt.get('copies_count', 0) or 0)
+        agg['count'] += 1
+
     _shipping_packets = []
     for pkt in packets:
         if pkt['mt_type'] != 'shipping':
@@ -949,16 +969,60 @@ def adapt_8083_to_step_results(c8083: Dict,
         _sig = pkt.get('bl_signing_capacity') or pkt.get('awb_signing_capacity') or {}
         if isinstance(_sig, dict) and _sig.get('label'):
             _ev = _sig.get('evidence') or ''
-            _audit_lines.append(
-                f"SIGNED AS: {_sig['label']}" + (f" (evidence: {_ev[:120]})" if _ev else '')
-            )
+            # P198h6 — Sanity-check the classifier's signing_capacity
+            # label against the literal evidence text. Real failure
+            # case: classifier inferred label="As Agent for the Master"
+            # for a BL whose signature block literally reads only
+            # "For M.Y LOGISTICS" (no master/carrier wording). The
+            # downstream LLM verifier and deterministic rescues both
+            # trust the audit-header label, so they wrongly PASSed
+            # FF-prohibition checks. If the label asserts master /
+            # carrier / owner agency but the evidence text doesn't
+            # contain those words, suppress the SIGNED AS line and
+            # surface only the verbatim evidence so the verifier
+            # judges the literal text instead.
+            _lbl_u = str(_sig.get('label') or '').upper()
+            _ev_u = str(_ev).upper()
+            _label_claims_authority = any(w in _lbl_u for w in (
+                'MASTER', 'CARRIER', 'OWNER', 'CHARTERER',
+            ))
+            _evidence_supports_label = any(w in _ev_u for w in (
+                'MASTER', 'CARRIER', 'OWNER', 'CHARTERER',
+                'AS AGENT FOR', 'AS AGENTS FOR',
+                'FOR AND ON BEHALF OF',
+                'ON BEHALF OF',
+            ))
+            if _label_claims_authority and _ev and not _evidence_supports_label:
+                # Classifier label is unsupported by evidence text — emit
+                # only the verbatim, no SIGNED AS interpretation.
+                _audit_lines.append(
+                    f"SIGNATURE TEXT (verbatim from doc): {_ev[:200]}"
+                )
+            else:
+                _audit_lines.append(
+                    f"SIGNED AS: {_sig['label']}" + (f" (evidence: {_ev[:120]})" if _ev else '')
+                )
         _orig_c = pkt.get('originals_count', 0)
         _copy_c = pkt.get('copies_count', 0)
         _lc_o   = pkt.get('lc_required_originals')
         _lc_c   = pkt.get('lc_required_copies')
-        if _orig_c or _copy_c or _lc_o is not None or _lc_c is not None:
+        # P198h7 — Use the aggregate across ALL packets of this doc
+        # type, not just this packet's count, so the verifier sees the
+        # full presentation. Show this packet's individual contribution
+        # too for transparency.
+        _dt_agg_key = (pkt.get('document_type','') or '').lower().strip()
+        _agg = _type_aggregate.get(_dt_agg_key, {'orig': 0, 'copy': 0, 'count': 0})
+        _tot_orig = _agg['orig']
+        _tot_copy = _agg['copy']
+        _tot_pkts = _agg['count']
+        if _tot_orig or _tot_copy or _lc_o is not None or _lc_c is not None:
             _req = f"LC requires: {_lc_o if _lc_o is not None else '?'} originals + {_lc_c if _lc_c is not None else '?'} copies"
-            _sub = f"Submitted: {_orig_c} originals + {_copy_c} copies"
+            if _tot_pkts > 1:
+                _sub = (f"Submitted ACROSS ALL {_tot_pkts} packets of this "
+                        f"doc type: {_tot_orig} originals + {_tot_copy} copies "
+                        f"(this packet: {_orig_c} originals + {_copy_c} copies)")
+            else:
+                _sub = f"Submitted: {_tot_orig} originals + {_tot_copy} copies"
             _audit_lines.append(f"COPY COUNTS: {_sub} ({_req})")
         _copies = pkt.get('copies') or []
         if _copies:
@@ -1047,9 +1111,35 @@ def adapt_8083_to_step_results(c8083: Dict,
                         _audit_lines.append(f"  • {_k}: {_scalar_str(_v)}")
                 for _k, _v in _objects:
                     _rows = []
+                    # P198h6 — drop the deep_extract Signature
+                    # subfield 'signing_capacity' when capacity_verbatim
+                    # contradicts it. Same root-cause as the SIGNED AS
+                    # sanity check: classifier may infer "As Agent for
+                    # the Master" from a verbatim that only says "For
+                    # M.Y LOGISTICS", and the verifier then trusts the
+                    # interpreted label over the actual text.
+                    _drop_signing_capacity = False
+                    if _k.lower() in ('signature', 'signatures'):
+                        try:
+                            _sc = str(_v.get('signing_capacity', '') or '').upper()
+                            _cv = str(_v.get('capacity_verbatim', '') or '').upper()
+                            _sc_claims = any(w in _sc for w in (
+                                'MASTER', 'CARRIER', 'OWNER', 'CHARTERER',
+                            ))
+                            _cv_supports = any(w in _cv for w in (
+                                'MASTER', 'CARRIER', 'OWNER', 'CHARTERER',
+                                'AS AGENT FOR', 'AS AGENTS FOR',
+                                'FOR AND ON BEHALF OF', 'ON BEHALF OF',
+                            ))
+                            if _sc_claims and _cv and not _cv_supports:
+                                _drop_signing_capacity = True
+                        except Exception:
+                            pass
                     for _kk, _vv in _v.items():
                         if not _kk or str(_kk).startswith('_'):
                             continue
+                        if _drop_signing_capacity and _kk == 'signing_capacity':
+                            continue  # suppress unsupported label
                         _s = _scalar_str(_vv) if not isinstance(_vv, (list, dict)) else json.dumps(_vv, ensure_ascii=False)[:240]
                         if _s:
                             _rows.append(f"      - {_kk}: {_s}")
@@ -1087,6 +1177,107 @@ def adapt_8083_to_step_results(c8083: Dict,
                         _audit_lines.append(f"  • {_k}: {', '.join(_x for _x in _items if _x)}")
         except Exception:
             # Never let structured-field formatting crash verification.
+            pass
+
+        # P198h8 — Compute "Subtotal per shipment ($/unit)" for invoices.
+        # Coal-pricing and similar invoices apply multi-step adjustments
+        # (price index, differential, discount, …) so the line-item
+        # `unit_price` field is the POST-discount NET price, NOT the
+        # gross rate the LC typically references ("Rate must be
+        # USD X.XX per M.TON"). The LLM tends to compare against the
+        # labelled unit_price and falsely FAILs. Surface the computed
+        # gross rate (Sub-Total ÷ Quantity) prominently so the LLM has
+        # the right number to compare against LC unit-rate conditions.
+        try:
+            _xf_rate = pkt.get('extracted_fields') or {}
+            _doc_type_for_rate = (pkt.get('document_type') or '').lower()
+            if (isinstance(_xf_rate, dict) and _xf_rate
+                    and ('commercial invoice' in _doc_type_for_rate
+                         or 'proforma' in _doc_type_for_rate)):
+                def _to_float(_s):
+                    try:
+                        return float(str(_s).replace(',', '').replace(' ', '').strip())
+                    except Exception:
+                        return None
+                # 1) Sub-Total preference order: Charges & Totals row
+                #    "Sub-Total" → fall back to sum of line-item amounts.
+                _sub_total = None
+                _charges = (_xf_rate.get('Charges & Totals')
+                            or _xf_rate.get('Charges and Totals')
+                            or [])
+                if isinstance(_charges, list):
+                    for _row in _charges:
+                        if not isinstance(_row, dict):
+                            continue
+                        _desc = (str(_row.get('description', ''))
+                                 .strip().lower().replace('-', '').replace(' ', ''))
+                        if _desc in ('subtotal',):
+                            _sub_total = _to_float(_row.get('amount', ''))
+                            if _sub_total is not None and _sub_total > 0:
+                                break
+                _lines = _xf_rate.get('Invoice Line Items') or []
+                if _sub_total is None and isinstance(_lines, list) and _lines:
+                    _sum = 0.0
+                    _any = False
+                    for _line in _lines:
+                        if not isinstance(_line, dict):
+                            continue
+                        _amt = _to_float(_line.get('amount', ''))
+                        if _amt is not None:
+                            _sum += _amt
+                            _any = True
+                    if _any and _sum > 0:
+                        _sub_total = _sum
+                # 2) Quantity preference: sum of line-item quantities
+                #    (with their unit) → Total Net Weight scalar.
+                _qty = None
+                _qty_unit = ''
+                if isinstance(_lines, list) and _lines:
+                    _qsum = 0.0
+                    _qany = False
+                    for _line in _lines:
+                        if not isinstance(_line, dict):
+                            continue
+                        _q = _to_float(_line.get('quantity', ''))
+                        if _q is not None:
+                            _qsum += _q
+                            _qany = True
+                            if not _qty_unit:
+                                _qty_unit = str(_line.get('unit', '')).strip()
+                    if _qany and _qsum > 0:
+                        _qty = _qsum
+                if _qty is None:
+                    for _k in ('Total Net Weight', 'Total Gross Weight',
+                               'Total Quantity'):
+                        _v = _xf_rate.get(_k)
+                        if _v:
+                            _qty = _to_float(_v)
+                            if _qty is not None and _qty > 0:
+                                break
+                # 3) Currency
+                _cur = (str(_xf_rate.get('Currency') or '').strip()
+                        or 'USD').upper()
+                if (_sub_total is not None and _sub_total > 0
+                        and _qty is not None and _qty > 0):
+                    _rate = _sub_total / _qty
+                    _unit_label = (_qty_unit or 'mt').lower()
+                    _audit_lines.append(
+                        "COMPUTED RATES (for unit-price comparison against LC):"
+                    )
+                    _audit_lines.append(
+                        f"  • Subtotal per shipment ({_cur}/{_unit_label}): "
+                        f"{_rate:.2f} (computed: {_cur} {_sub_total:,.2f} "
+                        f"÷ {_qty:,.2f} {_unit_label})"
+                    )
+                    _audit_lines.append(
+                        "  • Use this gross subtotal-derived rate for LC "
+                        "'rate per unit' / 'price per unit' comparisons. "
+                        "Do NOT use any post-discount line-item 'unit_price' "
+                        "field for that comparison — that value is net of "
+                        "adjustments and does not represent the contracted "
+                        "rate."
+                    )
+        except Exception:
             pass
 
         if _audit_lines:

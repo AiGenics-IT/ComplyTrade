@@ -235,6 +235,110 @@ def _extract_swift_fields(text: str, source_page: int = 0, source_mt: str = '') 
 
     text = re.sub(r'([^\n])(:\d{2}[A-Z]?:)', r'\1\n\2', text)
 
+    # P278 \u2014 Alliance UI label-injection. The Alliance Lite UI export
+    # format prints LC field labels as standalone lines (e.g. "Documents
+    # Required", "Partial Shipments", "Description of Goods and/or
+    # Services") and the value on the following line(s). Some LCs are
+    # MIXED: F-tags present for some fields (F20, F31C, F40A, F42D,
+    # F47A) but later fields like F43P, F43T, F44E/F, F44C, F45A, F46A
+    # use label-only sections with no F-prefix. The regex extractor
+    # then greedily consumes everything between the last F-tag and the
+    # NEXT F-tag, swallowing the label-only fields. Worst case: F42D
+    # eats F43P/T, F44, F45A, F46A \u2014 losing the documents-required
+    # list entirely and breaking missing-doc detection downstream.
+    #
+    # Fix: detect whole-line Alliance UI labels and inject the matching
+    # F-tag prefix BEFORE the regex split. Only fires when the label
+    # occupies an entire line (possibly with surrounding whitespace /
+    # trailing punctuation) so it doesn't false-positive on clause-body
+    # phrases like "Partial Shipments are not allowed under this LC".
+    _ALLIANCE_LABEL_TO_TAG = [
+        # Order: longest / most specific labels FIRST so they win over
+        # generic ones (e.g. "Description of Goods and/or Services"
+        # before bare "Description of Goods").
+        ('Sender to Receiver Information',                          'F72'),
+        ('Instructions to the Paying/Accepting/Negotiating Bank',   'F78'),
+        ('Instructions to the Paying or Accepting or Negotiating Bank', 'F78'),
+        ('Instructions to the Negotiating Bank',                    'F78'),
+        ('Instructions to the Accepting Bank',                      'F78'),
+        ('Instructions to the Paying Bank',                         'F78'),
+        ('Port of Discharge/Airport of Destination',                'F44F'),
+        ('Port of Loading/Airport of Departure',                    'F44E'),
+        ('Description of Goods and/or Services',                    'F45A'),
+        ('Description of Goods and or Services',                    'F45A'),
+        ('Percentage Credit Amount Tolerance',                      'F39A'),
+        ('Date and Place of Expiry',                                'F31D'),
+        ('Available With Bank By Negotiation',                      'F41D'),
+        ('Available With Bank By',                                  'F41D'),
+        ('Available With ... By ...',                               'F41A'),
+        ('Available With By',                                       'F41A'),
+        ('Available With',                                          'F41A'),
+        ('Place of Final Destination',                              'F44B'),
+        ('Place of Taking in Charge',                               'F44A'),
+        ('Form of Documentary Credit',                              'F40A'),
+        ('Documentary Credit Number',                               'F20'),
+        ('Latest Date of Shipment',                                 'F44C'),
+        ('Period for Presentation in Days',                         'F48'),
+        ('Period for Presentation',                                 'F48'),
+        ('Confirmation Instructions',                               'F49'),
+        ('Requested Confirmation Party',                            'F58A'),
+        ('Advising Through Bank',                                   'F57A'),
+        ('Reimbursing Bank',                                        'F53A'),
+        ('Applicant Bank',                                          'F51A'),
+        ('Issuing Bank',                                            'F52A'),
+        ('Additional Conditions',                                   'F47A'),
+        ('Documents Required',                                      'F46A'),
+        ('Description of Goods',                                    'F45A'),
+        ('Partial Shipments',                                       'F43P'),
+        ('Partial Shipment',                                        'F43P'),
+        ('Transshipment',                                           'F43T'),
+        ('Transhipment',                                            'F43T'),
+        ('Port of Discharge',                                       'F44F'),
+        ('Port of Loading',                                         'F44E'),
+        ('Applicable Rules',                                        'F40E'),
+        ('Currency Code, Amount',                                   'F32B'),
+        ('Currency Code Amount',                                    'F32B'),
+        ('Currency Amount',                                         'F32B'),
+        ('Date of Issue',                                           'F31C'),
+        ('Drafts at',                                               'F42C'),
+        ('Drawee',                                                  'F42D'),
+        ('Applicant',                                               'F50'),
+        ('Beneficiary',                                             'F59'),
+        ('Charges',                                                 'F71D'),
+    ]
+    # Don't run injection if the text is ALREADY fully F-tagged or
+    # Alliance-colon-tagged (extracting would already work).
+    _f_tag_count = len(re.findall(r'\bF\d{2}[A-Z]?\s*:', text))
+    _colon_tag_count = len(re.findall(r'\n\s*:\d{2}[A-Z]?:', text))
+    if _f_tag_count < 20 and _colon_tag_count < 20:
+        _present_tags = set(re.findall(r'\bF(\d{2}[A-Z]?)\s*:', text))
+        _injection_count = 0
+        # Pad with leading \n so the first line can match too.
+        text_buf = '\n' + text
+        for _label, _ftag in _ALLIANCE_LABEL_TO_TAG:
+            _tag_num = _ftag[1:]
+            if _tag_num in _present_tags:
+                continue  # tag already in the text, don't double-inject
+            # Whole-line label match: line must contain ONLY the label
+            # (case-insensitive), possibly with trailing punctuation /
+            # whitespace. \s+ tolerates OCR spacing variance inside.
+            _label_pat = re.escape(_label).replace(r'\ ', r'\s+')
+            _line_re = re.compile(
+                r'(?<=\n)[ \t]*'
+                + _label_pat
+                + r'[ \t.,:;]*\n',
+                flags=re.IGNORECASE,
+            )
+            text_buf, _n = _line_re.subn(_ftag + ': \n', text_buf, count=1)
+            if _n > 0:
+                _injection_count += 1
+                _present_tags.add(_tag_num)
+        # Apply only if we injected at least 3 \u2014 fewer suggests this
+        # isn't really an Alliance UI page and the false-positive risk
+        # outweighs the gain.
+        if _injection_count >= 3:
+            text = text_buf.lstrip('\n')
+
     _TRUNCATED_TAG_FIXES = [
         (r'(?<=\n)\s*\d{0,2}D:\s*(?=Date\s+and\s+Place\s+of\s+Expiry)',   'F31D: '),
         (r'(?<=\n)\s*\d{0,2}C:\s*(?=Date\s+of\s+Issue)',                   'F31C: '),

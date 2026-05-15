@@ -449,7 +449,35 @@ def _parse_date(date_str: str) -> Optional[datetime]:
             pass
 
     # ── Pass 2: dateutil (handles the majority of common formats) ──
-    if _HAS_DATEUTIL:
+    # P198h9 — Guard against dateutil's fuzzy parser hallucinating dates
+    # from non-date strings. `dateutil.parser.parse('CBC 001', fuzzy=True)`
+    # returns today's-year/today's-month/day-1 (e.g. 2026-05-01) — a
+    # catastrophic false-date that corrupts the lc_expiry check on stamp
+    # texts like "CBC 001", "REF 14", "L/C 90854" etc. We only call
+    # dateutil when the input contains at least one unambiguous date
+    # token: a 4-digit year, a 2-digit year with separator context, or
+    # a month name. Bare day-only strings ("001", "15", "Page 1") are
+    # rejected before dateutil ever sees them.
+    _has_year_4 = bool(re.search(r'\b(?:19|20)\d{2}\b', s))
+    # Month-name detection — accept digit-adjacent month tokens like
+    # "18MAR26" / "12-MAR-26" / "MAR2026" by using a non-word-boundary
+    # regex (digits adjacent are OK; only letter-adjacency would be a
+    # false-positive on words like "MAYBE", "AUGUSTA").
+    _has_month_name = bool(re.search(
+        r'(?<![A-Za-z])(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|'
+        r'OCT|NOV|DEC|JANUARY|FEBRUARY|MARCH|APRIL|JUNE|JULY|AUGUST|'
+        r'SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)(?![A-Za-z])',
+        s, re.IGNORECASE,
+    ))
+    # DMY/MDY numeric date with separators (e.g. "20/01/26", "20-01-2026")
+    _has_numeric_date = bool(re.search(
+        r'\b\d{1,2}[\-./\s]\d{1,2}[\-./\s]\d{2,4}\b',
+        s,
+    ))
+    _has_swift_date = bool(re.fullmatch(r'\d{6,8}', s))
+    _has_date_signal = (_has_year_4 or _has_month_name
+                        or _has_numeric_date or _has_swift_date)
+    if _HAS_DATEUTIL and _has_date_signal:
         # Trade finance LCs are international — most use DD/MM/YYYY, so
         # dayfirst=True is the safer default for formats where the year
         # is LAST. When the year is first (ISO-like), Pass 1b above has
