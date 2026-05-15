@@ -1183,9 +1183,9 @@ def _p198gd_partial_shipment_check(job_dir):
                     'document_checked': req_name,
                     'compliance': 'PASS',
                     'result': (f"PRESENT for invoice {inv}: "
-                               f"{', '.join(present_pkts)}"),
+                               f"{', '.join(str(_x) for _x in present_pkts)}"),
                     'findings': (f"PRESENT for invoice {inv}: "
-                                 f"{', '.join(present_pkts)}"),
+                                 f"{', '.join(str(_x) for _x in present_pkts)}"),
                 })
             else:
                 n_fail += 1

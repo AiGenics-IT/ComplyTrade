@@ -495,14 +495,34 @@ def _build_executive_summary(
             Paragraph('<b><font color="white">Finding</font></b>', styles['SmallTextHeader']),
         ]
         _cf_rows = [_cf_hdr]
-        for i, cf in enumerate(critical_findings[:30], 1):
-            # P198dg — show full finding text in the executive
-            # summary. Prefer the 'findings' field (longer and more
-            # informative) over the truncated 'result' summary, and
-            # don't cap it. ReportLab Paragraph wraps long text
-            # gracefully across cell rows.
-            finding = _esc(_safe_str(
-                cf.get('findings', '') or cf.get('result', '') or cf.get('condition', ''), 100000))
+        # P198h6 — show ALL critical findings, no cap. Previously
+        # capped at 30 which caused the executive summary to disagree
+        # with the per-clause detail tables further down (those have
+        # no cap). Operators expected the exec summary to be the
+        # authoritative count → match it.
+        for i, cf in enumerate(critical_findings, 1):
+            # P198h6 — show the MOST INFORMATIVE text in the executive
+            # summary so it matches what users see in the detail
+            # clause tables below. Previously preferred 'findings' over
+            # 'result' (P198dg), which broke for implicit date checks
+            # where 'findings' is a short evidence line ("Documents
+            # received on 2026-02-16") and 'result' carries the full
+            # verdict ("LC EXPIRED - DOCUMENTS RECEIVED ON 2026-02-16,
+            # WHICH IS 16 DAY(S) AFTER THE LC EXPIRY OF 2026-01-31.
+            # LATE PRESENTATION."). New rule: pick the LONGER of the
+            # two; if 'result' is at least 1.5x the length of 'findings'
+            # treat it as the authoritative explanation. Fall back to
+            # 'condition' only when both are empty.
+            _f = (cf.get('findings') or '').strip()
+            _r = (cf.get('result') or '').strip()
+            _c = (cf.get('condition') or '').strip()
+            if _r and (not _f or len(_r) >= int(len(_f) * 1.5) or len(_r) > len(_f)):
+                _chosen = _r
+            elif _f:
+                _chosen = _f
+            else:
+                _chosen = _r or _c
+            finding = _esc(_safe_str(_chosen, 100000))
             _cf_clause_ref = cf.get("clause_ref", "")
             _cf_anchor = _clause_anchor(_cf_clause_ref)
             # P198gd — Friendly label for partial-shipment / presentation
@@ -572,8 +592,8 @@ def _build_executive_summary(
             if _c.upper() in ('', 'N/A', 'INFORMATIONAL') and _f.upper() in ('', 'N/A') and _r.upper() in ('', 'N/A', 'INFORMATIONAL'):
                 continue
             _review_display.append(r)
-            if len(_review_display) >= 25:
-                break
+            # P198h6 — no 25-item cap. Show every review item so the
+            # exec summary matches the per-clause detail tables.
 
         if _review_display:
             # Build a table for review items (same format as critical findings)
@@ -589,8 +609,21 @@ def _build_executive_summary(
             ]
             _rv_rows = [_rv_hdr]
             for i, ri in enumerate(_review_display, 1):
-                detail = _esc(_safe_str(
-                    ri.get('condition', '') or ri.get('result', '') or ri.get('findings', ''), 100000))
+                # P198h6 — same logic as critical findings: pick the
+                # most informative non-empty text. Order of preference:
+                # result (typically full verdict) → findings → condition.
+                # Prefer the LONGER of result vs findings when both
+                # exist so implicit-check rows show their full verdict.
+                _rv_f = (ri.get('findings') or '').strip()
+                _rv_r = (ri.get('result') or '').strip()
+                _rv_c = (ri.get('condition') or '').strip()
+                if _rv_r and (not _rv_f or len(_rv_r) >= int(len(_rv_f) * 1.5) or len(_rv_r) > len(_rv_f)):
+                    _rv_chosen = _rv_r
+                elif _rv_f:
+                    _rv_chosen = _rv_f
+                else:
+                    _rv_chosen = _rv_r or _rv_c
+                detail = _esc(_safe_str(_rv_chosen, 100000))
                 _rv_clause_ref = ri.get("clause_ref", "")
                 _rv_anchor = _clause_anchor(_rv_clause_ref)
                 if _rv_anchor:

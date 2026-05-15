@@ -2354,6 +2354,76 @@ def _clean_consolidated_field_value(tag: str, value: str) -> str:
         return value
     v = value
 
+    # P198h6 — strip OCR-prompt-template leakage that the upstream
+    # GLM/VLM occasionally echoed back as content (real failure:
+    # 100+ repeated "- Use a table or list format if possible" lines
+    # showed up in F57A of the final LC). This pass cleans cached
+    # OCR text on regenerate, even if the classifier-side stripper
+    # didn't catch it during the original OCR pass.
+    _OCR_PROMPT_LEAK_PATTERNS = (
+        re.compile(
+            r'^\s*[-*•]?\s*Use\s+(?:a\s+)?(?:table|list|bullet)\s+'
+            r'(?:or\s+(?:list|table|bullet)\s+)?'
+            r'(?:format|structure|layout|representation|style)'
+            r'(?:\s+if\s+(?:possible|necessary|appropriate))?\s*$',
+            re.IGNORECASE | re.MULTILINE,
+        ),
+        re.compile(
+            r'^\s*[-*•]?\s*Use\s+(?:a\s+)?(?:table|list|bullet[s\-]list|bullet\s+points?)\s+'
+            r'to\s+(?:organize|present|display|format|show|list)[^\n]*$',
+            re.IGNORECASE | re.MULTILINE,
+        ),
+        re.compile(
+            r'^\s*[-*•]?\s*Use\s+a\s+table\s+structure\s+with\s+headers[^\n]*$',
+            re.IGNORECASE | re.MULTILINE,
+        ),
+        re.compile(
+            r'^\s*[-*•]?\s*Use\s+(?:a\s+)?(?:standard|consistent|clear|legible|'
+            r'readable|simple|plain)\s+font[^\n]*$',
+            re.IGNORECASE | re.MULTILINE,
+        ),
+        # "Use a clear, legible font for footnotes / document references / ..."
+        re.compile(
+            r'^\s*[-*•]?\s*Use\s+(?:a\s+)?(?:clear|legible|standard|simple|plain|'
+            r'consistent|readable|easy[\s-]to[\s-]read|professional)'
+            r'(?:\s*,\s*(?:clear|legible|standard|simple|plain|consistent|'
+            r'readable|easy[\s-]to[\s-]read|professional))*'
+            r'\s+font\s+for\s+(?:footnotes?|document\s+references?|'
+            r'references?|citations?|headings?|subheadings?|titles?|body|'
+            r'text|content|lists?|bullets?|tables?|all\s+text)[^\n]*$',
+            re.IGNORECASE | re.MULTILINE,
+        ),
+        re.compile(
+            r'^\s*[-*•]?\s*(?:Preserve|Maintain|Keep)\s+(?:line\s+breaks|'
+            r'indentation|spacing|formatting|layout)[^\n]*$',
+            re.IGNORECASE | re.MULTILINE,
+        ),
+    )
+    for _pat in _OCR_PROMPT_LEAK_PATTERNS:
+        v = _pat.sub('', v)
+    # P198h6 — Strip markdown-bold wrappers around SWIFT field labels
+    # like "**F71D: Charges**" / "**F48: Period for Presentation in Days**"
+    # / "**F49: Confirmation Instructions**". These come from the upstream
+    # OCR/LLM emitting markdown-styled labels that leak into the LC body.
+    # We keep the label text itself (in case it's part of a clause body)
+    # but drop the surrounding ** markers entirely.
+    v = re.sub(
+        r'\*{2,}\s*(F?\d{2}[A-Z]?\s*:\s*[^*\n]+?)\s*\*{2,}',
+        r'\1',
+        v,
+    )
+    # Also strip standalone bold-emphasized lines that ONLY contain
+    # a SWIFT field label (with no surrounding clause content) —
+    # they leak in as decorative headers from the LLM.
+    v = re.sub(
+        r'^\s*\*{2,}\s*F?\d{2}[A-Z]?\s*:\s*[^*\n]+?\s*\*{2,}\s*$',
+        '',
+        v,
+        flags=re.MULTILINE,
+    )
+    # Collapse the blank lines the stripping leaves behind
+    v = re.sub(r'\n{3,}', '\n\n', v).strip()
+
     _strip_pat = _FIELD_LABEL_STRIP.get(tag, '')
     if _strip_pat:
         v = re.sub(_strip_pat, '', v, flags=re.IGNORECASE).strip()

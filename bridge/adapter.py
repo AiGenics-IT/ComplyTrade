@@ -981,11 +981,21 @@ def adapt_8083_to_step_results(c8083: Dict,
             _audit_lines.append(f"ATTACHMENTS REQUIRED: {' · '.join(str(a) for a in _att_req)}")
         if _att_fnd:
             _audit_lines.append(f"ATTACHMENTS FOUND: {' · '.join(str(a) for a in _att_fnd)}")
-        _must = pkt.get('must_show') or []
-        if _must:
-            _audit_lines.append("LC MUST-SHOW PHRASES (each must appear in this document):")
-            for i, _m in enumerate(_must, 1):
-                _audit_lines.append(f"  {i}. {_m}")
+        # P198h6 — REMOVED 'LC MUST-SHOW PHRASES' audit-header
+        # injection. The phrases (e.g. "Importer's NTN No. 1550365-8
+        # should appear" or "House bill of lading acceptable") were
+        # being misread by the verifier as proof of presence on the
+        # document — causing both deterministic detectors (P198gz36)
+        # and the LLM verifier to PASS conditions when the required
+        # value only appeared in the audit header, not in the doc
+        # body. The same requirement reaches the verifier via
+        # condition_text on each row, so removing this section
+        # eliminates the false positives without losing context.
+        # _must = pkt.get('must_show') or []
+        # if _must:
+        #     _audit_lines.append("LC MUST-SHOW PHRASES (each must appear in this document):")
+        #     for i, _m in enumerate(_must, 1):
+        #         _audit_lines.append(f"  {i}. {_m}")
         _reason = pkt.get('match_reason', '')
         if _reason:
             _audit_lines.append(f"CLASSIFIER MATCH REASON: {_reason}")

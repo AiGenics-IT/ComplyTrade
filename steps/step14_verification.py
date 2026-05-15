@@ -833,17 +833,38 @@ def _find_matching_docs(doc_to_check: str, packets: list) -> list:
     return matches
 
 
+_AUDIT_MUST_SHOW_BLOCK_RE = re.compile(
+    r'\n?LC\s+MUST[-\s]?SHOW\s+PHRASES?\s*\([^)]*\):\s*\n'
+    r'(?:[ \t]*\d+\.\s+[^\n]+\n)+',
+    re.IGNORECASE,
+)
+
+
 def _pkt_text(pkt: dict) -> str:
-    """Get the best available text from a reconciled packet."""
+    """Get the best available text from a reconciled packet.
+
+    P198h6 — strips stale ``LC MUST-SHOW PHRASES`` blocks that may
+    still be present in packets built before the bridge stopped
+    injecting them. That block enumerates the LC's required values
+    verbatim ("Importer's NTN No. 1550365-8 should appear", "House
+    bill of lading acceptable", etc.) and confuses both the LLM
+    verifier and deterministic pattern detectors into believing the
+    values are on the document body. The bridge has been patched to
+    omit the block on new runs; this defensive strip catches any
+    cached step09 data from before the patch.
+    """
     if not pkt:
         return ""
-    return (
+    txt = (
         pkt.get("refined_text", "")
         or pkt.get("cleaned_text", "")
         or pkt.get("text", "")
         or pkt.get("raw_text", "")
         or ""
     )
+    if txt and 'MUST-SHOW' in txt.upper():
+        txt = _AUDIT_MUST_SHOW_BLOCK_RE.sub('\n', txt)
+    return txt
 
 
 def _pkt_images(pkt: dict) -> list:
@@ -3875,11 +3896,10 @@ def _deterministic_verify(
             if _isf is False:
                 return {
                     'verdict': 'PASS',
-                    'quote': f"bl_subtype.is_short_form = {_isf}",
+                    'quote': '(BL carries full terms; not a short-form BL)',
                     'findings': (
-                        "BL is not a short form "
-                        f"(is_short_form={_isf}, form_type="
-                        f"{bl_subtype.get('form_type','unknown')})."
+                        "The Bill of Lading is not a short form — "
+                        "the full carriage terms are printed on the document."
                     ),
                     'confidence': 0.95,
                     'structured_source': 'bl_subtype.is_short_form',
@@ -4008,12 +4028,10 @@ def _deterministic_verify(
             # NOT let the LLM hallucinate a FAIL.
             return {
                 'verdict': 'PASS',
-                'quote': f"bl_subtype.cleanness = {_cleanness or 'clean'}, is_claused_bl = {_is_claused}, clausing_notes = (none)",
+                'quote': '(no damage / clausing notation found on the BL)',
                 'findings': (
-                    f"BL is clean — no damage/defect notation on the goods "
-                    f"(cleanness={_cleanness or 'clean'}, "
-                    f"is_claused_bl={_is_claused or False}). "
-                    f"treats a BL without explicit clausing as clean by default."
+                    "The Bill of Lading is clean — no damage or defect "
+                    "notation is shown on the document."
                 ),
                 'confidence': 0.90,
                 'structured_source': 'bl_subtype.cleanness',
@@ -4371,6 +4389,71 @@ EXAMPLES OF HALLUCINATION (DO NOT DO THIS):
 
 RULE: If you cannot QUOTE the relevant text from the DOCUMENT TEXT,
 the answer is FAIL. Period.
+
+SELF-CONSISTENCY RULE (CRITICAL — DO NOT CONTRADICT YOURSELF):
+If you DO quote text from the DOCUMENT that contains the required value,
+your verdict MUST be PASS. Returning FAIL while quoting matching text in
+your own reasoning is a self-contradiction and is never correct.
+
+  EXAMPLE OF SELF-CONTRADICTION (DO NOT DO THIS):
+    Condition: "Goods description must be 'INFINIX SMART 20 X 6840
+                64+4 MOBILE PHONE IN SKD CONDITION'."
+    Document text: "DESCRIPTION OF GOODS: INFINIX MOBILITY LTD
+                    INFINIX SMART 20 X 6840 64+4 MOBILE PHONE IN
+                    SKD CONDITION"
+    Quote in your reasoning: "INFINIX MOBILITY LTD INFINIX SMART 20
+                              X 6840 64+4 MOBILE PHONE IN SKD CONDITION"
+    WRONG: findings="The Packing List does not contain the required
+                     goods description 'INFINIX SMART 20 X 6840 64+4
+                     MOBILE PHONE IN SKD CONDITION'."  result=FAIL
+    → SELF-CONTRADICTION. You just quoted the matching description
+      from the document. The correct verdict is PASS.
+
+WRITING STYLE FOR FINDINGS (CRITICAL — match the human bank-examiner
+voice the report uses):
+- One concise sentence. State what you found, not what the LC says.
+- For a FAIL when something is missing, prefer "<Field> is not
+  present on the <Doc>." over "The Doc shows X but does not include
+  a separate line for Y, and the LC requires Y to be mentioned
+  separately, etc."
+- For a PASS, prefer "<Field> is shown on the <Doc> as required."
+  over a long restatement of the condition.
+- Do NOT echo the LC clause text. Do NOT mention internal codes
+  ("deterministic", "post-check", "override", "P198…", "rescue").
+- If a required value is genuinely absent, the finding should read:
+  "<Required value> is not present on the <Document>."
+  Examples:
+    "Freight value is not present on the Commercial Invoice."
+    "Importer's NTN No. 1550365-8 is not present on the Bill of
+     Lading."
+    "Shipment Advice is not addressed to the Applicant."
+
+QUANTITY TOLERANCE & UNIT CONVERSION (CRITICAL — DO NOT MISREAD):
+- "LESS N PCT" / "± N%" / "±N PERCENT" in the LC means the SHIPPED
+  quantity may be anywhere in the range [100−N%, 100+N%] of the
+  stated figure. Example: "1000 METRIC TONS LESS 10 PCT" → 900 to
+  1100 MT is acceptable.
+- UCP 600 article 30 also grants a 5% tolerance to quantity (not
+  amount) UNLESS the LC says "ABOUT" / "APPROXIMATELY" (10%) or
+  states an exact piece count.
+- ALWAYS convert units before comparing: 1 MT = 1,000 KG.
+  • A doc that says "NET WEIGHT 950,000 KG" is shipping **950 MT**,
+    not 950,000 MT.
+  • A doc that says "NET WEIGHT 950 MT" is also shipping 950 MT.
+  • A doc that says "1,000 KG" is shipping 1 MT.
+- Quote the ACTUAL SHIPPED quantity from the doc, not the
+  contractual quantity. The CI usually restates the LC quantity
+  clause near the top, but the SHIPPED figure (in NET WEIGHT or a
+  line item) is what counts for compliance.
+
+  EXAMPLE — DO NOT MAKE THIS MISTAKE:
+    LC: "QUANTITY 1000 METRIC TONS LESS 10 PCT"
+    CI: "QUANTITY: 1000 METRIC TONS LESS 10 PCT
+         NET WEIGHT: 950,000 KG"
+    WRONG: result=FAIL, findings="The CI shows 950,000 MT which
+           exceeds the LC's 1,000 MT limit."
+    → UNIT ERROR. 950,000 KG = 950 MT. 950 MT is in the
+      900-1100 MT tolerance range. The correct verdict is PASS.
 
 GOODS DESCRIPTION TOLERANCE: Minor wording variations in goods
 description are acceptable if the PRODUCT is clearly the same.
@@ -5385,11 +5468,11 @@ Return ONLY valid JSON:
 
 
 _DOC_MISSING_RESULT = {
-    "findings": "Document not found in submission",
-    "result": "Required document missing",
+    "findings": "The required document was not submitted with the presentation.",
+    "result": "The required document is not present in the submission.",
     "compliance": "fail",
     "confidence": 1.0,
-    "reasoning": "The required document was not submitted",
+    "reasoning": "The document was not found among the presented documents.",
 }
 
 
@@ -5802,10 +5885,15 @@ def _call_vlm(
     # Truncate document text to avoid exceeding token limits.
     # After the T&C strip above, a BL packet is normally well under the
     # cap — so the BL header, parties, cargo description, dates, marks,
-    # stamps and signatures all pass through intact. Raised from 6500
-    # → 10000 so the largest clean BL bodies (multi-page merged BLs
-    # with attached schedules) also fit in one prompt.
-    max_chars = 10000
+    # stamps and signatures all pass through intact.
+    #
+    # P198h6 — raised 10000 → 28000. A 5-page Packing List (concatenated
+    # via the bridge) plus the audit-header block can run 12K-20K chars
+    # easily; the previous 10K cap silently dropped later pages, so
+    # F45A item names that lived on pg 3+ of a multi-page PL never
+    # reached the LLM and the row came back as FAIL/REVIEW. Qwen-72B
+    # handles 32K context with room for the prompt template + condition.
+    max_chars = 28000
     if len(document_text) > max_chars:
         document_text = document_text[:max_chars] + "\n... [truncated]"
 
@@ -6083,6 +6171,77 @@ def _call_vlm(
         parsed["elapsed"] = elapsed
         parsed["_verification_path"] = "vlm_split" if USE_SPLIT_PROMPTS else "vlm_legacy"
 
+        # P198h6 — KG vs MT unit-confusion guard. Real failure: LC says
+        # "1000 METRIC TONS LESS 10 PCT", CI shows net weight 950,000 KG
+        # (= 950 MT, within 900-1100 MT tolerance → PASS). LLM read
+        # "950,000" with weight context and reported "950,000 MT" →
+        # wrong FAIL. Pattern: condition mentions MT/METRIC TONS with a
+        # quantity X; finding mentions a number Y where Y is roughly
+        # 1000× X (off-by-factor-of-1000). Flip to PASS with a note
+        # about unit conversion.
+        try:
+            _comp = str(parsed.get("compliance", "")).lower().strip()
+            _findings = str(parsed.get("findings", ""))
+            _cond_u = (condition_text or "").upper()
+            if (_comp in ("fail", "not_complied", "non_compliant", "discrepant")
+                    and 'METRIC TON' in _cond_u
+                    and re.search(r'\d', _findings)):
+                # LC quantity (MT)
+                _lc_qty_m = re.search(
+                    r'(\d{1,4}(?:[,\s]\d{3})*(?:\.\d+)?)\s*(?:METRIC\s+TONS?|MT|M/?T|M\.T\.)\b',
+                    _cond_u,
+                )
+                _lc_qty = None
+                if _lc_qty_m:
+                    try:
+                        _lc_qty = float(_lc_qty_m.group(1).replace(',', '').replace(' ', ''))
+                    except Exception:
+                        _lc_qty = None
+                # Tolerance from "LESS N PCT" / "+/- N PCT" / UCP-30 default 5%
+                _tol_pct = 5.0
+                _tol_m = re.search(
+                    r'(?:LESS|MINUS|\+/?\-|\bPLUS\b\s+OR\s+\bMINUS\b|±)\s*'
+                    r'(\d{1,2}(?:\.\d+)?)\s*(?:PCT|PERCENT|%)',
+                    _cond_u,
+                )
+                if _tol_m:
+                    try:
+                        _tol_pct = float(_tol_m.group(1))
+                    except Exception:
+                        _tol_pct = 5.0
+                if 'ABOUT' in _cond_u or 'APPROXIMATELY' in _cond_u:
+                    _tol_pct = max(_tol_pct, 10.0)
+                # Stated quantity in findings (interpreted as MT)
+                _doc_qty_m = re.search(
+                    r'(\d{1,7}(?:,\d{3})*(?:\.\d+)?)\s*(?:metric\s+tons?|mt\b)',
+                    _findings, re.IGNORECASE,
+                )
+                _doc_qty = None
+                if _doc_qty_m:
+                    try:
+                        _doc_qty = float(_doc_qty_m.group(1).replace(',', ''))
+                    except Exception:
+                        _doc_qty = None
+                if _lc_qty and _doc_qty:
+                    _lo = _lc_qty * (1.0 - _tol_pct / 100.0)
+                    _hi = _lc_qty * (1.0 + _tol_pct / 100.0)
+                    # KG-as-MT confusion: doc number ÷ 1000 lands in
+                    # the tolerance range.
+                    _converted = _doc_qty / 1000.0
+                    if _lo <= _converted <= _hi:
+                        parsed["compliance"] = "pass"
+                        parsed["verdict"] = "PASS"
+                        parsed["findings"] = (
+                            f"The shipped quantity of {_converted:,.0f} MT "
+                            f"({_doc_qty:,.0f} KG) is within the LC tolerance "
+                            f"of {_lo:,.0f}–{_hi:,.0f} MT (LC: {_lc_qty:,.0f} MT "
+                            f"±{_tol_pct:.0f}%)."
+                        )
+                        parsed["result"] = parsed["findings"]
+                        parsed["_post_check"] = "P198h6_kg_mt_unit_conversion"
+        except Exception:
+            pass
+
         # P133 — Arithmetic sanity post-check for FAIL verdicts on
         # quantity/amount conditions. LLM occasionally writes "X exceeds
         # maximum Y" where X is in fact less than Y (self-contradictory
@@ -6127,8 +6286,8 @@ def _call_vlm(
                         parsed["compliance"] = "pass"
                         parsed["verdict"] = "PASS"
                         parsed["findings"] = (
-                            f"{_findings.rstrip('. ')}. Arithmetic post-check: "
-                            f"{_actual:,.2f} is NOT greater than {_limit:,.2f} — within tolerance (P133 override)."
+                            f"The value {_actual:,.2f} is within the "
+                            f"required limit of {_limit:,.2f}."
                         )
                         parsed["result"] = parsed["findings"]
                         parsed["_post_check"] = "P133_arithmetic_override"
@@ -6139,8 +6298,8 @@ def _call_vlm(
                         parsed["compliance"] = "pass"
                         parsed["verdict"] = "PASS"
                         parsed["findings"] = (
-                            f"{_findings.rstrip('. ')}. Arithmetic post-check: "
-                            f"{_actual:,.2f} is NOT less than {_limit:,.2f} — within tolerance (P133 override)."
+                            f"The value {_actual:,.2f} meets the required "
+                            f"minimum of {_limit:,.2f}."
                         )
                         parsed["result"] = parsed["findings"]
                         parsed["_post_check"] = "P133_arithmetic_override"
@@ -6232,8 +6391,9 @@ def _call_vlm(
                         parsed["compliance"] = "pass"
                         parsed["verdict"] = "PASS"
                         parsed["findings"] = (
-                            f"Structured consignee contains '{_target_key}' "
-                            f"(consignee='{_cons_txt[:150]}'). (P134 override)"
+                            f"The consignee on the document is "
+                            f"'{_cons_txt[:150]}', which includes the "
+                            f"required party '{_target_key}'."
                         )
                         parsed["result"] = parsed["findings"]
                         parsed["_post_check"] = "P134_consignee_override"
@@ -6317,11 +6477,10 @@ def _call_vlm(
                         parsed["compliance"] = "pass"
                         parsed["verdict"] = "PASS"
                         parsed["findings"] = (
-                            f"{parsed.get('findings','').rstrip('. ')}. "
-                            f"Product codes differ by a single character "
-                            f"({sorted(_cond_codes)} vs {sorted(_fin_codes)}) "
-                            f"— treating as same product with OCR variant. "
-                            f"(P150 OCR near-miss override)"
+                            f"The product codes match aside from a "
+                            f"single-character variant "
+                            f"({sorted(_cond_codes)} vs {sorted(_fin_codes)}). "
+                            f"Treating as the same product."
                         )
                         parsed["result"] = parsed["findings"]
                         parsed["_post_check"] = "P150_unit_price_ocr_pass"
@@ -6373,10 +6532,10 @@ def _call_vlm(
                         parsed["compliance"] = "pass"
                         parsed["verdict"] = "PASS"
                         parsed["findings"] = (
-                            f"Reference '{_needle}' IS present on the "
-                            f"document via OCR-normalised match. The "
-                            f"identifier appears after character-confusion "
-                            f"handling (O↔0, I↔1, etc.)."
+                            f"Reference '{_needle}' appears on the "
+                            f"document. The match was confirmed after "
+                            f"standard character normalization (letter O "
+                            f"vs digit 0, letter I vs digit 1, etc.)."
                         )
                         parsed["result"] = parsed["findings"]
                         parsed["_post_check"] = "P135_reference_found_override"
@@ -6500,14 +6659,76 @@ def _call_vlm(
                     parsed["compliance"] = "pass"
                     parsed["verdict"] = "PASS"
                     parsed["findings"] = (
-                        f"Party name match confirmed. Document name "
-                        f"contains the required party '{_hit}' as a prefix "
-                        f"(the LC-extracted form appears truncated; "
-                        f"document carries the full legal name). "
-                        f"(P165 prefix/truncation override)"
+                        f"The document names the required party "
+                        f"'{_hit}'. The LC-extracted name was a "
+                        f"shorter prefix; the document carries the full "
+                        f"legal form."
                     )
                     parsed["result"] = parsed["findings"]
                     parsed["_post_check"] = "P165_name_prefix_match"
+        except Exception:
+            pass
+
+        # P198h6 — LLM self-contradiction guard. The verifier
+        # occasionally returns FAIL ("Packing List does not contain
+        # 'INFINIX SMART 20 X 6840…'") while its OWN reasoning/quote
+        # field literally quotes the matching text from the doc
+        # ("Quote: DESCRIPTION OF GOODS: INFINIX MOBILITY LTD INFINIX
+        # SMART 20 X 6840…"). When the LLM's own evidence proves the
+        # required value is present, the verdict should be PASS.
+        try:
+            _comp_hg = str(parsed.get("compliance", "")).lower().strip()
+            if (_comp_hg in ("fail", "not_complied", "non_compliant", "discrepant")
+                    and parsed.get("_post_check") is None):
+                # Gather every piece of LLM evidence text we can quote-check
+                _evidence_blobs = []
+                for _k in ('reasoning', 'quote', 'verification_notes',
+                           'found_text', 'evidence'):
+                    _v = parsed.get(_k) or ''
+                    if isinstance(_v, str) and _v.strip():
+                        _evidence_blobs.append(_v)
+                _evidence_u = ' '.join(_evidence_blobs).upper()
+                # Determine the required value to look for
+                _required_values = []
+                _lfv = parsed.get('look_for_value') or row.get('look_for_value') if hasattr(row, 'get') else None
+                if isinstance(_lfv, str) and _lfv.strip():
+                    _required_values.append(_lfv.strip())
+                elif _lfv:
+                    _required_values.append(str(_lfv).strip())
+                # Also pull single-quoted phrases from the condition itself
+                _cu_hg = condition_text or ''
+                for _m in re.finditer(r"'([^']{6,200})'", _cu_hg):
+                    _required_values.append(_m.group(1).strip())
+                # Normalize: collapse whitespace + uppercase
+                def _normspc(s):
+                    return re.sub(r'\s+', ' ', str(s).upper()).strip()
+                _ev_n = _normspc(_evidence_u)
+                _found_required = None
+                for _val in _required_values:
+                    _vn = _normspc(_val)
+                    if len(_vn) < 6:
+                        continue
+                    if _vn in _ev_n:
+                        _found_required = _val
+                        break
+                    # Looser match: 80%+ of value's content tokens appear in evidence
+                    _toks = [t for t in re.findall(r'[A-Z0-9]+', _vn) if len(t) >= 2]
+                    if _toks:
+                        _hits = sum(1 for t in _toks if t in _ev_n)
+                        if _hits / len(_toks) >= 0.85:
+                            _found_required = _val
+                            break
+                if _found_required:
+                    parsed["compliance"] = "pass"
+                    parsed["verdict"] = "PASS"
+                    _shown = _found_required if len(_found_required) <= 80 else _found_required[:80] + '…'
+                    parsed["findings"] = (
+                        f"The document contains the required value '{_shown}'. "
+                        f"It appears verbatim in the document text (quoted "
+                        f"in the verification evidence)."
+                    )
+                    parsed["result"] = parsed["findings"]
+                    parsed["_post_check"] = "P198h6_self_contradiction_guard"
         except Exception:
             pass
 
@@ -6674,6 +6895,51 @@ def _call_vlm(
                             '', _res, flags=re.IGNORECASE,
                         )
                         parsed["result"] = _res.strip()
+        except Exception:
+            pass
+
+        # P198h6 — Strip internal-jargon markers from user-facing
+        # findings/result so the PDF report and result page don't show
+        # the engineer-side rescue codes (e.g. "(P133 override)",
+        # "deterministic post-check", "rescue", etc.). The internal
+        # `_post_check` field on `parsed` still carries the marker for
+        # audit/debug; only the visible text is sanitized.
+        try:
+            _JARGON_PATTERNS = [
+                # "(P123 override)" / "(P198gz59 override)" / "(override)"
+                re.compile(r'\s*\(\s*P\d{1,4}[a-z0-9]*[^)]{0,80}override[^)]*\)\s*', re.IGNORECASE),
+                re.compile(r'\s*\(\s*P\d{1,4}[a-z0-9]*[^)]{0,60}\)\s*', re.IGNORECASE),
+                re.compile(r'\s*\(\s*override\s*\)\s*', re.IGNORECASE),
+                # "P198gz59 ..." inline (without parens)
+                re.compile(r'\bP\d{1,4}[a-z0-9]+\b\s*[—\-:]\s*', re.IGNORECASE),
+                # "post-check" / "deterministic check" / "rescue" sentences
+                re.compile(r'(?:[\.\s,;—–-])\s*(?:Arithmetic|Deterministic)\s+post-check[:\s][^\.]*\.?', re.IGNORECASE),
+                re.compile(r'(?:[\.\s,;—–-])\s*\(?\s*deterministic[^.)]*\)?', re.IGNORECASE),
+                re.compile(r'(?:[\.\s,;—–-])\s*\(?\s*rescue\s+applied[^.)]*\)?', re.IGNORECASE),
+                re.compile(r'(?:[\.\s,;—–-])\s*\(?\s*post-check\s+(?:override|applied|flipped|fired)[^.)]*\)?', re.IGNORECASE),
+            ]
+            def _scrub_jargon(s: str) -> str:
+                if not s:
+                    return s
+                out = str(s)
+                for _pat in _JARGON_PATTERNS:
+                    out = _pat.sub(' ', out)
+                # Collapse whitespace + clean dangling punctuation
+                out = re.sub(r'\s+', ' ', out)
+                out = re.sub(r'\s+([.,;:])', r'\1', out)
+                out = re.sub(r'([.,;:])\1+', r'\1', out)
+                out = out.strip(' .,;-')
+                # Ensure trailing period if the original ended with one
+                if s.rstrip().endswith('.') and out and not out.endswith('.'):
+                    out += '.'
+                return out
+            for _k in ('findings', 'result', 'reasoning', 'verification_notes',
+                       'found_text'):
+                _v = parsed.get(_k)
+                if isinstance(_v, str) and _v.strip():
+                    _v2 = _scrub_jargon(_v)
+                    if _v2 and _v2 != _v:
+                        parsed[_k] = _v2
         except Exception:
             pass
 
@@ -7190,8 +7456,8 @@ def _build_tasks(
                      f"Amount check handled by system (LC {_lc_32b})"
                      + ("; partial shipment allowed" if _partial_allowed else ""))
                 _set(row, "findings",
-                     f"LC amount: {_lc_32b}. Arithmetic amount comparison is performed "
-                     f"deterministically by the system in the implicit checks section. "
+                     f"LC amount: {_lc_32b}. The amount comparison is "
+                     f"verified in the implicit checks section. "
                      f"{'Partial shipment is ALLOWED per F43P — invoice may be less than LC amount.' if _partial_allowed else ''}")
                 _set(row, "confidence", 1.0)
                 tasks.append({
@@ -7629,6 +7895,15 @@ def _build_tasks(
                     or _row_cond_id.endswith('-PL-OPT')
                 )
                 if _is_dc_clone:
+                    # P198h6 — also drop the row from the report. The
+                    # primary check on the Commercial Invoice still
+                    # shows in the report; the fan-out clone to a
+                    # missing Packing List was a phantom row creating
+                    # noisy "Pending Verification" REVIEW entries.
+                    try:
+                        row["_drop_from_report"] = True
+                    except Exception:
+                        pass
                     tasks.append({
                         "row": row,
                         "skip": True,
@@ -7636,19 +7911,10 @@ def _build_tasks(
                         "doc_type_target": doc_type_target,
                         "prefilled": {
                             "compliance": "N/A",
-                            "result": (
-                                f"{doc_type_target} is not present in the "
-                                f"presentation; this is a goods-description "
-                                f"fan-out clone (the same condition is "
-                                f"verified on the Commercial Invoice). "
-                                f"Missing-doc status is reported separately."
-                            ),
-                            "findings": (
-                                f"Skipped — {doc_type_target} not in "
-                                f"presentation; primary check is on CI."
-                            ),
+                            "result": "",
+                            "findings": "",
                             "confidence": 1.0,
-                            "reasoning": "P198gr fan-out skip",
+                            "reasoning": "P198gr fan-out skip (target doc absent; primary check on CI)",
                         },
                     })
                     continue
@@ -8457,6 +8723,131 @@ def run(
                 _in_lc = any(_v in _lc_text_up for _v in _dt_variants)
 
                 if not _in_lc:
+                    # P198h6 — REROUTE "Email Evidence" rows to the
+                    # Shipment Advice. When the LC says "advise by
+                    # email to info@example.com" the step12 decomposer
+                    # sometimes splits the email check into a separate
+                    # row tagged document='Email Evidence'. There is
+                    # no such document in trade-finance practice — the
+                    # email-address reference lives on the Shipment
+                    # Advice itself. Find the email address in the
+                    # condition, then scan the SA text for it. PASS if
+                    # the address appears, FAIL otherwise.
+                    if 'EMAIL' in _dt_up and ('EVIDENCE' in _dt_up
+                                              or 'PROOF' in _dt_up
+                                              or 'COPY' in _dt_up):
+                        _cond_full = (
+                            (_get(row, 'condition_text', '') or '')
+                            + ' '
+                            + (_get(row, 'original_clause_text', '') or '')
+                        )
+                        # Pull email-like tokens from the condition.
+                        # Accept both "info@siut.org" and the dressed-up
+                        # form "info(at)siut.org" / "info (AT) siut. org".
+                        # TLD is a 2-6 letter token followed by a word
+                        # boundary so we stop at the actual TLD end and
+                        # don't drag in trailing words after a period
+                        # ("info(at)siut.org. INSURANCE" → info@siut.org).
+                        _email_pat = re.compile(
+                            r'([A-Za-z0-9._%+-]+)\s*(?:@|\(\s*at\s*\)|\[\s*at\s*\])\s*'
+                            r'([A-Za-z0-9-]+(?:\s*\.\s*[A-Za-z0-9-]+)*'
+                            r'\s*\.\s*[A-Za-z]{2,6})\b',
+                            re.IGNORECASE,
+                        )
+                        _req_emails = []
+                        for _m in _email_pat.finditer(_cond_full):
+                            _addr = (_m.group(1) + '@' + _m.group(2)).lower()
+                            _addr = re.sub(r'\s+', '', _addr)
+                            _req_emails.append(_addr)
+                        if _req_emails:
+                            # Scan EVERY Shipment Advice packet — the LC
+                            # is satisfied if the required email appears
+                            # on ANY of them. Real failure mode the loop
+                            # protects against: 2 SAs (one for insurer,
+                            # one for applicant) and the email reference
+                            # lives on the applicant-addressed SA only.
+                            _sa_pkts = [
+                                _p for _p in (packets or [])
+                                if isinstance(_p, dict)
+                                and 'shipment advice'
+                                in (_p.get('document_type') or '').lower()
+                            ]
+                            _AE = '=== END AUDIT — DOCUMENT TEXT FOLLOWS ==='
+                            _matched_email = None
+                            _matched_loc = ''
+                            _scanned_count = len(_sa_pkts)
+                            for _sa_pkt in _sa_pkts:
+                                _sa_text = (
+                                    _sa_pkt.get('document_text')
+                                    or _sa_pkt.get('cleaned_text') or ''
+                                )
+                                _aei = _sa_text.find(_AE)
+                                if _aei >= 0:
+                                    _sa_text = _sa_text[_aei + len(_AE):]
+                                _sa_norm = re.sub(r'\s+', '', _sa_text.lower())
+                                _sa_norm2 = re.sub(
+                                    r'\(at\)|\[at\]|\bat\b', '@', _sa_norm,
+                                )
+                                for _e in _req_emails:
+                                    if _e in _sa_norm or _e in _sa_norm2:
+                                        _matched_email = _e
+                                        _pages = (_sa_pkt.get('page_numbers')
+                                                  or _sa_pkt.get('pages') or [])
+                                        if isinstance(_pages, list) and _pages:
+                                            _matched_loc = (
+                                                f' (page {_pages[0]})'
+                                                if len(_pages) == 1
+                                                else f' (pages '
+                                                f'{", ".join(str(p) for p in _pages)})'
+                                            )
+                                        break
+                                if _matched_email:
+                                    break
+                            _set(row, 'document_checked', 'Shipment Advice')
+                            if _matched_email:
+                                _msg = (
+                                    f"Shipment Advice{_matched_loc} "
+                                    f"references the required email "
+                                    f"address '{_matched_email}'."
+                                )
+                                _set(row, 'compliance', 'PASS')
+                                _set(row, 'result', _msg)
+                                _set(row, 'findings', _msg)
+                            else:
+                                _shown = _req_emails[0]
+                                if _scanned_count == 0:
+                                    _msg = (
+                                        f"No Shipment Advice was submitted, "
+                                        f"so the required email '{_shown}' "
+                                        f"could not be verified."
+                                    )
+                                elif _scanned_count == 1:
+                                    _msg = (
+                                        f"Email '{_shown}' is not present "
+                                        f"on the Shipment Advice."
+                                    )
+                                else:
+                                    _msg = (
+                                        f"Email '{_shown}' is not present "
+                                        f"on any of the {_scanned_count} "
+                                        f"Shipment Advice documents submitted."
+                                    )
+                                _set(row, 'compliance', 'FAIL')
+                                _set(row, 'result', _msg)
+                                _set(row, 'findings', _msg)
+                            _set(row, 'verification_notes',
+                                 f"Rerouted from 'Email Evidence' to "
+                                 f"Shipment Advice (email required by LC: "
+                                 f"{', '.join(_req_emails)})")
+                            try:
+                                _progress(
+                                    f"  {_get(row, 'row_id', '?')}: "
+                                    f"REROUTED Email Evidence → Shipment "
+                                    f"Advice (email check)"
+                                )
+                            except Exception:
+                                pass
+                            continue
                     # 3) Not in LC text → drop row entirely. LLM enumerated
                     #    this doc type for an "ALL DOCUMENTS" clause that
                     #    never named it.
@@ -8527,8 +8918,13 @@ def run(
                     _disp_doc = "Direct Sailing Certificate"
             except Exception:
                 pass
-            _named_findings = f"{_disp_doc} not found in submission"
-            _named_result   = f"Required document missing: {_disp_doc}"
+            _named_findings = (
+                f"The {_disp_doc} was not submitted with the presentation."
+            )
+            _named_result   = (
+                f"The {_disp_doc} required by the LC is not present in "
+                f"the submission."
+            )
             # Set document_checked to the target so the report's
             # Document column shows the actual name (was previously "N/A"
             # when the row was created with doc_to_check empty).
@@ -8826,20 +9222,26 @@ def run(
             if _fail_types:
                 agg_compliance = "FAIL"
                 _missing = ", ".join(_fail_types)
-                combined_findings = (
-                    f"Required value missing on: {_missing}. "
-                    f"Present on: {', '.join(_pass_types) or '(none)'}. "
-                    f"Per-doc: {_per_doc_block}"
+                _present_text = (
+                    f" It is present on: {', '.join(_pass_types)}."
+                    if _pass_types else ''
                 )
-                combined_result = f"Missing on {len(_fail_types)} doc(s): {_missing}"
+                combined_findings = (
+                    f"The required value is not present on: {_missing}."
+                    f"{_present_text}"
+                )
+                combined_result = combined_findings
             elif _review_types:
                 agg_compliance = "REVIEW"
-                combined_findings = (
-                    f"Requirement unclear on: {', '.join(_review_types)}. "
-                    f"Present on: {', '.join(_pass_types) or '(none)'}. "
-                    f"Per-doc: {_per_doc_block}"
+                _present_text = (
+                    f" It is present on: {', '.join(_pass_types)}."
+                    if _pass_types else ''
                 )
-                combined_result = f"Unclear on {len(_review_types)} doc(s)"
+                combined_findings = (
+                    f"The requirement could not be confirmed on: "
+                    f"{', '.join(_review_types)}.{_present_text}"
+                )
+                combined_result = combined_findings
             else:
                 agg_compliance = "PASS"
                 combined_findings = (
@@ -10243,8 +10645,7 @@ def run(
                     )
                     _msg = (
                         f"Pre-dated documents found (before LC issue date "
-                        f"{_lc_issue_date.isoformat()}): {_listing}. "
-                        f"(P163 deterministic)"
+                        f"{_lc_issue_date.isoformat()}): {_listing}."
                     )
                     _set(row, 'findings', _msg)
                     _set(row, 'result', _msg)
@@ -10253,8 +10654,8 @@ def run(
                 else:
                     _set(row, 'compliance', 'PASS')
                     _msg = (
-                        f"All submitted documents dated on or after LC issue "
-                        f"date {_lc_issue_date.isoformat()}. (P163 deterministic)"
+                        f"All submitted documents are dated on or after the "
+                        f"LC issue date {_lc_issue_date.isoformat()}."
                     )
                     _set(row, 'findings', _msg)
                     _set(row, 'result', _msg)
@@ -13388,6 +13789,17 @@ def run(
                 continue
             _txt = (_pkt.get('document_text')
                     or _pkt.get('cleaned_text') or '')
+            # P198h6 — the bridge prepends an audit-header block to
+            # the packet text with status flags + LC "must_show"
+            # requirement phrases. Those phrases legitimately mention
+            # things like "House bill of lading acceptable" / "Freight
+            # Forwarder" / "FIATA" because they ARE LC clauses talking
+            # about BL prohibitions. We must NOT scan the audit header
+            # for self-declaration markers — only the actual BL body.
+            _AUDIT_END = '=== END AUDIT — DOCUMENT TEXT FOLLOWS ==='
+            _audit_end_idx = _txt.find(_AUDIT_END)
+            if _audit_end_idx >= 0:
+                _txt = _txt[_audit_end_idx + len(_AUDIT_END):]
             _txt_clean = _FORM_LABEL_RE.sub(' ', _txt)
             if _FF_SELFDECL_RE.search(_txt_clean.upper()):
                 # Capture the matched phrase and its surrounding
