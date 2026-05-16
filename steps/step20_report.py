@@ -54,7 +54,7 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 from reportlab.platypus import (
-    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer,
+    SimpleDocTemplate, Table, LongTable, TableStyle, Paragraph, Spacer,
     PageBreak, KeepTogether, HRFlowable,
 )
 from reportlab.platypus.flowables import Flowable
@@ -840,7 +840,7 @@ def _build_section_tables(sections: List[Dict], styles) -> List:
                 _ri_tbl = len(_tbl_data) - 1
                 _tbl_styles.append(('BACKGROUND', (0, _ri_tbl), (-1, _ri_tbl), _row_bg))
 
-            _ct = Table(_tbl_data, colWidths=_cw, repeatRows=1)
+            _ct = LongTable(_tbl_data, colWidths=_cw, repeatRows=1, splitInRow=1)
             _ct.setStyle(TableStyle(_tbl_styles))
             elements.append(_ct)
 
