@@ -670,6 +670,43 @@ def _promote_flat_keys(doc_type: str, fields: Dict) -> Dict:
     return out
 
 
+def _ucp17_apparent_originals(pkt: Dict) -> Tuple[int, int]:
+    """Narrow special-case for Shipment Advice only.
+
+    The 8083 classifier counts only instances explicitly labeled
+    "ORIGINAL" as ``originals_count``; UNMARKED instances go into
+    ``unknown_marker_count`` and surface in the COPY COUNTS audit line
+    as "0 originals". For a Shipment Advice — which is issued and
+    signed by the beneficiary themselves and almost never carries the
+    word "ORIGINAL" — that triggers a spurious "no original presented"
+    discrepancy whenever the LC requires "a copy of the shipment advice
+    to accompany each set of documents".
+
+    To stay conservative we only promote UNMARKED -> ORIGINAL for the
+    Shipment Advice document type, and only when the packet bears an
+    apparent issuer signature or stamp. Every other document type
+    (Bill of Lading, Commercial Invoice, Packing List, etc.) keeps
+    the raw classifier counts unchanged.
+
+    Returns ``(effective_originals, promoted_unknown_count)``. The
+    ``promoted_unknown_count`` is the number of UNMARKED instances
+    re-classified as originals (0 if no promotion happened) — callers
+    use it to emit an audit-trail note alongside the adjusted count.
+    """
+    base = int(pkt.get('originals_count', 0) or 0)
+    dt = (pkt.get('document_type') or '').lower()
+    if 'shipment advice' not in dt:
+        return base, 0
+    unknown = int(pkt.get('unknown_marker_count', 0) or 0)
+    if unknown <= 0:
+        return base, 0
+    has_sig = bool(pkt.get('signatures'))
+    has_stamp = bool(pkt.get('stamps'))
+    if not (has_sig or has_stamp):
+        return base, 0
+    return base + unknown, unknown
+
+
 def _flatten_stamps_and_signatures(fields: Dict) -> Tuple[List[Dict], List[Dict]]:
     """Pull stamps + signatures out of 8083's extracted_fields into 8082's
     flat per-packet shape. step14_verification reads:
@@ -909,7 +946,11 @@ def adapt_8083_to_step_results(c8083: Dict,
         if not _dt_key:
             continue
         agg = _type_aggregate.setdefault(_dt_key, {'orig': 0, 'copy': 0, 'count': 0})
-        agg['orig'] += int(pkt.get('originals_count', 0) or 0)
+        # UCP 600 Art 17(b): promote UNMARKED signed/stamped instances to
+        # ORIGINAL so the per-doc-type aggregate matches what banks must
+        # treat as originals. See _ucp17_apparent_originals docstring.
+        _eff_orig, _ = _ucp17_apparent_originals(pkt)
+        agg['orig'] += _eff_orig
         agg['copy'] += int(pkt.get('copies_count', 0) or 0)
         agg['count'] += 1
 
@@ -1002,7 +1043,11 @@ def adapt_8083_to_step_results(c8083: Dict,
                 _audit_lines.append(
                     f"SIGNED AS: {_sig['label']}" + (f" (evidence: {_ev[:120]})" if _ev else '')
                 )
-        _orig_c = pkt.get('originals_count', 0)
+        # UCP 600 Art 17(b) — show the effective originals count (raw +
+        # promoted unmarked signed/stamped instances) so the per-packet
+        # display matches the aggregate computed above.
+        _orig_c_raw = int(pkt.get('originals_count', 0) or 0)
+        _orig_c, _ucp17_promoted = _ucp17_apparent_originals(pkt)
         _copy_c = pkt.get('copies_count', 0)
         _lc_o   = pkt.get('lc_required_originals')
         _lc_c   = pkt.get('lc_required_copies')
@@ -1024,6 +1069,23 @@ def adapt_8083_to_step_results(c8083: Dict,
             else:
                 _sub = f"Submitted: {_tot_orig} originals + {_tot_copy} copies"
             _audit_lines.append(f"COPY COUNTS: {_sub} ({_req})")
+            # UCP 600 Art 17(b) — when an UNMARKED instance has been
+            # promoted to ORIGINAL because it bears an apparent issuer
+            # signature/stamp, surface a short explanatory note so the
+            # LLM verifier (and any human reading the audit header)
+            # understands why the count differs from the raw classifier
+            # output. Without this, the verifier might still mention
+            # the absence of an explicit "ORIGINAL" marker.
+            if _ucp17_promoted:
+                _audit_lines.append(
+                    f"COPY COUNTS UCP NOTE: {_ucp17_promoted} unmarked "
+                    f"instance(s) on this packet treated as ORIGINAL "
+                    f"under UCP 600 Art 17(b) — bears apparent issuer "
+                    f"signature/stamp; an original need not be marked "
+                    f"'ORIGINAL'. Raw classifier count was "
+                    f"{_orig_c_raw} originals + {_ucp17_promoted} "
+                    f"unmarked."
+                )
         _copies = pkt.get('copies') or []
         if _copies:
             _audit_lines.append("PRINTOUTS:")

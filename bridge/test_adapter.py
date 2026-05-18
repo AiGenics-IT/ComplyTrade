@@ -22,6 +22,7 @@ from bridge.adapter import (
     _build_page_texts,
     _build_packets,
     _flatten_stamps_and_signatures,
+    _ucp17_apparent_originals,
 )
 
 
@@ -106,6 +107,54 @@ expect('bank stamp date carried',
        any(s.get('date') == '2026-04-23' for s in stamps), True)
 expect('endorsement type is endorsement',
        any(s.get('type') == 'endorsement' for s in sigs), True)
+
+
+# ── _ucp17_apparent_originals (Shipment Advice only) ──────────────
+print('\n== _ucp17_apparent_originals (Shipment Advice only) ==')
+
+# ── Promotion ONLY when document_type is Shipment Advice ─────────
+# Case A: Shipment Advice, 1 unmarked + signature → promote
+pkt_a = {'document_type': 'Shipment Advice',
+         'originals_count': 0, 'copies_count': 0, 'unknown_marker_count': 1,
+         'signatures': [{'description': 'Jessie Zhang'}], 'stamps': []}
+expect('SA: unmarked + signature -> (1, 1)', _ucp17_apparent_originals(pkt_a), (1, 1))
+
+# Case B: Shipment Advice, 1 unmarked + stamp only → promote
+pkt_b = {'document_type': 'Shipment Advice',
+         'originals_count': 0, 'copies_count': 0, 'unknown_marker_count': 1,
+         'signatures': [], 'stamps': [{'text': 'BANK STAMP'}]}
+expect('SA: unmarked + stamp -> (1, 1)', _ucp17_apparent_originals(pkt_b), (1, 1))
+
+# Case C: Shipment Advice, no signature AND no stamp → no promotion
+pkt_c = {'document_type': 'Shipment Advice',
+         'originals_count': 0, 'copies_count': 0, 'unknown_marker_count': 1,
+         'signatures': [], 'stamps': []}
+expect('SA: unmarked + no sig/stamp -> (0, 0)', _ucp17_apparent_originals(pkt_c), (0, 0))
+
+# ── All other doc types must return raw counts, no matter what ───
+# Case D: Bill of Lading with unmarked + signature → NO promotion
+pkt_d = {'document_type': 'Bill of Lading',
+         'originals_count': 0, 'copies_count': 0, 'unknown_marker_count': 1,
+         'signatures': [{'description': 'x'}], 'stamps': []}
+expect('BL: untouched even when signed -> (0, 0)', _ucp17_apparent_originals(pkt_d), (0, 0))
+
+# Case E: Commercial Invoice with unmarked + signature → NO promotion
+pkt_e = {'document_type': 'Commercial Invoice',
+         'originals_count': 0, 'copies_count': 0, 'unknown_marker_count': 1,
+         'signatures': [{'description': 'x'}], 'stamps': []}
+expect('CI: untouched even when signed -> (0, 0)', _ucp17_apparent_originals(pkt_e), (0, 0))
+
+# Case F: SA with already-counted ORIGINAL — passes raw through, no change
+pkt_f = {'document_type': 'Shipment Advice',
+         'originals_count': 1, 'copies_count': 0, 'unknown_marker_count': 0,
+         'signatures': [{'description': 'x'}], 'stamps': []}
+expect('SA: explicit ORIGINAL untouched -> (1, 0)', _ucp17_apparent_originals(pkt_f), (1, 0))
+
+# Case G: missing/None values are safe on the SA path
+pkt_g = {'document_type': 'Shipment Advice',
+         'originals_count': None, 'unknown_marker_count': None,
+         'signatures': [{'description': 'x'}]}
+expect('SA: None counts -> (0, 0)', _ucp17_apparent_originals(pkt_g), (0, 0))
 
 
 # ── _build_packets ────────────────────────────────────────────────
